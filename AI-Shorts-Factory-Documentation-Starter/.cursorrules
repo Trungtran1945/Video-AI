@@ -1,0 +1,4 @@
+Always prefer reusable components.
+Never duplicate logic.
+Use TypeScript strict.
+Follow docs before coding.
