@@ -7,7 +7,7 @@ import StatCard from '@/components/StatCard';
 import Loading from '@/components/Loading';
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { Video, Zap, ListOrdered, HardDrive, Cpu, Clock, ArrowRight, Plus, CheckCircle, Film } from 'lucide-react';
+import { Video, Layers, ListOrdered, HardDrive, Cpu, Clock, ArrowRight, Plus, CheckCircle, Film } from 'lucide-react';
 import { STAGE_LABELS, STAGE_ORDER, formatDate } from '@/lib/constants';
 
 export default function Dashboard() {
@@ -44,7 +44,6 @@ export default function Dashboard() {
   });
   const completed = (projects || []).filter(p => p.status === 'completed');
   const runningJobs = (jobs || []).filter(j => j.status === 'running' || j.status === 'pending');
-  const totalCredits = (logs || []).reduce((s, l) => s + (l.cost_estimate || 0), 0);
 
   const stages = STAGE_ORDER.map(s => STAGE_LABELS[s]);
 
@@ -64,7 +63,7 @@ export default function Dashboard() {
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <StatCard icon={Video} label="Video hôm nay" value={todayProjects.length} color="blue" delay={0} />
-          <StatCard icon={Zap} label="Credits đã dùng" value={totalCredits.toFixed(0)} color="purple" delay={0.05} />
+          <StatCard icon={Layers} label="Tổng dự án" value={(projects || []).length} color="purple" delay={0.05} />
           <StatCard icon={ListOrdered} label="Job đang chạy" value={runningJobs.length} color="orange" delay={0.1} />
           <StatCard icon={HardDrive} label="Video hoàn thành" value={completed.length} color="green" delay={0.15} />
         </div>

@@ -1,21 +1,21 @@
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, Zap, Globe, ArrowRight, Play, Scissors, Clapperboard } from 'lucide-react';
+import { Sparkles, Zap, Globe, ArrowRight, Play, Languages, Clapperboard } from 'lucide-react';
 import { useAuth } from '@/lib/AuthContext';
 
 const features = [
   { icon: Clapperboard, title: 'Review Phim Tự Động', desc: 'Tải phim 2–3 tiếng, AI cắt cảnh và viết lời review thành video 20–30 phút.' },
-  { icon: Scissors, title: 'Edit Theo Mẫu', desc: 'Upload ảnh/video/âm thanh + video mẫu, AI dựng video 30s–1phút cùng phong cách.' },
-  { icon: Zap, title: 'Pipeline Nền', desc: 'Hàng đợi thông minh, tự động thử lại, theo dõi thời gian thực.' },
+  { icon: Languages, title: 'Dịch Thuật & Lồng Tiếng', desc: 'Tải video nước ngoài có phụ đề cứng, AI dịch tiếng Việt theo 12 phong cách và lồng giọng AI ép khớp thời gian.' },
+  { icon: Zap, title: 'Pipeline Nền', desc: 'Hàng đợi thông minh, tự động thử lại, tiến trình real-time qua SSE.' },
   { icon: Globe, title: 'Đa Ngôn Ngữ', desc: 'Hỗ trợ 8+ ngôn ngữ với giọng nói tự nhiên.' },
 ];
 
 const modes = [
-  { num: '01', label: 'Chọn chế độ: Review phim / Edit theo mẫu' },
-  { num: '02', label: 'Upload phim hoặc assets + video mẫu' },
-  { num: '03', label: 'Chọn ngôn ngữ, độ dài, phong cách' },
-  { num: '04', label: 'AI chạy pipeline tự động' },
-  { num: '05', label: 'Xem tiến trình & video đầu ra' },
+  { num: '01', label: 'Chọn chế độ: Review phim / Dịch & Lồng tiếng' },
+  { num: '02', label: 'Upload phim hoặc video nước ngoài (resumable ≤2GB)' },
+  { num: '03', label: 'Chọn ngôn ngữ, phong cách dịch, bật/tắt lồng tiếng' },
+  { num: '04', label: 'AI chạy pipeline tự động (STT + OCR song song)' },
+  { num: '05', label: 'Xem tiến trình realtime & video đầu ra' },
 ];
 
 export default function Landing() {
@@ -76,7 +76,7 @@ export default function Landing() {
              initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
              className="text-lg text-slate-400 mt-6 max-w-2xl mx-auto leading-relaxed"
            >
-             Hai chế độ: <span className="text-slate-200">Review phim</span> (phim 2–3 tiếng → video review 20–30 phút) và <span className="text-slate-200">Edit theo mẫu</span> (assets + video mẫu → video ngắn 30s–1phút). AI tự động tạo đầu ra — không cần tự edit.
+             Hai chế độ: <span className="text-slate-200">Review phim</span> (phim 2–3 tiếng → video review 20–30 phút) và <span className="text-slate-200">Dịch &amp; Lồng tiếng</span> (video nước ngoài có hardsub → phụ đề tiếng Việt theo 12 phong cách + giọng lồng AI). AI tự động tạo đầu ra — không cần tự edit.
            </motion.p>
           <motion.div
             initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}

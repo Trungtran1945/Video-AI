@@ -1,17 +1,15 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, Scissors, AlertCircle } from 'lucide-react';
-import { LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS } from '@/lib/constants';
+import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, Languages, AlertCircle, AudioLines, Eraser } from 'lucide-react';
+import {
+  LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS,
+  MODE_LABELS, MASK_METHODS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
+  STYLE_PRESETS_FALLBACK,
+} from '@/lib/constants';
 import { projectsApi } from '@/api/projects';
 import { uploadApi } from '@/api/upload';
 import Layout from '@/components/Layout';
-
-const STYLE_EDIT_DURATIONS = [
-  { value: 30, label: '30 giây', desc: 'Rất ngắn' },
-  { value: 45, label: '45 giây', desc: 'Tiêu chuẩn' },
-  { value: 60, label: '60 giây', desc: 'Dài' },
-];
 
 const SUMMARY_DURATIONS = [
   { value: 1200, label: '20 phút', desc: 'Ngắn gọn' },
@@ -19,21 +17,16 @@ const SUMMARY_DURATIONS = [
   { value: 1800, label: '30 phút', desc: 'Chi tiết' },
 ];
 
-function kindOf(file) {
-  if (file.type.startsWith('image')) return 'image';
-  if (file.type.startsWith('video')) return 'video';
-  if (file.type.startsWith('audio')) return 'audio';
-  return 'unknown';
-}
-
 export default function CreateProject() {
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [creating, setCreating] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState(0);
   const [error, setError] = useState('');
+  const [presets, setPresets] = useState(STYLE_PRESETS_FALLBACK);
   const [form, setForm] = useState({
-    mode: null, // 'SUMMARY' | 'STYLE_EDIT'
+    mode: null, // 'SUMMARY' | 'TRANSLATE_DUB'
     title: '',
     sourceVideoKey: null,
     sourceFileName: '',
@@ -42,12 +35,14 @@ export default function CreateProject() {
     style: 'cinematic',
     tone: '',
     spoilerAllowed: false,
+    // TRANSLATE_DUB
+    sourceLanguage: 'auto',
+    targetLanguage: 'vi',
+    stylePreset: null,
+    enableDubbing: false,
     voiceProvider: 'elevenlabs',
     voiceName: '',
-    assets: [], // { storageKey, kind, name }
-    templateVideoKey: null,
-    templateFileName: '',
-    aspectRatio: '9:16',
+    maskMethod: 'fill',
   });
 
   const update = (key, val) => setForm((f) => ({ ...f, [key]: val }));
@@ -60,68 +55,48 @@ export default function CreateProject() {
     { key: 'voice', label: 'Giọng đọc', icon: Mic },
     { key: 'generate', label: 'Tạo', icon: Wand2 },
   ];
-  const styleSteps = [
-    { key: 'assets', label: 'Assets', icon: Upload },
-    { key: 'duration', label: 'Độ dài', icon: Clock },
-    { key: 'style', label: 'Phong cách', icon: Palette },
+  const dubSteps = [
+    { key: 'video', label: 'Video', icon: Film },
+    { key: 'language', label: 'Ngôn ngữ', icon: Globe },
+    { key: 'preset', label: 'Phong cách dịch', icon: Languages },
+    { key: 'dubbing', label: 'Lồng tiếng AI', icon: Mic },
+    { key: 'advanced', label: 'Nâng cao', icon: Eraser },
     { key: 'generate', label: 'Tạo', icon: Wand2 },
   ];
-  const steps = form.mode === 'SUMMARY' ? summarySteps : styleSteps;
+  const steps = form.mode === 'SUMMARY' ? summarySteps : dubSteps;
+
+  // Lấy danh sách 12 preset từ backend; lỗi/404 → fallback hardcode
+  useEffect(() => {
+    if (form.mode !== 'TRANSLATE_DUB') return;
+    let alive = true;
+    projectsApi.stylePresets().then((data) => {
+      if (!alive || !data) return;
+      const list = Array.isArray(data) ? data : data?.items || data?.data;
+      if (Array.isArray(list) && list.length) {
+        setPresets(list.map((p) => ({ slug: p.slug, name: p.name, description: p.description })));
+      }
+    });
+    return () => { alive = false; };
+  }, [form.mode]);
 
   // ── Upload handlers ──
-  const uploadFile = async (file) => {
-    setUploading(true);
-    try {
-      const res = await uploadApi.upload(file);
-      return res;
-    } finally {
-      setUploading(false);
-    }
-  };
-
   const handleMovie = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setError('');
+    setUploading(true);
+    setUploadPercent(0);
     try {
-      const res = await uploadFile(file);
+      const res = await uploadApi.upload(file, { onProgress: setUploadPercent });
       update('sourceVideoKey', res.key);
       update('sourceFileName', file.name);
     } catch (err) {
       setError('Tải phim thất bại: ' + (err?.response?.data?.message || err.message));
+    } finally {
+      setUploading(false);
+      setUploadPercent(0);
     }
   };
-
-  const handleTemplate = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setError('');
-    try {
-      const res = await uploadFile(file);
-      update('templateVideoKey', res.key);
-      update('templateFileName', file.name);
-    } catch (err) {
-      setError('Tải video mẫu thất bại: ' + (err?.response?.data?.message || err.message));
-    }
-  };
-
-  const handleAssets = async (e) => {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
-    setError('');
-    try {
-      const uploaded = [];
-      for (const f of files) {
-        const res = await uploadFile(f);
-        uploaded.push({ storageKey: res.key, kind: kindOf(f), name: f.name });
-      }
-      update('assets', [...form.assets, ...uploaded]);
-    } catch (err) {
-      setError('Tải assets thất bại: ' + (err?.response?.data?.message || err.message));
-    }
-  };
-
-  const removeAsset = (idx) => update('assets', form.assets.filter((_, i) => i !== idx));
 
   // ── Validation ──
   const canNext = () => {
@@ -132,24 +107,25 @@ export default function CreateProject() {
       if (step === 3) return !!form.style;
       if (step === 4) return !!form.voiceProvider;
       return true;
-    } else {
-      if (step === 0) return form.assets.length > 0 && !!form.templateVideoKey;
-      if (step === 1) return !!form.targetDurationSec;
-      if (step === 2) return !!form.style;
-      return true;
     }
+    // TRANSLATE_DUB
+    if (step === 0) return !!form.sourceVideoKey && !uploading;
+    if (step === 1) return !!form.targetLanguage;
+    if (step === 2) return !!form.stylePreset;
+    if (step === 3) return !form.enableDubbing || !!form.voiceProvider;
+    if (step === 4) return !!form.maskMethod;
+    return true;
   };
 
   const handleCreate = async () => {
     setCreating(true);
     setError('');
     try {
-      const title = form.title.trim() || (form.mode === 'SUMMARY' ? 'Review phim mới' : 'Video edit theo mẫu');
       let payload;
       if (form.mode === 'SUMMARY') {
         payload = {
           mode: 'SUMMARY',
-          title,
+          title: form.title.trim() || 'Review phim mới',
           language: form.language,
           style: form.style,
           targetDurationSec: form.targetDurationSec,
@@ -158,15 +134,17 @@ export default function CreateProject() {
         };
       } else {
         payload = {
-          mode: 'STYLE_EDIT',
-          title,
-          language: form.language,
-          style: form.style,
-          targetDurationSec: form.targetDurationSec,
-          aspectRatio: form.aspectRatio,
-          templateVideoKey: form.templateVideoKey,
-          assets: form.assets.map((a) => ({ storageKey: a.storageKey, kind: a.kind })),
-          params: { tone: form.tone, voiceProvider: form.voiceProvider, voiceName: form.voiceName },
+          mode: 'TRANSLATE_DUB',
+          title: form.title.trim() || 'Video Việt hoá mới',
+          sourceLanguage: form.sourceLanguage,
+          targetLanguage: form.targetLanguage,
+          stylePreset: form.stylePreset,
+          enableDubbing: form.enableDubbing,
+          maskMethod: form.maskMethod,
+          sourceVideoKey: form.sourceVideoKey,
+          params: form.enableDubbing
+            ? { voiceProvider: form.voiceProvider, voiceName: form.voiceName }
+            : undefined,
         };
       }
       const project = await projectsApi.create(payload);
@@ -192,10 +170,10 @@ export default function CreateProject() {
               desc="Tải phim 2–3 tiếng, AI cắt cảnh và viết lời review thành video 20–30 phút. Giọng đọc khớp với cảnh."
             />
             <ModeCard
-              onClick={() => update('mode', 'STYLE_EDIT')}
-              icon={Scissors}
-              title="Edit Theo Mẫu"
-              desc="Upload ảnh/video/âm thanh + video mẫu, AI dựng video 30s–1phút mang phong cách của video mẫu."
+              onClick={() => update('mode', 'TRANSLATE_DUB')}
+              icon={Languages}
+              title="Dịch Thuật & Lồng Tiếng"
+              desc="Tải video nước ngoài có phụ đề cứng, AI quét OCR + dịch tiếng Việt theo 12 phong cách, tuỳ chọn lồng giọng AI — giữ nguyên hình ảnh gốc."
             />
           </div>
         </div>
@@ -203,12 +181,15 @@ export default function CreateProject() {
     );
   }
 
+  const isDub = form.mode === 'TRANSLATE_DUB';
+  const selectedPreset = presets.find((p) => p.slug === form.stylePreset);
+
   return (
     <Layout>
       <div className="p-6 lg:p-8 max-w-2xl mx-auto">
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-white">
-            {form.mode === 'SUMMARY' ? 'Review Phim' : 'Edit Theo Mẫu'}
+            {MODE_LABELS[form.mode] || form.mode}
           </h1>
           <p className="text-sm text-slate-400 mt-1">Hoàn thành {steps.length} bước để AI bắt đầu tạo video</p>
         </div>
@@ -228,23 +209,20 @@ export default function CreateProject() {
                   onChange={handleMovie} accept="video/*" uploading={uploading} hint="Định dạng MP4, MOV, MKV..." />
               )}
 
-              {/* STYLE_EDIT: assets + template */}
-              {form.mode === 'STYLE_EDIT' && step === 0 && (
-                <div className="space-y-5">
-                  <UploadBlock label="Assets (ảnh / video / âm thanh)" fileName={form.assets.length ? `${form.assets.length} tệp` : ''}
-                    onChange={handleAssets} accept="image/*,video/*,audio/*" multiple uploading={uploading} hint="Chọn nhiều tệp cùng lúc" />
-                  {form.assets.length > 0 && (
-                    <div className="space-y-2">
-                      {form.assets.map((a, i) => (
-                        <div key={i} className="flex items-center justify-between text-sm bg-white/[0.03] border border-white/5 rounded-lg px-3 py-2">
-                          <span className="text-slate-300 truncate">{a.name} <span className="text-slate-500">({a.kind})</span></span>
-                          <button onClick={() => removeAsset(i)} className="text-red-400 hover:text-red-300 text-xs">Xoá</button>
-                        </div>
-                      ))}
+              {/* TRANSLATE_DUB: video nguồn (≤2GB, resumable) */}
+              {isDub && step === 0 && (
+                <div className="space-y-3">
+                  <UploadBlock label="Tải video cần Việt hoá (tối đa 2GB)" fileName={form.sourceFileName}
+                    onChange={handleMovie} accept="video/*" uploading={uploading}
+                    hint="Upload chia chunk tự động phục hồi khi mất mạng" />
+                  {uploading && (
+                    <div className="space-y-1.5">
+                      <div className="h-2 rounded-full bg-white/5 overflow-hidden">
+                        <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all" style={{ width: `${uploadPercent}%` }} />
+                      </div>
+                      <p className="text-xs text-slate-400 text-right">{uploadPercent}%</p>
                     </div>
                   )}
-                  <UploadBlock label="Video mẫu (phong cách tham chiếu)" fileName={form.templateFileName}
-                    onChange={handleTemplate} accept="video/*" uploading={uploading} hint="AI sẽ học phong cách từ video này" />
                 </div>
               )}
 
@@ -257,25 +235,36 @@ export default function CreateProject() {
                 </div>
               )}
 
-              {/* Duration */}
-              {(form.mode === 'SUMMARY' && step === 2) || (form.mode === 'STYLE_EDIT' && step === 1) ? (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-3 gap-3">
-                    {(form.mode === 'SUMMARY' ? SUMMARY_DURATIONS : STYLE_EDIT_DURATIONS).map((d) => (
-                      <OptionCard key={d.value} selected={form.targetDurationSec === d.value} onClick={() => update('targetDurationSec', d.value)} title={d.label} desc={d.desc} />
-                    ))}
-                  </div>
-                  {form.mode === 'STYLE_EDIT' && (
-                    <div>
-                      <label className="text-sm font-medium text-slate-300 mb-2 block">Tỷ lệ khung hình</label>
-                      <div className="grid grid-cols-2 gap-3">
-                        <OptionCard selected={form.aspectRatio === '9:16'} onClick={() => update('aspectRatio', '9:16')} title="9:16 (Shorts)" />
-                        <OptionCard selected={form.aspectRatio === '1:1'} onClick={() => update('aspectRatio', '1:1')} title="1:1 (Square)" />
-                      </div>
+              {/* TRANSLATE_DUB: ngôn ngữ nguồn → đích */}
+              {isDub && step === 1 && (
+                <div className="space-y-5">
+                  <div>
+                    <label className="text-sm font-medium text-slate-300 mb-2 block">Ngôn ngữ nguồn</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      {Object.entries(SOURCE_LANGUAGES).map(([code, label]) => (
+                        <OptionCard key={code} selected={form.sourceLanguage === code} onClick={() => update('sourceLanguage', code)} title={label} />
+                      ))}
                     </div>
-                  )}
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium text-slate-300 mb-2 block">Dịch sang</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      {Object.entries(TARGET_LANGUAGES).map(([code, label]) => (
+                        <OptionCard key={code} selected={form.targetLanguage === code} onClick={() => update('targetLanguage', code)} title={label} />
+                      ))}
+                    </div>
+                  </div>
                 </div>
-              ) : null}
+              )}
+
+              {/* Duration (SUMMARY) */}
+              {form.mode === 'SUMMARY' && step === 2 && (
+                <div className="grid grid-cols-3 gap-3">
+                  {SUMMARY_DURATIONS.map((d) => (
+                    <OptionCard key={d.value} selected={form.targetDurationSec === d.value} onClick={() => update('targetDurationSec', d.value)} title={d.label} desc={d.desc} />
+                  ))}
+                </div>
+              )}
 
               {/* SUMMARY style + tone + spoiler */}
               {form.mode === 'SUMMARY' && step === 3 && (
@@ -305,23 +294,57 @@ export default function CreateProject() {
                 <VoiceStep form={form} update={update} />
               )}
 
-              {/* STYLE_EDIT style + voice */}
-              {form.mode === 'STYLE_EDIT' && step === 2 && (
-                <div className="space-y-4">
-                  <div>
-                    <label className="text-sm font-medium text-slate-300 mb-2 block">Phong cách dựng</label>
-                    <div className="grid grid-cols-2 gap-3">
-                      {Object.entries(STYLE_LABELS).map(([code, label]) => (
-                        <OptionCard key={code} selected={form.style === code} onClick={() => update('style', code)} title={label} />
-                      ))}
-                    </div>
+              {/* TRANSLATE_DUB: chọn 1 trong 12 phong cách dịch */}
+              {isDub && step === 2 && (
+                <div>
+                  <label className="text-sm font-medium text-slate-300 mb-2 block">Phong cách dịch (12 lựa chọn)</label>
+                  <div className="grid grid-cols-2 gap-3 max-h-[360px] overflow-y-auto pr-1">
+                    {presets.map((p) => (
+                      <OptionCard key={p.slug} selected={form.stylePreset === p.slug}
+                        onClick={() => update('stylePreset', p.slug)} title={p.name} desc={p.description} />
+                    ))}
                   </div>
-                  <VoiceStep form={form} update={update} optional />
+                </div>
+              )}
+
+              {/* TRANSLATE_DUB: lồng tiếng AI bật/tắt */}
+              {isDub && step === 3 && (
+                <div className="space-y-4">
+                  <button onClick={() => update('enableDubbing', !form.enableDubbing)}
+                    className={`w-full flex items-center justify-between p-4 rounded-xl border transition ${form.enableDubbing ? 'border-blue-500 bg-blue-500/10' : 'border-white/5 bg-white/[0.02] hover:border-white/15'}`}>
+                    <div className="text-left">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                        <AudioLines className="w-4 h-4 text-blue-400" /> Lồng tiếng AI
+                      </div>
+                      <div className="text-xs text-slate-400 mt-0.5">
+                        {form.enableDubbing ? 'Bật — giọng đọc AI thay thế audio gốc, ép khớp thời gian' : 'Tắt — giữ nguyên âm thanh gốc, chỉ thay phụ đề'}
+                      </div>
+                    </div>
+                    <span className={`relative w-11 h-6 rounded-full transition shrink-0 ${form.enableDubbing ? 'bg-blue-600' : 'bg-white/10'}`}>
+                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${form.enableDubbing ? 'translate-x-5' : ''}`} />
+                    </span>
+                  </button>
+                  {form.enableDubbing && <VoiceStep form={form} update={update} />}
+                </div>
+              )}
+
+              {/* TRANSLATE_DUB: nâng cao — method che chữ */}
+              {isDub && step === 4 && (
+                <div>
+                  <label className="text-sm font-medium text-slate-300 mb-2 block">Cách xử lý phụ đề gốc (hardsub)</label>
+                  <div className="space-y-3">
+                    {Object.entries(MASK_METHODS).map(([code, m]) => (
+                      <OptionCard key={code} selected={form.maskMethod === code} onClick={() => update('maskMethod', code)} title={m.label} desc={m.desc} />
+                    ))}
+                  </div>
+                  <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+                    Sau khi pipeline quét OCR xong, bạn có thể chỉnh vùng che chữ trực tiếp trên trang chi tiết dự án.
+                  </p>
                 </div>
               )}
 
               {/* Generate */}
-              {(form.mode === 'SUMMARY' && step === 5) || (form.mode === 'STYLE_EDIT' && step === 3) ? (
+              {(form.mode === 'SUMMARY' && step === 5) || (isDub && step === 5) ? (
                 <div>
                   <div className="text-center mb-6">
                     <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-600/30">
@@ -334,14 +357,23 @@ export default function CreateProject() {
                     <input value={form.title} onChange={(e) => update('title', e.target.value)} placeholder="Tên dự án (tùy chọn)"
                       className="w-full px-4 py-2.5 rounded-xl bg-[#0F1117] border border-white/5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50" />
                     <div className="rounded-xl bg-[#0F1117] border border-white/5 p-4 space-y-2 text-sm">
-                      {[
-                        ['Chế độ', form.mode === 'SUMMARY' ? 'Review phim' : 'Edit theo mẫu'],
-                        ['Ngôn ngữ', LANGUAGE_LABELS[form.language] || form.language],
-                        ['Độ dài', form.targetDurationSec >= 60 ? `${Math.round(form.targetDurationSec / 60)} phút` : `${form.targetDurationSec} giây`],
-                        ['Phong cách', STYLE_LABELS[form.style] || form.style],
-                        form.mode === 'STYLE_EDIT' ? ['Tỷ lệ', form.aspectRatio] : null,
-                        ['Giọng đọc', VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider],
-                      ].filter(Boolean).map(([k, v]) => (
+                      {(isDub
+                        ? [
+                            ['Chế độ', MODE_LABELS.TRANSLATE_DUB],
+                            ['Video', form.sourceFileName],
+                            ['Ngôn ngữ', `${SOURCE_LANGUAGES[form.sourceLanguage]} → ${TARGET_LANGUAGES[form.targetLanguage]}`],
+                            ['Phong cách dịch', selectedPreset ? `${selectedPreset.name}` : form.stylePreset],
+                            ['Lồng tiếng AI', form.enableDubbing ? `Bật (${VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider})` : 'Tắt'],
+                            ['Che chữ gốc', MASK_METHODS[form.maskMethod]?.label],
+                          ]
+                        : [
+                            ['Chế độ', MODE_LABELS.SUMMARY],
+                            ['Ngôn ngữ', LANGUAGE_LABELS[form.language] || form.language],
+                            ['Độ dài', form.targetDurationSec >= 60 ? `${Math.round(form.targetDurationSec / 60)} phút` : `${form.targetDurationSec} giây`],
+                            ['Phong cách', STYLE_LABELS[form.style] || form.style],
+                            ['Giọng đọc', VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider],
+                          ]
+                      ).map(([k, v]) => (
                         <div key={k} className="flex items-center justify-between">
                           <span className="text-slate-400">{k}</span>
                           <span className="text-slate-200 font-medium text-right max-w-[60%] truncate">{v}</span>
@@ -417,7 +449,7 @@ function OptionCard({ selected, onClick, title, desc, children }) {
           <div className="text-sm font-semibold text-white">{title}</div>
           {desc && <div className="text-xs text-slate-400 mt-0.5">{desc}</div>}
         </div>
-        {selected && <Check className="w-4 h-4 text-blue-400" />}
+        {selected && <Check className="w-4 h-4 text-blue-400 shrink-0 ml-2" />}
       </div>
       {children}
     </button>
@@ -455,7 +487,7 @@ function VoiceStep({ form, update, optional }) {
   return (
     <div className="space-y-3">
       <div>
-        <label className="text-sm font-medium text-slate-300 mb-2 block">{optional ? 'Giọng đọc (tuỳ chọn)' : 'Giọng đọc'}</label>
+        <label className="text-sm font-medium text-slate-300 mb-2 block">{optional ? 'Giọng đọc (tuỳ chọn)' : 'Nhà cung cấp giọng đọc'}</label>
         <div className="grid grid-cols-2 gap-3">
           {Object.entries(VOICE_PROVIDER_LABELS).map(([code, label]) => (
             <OptionCard key={code} selected={form.voiceProvider === code} onClick={() => update('voiceProvider', code)} title={label} />

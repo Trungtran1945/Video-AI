@@ -3,9 +3,11 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { projectsApi } from '@/api/projects';
 import Layout from '@/components/Layout';
 import Loading from '@/components/Loading';
+import SubRegionEditor from '@/components/SubRegionEditor';
 import { motion } from 'framer-motion';
-import { ArrowLeft, FileText, Image, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Download, RotateCcw, Scissors, Sparkles, Combine, Clapperboard, Film, Trash2 } from 'lucide-react';
-import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS } from '@/lib/constants';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, ScanText, Languages, AudioLines } from 'lucide-react';
+import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, MASK_METHODS, SOURCE_LANGUAGES, TARGET_LANGUAGES } from '@/lib/constants';
+import { useJobEvents } from '@/hooks/useJobEvents';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,16 +29,16 @@ const stageIcons = {
   'summary.tts': Mic,
   'summary.subtitle': Captions,
   'summary.render': Video,
-  'style.analyze': Sparkles,
-  'style.storyboard': Clapperboard,
-  'style.tts': Mic,
-  'style.render': Video,
+  'dub.ingest': FileAudio,
+  'dub.stt': Mic,
+  'dub.ocr': ScanText,
+  'dub.translate': Languages,
+  'dub.ttsAlign': AudioLines,
+  'dub.render': Video,
 };
 
-const MODE_STAGES = {
-  SUMMARY: ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'],
-  STYLE_EDIT: ['style.analyze', 'style.storyboard', 'style.tts', 'style.render'],
-};
+const SUMMARY_STAGES = ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'];
+const DUB_STAGES_ALL = ['dub.ingest', 'dub.stt', 'dub.ocr', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
 
 const ACTIVE_STATUSES = ['pending', 'queued', 'generating', 'running'];
 
@@ -47,11 +49,27 @@ function fmtSec(sec) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+function normSegment(s) {
+  return {
+    id: s.id || s.index,
+    index: s.index ?? 0,
+    startSec: Number(s.startSec ?? s.start_sec) || 0,
+    endSec: Number(s.endSec ?? s.end_sec) || 0,
+    text: s.text || s.original_text || '',
+    translation: s.translation || s.translated_text || '',
+    speaker: s.speaker || null,
+  };
+}
+
 export default function ProjectDetail() {
   const { id } = useParams();
   const [project, setProject] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [scenes, setScenes] = useState([]);
+  const [transcript, setTranscript] = useState([]);
+  const [regions, setRegions] = useState([]);
+  const [savingRegions, setSavingRegions] = useState(false);
+  const [regionError, setRegionError] = useState('');
   const [loading, setLoading] = useState(true);
   const [regenerating, setRegenerating] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -60,12 +78,17 @@ export default function ProjectDetail() {
   const navigate = useNavigate();
   const { toast } = useToast();
 
+  // SSE realtime — tự tắt và fallback polling nếu backend chưa hỗ trợ
+  const { events: sseEvents, sseAvailable } = useJobEvents(id, !!project && ACTIVE_STATUSES.includes(project?.status));
+
+  const isDub = project?.mode === 'TRANSLATE_DUB' || project?.mode === 'translate_dub';
+
   const load = useCallback(async () => {
     try {
       const p = await projectsApi.get(id);
       setProject(p);
       setJobs(p.jobs || []);
-      setScenes(p.mode === 'SUMMARY' ? (p.scenes || []) : (p.assets || []));
+      setScenes(p.mode === 'SUMMARY' ? (p.scenes || []) : []);
       return p;
     } catch (e) {
       console.error(e);
@@ -73,20 +96,61 @@ export default function ProjectDetail() {
     }
   }, [id]);
 
+  const loadDubData = useCallback(async () => {
+    try {
+      const segs = await projectsApi.transcript(id);
+      const list = Array.isArray(segs) ? segs : segs?.segments || [];
+      setTranscript(list.map(normSegment));
+    } catch {
+      /* endpoint chưa có — để trống */
+    }
+    try {
+      const regs = await projectsApi.getMaskRegions(id);
+      const list = Array.isArray(regs) ? regs : regs?.regions || [];
+      setRegions(
+        list.map((r) => ({
+          id: r.id,
+          startSec: Number(r.startSec ?? r.start_sec) || 0,
+          endSec: Number(r.endSec ?? r.end_sec) || 0,
+          x: Number(r.x) || 0,
+          y: Number(r.y) || 0,
+          width: Number(r.width ?? r.w) || 0,
+          height: Number(r.height ?? r.h) || 0,
+          text: r.text || '',
+          source: r.source || 'AUTO',
+        }))
+      );
+    } catch {
+      /* endpoint chưa có */
+    }
+  }, [id]);
+
   // Initial load
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    load().finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [load]);
+    load()
+      .then((p) => {
+        if (!cancelled && p && (p.mode === 'TRANSLATE_DUB' || p.mode === 'translate_dub')) {
+          return loadDubData();
+        }
+        return undefined;
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [load, loadDubData]);
 
-  // Poll progress while pipeline is active
+  // Poll progress while pipeline is active — chỉ khi SSE không khả dụng (fallback)
   useEffect(() => {
     if (!project || !ACTIVE_STATUSES.includes(project.status)) return undefined;
+    if (sseAvailable) return undefined;
     const t = setInterval(load, POLL_INTERVAL_MS);
     return () => clearInterval(t);
-  }, [project?.status, load]);
+  }, [project?.status, project, load, sseAvailable]);
 
   const isActive = project && ACTIVE_STATUSES.includes(project.status);
   const canRegenerate = project && ['completed', 'failed'].includes(project.status);
@@ -123,15 +187,62 @@ export default function ProjectDetail() {
     }
   };
 
+  const handleSaveRegions = async () => {
+    setSavingRegions(true);
+    setRegionError('');
+    try {
+      await projectsApi.putMaskRegions(
+        id,
+        regions.map((r) => ({
+          id: String(r.id).startsWith('tmp_') ? undefined : r.id,
+          startSec: r.startSec,
+          endSec: r.endSec,
+          x: Math.round(r.x),
+          y: Math.round(r.y),
+          width: Math.round(r.width),
+          height: Math.round(r.height),
+          source: r.source,
+        }))
+      );
+      toast({ title: 'Đã lưu vùng che chữ', description: `${regions.length} vùng sẽ được áp dụng khi render.` });
+      await loadDubData();
+    } catch (e) {
+      setRegionError('Chưa lưu được: backend chưa hỗ trợ endpoint mask-regions hoặc có lỗi — ' + (e?.response?.data?.message || e.message));
+    } finally {
+      setSavingRegions(false);
+    }
+  };
+
   if (loading) return <Layout><Loading /></Layout>;
   if (!project) return <Layout><div className="p-8 text-center text-slate-400">Không tìm thấy dự án.</div></Layout>;
 
+  // Gộp trạng thái job từ polling + SSE realtime
   const jobByStage = {};
-  (jobs || []).forEach(j => { if (!jobByStage[j.type]) jobByStage[j.type] = j; });
-  const stages = MODE_STAGES[project.mode] || [];
+  (jobs || []).forEach((j) => {
+    if (!jobByStage[j.type]) jobByStage[j.type] = j;
+  });
+  Object.entries(sseEvents).forEach(([stage, ev]) => {
+    jobByStage[stage] = jobByStage[stage]
+      ? { ...jobByStage[stage], status: ev.status || jobByStage[stage].status }
+      : { type: stage, status: ev.status };
+  });
+
+  const params = project.params || {};
+  const enableDubbing = params.enableDubbing ?? params.enable_dubbing ?? false;
+  const stages = isDub
+    ? DUB_STAGES_ALL.filter((s) => s !== 'dub.ttsAlign' || enableDubbing)
+    : SUMMARY_STAGES;
   const timeline = project.timeline || [];
   const outputUrl = project.output?.storage_key ? `/storage/${project.output.storage_key}` : null;
   const isVideoOutput = /\.(mp4|webm|mov|m4v|mkv)$/i.test(project.output?.storage_key || '');
+
+  const seekTo = (sec) => {
+    const el = document.getElementById('output-video');
+    if (el) {
+      el.currentTime = sec;
+      el.play?.().catch(() => {});
+    }
+  };
 
   return (
     <Layout>
@@ -147,7 +258,10 @@ export default function ProjectDetail() {
               <h1 className="text-2xl font-bold text-white">{project.title}</h1>
               <StatusBadge status={project.status} />
             </div>
-            <p className="text-sm text-slate-400">{project.mode === 'SUMMARY' ? 'Review phim' : 'Edit theo mẫu'} • {project.target_duration_sec}s</p>
+            <p className="text-sm text-slate-400">
+              {MODE_LABELS[project.mode] || project.mode}
+              {!isDub && ` • ${project.target_duration_sec}s`}
+            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button onClick={() => setConfirmDelete(true)}
@@ -182,25 +296,12 @@ export default function ProjectDetail() {
         {/* Output preview */}
         {outputUrl && isVideoOutput && (
           <div className="rounded-2xl bg-[#161922] border border-white/5 p-4 mb-6">
-            <video src={outputUrl} controls className="w-full max-h-[420px] rounded-xl bg-black" />
+            <video id="output-video" src={outputUrl} controls className="w-full max-h-[420px] rounded-xl bg-black" />
           </div>
         )}
 
         {/* Info grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          {[
-            ['Chế độ', project.mode === 'SUMMARY' ? 'Review phim' : 'Edit theo mẫu'],
-            ['Ngôn ngữ', LANGUAGE_LABELS[project.language] || project.language],
-            ['Thời lượng', `${project.target_duration_sec}s`],
-            ['Phong cách', STYLE_LABELS[project.style] || project.style],
-            ['Giọng nói', VOICE_PROVIDER_LABELS[project.params?.voiceProvider] || project.params?.voiceProvider || '—'],
-          ].map(([k, v]) => (
-            <div key={k} className="rounded-xl bg-[#161922] border border-white/5 p-4">
-              <div className="text-xs text-slate-500">{k}</div>
-              <div className="text-sm font-medium text-slate-200 mt-1">{v}</div>
-            </div>
-          ))}
-        </div>
+        <InfoGrid project={project} isDub={isDub} params={params} />
 
         {/* Pipeline progress */}
         <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
@@ -208,7 +309,8 @@ export default function ProjectDetail() {
             <h3 className="text-base font-semibold text-white">Tiến trình Pipeline</h3>
             {isActive && (
               <span className="inline-flex items-center gap-1.5 text-xs text-blue-400">
-                <Loader2 className="w-3 h-3 animate-spin" /> Tự động cập nhật
+                <Loader2 className="w-3 h-3 animate-spin" />
+                {sseAvailable ? 'Cập nhật real-time (SSE)' : 'Tự động cập nhật'}
               </span>
             )}
           </div>
@@ -267,7 +369,28 @@ export default function ProjectDetail() {
           </div>
         </div>
 
-        {/* Timeline preview */}
+        {/* TRANSLATE_DUB: transcript song ngữ */}
+        {isDub && transcript.length > 0 && (
+          <TranscriptView transcript={transcript} onSeek={seekTo} hasVideo={!!outputUrl} />
+        )}
+
+        {/* TRANSLATE_DUB: editor vùng che hardsub */}
+        {isDub && regions.length > 0 && (
+          <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
+            <h3 className="text-base font-semibold text-white">Vùng che phụ đề gốc (hardsub)</h3>
+            <p className="text-xs text-slate-500 mt-1 mb-4">AI tự phát hiện từ OCR — bạn chỉnh tay trước khi render để che đúng chỗ.</p>
+            <SubRegionEditor
+              videoUrl={outputUrl}
+              regions={regions}
+              onChange={setRegions}
+              onSave={handleSaveRegions}
+              saving={savingRegions}
+              saveError={regionError}
+            />
+          </div>
+        )}
+
+        {/* Timeline preview (SUMMARY) */}
         {timeline.length > 0 && (
           <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
             <h3 className="text-base font-semibold text-white">Bản dựng (Timeline)</h3>
@@ -295,33 +418,22 @@ export default function ProjectDetail() {
           </div>
         )}
 
-        {/* Scenes / Assets */}
+        {/* Scenes (SUMMARY) */}
         {scenes.length > 0 && (
           <div className="rounded-2xl bg-[#161922] border border-white/5 p-6">
-            <h3 className="text-base font-semibold text-white mb-4">
-              {project.mode === 'SUMMARY' ? `Cảnh (${scenes.length})` : `Assets (${scenes.length})`}
-            </h3>
+            <h3 className="text-base font-semibold text-white mb-4">Cảnh ({scenes.length})</h3>
             <div className="space-y-3">
               {scenes.map((item, i) => (
                 <div key={item.id} className="flex gap-4 p-3 rounded-xl bg-white/[0.02] border border-white/5">
                   <div className="text-2xl font-bold text-slate-600 w-8 text-center">{i + 1}</div>
                   <div className="w-20 h-20 rounded-lg bg-white/5 flex items-center justify-center shrink-0">
-                    <Image className="w-5 h-5 text-slate-600" />
+                    <FileText className="w-5 h-5 text-slate-600" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    {project.mode === 'SUMMARY' ? (
-                      <>
-                        <div className="text-sm text-slate-300 line-clamp-2">{item.description}</div>
-                        <div className="flex items-center gap-3 mt-2 text-xs text-slate-500">
-                          <span>{item.start_sec}s – {item.end_sec}s</span>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="text-sm text-slate-300">{item.kind}</div>
-                        <div className="text-xs text-slate-500 mt-1 truncate">{item.storage_key}</div>
-                      </>
-                    )}
+                    <div className="text-sm text-slate-300 line-clamp-2">{item.description}</div>
+                    <div className="flex items-center gap-3 mt-2 text-xs text-slate-500">
+                      <span>{item.start_sec}s – {item.end_sec}s</span>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -353,5 +465,59 @@ export default function ProjectDetail() {
         </AlertDialogContent>
       </AlertDialog>
     </Layout>
+  );
+}
+
+function InfoGrid({ project, isDub, params }) {
+  const rows = isDub
+    ? [
+        ['Chế độ', MODE_LABELS[project.mode] || project.mode],
+        ['Ngôn ngữ', `${SOURCE_LANGUAGES[params.sourceLanguage ?? params.source_language] || params.sourceLanguage || 'Tự động'} → ${TARGET_LANGUAGES[params.targetLanguage ?? params.target_language] || project.language || 'vi'}`],
+        ['Phong cách dịch', params.stylePreset ?? params.style_preset ?? '—'],
+        ['Lồng tiếng AI', (params.enableDubbing ?? params.enable_dubbing) ? `Bật (${VOICE_PROVIDER_LABELS[params.voiceProvider] || params.voiceProvider || 'mặc định'})` : 'Tắt'],
+        ['Che chữ gốc', MASK_METHODS[params.maskMethod ?? params.mask_method]?.label || params.maskMethod || '—'],
+      ]
+    : [
+        ['Chế độ', MODE_LABELS[project.mode] || project.mode],
+        ['Ngôn ngữ', LANGUAGE_LABELS[project.language] || project.language],
+        ['Thời lượng', `${project.target_duration_sec}s`],
+        ['Phong cách', STYLE_LABELS[project.style] || project.style],
+        ['Giọng nói', VOICE_PROVIDER_LABELS[params.voiceProvider] || params.voiceProvider || '—'],
+      ];
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+      {rows.map(([k, v]) => (
+        <div key={k} className="rounded-xl bg-[#161922] border border-white/5 p-4">
+          <div className="text-xs text-slate-500">{k}</div>
+          <div className="text-sm font-medium text-slate-200 mt-1 truncate" title={String(v)}>{v}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TranscriptView({ transcript, onSeek, hasVideo }) {
+  return (
+    <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
+      <h3 className="text-base font-semibold text-white">Lời thoại song ngữ</h3>
+      <p className="text-xs text-slate-500 mt-1 mb-4">
+        Gốc ↔ bản dịch theo timestamp{hasVideo ? ' — nhấn vào câu để nhảy tới đoạn đó trong video' : ''}.
+      </p>
+      <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+        {transcript.map((seg, i) => (
+          <button key={seg.id || i} onClick={() => onSeek(seg.startSec)}
+            className="w-full text-left p-3 rounded-xl bg-white/[0.02] border border-white/5 hover:border-blue-500/30 transition">
+            <div className="flex items-center gap-2 text-[11px] text-slate-500 mb-1.5">
+              <span className="tabular-nums">{fmtSec(seg.startSec)} → {fmtSec(seg.endSec)}</span>
+              {seg.speaker && (
+                <span className="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 font-medium">{seg.speaker}</span>
+              )}
+            </div>
+            <div className="text-sm text-slate-400 line-clamp-1">{seg.text}</div>
+            <div className="text-sm text-slate-200 mt-0.5 line-clamp-2">{seg.translation || <span className="italic text-slate-600">Chưa dịch</span>}</div>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }

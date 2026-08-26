@@ -23,15 +23,65 @@ export const STATUS_LABELS = {
     'summary.tts': { label: 'Tạo giọng đọc', icon: 'Mic' },
     'summary.subtitle': { label: 'Phụ đề', icon: 'Captions' },
     'summary.render': { label: 'Xuất video', icon: 'Video' },
-    // STYLE_EDIT pipeline
-    'style.analyze': { label: 'Phân tích mẫu', icon: 'Sparkles' },
-    'style.storyboard': { label: 'Dàn dựng', icon: 'Clapperboard' },
-    'style.tts': { label: 'Tạo giọng đọc', icon: 'Mic' },
-    'style.render': { label: 'Xuất video', icon: 'Video' },
+    // TRANSLATE_DUB pipeline
+    'dub.ingest': { label: 'Tách âm thanh & chuẩn hoá', icon: 'FileAudio' },
+    'dub.stt': { label: 'Nhận dạng giọng nói', icon: 'Mic' },
+    'dub.ocr': { label: 'Quét phụ đề cứng (OCR)', icon: 'ScanText' },
+    'dub.translate': { label: 'Dịch theo phong cách', icon: 'Languages' },
+    'dub.ttsAlign': { label: 'Lồng tiếng & khớp thời gian', icon: 'AudioLines' },
+    'dub.render': { label: 'Che chữ & xuất video', icon: 'Video' },
   };
 
-  export const STAGE_ORDER = ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render', 'style.analyze', 'style.storyboard', 'style.tts', 'style.render'];
-  
+  export const STAGE_ORDER = [
+    ...['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'],
+    ...['dub.ingest', 'dub.stt', 'dub.ocr', 'dub.translate', 'dub.ttsAlign', 'dub.render'],
+  ];
+
+  export const MODE_LABELS = {
+    SUMMARY: 'Review phim',
+    TRANSLATE_DUB: 'Dịch & Lồng tiếng',
+    // bản lowercase do backend MVP lưu
+    summary: 'Review phim',
+    translate_dub: 'Dịch & Lồng tiếng',
+  };
+
+  export const DUB_STAGES = ['dub.ingest', 'dub.stt', 'dub.ocr', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
+
+  export const MASK_METHODS = {
+    blur: { label: 'Làm mờ', desc: 'Nhanh, rẻ — có thể còn vệt chữ lem' },
+    fill: { label: 'Lấp màu nền', desc: 'Lấy màu nền quanh chữ lấp phẳng — mặc định' },
+    inpaint: { label: 'AI Inpainting', desc: 'Tái tạo nền đẹp nhất — tốn tài nguyên nhất' },
+  };
+
+  export const SOURCE_LANGUAGES = {
+    auto: 'Tự động nhận diện',
+    en: 'Tiếng Anh',
+    ja: 'Tiếng Nhật',
+    ko: 'Tiếng Hàn',
+    zh: 'Tiếng Trung',
+  };
+
+  export const TARGET_LANGUAGES = {
+    vi: 'Tiếng Việt',
+    en: 'Tiếng Anh',
+  };
+
+  // Fallback khi GET /style-presets chưa sẵn sàng ở backend — khớp seed 12 StylePreset (docs/05)
+  export const STYLE_PRESETS_FALLBACK = [
+    { slug: 'co-trang', name: 'Cổ trang', description: 'Cổ phong, xưng hô "bổn tọa", "hiền muội"' },
+    { slug: 'bat-trend', name: 'Bắt trend', description: 'Gen Z, slang mạng, lối nói viral' },
+    { slug: 'review-phim', name: 'Review phim', description: 'Phân tích, châm biếm nhẹ' },
+    { slug: 'tinh-cam', name: 'Tình cảm / học đường', description: 'Mềm mại, xưng "anh/em"' },
+    { slug: 'tai-lieu', name: 'Tài liệu / chính biên', description: 'Chuẩn mực, trung tính' },
+    { slug: 'hai-huoc', name: 'Hài hước / meme', description: 'Chơi chữ, twist bất ngờ' },
+    { slug: 'chinh-luan', name: 'Tin tức / chính luận', description: 'Trang trọng, khách quan' },
+    { slug: 'gaming', name: 'Gaming / esports', description: 'Thuật ngữ game, năng lượng cao' },
+    { slug: 'kinh-di', name: 'Kinh dị / rùng rợn', description: 'Giọng kể căng, rùng rợn' },
+    { slug: 'the-thao', name: 'Thể thao', description: 'Sôi động, cảm thán' },
+    { slug: 'cong-nghe', name: 'Công nghệ', description: 'Chính xác thuật ngữ kỹ thuật' },
+    { slug: 'tre-em', name: 'Thiếu nhi / gia đình', description: 'Đơn giản, dễ hiểu' },
+  ];
+
   export const LANGUAGE_LABELS = {
     vi: 'Tiếng Việt',
     en: 'Tiếng Anh',

@@ -6,7 +6,7 @@ import PageHeader from '@/components/PageHeader';
 import StatCard from '@/components/StatCard';
 import Loading from '@/components/Loading';
 import { motion } from 'framer-motion';
-import { BarChart3, Video, Zap, CheckCircle, XCircle, TrendingUp } from 'lucide-react';
+import { BarChart3, Video, CheckCircle, XCircle, TrendingUp, Layers } from 'lucide-react';
 import { STATUS_LABELS } from '@/lib/constants';
 
 export default function Analytics() {
@@ -35,7 +35,6 @@ export default function Analytics() {
   const completed = projects.filter(p => p.status === 'completed').length;
   const failed = projects.filter(p => p.status === 'failed').length;
   const successRate = totalProjects > 0 ? Math.round((completed / totalProjects) * 100) : 0;
-  const totalCredits = logs.reduce((s, l) => s + (Number(l.cost_usd) || 0), 0);
   const totalTokens = logs.reduce((s, l) => s + ((l.tokens_in || 0) + (l.tokens_out || 0)), 0);
 
   // Provider usage
@@ -65,7 +64,7 @@ export default function Analytics() {
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <StatCard icon={Video} label="Tổng dự án" value={totalProjects} color="blue" delay={0} />
-          <StatCard icon={Zap} label="Credits đã dùng" value={totalCredits.toFixed(0)} color="purple" delay={0.05} />
+          <StatCard icon={Layers} label="Video hoàn thành" value={completed} color="purple" delay={0.05} />
           <StatCard icon={CheckCircle} label="Tỷ lệ thành công" value={`${successRate}%`} color="green" delay={0.1} />
           <StatCard icon={TrendingUp} label="Tokens đã dùng" value={totalTokens.toLocaleString()} color="cyan" delay={0.15} />
         </div>

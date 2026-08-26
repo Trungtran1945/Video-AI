@@ -8,7 +8,16 @@ export const projectsApi = {
   regenerate: (id) => api.post(`/projects/${id}/regenerate`).then((r) => r.data),
   remove: (id) => api.delete(`/projects/${id}`).then((r) => r.data),
   summaryStart: (id) => api.post(`/projects/${id}/summary/start`).then((r) => r.data),
-  styleStart: (id) => api.post(`/projects/${id}/style-edit/start`).then((r) => r.data),
+  translateDubStart: (id) => api.post(`/projects/${id}/translate-dub/start`).then((r) => r.data),
   jobs: (id) => api.get(`/projects/${id}/jobs`).then((r) => r.data),
   retryJob: (id, type) => api.post(`/projects/${id}/jobs/${type}/retry`).then((r) => r.data),
+  // TRANSLATE_DUB
+  transcript: (id) => api.get(`/projects/${id}/transcript`).then((r) => r.data),
+  getMaskRegions: (id) => api.get(`/projects/${id}/mask-regions`).then((r) => r.data),
+  putMaskRegions: (id, regions) => api.put(`/projects/${id}/mask-regions`, { regions }).then((r) => r.data),
+  stylePresets: () =>
+    api
+      .get('/style-presets')
+      .then((r) => r.data)
+      .catch(() => null), // graceful fallback → caller dùng STYLE_PRESETS_FALLBACK
 }

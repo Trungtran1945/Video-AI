@@ -70,9 +70,6 @@ export default function Queue() {
                       <div className="text-xs text-slate-500 text-center mt-1">{job.progress}%</div>
                     </div>
                   )}
-                  {job.cost_estimate > 0 && (
-                    <div className="text-xs text-slate-500 hidden sm:block">{job.cost_estimate.toFixed(1)} credits</div>
-                  )}
                   {job.status === 'failed' && (
                     <button onClick={() => handleRetry(job)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-xs text-slate-300 transition">
                       <RefreshCw className="w-3 h-3" /> Thử lại
