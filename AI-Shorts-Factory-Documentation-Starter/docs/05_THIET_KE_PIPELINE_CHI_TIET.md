@@ -2,7 +2,7 @@
 
 Tài liệu này đi sâu vào **thuật toán cốt lõi** của hai mode. Đây là phần quan trọng nhất để đảm bảo:
 - `SUMMARY`: **giọng đọc review khớp với cảnh phim được cắt**.
-- `STYLE_EDIT`: đầu ra **có phong cách y hệt video mẫu**.
+- `TRANSLATE_DUB`: phụ đề dịch & giọng lồng tiếng **khớp chính xác timestamp gốc** của video nước ngoài.
 
 ---
 
@@ -132,62 +132,140 @@ Xem chi tiết `07_MODULE_FFMPEG.md`. Tóm tắt:
 
 ---
 
-# B. MODE STYLE_EDIT — Edit theo mẫu
+# B. MODE TRANSLATE_DUB — Dịch thuật & Lồng tiếng
 
-## B.1. Stage: style-analyze → StyleProfile
+Biến một video nước ngoài (có phụ đề cứng/hardsub) thành bản tiếng Việt: dịch phụ đề theo phong cách
+tuỳ chọn (12 StylePreset) và **(tuỳ chọn)** lồng tiếng AI, giữ nguyên hình ảnh gốc.
 
-Phân tích video mẫu (`templateVideoId`) để trích **StyleProfile** (JSON):
+## B.0. Tổng quan stage
 
-```json
-{
-  "aspectRatio": "9:16",
-  "transitions": { "default": "slide", "durationSec": 0.4, "pattern": "ABAB" },
-  "pacing": { "avgShotLen": 2.2, "beatSync": true, "bpm": 120 },
-  "color": { "lut": "teal-orange", "contrast": 1.1, "saturation": 1.15, "temperature": "cool" },
-  "motion": { "kenBurns": true, "zoomRange": [1.0, 1.12], "pan": "slow" },
-  "text": { "font": "Montserrat", "position": "bottom", "animation": "fade-up", "size": 48 },
-  "audio": { "musicBed": true, "ducking": -12 }
-}
+| Stage | Thực thi bởi | Đầu ra chính |
+| --- | --- | --- |
+| ingest | media | demux audio/video, chuẩn hoá LUFS, metadata |
+| stt ‖ ocr ★ | AsrProvider ‖ OcrProvider (**chạy SONG SONG**) | `TranscriptSegment[]` / `OcrRegion[]` |
+| translate | AIProvider(LLM) | bản dịch theo StylePreset, gắn vào transcript |
+| ttsAlign ★ | TtsProvider + ForcedAlignService (core) | audio dub khớp slot thời gian (tuỳ chọn) |
+| composite | media (+ VisionProvider nếu inpaint) | mask hardsub → burn-in sub mới → mix → mux |
+
+Nhánh `stt` và `ocr` **độc lập dữ liệu** nên được enqueue song song để tối ưu latency.
+Stage `translate` chỉ chạy khi cả hai xong: dịch dựa trên transcript, còn mask dựa trên OCR regions.
+
+## B.1. Stage: ingest & tiền xử lý
+
+- **Upload resumable**: client chia file (≤ 2GB) thành chunk 5–10MB upload song song (giao thức
+  kiểu TUS). Mất mạng ở 99% → resume từ offset đã nhận, không tải lại từ đầu (xem `06_API.md`).
+- **Demux FFmpeg**: tách audio stream (WAV/FLAC 16kHz mono cho ASR) và video stream.
+- **Audio normalization LUFS** (`loudnorm`, mục tiêu −16): âm lượng đều → STT chính xác hơn.
+- Probe metadata (duration, resolution, fps) phục vụ frame sampling & toạ độ bounding box.
+
+## B.2. Stage: stt (ASR)
+
+- Gọi `AsrProvider.transcribe(audio)` trên audio đã normalize → segments `{start, end, text}`
+  kèm **word-level timestamps**.
+- **Speaker diarization**: gán nhãn người nói (`SPK_1`, `SPK_2`...) khi video có nhiều nhân vật →
+  lưu vào `TranscriptSegment.speaker`.
+- Phát hiện ngôn ngữ nguồn tự động (hoặc theo `params.sourceLanguage`).
+
+## B.3. Stage: ocr (phát hiện hardsub)
+
+- **Frame sampling**: trích 1–2 khung hình/giây (`media.sampleFrames`) — đủ dày để bắt text,
+  đủ thưa để tiết kiệm GPU.
+- `OcrProvider.detect(frame)` → bounding box `{x, y, width, height, text, confidence}`.
+- **Merge boxes liên tiếp**: box cùng vị trí (IoU > 0.7) qua các frame liền kề được gộp thành
+  `OcrRegion { startSec, endSec, x, y, width, height, text }`.
+- Lọc nhiễu: bỏ region hiện < 0.5s hoặc confidence thấp; vùng dưới 1/3 khung hình được ưu tiên
+  (vị trí phụ đề phổ biến).
+- User có thể chỉnh/tạo thêm region trên Canvas (`source='MANUAL'`) trước render.
+
+## B.4. Stage: translate (LLM + 12 StylePreset)
+
+- **Context window**: gom nhóm TranscriptSegment (~10 câu / ~30 giây) gửi LLM một lần để bản dịch
+  mạch lạc, không mất ngữ cảnh giữa chừng; giữ glossary tên riêng nhất quán toàn video.
+- **Routing 12 phong cách**: `StylePreset.systemPrompt` được inject vào System Prompt → AI điều chỉnh
+  văn phong, đại từ nhân xưng và slang:
+
+| slug | Phong cách | Đặc trưng văn phong |
+| --- | --- | --- |
+| co-trang | Cổ trang | cổ phong, xưng hô "bổn tọa", "hiền muội" |
+| bat-trend | Bắt trend | Gen Z, slang mạng, lối nói viral |
+| review-phim | Review phim | phân tích, châm biếm nhẹ |
+| tinh-cam | Tình cảm / học đường | mềm mại, xưng "anh/em" |
+| tai-lieu | Tài liệu / chính biên | chuẩn mực, trung tính |
+| hai-huoc | Hài hước / meme | chơi chữ, twist bất ngờ |
+| chinh-luan | Tin tức / chính luận | trang trọng, khách quan |
+| gaming | Gaming / esports | thuật ngữ game, năng lượng cao |
+| kinh-di | Kinh dị / rùng rợn | giọng kể căng, rùng rợn |
+| the-thao | Thể thao | sôi động, cảm thán |
+| cong-nghe | Công nghệ | chính xác thuật ngữ kỹ thuật |
+| tre-em | Thiếu nhi / gia đình | đơn giản, dễ hiểu |
+
+- **Ràng buộc output**: trả JSON `{ "segments": [{ "index", "translation" }] }`; độ dài bản dịch
+  ≈ bản gốc (±20%) để không vỡ forced alignment ở stage sau.
+- Ghi `ProviderLog` (provider, model, tokens, cost) như mọi cuộc gọi AI khác.
+
+## B.5. ★ Stage: ttsAlign (TTS + Forced Alignment) — KHÓ NHẤT
+
+Chỉ chạy khi `params.enableDubbing = true`. Mục tiêu: giọng dub nằm trọn trong slot
+`[startSec, endSec]` của câu gốc — không hình đi trước tiếng, không tiếng chồng sang câu sau.
+
+### Thuật toán
+
+```
+cho mỗi TranscriptSegment seg (đã có translation):
+  1. audio = TtsProvider.synthesize(seg.translation, targetLanguage, voiceId)
+     D_tts  = audio.durationSec          // thời lượng đọc thực tế
+     D_slot = seg.endSec - seg.startSec  // slot của câu gốc
+  2. if D_slot*0.92 <= D_tts <= D_slot*1.08:
+        đặt tại startSec, giữ nguyên            // trong dung sai ±8%
+  3. elif D_tts > D_slot*1.08:                  // đọc dài hơn slot
+        a. tempo = clamp(D_tts/D_slot, 1.0, 1.15) → atempo tăng tốc nhẹ
+        b. vẫn thừa? → yêu cầu LLM rút gọn bản dịch (pass 2: "rút còn X%") rồi TTS lại
+        c. vẫn trượt? → overlap tối đa 0.3s vào khoảng lặng kế tiếp
+  4. elif D_tts < D_slot*0.92:                  // ngắn hơn slot
+        chèn silence padding (30% đầu / 70% cuối) hoặc atempo chậm nhẹ (không dưới 0.9)
+  5. ghi startAtSec thực tế + audioId vào TranscriptSegment.ttsAudioId
 ```
 
-Cách trích:
-- **pacing/bpm**: `media` phân tích năng lượng âm thanh (FFT) → BPM; đo khoảng cách cut.
-- **color**: trung bình histogram → áp dụng LUT xấp xỉ (preserve hue) hoặc `eq/colorbalance`.
-- **motion**: detect optical flow / zoom qua frame diff → tham số ken-burns.
-- **text**: VLM đọc overlay tiêu đề → font/position/animation (gần đúng).
-- **transitions**: so sánh frame liền kề → phân loại cut/fade/slide.
+### Đảm bảo khớp (Invariant)
 
-## B.2. Stage: storyboard (LLM/core)
+- Lệch biên mỗi segment < 5% slot; **không segment nào chồng lên segment kế**.
+- `atempo` bị chặn trong [0.9–1.15] để giọng không méo; ưu tiên **rút gọn câu thay vì hớt tốc độ**.
+- Word-level khớp (karaoke-style) dùng tham khảo **Dynamic Time Warping (DTW)** khi cần.
 
-- Input: assets (ảnh/video/audio) + StyleProfile + `targetDurationSec` (30–60), `style`.
-- LLM sắp xếp assets thành `Shot[]`:
-  ```json
-  [{ "assetId": "a_3", "durationSec": 2.2, "transition": "slide",
-     "motion": "kenBurns", "grade": "teal-orange", "text": "Cảnh 1" }]
-  ```
-- Tổng duration ≈ target. Nếu cần lời dẫn → sinh `narration` rồi TTS.
+## B.6. Stage: composite — mask hardsub
 
-## B.3. Stage: render
+Áp dụng theo từng `OcrRegion` (chỉ trong `[startSec, endSec]`, không đè toàn bộ video),
+method theo `params.maskMethod`:
 
-- Mỗi asset → resize/crop theo `aspectRatio` (9:16), áp dụng `motion` (zoom/pan), `grade` (color),
-  `transition`, cắt theo BPM (`beatSync`).
-- Overlay `text` theo style, ghép music bed (cắt nhịp), duck voice.
-- Xuất 30s–1phút.
+| Method | Cơ chế | Ưu/nhược |
+| --- | --- | --- |
+| `blur` | Gaussian/box blur vùng bbox | nhanh, rẻ — nhưng chữ lem vẫn lộ vệt |
+| `fill` | sample màu nền quanh bbox → lấp phẳng (`drawbox`) | xử lý lem/nhòe tốt hơn blur |
+| `inpaint` | AI inpainting tái tạo nền (VisionProvider), ffmpeg chỉ composite | đẹp nhất, tốn GPU nhất |
 
-**Khác SUMMARY:** STYLE_EDIT không cần `align` (không có nguồn đồng bộ); nó **áp dụng StyleProfile**
-lên assets rời. Đầu ra mang phong cách mẫu nhờ các tham số đã học.
+## B.7. Stage: composite — burn-in, mix, mux
+
+- **Burn-in phụ đề mới**: file ASS có `\pos` khớp bbox cũ (hoặc vị trí user chọn) →
+  `media.burnSubtitlesStyled`.
+- **Audio mixing**:
+  - Dubbing bật: thay voice gốc bằng dub track; giữ background (nhạc/tiếng động môi trường) nếu
+    hệ thống tách stem được; ducking −12dB; `loudnorm` lần cuối.
+  - Dubbing tắt: giữ nguyên audio gốc, chỉ thay phụ đề.
+- **Muxing**: đóng gói video + audio mới thành MP4/MKV, ưu tiên tăng tốc phần cứng NVENC.
 
 ---
 
 # C. So sánh hai mode
 
-| Tiêu chí | SUMMARY | STYLE_EDIT |
+| Tiêu chí | SUMMARY | TRANSLATE_DUB |
 | --- | --- | --- |
-| Nguồn hình ảnh | 1 phim (cắt cảnh) | Nhiều assets rời |
-| Đồng bộ giọng↔cảnh | Bắt buộc (align) | Không (lời dẫn tuỳ chọn) |
-| Tham số phong cách | Từ user (tone) | Từ video mẫu (StyleProfile) |
-| Độ dài | 20–30 phút | 30s–1phút |
-| Tỷ lệ | 16:9 (review) | 9:16 (shorts) |
+| Nguồn | 1 phim (cắt cảnh dựng review) | 1 video nước ngoài (giữ nguyên hình ảnh gốc) |
+| Nhánh AI | ASR + Vision + LLM viết kịch bản | ASR ‖ OCR song song + LLM dịch |
+| Đồng bộ | Align giọng ↔ cảnh (pack scene theo D) | Forced align dub ↔ slot timestamp gốc |
+| Văn phong | tone tự do từ user | 1 trong 12 StylePreset cố định |
+| Che/b đè chữ | Không | Mask hardsub (blur/fill/inpaint) + burn-in sub mới |
+| TimelineClip | Có (ghép cảnh) | Không (render theo cue + OcrRegion) |
+| Độ dài đầu ra | 20–30 phút | Bằng đúng duration video gốc |
 
 ---
 
@@ -195,7 +273,11 @@ lên assets rời. Đầu ra mang phong cách mẫu nhờ các tham số đã h�
 
 | Quyết định | Lý do |
 | --- | --- |
-| TTS nằm trong align | lấy `duration` làm chuẩn đồng bộ |
+| TTS nằm trong align (SUMMARY) | lấy `duration` làm chuẩn đồng bộ |
 | Scene được trim/speed thay vì ghép thừa | giữ giọng tự nhiên, không vỡ nhịp |
-| StyleProfile tách riêng assets | tái dùng mẫu, so sánh dễ |
-| Vision mô tả scene → embedding | semantic match khi thiếu cảnh |
+| STT & OCR chạy 2 job song song | độc lập dữ liệu → giảm latency tổng |
+| OCR merge box theo IoU theo thời gian | bbox từng frame nhiễu; region timeline ổn định cho mask & burn-in |
+| Bản dịch gom theo context window | dịch trọn mạch câu, tránh lệch ngữ cảnh giữa các segment |
+| TTS + forced align tách khỏi translate | retry TTS không phải dịch lại; invariant đo được (< 5%) |
+| Rút gọn câu trước khi tăng tốc quá mức | atempo giới hạn [0.9–1.15], giọng dub tự nhiên |
+| `fill` màu nền là mặc định thay `blur` | blur để lại vệt chữ lem; inpaint đẹp nhưng đắt GPU |

@@ -72,8 +72,13 @@ packages/<name>/
 ## 5. Viết test
 
 - **Provider**: mock HTTP, assert gọi đúng & map kết quả; test lỗi → `ProviderLog` status error.
-- **AlignService**: test invariant `sum(clip.duration*speed) ≈ D` với nhiều kịch bản (thiếu cảnh, thừa cảnh).
-- **StyleAnalyzer**: fixture video mẫu → assert `StyleProfile` có trường bắt buộc.
+- **AlignService** (SUMMARY): test invariant `sum(clip.duration*speed) ≈ D` với nhiều kịch bản (thiếu cảnh, thừa cảnh).
+- **ForcedAlignService** (TRANSLATE_DUB): fixture TTS dài/ngắn hơn slot → assert lệch < 5% slot,
+  không segment nào chồng nhau, atempo không vượt [0.9–1.15].
+- **OcrRegion merge**: boxes liên tiếp IoU > 0.7 → assert gộp đúng `[startSec, endSec]`; box hiện
+  < 0.5s bị lọc.
+- **TranslateService**: cùng input, khác StylePreset → assert đúng systemPrompt được inject và
+  output khớp JSON schema `{segments:[{index, translation}]}`.
 - **API**: test controller qua supertest + mock use-case.
 - **E2E pipeline**: dùng video ngắn (30s) thay phim 2–3h để chạy nhanh.
 

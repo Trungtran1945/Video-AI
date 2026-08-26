@@ -57,7 +57,7 @@ apps/web/
 | --- | --- |
 | Landing | Giới thiệu 2 mode, CTA đăng ký |
 | Login / Register | Auth (RHF + Zod) |
-| Dashboard | Widget: video đã sinh, credit, queue, storage, provider status, lịch sử |
+| Dashboard | Widget: video đã sinh, queue, storage, provider status, lịch sử |
 | Projects | Danh sách project (filter theo mode), trạng thái |
 | ProjectDetail | Xem pipeline stage, **TimelinePreview** (clip + player), output |
 | CreateProject | **Wizard** (dưới) |
@@ -82,30 +82,58 @@ Wizard 2 mode khác nhau:
 5. **Giọng đọc** (chọn voice provider + giọng).
 6. **Generate** → gọi `POST /projects` + start.
 
-### Mode `STYLE_EDIT` (Edit theo mẫu)
-1. **Chọn mode** = STYLE_EDIT.
-2. **Upload assets** (ảnh/video/audio).
-3. **Upload video mẫu**.
-4. **Độ dài** (30s–1phút), tỷ lệ (9:16).
-5. **Phong cách** (lấy từ mẫu hoặc tuỳ chỉnh).
-6. **Generate** → start pipeline.
+### Mode `TRANSLATE_DUB` (Dịch thuật & Lồng tiếng)
+1. **Chọn mode** = TRANSLATE_DUB.
+2. **Upload video** (≤ 2GB) — resumable, hiện % chunk đã nhận; rớt mạng resume không mất.
+3. **Ngôn ngữ**: nguồn (auto-detect hoặc chọn) → đích (mặc định tiếng Việt).
+4. **Phong cách dịch**: chọn 1 trong 12 StylePreset (card có mô tả + ví dụ văn phong).
+5. **Lồng tiếng AI** (toggle): bật → chọn voice provider + giọng; tắt → chỉ thay phụ đề.
+6. **Nâng cao** (tuỳ chọn): method che chữ `blur`/`fill`/`inpaint`, vị trí phụ đề mới.
+7. **Generate** → start pipeline; theo dõi tiến trình realtime bằng SSE.
 
 Wizard dùng `useWizard` (state machine đơn giản) + RHF mỗi bước; validate bằng Zod trước khi next.
 
 ---
 
-## 5. TimelinePreview (trọng tâm UX)
+## 4.1. SubRegionEditor (riêng TRANSLATE_DUB)
 
-`ProjectDetail` hiển thị `TimelineClip[]` dạng track ngang:
-- Mỗi clip: thumbnail (từ Scene/Asset), thời lượng, transition icon, đoạn giọng đọc tương ứng.
+Sau khi stage `dub.ocr` xong, `ProjectDetail` hiển thị các OcrRegion tự động phát hiện đè lên
+khung hình preview:
+
+- Vẽ bằng **Canvas API** overlay trên `<video>` — user kéo/thêm/xoá/sửa bounding box
+  (đặt đúng vùng hardsub mà OCR sót), đánh dấu `source='MANUAL'`.
+- Preview từng region tại mốc thời gian: click region → player seek tới giữa `[startSec, endSec]`.
+- "Dùng mặc định AI" nếu không muốn chỉnh tay; PUT `/projects/:id/mask-regions` trước khi render.
+- Không phải editor timeline — chỉ chỉnh vùng chữ, giữ nguyên nguyên tắc tự động hoàn toàn.
+
+## 4.2. Tiến trình real-time (SSE)
+
+- Hook `useJobEvents(projectId)` mở **EventSource** tới `GET /projects/:id/events`
+  (fallback polling TanStack Query nếu SSE lỗi).
+- Mỗi event `{ stage, status, percent }` cập nhật stepper pipeline + progress bar không cần F5:
+  ingest → stt ‖ ocr (hiện 2 nhánh song song) → translate → ttsAlign? → render.
+
+---
+
+## 5. TimelinePreview & TranscriptView (trọng tâm UX)
+
+`ProjectDetail` hiển thị khác nhau theo mode:
+
+**SUMMARY — TimelinePreview:** `TimelineClip[]` dạng track ngang:
+- Mỗi clip: thumbnail (từ Scene), thời lượng, transition icon, đoạn giọng đọc tương ứng.
 - Player đồng bộ: click clip → nhảy đến `startAtSec`.
 - **Chỉ xem**, không edit (theo yêu cầu tự động hoàn toàn). User có thể "Regenerate" nếu không ưng.
+
+**TRANSLATE_DUB — TranscriptView + SubRegionEditor:**
+- Danh sách câu song ngữ (gốc ↔ bản dịch) theo timestamp; click câu → player seek tới `startSec`;
+  badge speaker nếu có diarization.
+- Kèm `SubRegionEditor` (mục 4.1) để chỉnh vùng che chữ trước render.
 
 ---
 
 ## 6. Widget Dashboard
 
-- `StatCard` — tổng video, credit đã dùng.
+- `StatCard` — tổng video đã sinh, tổng phút video đã Việt hoá.
 - `QueueStatus` — số job running/failed (polling `/queue`).
 - `StorageUsage` — dung lượng theo `storage/`.
 - `ProviderStatus` — health từ `/providers`.

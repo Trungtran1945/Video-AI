@@ -58,9 +58,14 @@ Use-case gọi `resolveTts(settings.voiceProvider)` → **không biết** implem
 
 - `CreateProjectUseCase` — validate, lưu Project, enqueue stage đầu.
 - `SummaryPipeline` — điều phối các stage SUMMARY (gọi provider qua interface).
-- `StyleEditPipeline` — điều phối các stage STYLE_EDIT.
-- `AlignService` — thuật toán đồng bộ (xem `05`).
-- `StyleAnalyzer` — trích StyleProfile từ video mẫu.
+- `TranslateDubPipeline` — điều phối các stage TRANSLATE_DUB; đặc biệt **enqueue `dub.stt` và
+  `dub.ocr` song song**, chỉ sang `dub.translate` khi cả hai xong (BullMQ `Promise.all` trên 2 job,
+  hoặc job tổng hợp `dub.merge` chờ kết quả).
+- `AlignService` — thuật toán đồng bộ giọng ↔ cảnh của SUMMARY (xem `05`).
+- `ForcedAlignService` — ép khớp thời lượng TTS vào slot timestamp gốc của TRANSLATE_DUB
+  (tempo stretching / chèn lặng / yêu cầu rút gọn câu).
+- `SubtitleMaskService` — quản lý OcrRegion: merge bbox OCR, nhận region MANUAL từ Canvas,
+  chọn method blur/fill/inpaint.
 - `RenderService` — gọi `packages/media` sinh video.
 
 Ví dụ controller mỏng:
@@ -71,6 +76,13 @@ export async function startSummary(req: Req, res: Res) {
   const uc = container.resolve(CreateProjectUseCase);
   const project = await uc.execute({ ...req.body, mode: 'SUMMARY', userId: req.user.id });
   await enqueueSummary(project.id);
+  res.status(202).json(project);
+}
+
+export async function startTranslateDub(req: Req, res: Res) {
+  const uc = container.resolve(CreateProjectUseCase);
+  const project = await uc.execute({ ...req.body, mode: 'TRANSLATE_DUB', userId: req.user.id });
+  await Promise.all([enqueueDubStt(project.id), enqueueDubOcr(project.id)]); // song song
   res.status(202).json(project);
 }
 ```
@@ -107,6 +119,17 @@ export const CreateSummarySchema = z.object({
   style: z.string(),
   targetDurationSec: z.number().int().min(1200).max(1800),
   params: z.object({ tone: z.string(), spoilerAllowed: z.boolean() }).optional(),
+});
+
+export const CreateTranslateDubSchema = z.object({
+  title: z.string().min(3),
+  sourceLanguage: z.enum(['auto', 'en', 'ja', 'ko', 'zh']).default('auto'),
+  targetLanguage: z.enum(['vi', 'en']).default('vi'),
+  stylePreset: z.string(),            // slug của 1 trong 12 StylePreset
+  enableDubbing: z.boolean().default(false),
+  voiceId: z.string().optional(),     // bắt buộc khi enableDubbing
+  maskMethod: z.enum(['blur', 'fill', 'inpaint']).default('fill'),
+  sourceVideoKey: z.string(),         // đã upload resumable xong
 });
 ```
 

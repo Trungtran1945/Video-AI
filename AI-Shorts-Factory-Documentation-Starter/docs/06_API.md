@@ -31,23 +31,46 @@ Base URL: `/api/v1`.
   "params": { "tone": "nghiêm túc", "spoilerAllowed": false },
   "sourceVideoKey": "uploads/dune.mp4"   // đã upload trước
 }
-// STYLE_EDIT
+// TRANSLATE_DUB
 {
-  "mode": "STYLE_EDIT",
-  "title": "Short theo mẫu A",
-  "language": "vi",
-  "style": "from-template",
-  "targetDurationSec": 45,
-  "assetKeys": ["a1.jpg","a2.mp4","bgm.mp3"],
-  "templateVideoKey": "templates/a.mp4"
+  "mode": "TRANSLATE_DUB",
+  "title": "Việt hoá anime short",
+  "sourceLanguage": "auto",
+  "targetLanguage": "vi",
+  "stylePreset": "bat-trend",            // slug của 1 trong 12 StylePreset
+  "enableDubbing": true,
+  "voiceId": "vi-female-1",
+  "maskMethod": "fill",                  // 'blur' | 'fill' | 'inpaint'
+  "sourceVideoKey": "uploads/short.mp4"
 }
 ```
 → `202 Accepted` + `Project` (status PENDING).
 
 ### GET `/projects` — danh sách (phân trang, filter `?mode=`)
-### GET `/projects/:id` — chi tiết (kèm stages, timeline, output)
-### GET `/projects/:id/timeline` — `TimelineClip[]` (xem trước)
+### GET `/projects/:id` — chi tiết (kèm stages, timeline/transcript, output)
+### GET `/projects/:id/timeline` — `TimelineClip[]` (SUMMARY)
+### GET `/projects/:id/transcript` — `TranscriptSegment[]` + bản dịch (TRANSLATE_DUB)
+### GET/PUT `/projects/:id/mask-regions` — `OcrRegion[]`; PUT nhận region user chỉnh trên Canvas (`source='MANUAL'`)
 ### POST `/projects/:id/regenerate` — chạy lại pipeline (từ stage lỗi hoặc đầu)
+
+---
+
+## 2.1. Upload resumable (dùng chung cho mọi file lớn)
+
+| Method | Path | Mô tả |
+| --- | --- | --- |
+| POST | `/uploads/init` | `{ filename, size, mime }` → `{ uploadId, chunkSize }` (chunk 5–10MB) |
+| PUT | `/uploads/:uploadId/chunk?offset=N` | đẩy 1 chunk tại offset; idempotent theo offset |
+| HEAD | `/uploads/:uploadId` | trả offset đã nhận — client resume sau rớt mạng |
+| POST | `/uploads/:uploadId/complete` | ghép chunk → trả `storageKey` dùng cho POST /projects |
+
+---
+
+## 2.2. Real-time progress (SSE)
+
+| Method | Path | Mô tả |
+| --- | --- | --- |
+| GET | `/projects/:id/events` | stream `text/event-stream`: `{ stage, status, percent }` từng job; worker publish qua Redis pub/sub |
 
 ---
 
@@ -56,7 +79,8 @@ Base URL: `/api/v1`.
 | Method | Path | Mô tả |
 | --- | --- | --- |
 | POST | `/projects/:id/summary/start` | bắt đầu pipeline SUMMARY |
-| POST | `/projects/:id/style-edit/start` | bắt đầu pipeline STYLE_EDIT |
+| POST | `/projects/:id/translate-dub/start` | bắt đầu pipeline TRANSLATE_DUB (enqueue dub.stt ‖ dub.ocr song song) |
+| GET | `/style-presets` | danh mục 12 phong cách dịch (slug, name, description) |
 | GET | `/projects/:id/jobs` | trạng thái từng stage (`GenerationJob`) |
 | POST | `/projects/:id/jobs/:type/retry` | retry thủ công 1 stage |
 
@@ -78,7 +102,7 @@ Base URL: `/api/v1`.
 | Method | Path | Mô tả |
 | --- | --- | --- |
 | GET | `/queue` | job đang chạy/thất bại (toàn hệ với ADMIN) |
-| GET | `/analytics` | `{ videos, creditsUsed, byProvider, byDay }` |
+| GET | `/analytics` | `{ videos, minutesTranslated, byProvider, byDay }` |
 | GET | `/providers` | danh sách provider + health status |
 
 ---
@@ -96,24 +120,32 @@ Base URL: `/api/v1`.
 
 ---
 
-## 7. Ví dụ response `/projects/:id`
+## 7. Ví dụ response `/projects/:id` (TRANSLATE_DUB)
 
 ```json
 {
   "data": {
-    "id": "p_1",
-    "mode": "SUMMARY",
+    "id": "p_2",
+    "mode": "TRANSLATE_DUB",
     "status": "RUNNING",
-    "targetDurationSec": 1500,
+    "params": {
+      "sourceLanguage": "auto", "targetLanguage": "vi",
+      "stylePreset": "bat-trend", "enableDubbing": true,
+      "maskMethod": "fill"
+    },
     "jobs": [
-      { "type": "summary.transcribe", "status": "SUCCESS" },
-      { "type": "summary.sceneDetect", "status": "SUCCESS" },
-      { "type": "summary.script", "status": "RUNNING" }
+      { "type": "dub.ingest", "status": "SUCCESS" },
+      { "type": "dub.stt", "status": "SUCCESS" },
+      { "type": "dub.ocr", "status": "SUCCESS" },
+      { "type": "dub.translate", "status": "RUNNING", "percent": 62 }
     ],
-    "timeline": [
-      { "order": 0, "sourceType": "SCENE", "refId": "s_12",
-        "inSec": 120.0, "outSec": 145.0, "speed": 1.0,
-        "transitionOut": "cross", "startAtSec": 0.0 }
+    "transcriptPreview": [
+      { "index": 0, "startSec": 0.4, "endSec": 3.1,
+        "text": "おはよう", "translation": "Chào buổi sáng nha mấy bạ", "speaker": "SPK_1" }
+    ],
+    "ocrRegions": [
+      { "id": "r_1", "startSec": 0.4, "endSec": 3.1,
+        "x": 120, "y": 980, "width": 840, "height": 90, "source": "AUTO" }
     ],
     "output": null
   }

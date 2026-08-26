@@ -16,10 +16,15 @@ Dựa trên thiết kế tại [`01_KIEN_TRUC_TONG_THE.md`](01_KIEN_TRUC_TONG_TH
 - [ ] **AlignService** (đồng bộ giọng ↔ cảnh).
 - [ ] TTS + subtitle + render (ffmpeg).
 
-## Giai đoạn 3 — Pipeline STYLE_EDIT
-- [ ] style-analyze → StyleProfile.
-- [ ] storyboard từ assets + StyleProfile.
-- [ ] render theo phong cách mẫu.
+## Giai đoạn 3 — Pipeline TRANSLATE_DUB (dịch & lồng tiếng)
+- [ ] Upload resumable (chunk 5–10MB, kiểu TUS) + ingest: demux, normalize LUFS.
+- [ ] `dub.stt` — ASR + word timestamps + speaker diarization.
+- [ ] `dub.ocr` — frame sampling 1–2 fps → OCR → merge OcrRegion (IoU theo thời gian).
+- [ ] Chạy song song `dub.stt` ‖ `dub.ocr` trong TranslateDubPipeline.
+- [ ] `dub.translate` — LLM context window + 12 StylePreset routing.
+- [ ] `dub.ttsAlign` — TTS (tuỳ chọn) + ForcedAlignService (tempo/pause/rút gọn).
+- [ ] `dub.render` — mask hardsub (blur/fill/inpaint) → burn-in ASS → audio mix → mux NVENC.
+- [ ] SSE progress realtime (`/projects/:id/events`) + SubRegionEditor Canvas.
 
 ## Giai đoạn 4 — Vận hành
 - [ ] BullMQ worker scale, retry.

@@ -21,8 +21,14 @@ export interface MediaService {
   mixAudio(inVideo: string, voice: string, music: string|null, out: string): Promise<void>;
   addIntroOutro(main: string, intro: string, outro: string, out: string): Promise<void>;
   makeThumbnail(inFile: string, atSec: number, out: string): Promise<void>;
-  analyzeAudioEnergy(src: string): Promise<EnergyProfile>; // BPM, beats
-  extractTemplateStyle(src: string): Promise<StyleProfile>;  // cho STYLE_EDIT
+
+  // === TRANSLATE_DUB ===
+  sampleFrames(src: string, fps: 1|2, outDir: string): Promise<Frame[]>;
+  normalizeLoudness(inFile: string, out: string, targetLufs?: number): Promise<void>; // mặc định -16
+  maskRegions(inFile: string, regions: MaskRegion[], method: 'blur'|'fill'|'delogo', out: string): Promise<void>;
+  burnSubtitlesStyled(inFile: string, assFile: string, out: string): Promise<void>;
+  mixDubAudio(video: string, dubVoice: string|null, background: string|null, out: string): Promise<void>;
+  muxStream(inVideo: string, inAudio: string, out: string, format?: 'mp4'|'mkv'): Promise<void>;
 }
 ```
 
@@ -49,7 +55,7 @@ Video: `-filter:v "setpts=PTS/${speed}"`.
 Audio kèm: `-filter:a "atempo(${speed})"` (atempo giới hạn 0.5–2.0; ghép nếu cần).
 Speed nằm [0.9, 1.1] theo thiết kế align → an toàn.
 
-### 2.6. applyGrade (StyleProfile.color)
+### 2.6. applyGrade (chỉnh màu)
 `-vf "eq=contrast=${c}:saturation=${s}, colorbalance=..."` hoặc áp LUT:
 `-vf "lut3d=file=teal-orange.cube"`.
 
@@ -69,19 +75,48 @@ Speed nằm [0.9, 1.1] theo thiết kế align → an toàn.
 ### 2.10. addSubtitles
 Burn-in: `-vf "subtitles=sub.srt"`. Hoặc mux sidecar (`-c:s mov_text`).
 
-### 2.11. extractTemplateStyle (STYLE_EDIT)
-- `analyzeAudioEnergy` → BPM, beats (FFT qua `astats`/`ebur128` hoặc lib).
-- Phân tích histogram frame → `color`.
-- Frame diff → `motion`, `transitions`.
-- VLM (VisionProvider) đọc overlay → `text`.
-→ trả `StyleProfile` (xem `05`).
+### 2.11. sampleFrames (TRANSLATE_DUB)
+`ffmpeg -i src -vf fps=2 -q:v 2 out/frame_%05d.jpg` — trích 1–2 fps cho OCR.
+Chỉ decode video stream (`-an`) để tiết kiệm CPU.
+
+### 2.12. normalizeLoudness (TRANSLATE_DUB)
+Hai pass chuẩn EBU R128: đo rồi áp
+`-af loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json`. Audio đầu vào chuẩn LUFS giúp STT
+và TTS mixing ổn định hơn.
+
+### 2.13. maskRegions (TRANSLATE_DUB) ★
+Che vùng hardsub theo từng `OcrRegion { startSec, endSec, x, y, w, h }`, chỉ bật filter trong
+khoảng thời gian đó:
+
+| Method | Filter |
+| --- | --- |
+| `blur` | `boxblur=luma_radius=20` áp trên vùng crop bbox, overlay trả về |
+| `fill` | `drawbox=x:y:w:h:color=<nền>@1:t=fill` — màu nền lấy từ **background color sampling** quanh bbox (tránh vệt chữ lem còn sót khi blur) |
+| `delogo` | `delogo=x:y:w:h` — nội suy từ biên, tốt cho nền tĩnh |
+
+AI inpainting (`method='inpaint'`) không chạy bằng ffmpeg: VisionProvider sinh frame đã lấp chữ,
+ffmpeg chỉ composite lại vào timeline gốc.
+
+### 2.14. burnSubtitlesStyled (TRANSLATE_DUB)
+Burn file **ASS** (không phải SRT) vì cần `\pos` định vị đúng toạ độ bbox cũ (hoặc vị trí user
+chọn) + font/outline:
+`-vf "ass=subs.ass"` — giữ nguyên timing `[startSec, endSec]` của TranscriptSegment.
+
+### 2.15. mixDubAudio & muxStream (TRANSLATE_DUB)
+- Dubbing bật: thay voice gốc bằng dub track; nếu có background stem (nhạc/tiếng động môi trường)
+  thì `amix` với ducking −12dB, kết thúc bằng `loudnorm`.
+- Dubbing tắt: copy audio gốc (`-c:a copy`).
+- Mux cuối: `-c:v h264_nvenc -preset p4` nếu có GPU NVIDIA (tăng tốc phần cứng), fallback
+  `libx264 -preset medium`; container MP4 hoặc MKV theo tuỳ chọn.
 
 ---
 
 ## 3. Worker & tài nguyên
 
 - Render chạy trong **BullMQ worker riêng** (không block API).
-- Giới hạn concurrent render (sem)) theo CPU/RAM; phim 2–3h cần transcode song song chunk.
+- Tách worker **CPU** (ffmpeg: demux, mask, burn-in, mux) và worker **GPU/AI** (ASR, OCR, TTS,
+  inpainting) — render nặng không tranh chấp VRAM với inference (xem `08_TRIEN_KHAI_VA_VAN_HANH.md`).
+- Giới hạn concurrent render (semaphore) theo CPU/RAM; video dài chia chunk song song.
 - File trung gian lưu `storage/tmp`, dọn sau khi xuất.
 
 ---
@@ -93,4 +128,7 @@ Burn-in: `-vf "subtitles=sub.srt"`. Hoặc mux sidecar (`-c:s mov_text`).
 | Mezzanine trước concat | concat nhanh, tránh re-encode lặp |
 | speed qua setpts/atempo | align chính xác, giữ đồng bộ |
 | xfade cho transition | mượt, không nhảy hình |
-| style qua LUT/eq | sát video mẫu, nhẹ |
+| `fill` màu nền sampling là mặc định che chữ | blur để lại vệt chữ lem; inpaint đẹp nhưng đắt GPU |
+| Mask theo `enable='between(t,...)'` | chỉ xử lý đúng đoạn có hardsub, không đè toàn video |
+| Burn-in bằng ASS thay SRT | cần `\pos` khớp bbox cũ + style chữ nhất quán |
+| NVENC ưu tiên khi mux | render 1080p/4K nhanh gấp nhiều lần so với libx264 CPU |

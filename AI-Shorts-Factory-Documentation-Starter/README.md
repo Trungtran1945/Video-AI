@@ -15,7 +15,7 @@ Hệ thống tập trung vào **hai hướng sản phẩm chính**, đều đư�
 | Mode | Mô tả | Đầu vào | Đầu ra |
 | --- | --- | --- | --- |
 | `SUMMARY` | **Review phim** | 1 bộ phim dài **2–3 tiếng** | Video **review phim 20–30 phút** có giọng đọc review, cảnh cắt từ phim gốc khớp với lời review |
-| `STYLE_EDIT` | **Edit theo mẫu** | Ảnh, video, âm thanh do user cung cấp + 1 **video mẫu** | Video ngắn **30 giây – 1 phút** được edit theo đúng phong cách của video mẫu |
+| `TRANSLATE_DUB` | **Dịch thuật & Lồng tiếng** | 1 video nước ngoài có **phụ đề cứng (hardsub)** ≤ 2GB, chọn 1 trong **12 phong cách dịch** | Video giữ nguyên hình ảnh gốc, đã **dịch phụ đề tiếng Việt** đè lên vùng hardsub được che + **giọng lồng AI ép khớp timestamp** (tuỳ chọn) |
 
 Cả hai hướng đều tuân thủ nguyên tắc: **user cấu hình → AI chạy pipeline → user xem kết quả**.
 
@@ -30,7 +30,7 @@ Cả hai hướng đều tuân thủ nguyên tắc: **user cấu hình → AI ch
 | [`docs/02_THIET_KE_CO_SO_DU_LIEU.md`](docs/02_THIET_KE_CO_SO_DU_LIEU.md) | Thiết kế cơ sở dữ liệu (Prisma), ERD, quan hệ, migration |
 | [`docs/03_THIET_KE_BACKEND.md`](docs/03_THIET_KE_BACKEND.md) | Backend: Clean Architecture, DI, services, auth, logging |
 | [`docs/04_THIET_KE_FRONTEND.md`](docs/04_THIET_KE_FRONTEND.md) | Frontend: trang, wizard, components, hooks, state |
-| [`docs/05_THIET_KE_PIPELINE_CHI_TIET.md`](docs/05_THIET_KE_PIPELINE_CHI_TIET.md) | Thuật toán Align (giọng khớp cảnh), StyleProfile, từng stage |
+| [`docs/05_THIET_KE_PIPELINE_CHI_TIET.md`](docs/05_THIET_KE_PIPELINE_CHI_TIET.md) | Thuật toán Align (giọng khớp cảnh), OCR hardsub, Forced Alignment, 12 StylePreset, từng stage |
 | [`docs/06_API.md`](docs/06_API.md) | REST API cho cả 2 mode, schema request/response |
 | [`docs/07_MODULE_FFMPEG.md`](docs/07_MODULE_FFMPEG.md) | Gói media/ffmpeg: transcode, scene-detect, concat, conform, grade, subtitle |
 | [`docs/08_TRIEN_KHAI_VA_VAN_HANH.md`](docs/08_TRIEN_KHAI_VA_VAN_HANH.md) | Docker, docker-compose, GitHub Actions, env, scaling |
@@ -44,7 +44,8 @@ Cả hai hướng đều tuân thủ nguyên tắc: **user cấu hình → AI ch
 - **Backend:** Node.js 22+, TypeScript (strict), Express, Prisma (SQLite MVP → PostgreSQL), BullMQ + Redis, Zod, JWT, Swagger/OpenAPI, Pino.
 - **Frontend:** React 19, Vite, TypeScript, TailwindCSS, shadcn/ui, TanStack Query, React Router, React Hook Form, Framer Motion.
 - **Media:** FFmpeg (gói `packages/media` đóng gói mọi thao tác).
-- **AI/Provider:** Provider Pattern cho ASR, TTS, Vision/LLM, Video-gen (có thể mở rộng).
+- **AI/Provider:** Provider Pattern cho ASR (+ diarization), TTS, OCR (hardsub), Vision/LLM,
+  Video-gen (có thể mở rộng).
 
 ---
 

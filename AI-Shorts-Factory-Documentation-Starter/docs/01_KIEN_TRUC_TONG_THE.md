@@ -44,7 +44,7 @@ Lớp trên không được import implementation cụ thể của lớp dưới
 │ Presentation: apps/web (React)  +  apps/api (Controllers) │
 ├──────────────────────────────────────────────────────────┤
 │ Application / Use-cases: services trong packages/core     │
-│   - CreateProjectUseCase, SummaryPipeline, StyleEditPipeline│
+│   - CreateProjectUseCase, SummaryPipeline, TranslateDubPipeline│
 ├──────────────────────────────────────────────────────────┤
 │ Domain: entities, interfaces (AIProvider, AsrProvider...)  │
 ├──────────────────────────────────────────────────────────┤
@@ -77,22 +77,26 @@ Phim (2–3h)
    ▼  [upload?]       YouTube
 ```
 
-### 3.2. Mode `STYLE_EDIT` (Edit theo mẫu)
+### 3.2. Mode `TRANSLATE_DUB` (Dịch thuật & Lồng tiếng)
 
 ```
-Assets (ảnh/video/audio) + Video mẫu
+Video nước ngoài (hardsub, ≤ 2GB)
    │
-   ▼  [ingest]        lưu assets + template
-   ▼  [style-analyze] media+Vision → StyleProfile (transition, nhịp, màu, motion, text)
-   ▼  [storyboard]    LLM/core → Shot[] (asset + style áp dụng)
-   ▼  [tts?]          TtsProvider (nếu có lời dẫn)
-   ▼  [render]        media/ffmpeg → Video 30s–1phút theo StyleProfile
+   ▼  [ingest]        resumable upload → demux (audio/video) → normalize LUFS
+   ├──▶ [stt]         ASR → transcript(timestamp, speaker)      ┐ SONG SONG
+   └──▶ [ocr]         frame sampling 1–2fps → OCR → OcrRegion[] ┘ (hardsub bbox)
+   ▼  [translate]     LLM + StylePreset(12 phong cách) → bản dịch khớp context window
+   ▼  [ttsAlign?]     TTS + Forced Alignment khớp slot gốc (tuỳ chọn enableDubbing)
+   ▼  [composite]     mask hardsub (blur/fill/inpaint) → burn-in sub mới
+                      → audio mix (dub voice + nền) → mux MP4/MKV (NVENC)
    ▼  [upload?]       YouTube
 ```
 
 **Khác biệt cốt lõi:**
-- `SUMMARY` cắt từ **1 video nguồn duy nhất** (phim) và phải đồng bộ giọng ↔ cảnh (stage `align`).
-- `STYLE_EDIT` **soạn từ nhiều assets rời** theo **phong cách học được** từ video mẫu; không cần đồng bộ với nguồn.
+- `SUMMARY` cắt từ **1 video nguồn duy nhất** (phim) và phải đồng bộ giọng ↔ cảnh (stage `align`);
+  đầu ra là **video mới dựng** từ các cảnh trích.
+- `TRANSLATE_DUB` **giữ nguyên hình ảnh gốc**, chỉ thay lớp ngôn ngữ: phụ đề dịch đè lên vùng hardsub
+  đã che và (tuỳ chọn) giọng lồng AI ép khớp timestamp; STT & OCR chạy song song để tối ưu latency.
 
 ---
 
@@ -123,7 +127,8 @@ export interface TtsResult {
 }
 ```
 
-Tương tự: `AIProvider` (LLM), `AsrProvider` (transcribe), `VisionProvider` (mô tả cảnh).
+Tương tự: `AIProvider` (LLM), `AsrProvider` (transcribe + word timestamps + diarization),
+`OcrProvider` (phát hiện hardsub → bounding box), `VisionProvider` (mô tả cảnh / AI inpainting).
 
 **Registry + Strategy:** dùng DI container ánh xạ `providerId → implementation`. Use-case chỉ gọi
 `container.resolve('tts', settings.voiceProvider)`. Thêm provider = thêm 1 file implement + đăng ký,
@@ -151,9 +156,12 @@ API ──enqueue──▶ Redis/BullMQ ──▶ Worker (per stage)
 | `summary.tts` | tts | 3 |
 | `summary.subtitle` | media | 2 |
 | `summary.render` | media | 2 |
-| `style.analyze` | media+vision | 3 |
-| `style.storyboard` | llm/core | 3 |
-| `style.render` | media | 2 |
+| `dub.ingest` | media (demux + LUFS) | 2 |
+| `dub.stt` | asr (+ diarization) | 3 |
+| `dub.ocr` | ocr (frame sampling) | 3 |
+| `dub.translate` | llm + StylePreset | 3 |
+| `dub.ttsAlign` | tts + ForcedAlignService | 3 |
+| `dub.render` | media (mask/burn-in/mix/mux) | 2 |
 | `output.uploadYoutube` | api | 2 |
 
 Mỗi job **idempotent**: key theo `(projectId, stage)`. Thất bại → tự động retry; hết retry → đánh dấu
@@ -194,6 +202,39 @@ sequenceDiagram
   A-->>W: notify hoàn thành
 ```
 
+### 6.1. Sơ đồ trình tự — TRANSLATE_DUB
+
+```mermaid
+sequenceDiagram
+  actor U as User
+  participant W as Web
+  participant A as API
+  participant Q as Queue
+  participant P as Providers (ASR/OCR/LLM/TTS)
+  participant C as Core(ForcedAlign)
+  participant M as Media(ffmpeg)
+  participant D as DB
+
+  U->>W: Upload video resumable + chọn preset/dubbing
+  W->>A: POST /projects + start TRANSLATE_DUB
+  A->>D: Tạo Project(mode=TRANSLATE_DUB)
+  A->>Q: enqueue dub.stt ‖ dub.ocr (song song)
+  Q->>P: ASR(audio LUFS) ; OCR(frames 1–2fps)
+  P-->>D: TranscriptSegment[] ; OcrRegion[]
+  A->>Q: enqueue dub.translate
+  Q->>P: LLM dịch theo StylePreset (context window)
+  P-->>D: translation gắn vào transcript
+  alt enableDubbing
+    A->>Q: enqueue dub.ttsAlign
+    Q->>C: TTS từng câu → ép khớp slot gốc
+    C-->>D: Audio dub + startAtSec
+  end
+  A->>Q: enqueue dub.render
+  Q->>M: mask OcrRegion → burn-in sub → mix → mux (NVENC)
+  M-->>D: Output(video đã Việt hoá)
+  A--)W: SSE progress realtime từng stage
+```
+
 ---
 
 ## 7. Storage Abstraction
@@ -210,7 +251,8 @@ Mọi asset (phim nguồn, scene, audio, video, subtitle, output) lưu qua abstr
 | --- | --- |
 | Tách `script` và `scene selection` nhưng gộp ở `align` | Đảm bảo giọng ↔ cảnh đồng bộ từ **cùng một biên thời gian** |
 | TTS trả `durationSec` chính xác | Làm Input cho `align`, tránh đoán thời lượng |
-| Scene detect local (ffmpeg) + Vision mô tả | Nhanh, rẻ, không phụ thuộc API đắt |
-| StyleProfile tách biệt assets | Tái dùng mẫu cho nhiều project |
+| STT & OCR tách 2 job chạy song song | Độc lập dữ liệu → giảm latency tổng của TRANSLATE_DUB |
+| OCR trả region timeline (không phải bbox rời) | Mask & burn-in cần vùng ổn định theo `[startSec, endSec]` |
+| StylePreset lưu DB (không hardcode) | Thêm/sửa phong cách dịch không phải deploy lại code |
 | Job idempotent + DB mirror | Quan sát & tiếp tục từ stage lỗi |
 | Monorepo pnpm | Chia sẻ type/Zod giữa web & api, build nhất quán |

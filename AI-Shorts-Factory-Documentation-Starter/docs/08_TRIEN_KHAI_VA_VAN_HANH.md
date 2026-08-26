@@ -109,8 +109,17 @@ AWS_S3_BUCKET=...
 ## 5. Scaling
 
 - **Worker**: scale ngang (`docker compose up --scale worker=4`). BullMQ tự cân bằng.
-- **Render nặng**: tách worker `render` riêng với resource limit; worker `llm/tts` khác.
-- **Storage**: chuyển `STORAGE_DRIVER=s3` để chia sẻ giữa worker.
+- **Tách worker theo loại tài nguyên**:
+  - `worker-cpu` — ffmpeg (ingest, demux, mask hardsub, burn-in, mux). Render 1080p/4K ưu tiên
+    **NVENC** (`h264_nvenc`) khi host có GPU NVIDIA.
+  - `worker-gpu` — inference AI nặng: ASR/diarization, OCR frame sampling, TTS, inpainting
+    (PyTorch/ONNX Runtime/TensorRT nếu self-host).
+  - LLM translate gọi qua Provider API → không cần GPU node riêng.
+- **Auto-scale theo queue depth**: đọc `queue.getJobCounts()` (BullMQ) → hàng đợi `dub.render` /
+  `dub.ocr` ùn tắc vượt ngưỡng thì spawn thêm worker (K8s HPA/KEDA tự tạo Pod GPU mới), vãn khách
+  tự thu hồi để tiết kiệm chi phí cloud.
+- **Priority queue** (tuỳ chọn): job nhỏ / gói cao hơn được tiêu thụ trước khi burst traffic trend.
+- **Storage**: chuyển `STORAGE_DRIVER=s3` để chia sẻ giữa worker (bắt buộc khi scale nhiều node).
 - **DB**: PostgreSQL + connection pool; `ProviderLog` có thể chuyển warehouse riêng.
 
 ---

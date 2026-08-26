@@ -33,7 +33,7 @@ export function ffmpeg(args, opts = {}) {
 
 export async function ffmpegAvailable() {
   try {
-    const { stdout } = await runBin(FFMPEG_BIN, ['-version'])
+    const { stdout } = await runBin(FFMPEG_BIN, ['-version'], { captureStdout: true })
     return { ok: true, version: stdout.split('\n')[0].trim() }
   } catch (err) {
     return { ok: false, error: err.message }
@@ -47,7 +47,7 @@ export async function probe(file) {
     '-show_format',
     '-show_streams',
     file,
-  ])
+  ], { captureStdout: true })
   let info
   try {
     info = JSON.parse(stdout)
