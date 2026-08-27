@@ -4,12 +4,14 @@ import { insert } from '../db/query.js'
 const COST_PER_1K_TOKENS = {
   'gemini-1.5-flash': { in: 0.000075, out: 0.0003 },
   'gemini-1.5-pro': { in: 0.00125, out: 0.005 },
+  'gemini-2.5-flash': { in: 0.0003, out: 0.0025 },
   'gpt-4o-mini': { in: 0.00015, out: 0.0006 },
   'gpt-4o': { in: 0.0025, out: 0.01 },
 }
 
 const ASR_USD_PER_MIN = { 'whisper-1': 0.006 }
-const TTS_USD_PER_1K_CHARS = { elevenlabs: 0.18, 'tts-1': 0.015, 'tts-1-hd': 0.03 }
+// edge_tts miễn phí → giá 0
+const TTS_USD_PER_1K_CHARS = { elevenlabs: 0.18, 'tts-1': 0.015, 'tts-1-hd': 0.03, edge_tts: 0 }
 
 export function estimateCostUsd({ type, model, tokensIn = 0, tokensOut = 0, durationSec = 0, chars = 0, provider }) {
   const rate = COST_PER_1K_TOKENS[model]

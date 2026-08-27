@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { query } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
+import { sendError } from '../../lib/httpError.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -12,8 +13,7 @@ router.get('/', async (req, res) => {
     const isAdmin = req.user.role === 'admin'
     let sql = `SELECT j.*, p.user_id, p.title as project_title, p.mode,
                       pl.provider AS provider,
-                      pl.duration_ms AS duration_ms,
-                      COALESCE(pl.cost_usd, 0) AS cost_estimate
+                      pl.duration_ms AS duration_ms
                FROM generation_jobs j
                JOIN projects p ON j.project_id = p.id
                LEFT JOIN provider_logs pl ON pl.job_id = j.id AND pl.status = 'ok'`
@@ -24,7 +24,7 @@ router.get('/', async (req, res) => {
     res.json(rows)
   } catch (err) {
     console.error('Queue error:', err)
-    res.status(500).json({ message: 'Internal server error', code: 'INTERNAL_ERROR' })
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })
 

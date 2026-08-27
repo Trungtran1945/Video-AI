@@ -11,7 +11,8 @@ const providerLabels = {
   gemini: 'Gemini', openai: 'OpenAI', anthropic: 'Anthropic', huggingface: 'HuggingFace',
   elevenlabs: 'ElevenLabs', google_tts: 'Google TTS', azure_speech: 'Azure Speech',
   kling: 'Kling', hailuo: 'Hailuo', pixverse: 'PixVerse', runway: 'Runway', luma: 'Luma',
-  flux: 'FLUX', stable_diffusion: 'Stable Diffusion', whisper: 'Whisper', youtube: 'YouTube',
+  flux: 'FLUX', stable_diffusion: 'Stable Diffusion',
+  whisper: 'Whisper (OpenAI/Groq)', openai_whisper: 'Whisper API', youtube: 'YouTube',
 };
 
 const categories = ['llm', 'image', 'video', 'voice', 'subtitle', 'platform'];

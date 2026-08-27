@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne, insert, run } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { encrypt, decrypt } from '../../lib/crypto.js'
+import { sendError, ERR } from '../../lib/httpError.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -23,7 +24,7 @@ router.get('/', async (req, res) => {
 // POST /api/v1/api-keys
 router.post('/', async (req, res) => {
   const { provider, label, key } = req.body || {}
-  if (!provider || !key) return res.status(400).json({ message: 'provider and key are required', code: 'VALIDATION_ERROR' })
+  if (!provider || !key) return sendError(res, 400, ERR.VALIDATION, 'provider and key are required', { field: 'provider,key' })
   const row = await insert('api_keys', {
     id: uuidv4(),
     user_id: req.user.id,
@@ -38,7 +39,7 @@ router.post('/', async (req, res) => {
 // DELETE /api/v1/api-keys/:id
 router.delete('/:id', async (req, res) => {
   const row = await queryOne('SELECT * FROM api_keys WHERE id = ? AND user_id = ?', [req.params.id, req.user.id])
-  if (!row) return res.status(404).json({ message: 'Not found', code: 'NOT_FOUND' })
+  if (!row) return sendError(res, 404, 'NOT_FOUND', 'Not found')
   await run('DELETE FROM api_keys WHERE id = ?', [req.params.id])
   res.json({ message: 'Deleted' })
 })
@@ -46,7 +47,7 @@ router.delete('/:id', async (req, res) => {
 // PUT /api/v1/api-keys/:id  (toggle active / update label)
 router.put('/:id', async (req, res) => {
   const row = await queryOne('SELECT * FROM api_keys WHERE id = ? AND user_id = ?', [req.params.id, req.user.id])
-  if (!row) return res.status(404).json({ message: 'Not found', code: 'NOT_FOUND' })
+  if (!row) return sendError(res, 404, 'NOT_FOUND', 'Not found')
   const patch = {}
   if (typeof req.body?.isActive === 'boolean') patch.is_active = req.body.isActive ? 1 : 0
   if (typeof req.body?.label === 'string') patch.label = req.body.label

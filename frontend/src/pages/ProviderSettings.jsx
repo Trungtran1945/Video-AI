@@ -20,7 +20,8 @@ const providerLabels = {
   flux: 'FLUX', stable_diffusion: 'Stable Diffusion', google_image: 'Google Image', huggingface_inference: 'HF Inference',
   kling: 'Kling', hailuo: 'Hailuo', pixverse: 'PixVerse', runway: 'Runway', luma: 'Luma',
   elevenlabs: 'ElevenLabs', google_tts: 'Google TTS', azure_speech: 'Azure Speech', openai_tts: 'OpenAI TTS',
-  whisper: 'Whisper', openai_whisper: 'OpenAI Whisper', faster_whisper: 'Faster Whisper',
+  edge_tts: 'Edge TTS (Miễn phí)',
+  whisper: 'Whisper (OpenAI/Groq)', openai_whisper: 'OpenAI Whisper', faster_whisper: 'Faster Whisper',
 };
 
 export default function ProviderSettings() {

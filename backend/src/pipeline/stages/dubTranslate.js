@@ -1,0 +1,181 @@
+import path from 'path'
+import fs from 'node:fs'
+import { v4 as uuidv4 } from 'uuid'
+import { query, queryOne, updateById, insert, run } from '../../db/query.js'
+import { getProvider } from '../../providers/registry.js'
+import { tracked } from '../../providers/tracked.js'
+import { projectDir, extractJsonBlock, round2 } from '../context.js'
+
+const CONTEXT_WINDOW_SEC = 30 // docs/05 §B.4: gom ~30 giây thoại / lần gọi LLM
+const LENGTH_RATIO_MAX = 1.6 // bản dịch dài hơn 1.6× gốc → ép rút gọn lại 1 lần
+
+// dub.translate (docs/05 §B.4): LLM dịch theo StylePreset + context window.
+export async function dubTranslate(ctx) {
+  const { project, job, setProgress } = ctx
+  const params = parseParams(project.params)
+
+  const segments = await query(
+    'SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC',
+    [project.id]
+  )
+  if (!segments.length) throw new Error('Không có transcript để dịch — stage dub.stt chưa chạy hoặc rỗng')
+
+  const presetSlug = params.stylePreset
+  const preset = presetSlug
+    ? await queryOne('SELECT * FROM style_presets WHERE slug = ?', [presetSlug])
+    : null
+
+  const targetLanguage = params.targetLanguage || 'vi'
+  const llm = await getProvider(project.user_id, 'llm')
+  const system = buildSystemPrompt(preset, targetLanguage)
+  setProgress(5)
+
+  // Gom nhóm theo context window ~30s (docs/05 §B.4)
+  const groups = groupByWindow(segments, CONTEXT_WINDOW_SEC)
+  let translated = 0
+  const translations = new Map() // segment id → bản dịch
+  for (let g = 0; g < groups.length; g++) {
+    const group = groups[g]
+    const lines = group
+      .map((s) => `${s.index_num}|${round2(s.start_sec)}-${round2(s.end_sec)}|${s.text}`)
+      .join('\n')
+    const prompt =
+      `Dịch các câu thoại dưới đây sang ${languageName(targetLanguage)}. ` +
+      `Mỗi dòng có định dạng "index|thời gian|văn bản". ` +
+      `Giữ nguyên index, chỉ dịch phần văn bản. Bản dịch phải tự nhiên như lồng tiếng, ` +
+      `độ dài xấp xỉ bản gốc (±20%) để khớp thời lượng. Giữ tên riêng nhất quán toàn video.\n\n${lines}\n\n` +
+      `Trả về DUY NHẤT JSON: {"segments":[{"index":int,"translation":string}]}`
+
+    const res = await tracked(
+      { projectId: project.id, jobId: job.id, provider: llm.id, type: 'llm' },
+      () => llm.provider.complete({ system, prompt, json: true, temperature: 0.4 })
+    )
+
+    const parsed = extractJsonBlock(res.text) || {}
+    const list = Array.isArray(parsed.segments) ? parsed.segments : []
+    const map = new Map()
+    for (const item of list) {
+      if (item && Number.isInteger(item.index) && typeof item.translation === 'string') {
+        map.set(item.index, item.translation.trim())
+      }
+    }
+
+    for (const seg of group) {
+      let translation = map.get(seg.index_num)
+      if (!translation) continue
+      // Ràng buộc độ dài (docs/05 §B.4): dài quá → yêu cầu rút gọn đúng 1 lần
+      if (seg.text && translation.length > seg.text.length * LENGTH_RATIO_MAX) {
+        translation = await shortenOnce(llm, system, seg.text, translation, job, project.id)
+      }
+      await updateById('transcript_segments', seg.id, { translation })
+      translations.set(seg.id, translation)
+      translated++
+    }
+    setProgress(5 + Math.round(((g + 1) / groups.length) * 85))
+  }
+
+  if (!translated) throw new Error('LLM không trả về bản dịch hợp lệ nào')
+
+  // Sinh SRT từ timing gốc + bản dịch (docs/05 FR-T6)
+  const cues = segments
+    .filter((s) => translations.has(s.id))
+    .map((s) => ({ start: Number(s.start_sec), end: Number(s.end_sec), text: translations.get(s.id) }))
+  if (cues.length) await writeSrt(project, cues)
+
+  return {
+    translatedCount: translated,
+    segmentCount: segments.length,
+    presetSlug: preset?.slug || null,
+    targetLanguage,
+  }
+}
+
+async function writeSrt(project, cues) {
+  if (!cues.length) return
+  const dir = projectDir(project.id)
+  fs.mkdirSync(dir, { recursive: true })
+  const srtPath = path.join(dir, 'subtitles.srt')
+  const body = cues
+    .map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${c.text}\n`)
+    .join('\n')
+  fs.writeFileSync(srtPath, body, 'utf8')
+
+  await run(`DELETE FROM subtitles WHERE project_id = ?`, [project.id])
+  await insert('subtitles', {
+    id: uuidv4(),
+    project_id: project.id,
+    format: 'srt',
+    language: parseParams(project.params).targetLanguage || 'vi',
+    storage_key: null,
+    cues: JSON.stringify(cues),
+  })
+}
+
+async function shortenOnce(llm, system, originalText, tooLongTranslation, job, projectId) {
+  try {
+    const res = await tracked(
+      { jobId: job.id, provider: llm.id, type: 'llm' },
+      () => llm.provider.complete({
+        system,
+        prompt:
+          `Bản dịch sau dài hơn bản gốc "${originalText}" quá nhiều. ` +
+          `Hãy rút gọn còn ngắn tương đương bản gốc nhưng vẫn giữ ý chính:\n"${tooLongTranslation}"\n` +
+          `Trả về DUY NHẤT chuỗi bản dịch đã rút gọn, không giải thích.`,
+        temperature: 0.3,
+        maxOutputTokens: 300,
+      })
+    )
+    const cleaned = res.text.replace(/^["'\s]+|["'\s]+$/g, '')
+    return cleaned.length <= tooLongTranslation.length ? cleaned : tooLongTranslation
+  } catch (_) {
+    return tooLongTranslation
+  }
+}
+
+function buildSystemPrompt(preset, targetLanguage) {
+  const base =
+    `Bạn là biên tập viên lồng tiếng chuyên nghiệp. Nhiệm vụ: dịch thoại video sang ${languageName(targetLanguage)}.` +
+    ` Luôn giữ ý nghĩa gốc, không bịa thêm chi tiết.`
+  if (preset?.system_prompt) return `${base} Văn phong bắt buộc — ${preset.name}: ${preset.system_prompt}`
+  return `${base} Văn phong trung tính tự nhiên.`
+}
+
+function groupByWindow(segments, windowSec) {
+  const groups = []
+  let current = []
+  let windowStart = 0
+  for (const s of segments) {
+    if (!current.length) windowStart = Number(s.start_sec) || 0
+    if ((Number(s.end_sec) - windowStart) > windowSec && current.length) {
+      groups.push(current)
+      current = [s]
+      windowStart = Number(s.start_sec) || 0
+    } else {
+      current.push(s)
+    }
+  }
+  if (current.length) groups.push(current)
+  return groups
+}
+
+function parseParams(raw) {
+  try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
+}
+
+function languageName(code) {
+  const names = { vi: 'tiếng Việt', en: 'tiếng Anh' }
+  return names[code] || code
+}
+
+function srtTime(sec) {
+  const total = Math.max(0, Math.round(sec * 1000))
+  const ms = total % 1000
+  const s = Math.floor(total / 1000) % 60
+  const m = Math.floor(total / 60000) % 60
+  const h = Math.floor(total / 3600000)
+  const p2 = (n) => String(n).padStart(2, '0')
+  const p3 = (n) => String(n).padStart(3, '0')
+  return `${p2(h)}:${p2(m)}:${p2(s)},${p3(ms)}`
+}
+
+export default dubTranslate

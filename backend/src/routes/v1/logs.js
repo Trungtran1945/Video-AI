@@ -1,9 +1,24 @@
 import { Router } from 'express'
 import { query } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
+import { sendError } from '../../lib/httpError.js'
 
 const router = Router()
 router.use(authMiddleware)
+
+// Map type nội bộ → taxonomy frontend (Logs.jsx: llm/image/video/voice/subtitle).
+const TYPE_MAP = {
+  llm: 'llm',
+  vision: 'image',
+  ocr: 'image',
+  image: 'image',
+  tts: 'voice',
+  voice: 'voice',
+  asr: 'subtitle',
+  subtitle: 'subtitle',
+  media: 'video',
+  video: 'video',
+}
 
 // GET /api/v1/logs
 router.get('/', async (req, res) => {
@@ -16,17 +31,17 @@ router.get('/', async (req, res) => {
     sql += ' ORDER BY pl.created_date DESC LIMIT ?'
     params.push(Number(req.query.limit) || 100)
     const rows = await query(sql, params)
-    // Normalize to the frontend vocabulary (docs/02 §6 deviation):
-    // DB stores 'ok'/'error'; API speaks 'success'/'error'. Also expose
-    // cost_estimate as the alias Dashboard uses for credits.
+    // Normalize về vocabulary frontend: status 'ok'→'success', type → category map
+    // (type gốc giữ lại trong rawType để đối chiếu ProviderLog docs/02 §6).
     res.json(rows.map((r) => ({
       ...r,
+      rawType: r.type,
+      type: TYPE_MAP[r.type] || r.type,
       status: r.status === 'ok' ? 'success' : r.status,
-      cost_estimate: r.cost_usd ?? 0,
     })))
   } catch (err) {
     console.error('Logs error:', err)
-    res.status(500).json({ message: 'Internal server error', code: 'INTERNAL_ERROR' })
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })
 

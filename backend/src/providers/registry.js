@@ -5,6 +5,7 @@ import OpenAiLlm from './llm/openai.js'
 import OpenAiWhisperAsr from './asr/openaiWhisper.js'
 import ElevenLabsTts from './tts/elevenlabs.js'
 import OpenAiTts from './tts/openaiTts.js'
+import EdgeTts from './tts/edgeTts.js'
 import GeminiVision from './vision/geminiVision.js'
 
 export class ProviderError extends Error {
@@ -24,21 +25,27 @@ export const PROVIDER_LABELS = {
   openai_whisper: 'OpenAI Whisper API',
   elevenlabs: 'ElevenLabs',
   openai_tts: 'OpenAI TTS',
+  edge_tts: 'Edge TTS (miễn phí)',
   google_tts: 'Google TTS',
   azure_speech: 'Azure Speech',
   clip: 'CLIP (local)',
 }
 
+// Mỗi provider có thể có nhiều biến môi trường fallback (thử theo thứ tự).
 const ENV_KEYS = {
-  gemini: 'GEMINI_API_KEY',
-  openai: 'OPENAI_API_KEY',
-  anthropic: 'ANTHROPIC_API_KEY',
-  huggingface: 'HUGGINGFACE_TOKEN',
-  whisper: 'OPENAI_API_KEY',
-  openai_whisper: 'OPENAI_API_KEY',
-  elevenlabs: 'ELEVENLABS_API_KEY',
-  openai_tts: 'OPENAI_API_KEY',
+  gemini: ['GEMINI_API_KEY'],
+  openai: ['OPENAI_API_KEY'],
+  anthropic: ['ANTHROPIC_API_KEY'],
+  huggingface: ['HUGGINGFACE_TOKEN'],
+  // Whisper tương thích OpenAI — Groq free dùng key riêng, OpenAI là fallback cuối
+  whisper: ['WHISPER_API_KEY', 'GROQ_API_KEY', 'OPENAI_API_KEY'],
+  openai_whisper: ['WHISPER_API_KEY', 'GROQ_API_KEY', 'OPENAI_API_KEY'],
+  elevenlabs: ['ELEVENLABS_API_KEY'],
+  openai_tts: ['OPENAI_API_KEY'],
 }
+
+// Provider chạy không cần API key (Edge-TTS của Microsoft).
+const KEYLESS = new Set(['edge_tts'])
 
 const REGISTRY = {
   llm: {
@@ -53,6 +60,7 @@ const REGISTRY = {
     faster_whisper: null,
   },
   tts: {
+    edge_tts: (key) => new EdgeTts(key),
     elevenlabs: (key) => new ElevenLabsTts(key),
     openai_tts: (key) => new OpenAiTts(key),
     google_tts: null,
@@ -62,15 +70,21 @@ const REGISTRY = {
     gemini: (key) => new GeminiVision(key),
     clip: null,
   },
+  // OCR hardsub (docs/05 §B.3): dùng chung Gemini Vision, cùng key resolution.
+  ocr: {
+    gemini: (key) => new GeminiVision(key),
+    paddleocr: null,
+  },
 }
 
-const DEFAULTS = { llm: 'gemini', asr: 'whisper', tts: 'elevenlabs', vision: 'gemini' }
+const DEFAULTS = { llm: 'gemini', asr: 'whisper', tts: 'edge_tts', vision: 'gemini', ocr: 'gemini' }
 
 const SETTINGS_COLUMN = {
   llm: ['active_llm_provider'],
   asr: ['active_subtitle_provider'],
   tts: ['active_voice_provider', 'voice_provider'],
   vision: [],
+  ocr: [],
 }
 
 async function resolveApiKey(userId, providerId) {
@@ -85,8 +99,9 @@ async function resolveApiKey(userId, providerId) {
       if (key) return key
     } catch (_) {}
   }
-  const envName = ENV_KEYS[providerId]
-  if (envName && process.env[envName]) return process.env[envName]
+  for (const envName of ENV_KEYS[providerId] || []) {
+    if (process.env[envName]) return process.env[envName]
+  }
   return null
 }
 
@@ -112,10 +127,13 @@ export async function getProvider(userId, type, { id } = {}) {
       `${PROVIDER_LABELS[providerId] || providerId} chưa được hỗ trợ trên máy chủ này. Hãy chọn nhà cung cấp khác trong Cài đặt.`
     )
   }
+  if (KEYLESS.has(providerId)) {
+    return { id: providerId, provider: factory(null) }
+  }
   const apiKey = await resolveApiKey(userId, providerId)
   if (!apiKey) {
     throw new ProviderError(
-      `Chưa cấu hình API key cho ${PROVIDER_LABELS[providerId] || providerId}. Thêm key tại trang API Keys (provider: ${providerId}) hoặc đặt biến môi trường ${ENV_KEYS[providerId] || 'tương ứng'}`
+      `Chưa cấu hình API key cho ${PROVIDER_LABELS[providerId] || providerId}. Thêm key tại trang API Keys (provider: ${providerId}) hoặc đặt biến môi trường ${(ENV_KEYS[providerId] || []).join(' / ')}`
     )
   }
   return { id: providerId, provider: factory(apiKey) }

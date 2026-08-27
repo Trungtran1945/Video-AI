@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { queryOne, run } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
+import { sendError } from '../../lib/httpError.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -51,7 +52,7 @@ router.get('/', async (req, res) => {
     res.json(await getOrCreateSettings(req.user.id))
   } catch (err) {
     console.error('Get settings error:', err)
-    res.status(500).json({ message: 'Internal server error', code: 'INTERNAL_ERROR' })
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })
 
@@ -67,7 +68,7 @@ router.put('/', async (req, res) => {
     res.json(await getOrCreateSettings(req.user.id))
   } catch (err) {
     console.error('Update settings error:', err)
-    res.status(500).json({ message: 'Internal server error', code: 'INTERNAL_ERROR' })
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })
 

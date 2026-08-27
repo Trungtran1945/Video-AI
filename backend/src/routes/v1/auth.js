@@ -9,11 +9,13 @@ import {
   clearRefreshToken,
   authMiddleware,
 } from '../../middleware/auth.js'
+import { sendError, ERR } from '../../lib/httpError.js'
 
 const router = Router()
 
 function publicUser(u) {
-  return { id: u.id, email: u.email, role: u.role, name: u.name || '', credits: u.credits ?? 0 }
+  // users.credits is a legacy column — no longer exposed (hệ Xu đã bỏ, docs/00 §2.2)
+  return { id: u.id, email: u.email, role: u.role, name: u.name || '' }
 }
 
 // POST /api/v1/auth/register
@@ -21,11 +23,11 @@ router.post('/register', async (req, res) => {
   try {
     const { email, password, name } = req.body
     if (!email || !password) {
-      return res.status(400).json({ message: 'Email and password are required', code: 'VALIDATION_ERROR' })
+      return sendError(res, 400, ERR.VALIDATION, 'Email and password are required', { field: 'email,password' })
     }
     const existing = await queryOne(`SELECT id FROM users WHERE email = ?`, [email])
     if (existing) {
-      return res.status(409).json({ message: 'Email already registered', code: 'EMAIL_EXISTS' })
+      return sendError(res, 409, 'EMAIL_EXISTS', 'Email already registered', { field: 'email' })
     }
     const hashed = await bcrypt.hash(password, 10)
     const user = await insert('users', {
@@ -41,7 +43,7 @@ router.post('/register', async (req, res) => {
     res.json({ accessToken, refreshToken, user: publicUser(user) })
   } catch (err) {
     console.error('Register error:', err)
-    res.status(500).json({ message: 'Internal server error', code: 'INTERNAL_ERROR' })
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })
 
@@ -50,11 +52,11 @@ router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body
     if (!email || !password) {
-      return res.status(400).json({ message: 'Email and password are required', code: 'VALIDATION_ERROR' })
+      return sendError(res, 400, ERR.VALIDATION, 'Email and password are required', { field: 'email,password' })
     }
     const user = await queryOne(`SELECT * FROM users WHERE email = ?`, [email])
     if (!user || !(await bcrypt.compare(password, user.password))) {
-      return res.status(401).json({ message: 'Invalid email or password', code: 'INVALID_CREDENTIALS' })
+          return sendError(res, 401, 'INVALID_CREDENTIALS', 'Invalid email or password')
     }
     const accessToken = generateAccessToken(user)
     const refreshToken = generateRefreshToken(user)
@@ -62,7 +64,7 @@ router.post('/login', async (req, res) => {
     res.json({ accessToken, refreshToken, user: publicUser(user) })
   } catch (err) {
     console.error('Login error:', err)
-    res.status(500).json({ message: 'Internal server error', code: 'INTERNAL_ERROR' })
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })
 
@@ -70,7 +72,7 @@ router.post('/login', async (req, res) => {
 router.post('/refresh', async (req, res) => {
   try {
     const token = req.body?.refreshToken || req.headers['x-refresh-token']
-    if (!token) return res.status(401).json({ message: 'Refresh token required', code: 'UNAUTHORIZED' })
+    if (!token) return sendError(res, 401, ERR.AUTH_TOKEN, 'Refresh token required')
     // Verify + rotate
     const jwt = (await import('jsonwebtoken')).default
     const { config } = await import('../../config.js')
@@ -78,17 +80,17 @@ router.post('/refresh', async (req, res) => {
     const user = await queryOne(`SELECT * FROM users WHERE id = ?`, [decoded.id])
     const { sha256 } = await import('../../lib/crypto.js')
     if (!user || user.refresh_token !== sha256(token)) {
-      return res.status(401).json({ message: 'Invalid refresh token', code: 'UNAUTHORIZED' })
+      return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid refresh token')
     }
     if (user.refresh_expires && new Date(user.refresh_expires) < new Date()) {
-      return res.status(401).json({ message: 'Refresh token expired', code: 'UNAUTHORIZED' })
+      return sendError(res, 401, ERR.AUTH_TOKEN, 'Refresh token expired')
     }
     const accessToken = generateAccessToken(user)
     const newRefresh = generateRefreshToken(user)
     await storeRefreshToken(user.id, newRefresh)
     res.json({ accessToken, refreshToken: newRefresh, user: publicUser(user) })
   } catch (err) {
-    return res.status(401).json({ message: 'Invalid refresh token', code: 'UNAUTHORIZED' })
+    return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid refresh token')
   }
 })
 
@@ -100,8 +102,8 @@ router.post('/logout', authMiddleware, async (req, res) => {
 
 // GET /api/v1/auth/me
 router.get('/me', authMiddleware, async (req, res) => {
-  const user = await queryOne(`SELECT id, email, role, name, credits, created_date FROM users WHERE id = ?`, [req.user.id])
-  if (!user) return res.status(404).json({ message: 'User not found', code: 'USER_NOT_FOUND' })
+  const user = await queryOne(`SELECT id, email, role, name, created_date FROM users WHERE id = ?`, [req.user.id])
+  if (!user) return sendError(res, 404, 'USER_NOT_FOUND', 'User not found')
   res.json(publicUser(user))
 })
 
@@ -109,7 +111,7 @@ router.get('/me', authMiddleware, async (req, res) => {
 router.post('/forgot-password', async (req, res) => {
   try {
     const { email } = req.body
-    if (!email) return res.status(400).json({ message: 'Email is required', code: 'VALIDATION_ERROR' })
+    if (!email) return sendError(res, 400, ERR.VALIDATION, 'Email is required', { field: 'email' })
     const user = await queryOne(`SELECT id FROM users WHERE email = ?`, [email])
     if (user) {
       const token = uuidv4() + uuidv4().replace(/-/g, '')
@@ -121,7 +123,7 @@ router.post('/forgot-password', async (req, res) => {
     res.json({ message: 'Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.' })
   } catch (err) {
     console.error('Forgot password error:', err)
-    res.status(500).json({ message: 'Internal server error', code: 'INTERNAL_ERROR' })
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })
 
@@ -129,19 +131,19 @@ router.post('/forgot-password', async (req, res) => {
 router.post('/reset-password', async (req, res) => {
   try {
     const { token, newPassword } = req.body
-    if (!token || !newPassword) return res.status(400).json({ message: 'Token and new password are required', code: 'VALIDATION_ERROR' })
+    if (!token || !newPassword) return sendError(res, 400, ERR.VALIDATION, 'Token and new password are required', { field: 'token,newPassword' })
     const row = await queryOne(`SELECT * FROM reset_tokens WHERE token = ?`, [token])
-    if (!row || row.used) return res.status(400).json({ message: 'Invalid or used reset token', code: 'INVALID_TOKEN' })
-    if (new Date(row.expires_at) < new Date()) return res.status(400).json({ message: 'Reset token expired', code: 'INVALID_TOKEN' })
+    if (!row || row.used) return sendError(res, 400, 'INVALID_TOKEN', 'Invalid or used reset token')
+    if (new Date(row.expires_at) < new Date()) return sendError(res, 400, 'INVALID_TOKEN', 'Reset token expired')
     const user = await queryOne(`SELECT id FROM users WHERE email = ?`, [row.email])
-    if (!user) return res.status(400).json({ message: 'Invalid reset token', code: 'INVALID_TOKEN' })
+    if (!user) return sendError(res, 400, 'INVALID_TOKEN', 'Invalid reset token')
     const hashed = await bcrypt.hash(newPassword, 10)
     await updateById('users', user.id, { password: hashed })
     await run(`UPDATE reset_tokens SET used = 1 WHERE token = ?`, [token])
     res.json({ message: 'Mật khẩu đã được cập nhật.' })
   } catch (err) {
     console.error('Reset password error:', err)
-    res.status(500).json({ message: 'Internal server error', code: 'INTERNAL_ERROR' })
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })
 

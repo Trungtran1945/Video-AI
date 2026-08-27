@@ -103,6 +103,7 @@ export const STATUS_LABELS = {
   };
   
   export const VOICE_PROVIDER_LABELS = {
+    edge_tts: 'Edge TTS (Miễn phí)',
     elevenlabs: 'ElevenLabs',
     google_tts: 'Google TTS',
     azure_speech: 'Azure Speech',
@@ -112,7 +113,7 @@ export const STATUS_LABELS = {
   export const LLM_PROVIDERS = ['gemini', 'openai', 'anthropic', 'huggingface'];
   export const IMAGE_PROVIDERS = ['flux', 'stable_diffusion', 'google_image', 'huggingface_inference'];
   export const VIDEO_PROVIDERS = ['kling', 'hailuo', 'pixverse', 'runway', 'luma'];
-  export const VOICE_PROVIDERS = ['elevenlabs', 'google_tts', 'azure_speech', 'openai_tts'];
+  export const VOICE_PROVIDERS = ['edge_tts', 'elevenlabs', 'google_tts', 'azure_speech', 'openai_tts'];
   export const SUBTITLE_PROVIDERS = ['whisper', 'openai_whisper', 'faster_whisper'];
   
   export function StatusBadge({ status }) {

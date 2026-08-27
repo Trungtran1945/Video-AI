@@ -1,7 +1,8 @@
 import fs from 'node:fs'
 import path from 'path'
 
-const BASE = 'https://api.openai.com/v1'
+// Tương thích OpenAI Whisper API — có thể trỏ sang Groq free qua WHISPER_BASE_URL
+const BASE = process.env.WHISPER_BASE_URL || 'https://api.openai.com/v1'
 
 export class OpenAiWhisperAsr {
   constructor(apiKey) {

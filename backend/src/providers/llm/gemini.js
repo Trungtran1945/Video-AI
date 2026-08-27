@@ -3,7 +3,7 @@ const BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 export class GeminiLlm {
   constructor(apiKey) {
     this.id = 'gemini'
-    this.model = process.env.GEMINI_MODEL || 'gemini-1.5-flash'
+    this.model = process.env.GEMINI_MODEL || 'gemini-2.5-flash'
     this.apiKey = apiKey
   }
 

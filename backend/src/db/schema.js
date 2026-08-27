@@ -5,8 +5,11 @@ import { getDb, save } from '../db.js'
 // Deviations kept intentionally for the MVP:
 // - Enum values stored lowercase ('user', 'pending', ...) — matches API/frontend contract
 //   (docs use Prisma enums UPPERCASE; SQLite has no native enums).
+//   project.mode is stored as posted ('SUMMARY' | 'TRANSLATE_DUB').
 // - reset_tokens is an extension table (forgot-password flow) not present in the doc schema.
-// - projects stores both source_video_id/template_video_id (doc) and *_key (API contract).
+// - projects stores both source_video_id (doc) and source_video_key (API contract);
+//   template_video_* columns are legacy from the removed STYLE_EDIT mode (kept inert).
+// - users.credits column is legacy/inert — never exposed through the API.
 export async function initSchema() {
   const db = await getDb()
 
@@ -48,9 +51,9 @@ export async function initSchema() {
     active_llm_provider TEXT DEFAULT 'gemini',
     active_image_provider TEXT DEFAULT 'flux',
     active_video_provider TEXT DEFAULT '',
-    active_voice_provider TEXT DEFAULT 'elevenlabs',
+    active_voice_provider TEXT DEFAULT 'edge_tts',
     active_subtitle_provider TEXT DEFAULT 'whisper',
-    voice_provider TEXT DEFAULT 'elevenlabs',
+    voice_provider TEXT DEFAULT 'edge_tts',
     aspect_ratio TEXT DEFAULT '16:9'
   )`)
 
@@ -218,6 +221,58 @@ export async function initSchema() {
     created_date TEXT DEFAULT (datetime('now'))
   )`)
 
+  // ── TRANSLATE_DUB tables (docs/02) ────────────────────────────────────
+  db.run(`CREATE TABLE IF NOT EXISTS transcript_segments (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    index_num INTEGER DEFAULT 0,
+    start_sec REAL DEFAULT 0,
+    end_sec REAL DEFAULT 0,
+    text TEXT,
+    speaker TEXT,
+    language TEXT,
+    translation TEXT,
+    tts_audio_id TEXT,
+    subtitle_id TEXT
+  )`)
+
+  db.run(`CREATE TABLE IF NOT EXISTS ocr_regions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    start_sec REAL DEFAULT 0,
+    end_sec REAL DEFAULT 0,
+    x INTEGER DEFAULT 0,
+    y INTEGER DEFAULT 0,
+    width INTEGER DEFAULT 0,
+    height INTEGER DEFAULT 0,
+    text TEXT,
+    confidence REAL,
+    source TEXT DEFAULT 'AUTO'
+  )`)
+
+  db.run(`CREATE TABLE IF NOT EXISTS style_presets (
+    id TEXT PRIMARY KEY,
+    slug TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    system_prompt TEXT,
+    is_system INTEGER DEFAULT 1
+  )`)
+
+  // Resumable upload sessions (TUS-style, docs/06 §2.1)
+  db.run(`CREATE TABLE IF NOT EXISTS upload_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    filename TEXT,
+    size INTEGER DEFAULT 0,
+    mime TEXT,
+    tmp_path TEXT,
+    bytes_received INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending',
+    storage_key TEXT,
+    created_date TEXT DEFAULT (datetime('now'))
+  )`)
+
   // ── Indexes (docs/02 §3) ─────────────────────────────────────────────
   // Unique (project_id, type) doubles as the idempotency constraint:
   // BullMQ jobId = `${projectId}:${stage}` (docs/03 §7). If legacy rows
@@ -234,6 +289,8 @@ export async function initSchema() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_assets_project ON assets(project_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_scenes_project ON scenes(project_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_transcript_segments_project ON transcript_segments(project_id, index_num)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_ocr_regions_project ON ocr_regions(project_id, start_sec)`)
 
   save()
   console.log('[DB] Schema initialized (sql.js)')
