@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { query, queryOne } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
-import { runPipeline, flatStages } from '../../pipeline/runner.js'
+import { runPipeline, flatStages, isPipelineRunning } from '../../pipeline/runner.js'
 import { sendError, ERR } from '../../lib/httpError.js'
 
 const router = Router()
@@ -22,6 +22,20 @@ router.post('/:id/translate-dub/start', requireProjectOwner, async (req, res) =>
   }
   runPipeline(req.project.id).catch(() => {})
   res.json({ message: 'Started', status: 'running' })
+})
+
+// POST /api/v1/projects/:id/translate-dub/redub
+// Chạy lại chỉ phần lồng tiếng + render (dub.ttsAlign → dub.render) dùng bản dịch
+// ĐÃ CHỈNH SỬA trong transcript_segments. Không dịch lại, không mất chỉnh sửa.
+router.post('/:id/translate-dub/redub', requireProjectOwner, async (req, res) => {
+  if (String(req.project.mode).toUpperCase().replace('-', '_') !== 'TRANSLATE_DUB') {
+    return sendError(res, 400, ERR.VALIDATION, 'Not a TRANSLATE_DUB project', { field: 'mode' })
+  }
+  if (isPipelineRunning(req.project.id)) {
+    return sendError(res, 409, 'PIPELINE_RUNNING', 'Pipeline đang chạy, hãy đợi hoàn tất rồi mới chạy lại')
+  }
+  runPipeline(req.project.id, 'dub.ttsAlign').catch(() => {})
+  res.json({ message: 'Re-dub started', status: 'running' })
 })
 
 // GET /api/v1/projects/:id/jobs

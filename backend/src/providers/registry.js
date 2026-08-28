@@ -6,6 +6,7 @@ import OpenAiWhisperAsr from './asr/openaiWhisper.js'
 import ElevenLabsTts from './tts/elevenlabs.js'
 import OpenAiTts from './tts/openaiTts.js'
 import EdgeTts from './tts/edgeTts.js'
+import GoogleTts from './tts/googleTts.js'
 import GeminiVision from './vision/geminiVision.js'
 
 export class ProviderError extends Error {
@@ -26,6 +27,7 @@ export const PROVIDER_LABELS = {
   elevenlabs: 'ElevenLabs',
   openai_tts: 'OpenAI TTS',
   edge_tts: 'Edge TTS (miễn phí)',
+  google_tts: 'Google TTS (miễn phí)',
   google_tts: 'Google TTS',
   azure_speech: 'Azure Speech',
   clip: 'CLIP (local)',
@@ -45,7 +47,7 @@ const ENV_KEYS = {
 }
 
 // Provider chạy không cần API key (Edge-TTS của Microsoft).
-const KEYLESS = new Set(['edge_tts'])
+const KEYLESS = new Set(['edge_tts', 'google_tts'])
 
 const REGISTRY = {
   llm: {
@@ -63,7 +65,7 @@ const REGISTRY = {
     edge_tts: (key) => new EdgeTts(key),
     elevenlabs: (key) => new ElevenLabsTts(key),
     openai_tts: (key) => new OpenAiTts(key),
-    google_tts: null,
+    google_tts: (key) => new GoogleTts(key),
     azure_speech: null,
   },
   vision: {

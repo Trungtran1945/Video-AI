@@ -9,8 +9,8 @@ import { clamp } from './context.js'
 // - atempo bị chặn trong [0.9, 1.15] để giọng không méo;
 //   ưu tiên RÚT GỌN CÂU thay vì hớt tốc độ.
 
-export const TEMPO_MIN = 0.9
-export const TEMPO_MAX = 1.15
+export const TEMPO_MIN = 0.94
+export const TEMPO_MAX = 1.06
 export const TOLERANCE = 0.08 // ±8%
 export const MAX_OVERLAP_SEC = 0.3
 

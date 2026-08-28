@@ -316,7 +316,7 @@ export async function compressAudioForUpload(src, out) {
 
 // Trích frame theo tần suất fps cho OCR (cap số lượng để tiết kiệm GPU/chi phí).
 export async function sampleFrames(src, outDir, { fps = 2, cap = 600 } = {}) {
-  ensureDir(outDir)
+  fs.mkdirSync(outDir, { recursive: true })
   const info = await probe(src)
   if (!info.durationSec) return []
   let effFps = fps
@@ -416,7 +416,10 @@ export async function maskRegions(src, regions, out, { method = 'fill', videoDim
     regions.forEach((r, i) => {
       const bw = Math.max(2, Math.round(r.width))
       const bh = Math.max(2, Math.round(r.height))
-      filters.push(`[${prevLabel}]crop=${bw}:${bh}:${Math.round(r.x)}:${Math.round(r.y)},boxblur=luma_radius=min(h,w)/6:luma_power=2[b${i}]`)
+      // Tính radius bằng JS (không dùng biểu thức min(h,w) trong filter vì dấu phẩy
+      // sẽ phá cú pháp filtergraph ffmpeg → lỗi "No option name near ...").
+      const radius = Math.max(1, Math.round(Math.min(bw, bh) / 6))
+      filters.push(`[${prevLabel}]crop=${bw}:${bh}:${Math.round(r.x)}:${Math.round(r.y)},boxblur=luma_radius=${radius}:luma_power=2[b${i}]`)
       prevLabel = `ov${i}`
       filters.push(`[${i === 0 ? '0:v' : `[ov${i - 1}]`}][b${i}]overlay=${Math.round(r.x)}:${Math.round(r.y)}:enable='between(t,${round2(r.start_sec)},${round2(r.end_sec)})'[${prevLabel}]`)
     })

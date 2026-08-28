@@ -13,6 +13,8 @@ export const projectsApi = {
   retryJob: (id, type) => api.post(`/projects/${id}/jobs/${type}/retry`).then((r) => r.data),
   // TRANSLATE_DUB
   transcript: (id) => api.get(`/projects/${id}/transcript`).then((r) => r.data),
+  updateTranscript: (id, segments) => api.put(`/projects/${id}/transcript`, { segments }).then((r) => r.data),
+  redub: (id) => api.post(`/projects/${id}/translate-dub/redub`).then((r) => r.data),
   getMaskRegions: (id) => api.get(`/projects/${id}/mask-regions`).then((r) => r.data),
   putMaskRegions: (id, regions) => api.put(`/projects/${id}/mask-regions`, { regions }).then((r) => r.data),
   stylePresets: () =>

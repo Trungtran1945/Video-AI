@@ -8,7 +8,7 @@ const DEFAULT_PROMPT =
 export class GeminiVision {
   constructor(apiKey) {
     this.id = 'gemini'
-    this.model = process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+    this.model = process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || 'gemini-3.6-flash'
     this.apiKey = apiKey
   }
 

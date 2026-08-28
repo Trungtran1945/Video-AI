@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { projectsApi } from '@/api/projects';
 import Layout from '@/components/Layout';
@@ -70,6 +70,9 @@ export default function ProjectDetail() {
   const [regions, setRegions] = useState([]);
   const [savingRegions, setSavingRegions] = useState(false);
   const [regionError, setRegionError] = useState('');
+  const [savingTranscript, setSavingTranscript] = useState(false);
+  const [transcriptError, setTranscriptError] = useState('');
+  const [redubbing, setRedubbing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [regenerating, setRegenerating] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -152,6 +155,16 @@ export default function ProjectDetail() {
     return () => clearInterval(t);
   }, [project?.status, project, load, sseAvailable]);
 
+  // Khi pipeline vừa chuyển sang completed/failed (sau Chạy lại / Chạy lại lồng tiếng),
+  // reload để làm mới output video & trạng thái.
+  const prevStatus = useRef(project?.status);
+  useEffect(() => {
+    if (prevStatus.current && prevStatus.current !== project?.status) {
+      if (['completed', 'failed'].includes(project?.status)) load();
+    }
+    prevStatus.current = project?.status;
+  }, [project?.status, load]);
+
   const isActive = project && ACTIVE_STATUSES.includes(project.status);
   const canRegenerate = project && ['completed', 'failed'].includes(project.status);
 
@@ -210,6 +223,38 @@ export default function ProjectDetail() {
       setRegionError('Chưa lưu được: backend chưa hỗ trợ endpoint mask-regions hoặc có lỗi — ' + (e?.response?.data?.message || e.message));
     } finally {
       setSavingRegions(false);
+    }
+  };
+
+  const handleSaveTranscript = async (edits) => {
+    if (savingTranscript) return;
+    setSavingTranscript(true);
+    setTranscriptError('');
+    try {
+      const res = await projectsApi.updateTranscript(id, edits);
+      if (Array.isArray(res.segments)) {
+        setTranscript(res.segments.map(normSegment));
+      }
+      toast({ title: 'Đã lưu chỉnh sửa', description: `${res.updated || edits.length} câu đã cập nhật.` });
+    } catch (e) {
+      setTranscriptError('Chưa lưu được: ' + (e?.response?.data?.message || e.message));
+    } finally {
+      setSavingTranscript(false);
+    }
+  };
+
+  const handleRedub = async () => {
+    if (redubbing) return;
+    setRedubbing(true);
+    setTranscriptError('');
+    try {
+      await projectsApi.redub(id);
+      toast({ title: 'Đang lồng tiếng lại', description: 'Video sẽ được cập nhật sau khi hoàn tất.' });
+      await load();
+    } catch (e) {
+      setTranscriptError('Không thể chạy lại: ' + (e?.response?.data?.message || e.message));
+    } finally {
+      setRedubbing(false);
     }
   };
 
@@ -369,24 +414,40 @@ export default function ProjectDetail() {
           </div>
         </div>
 
-        {/* TRANSLATE_DUB: transcript song ngữ */}
-        {isDub && transcript.length > 0 && (
-          <TranscriptView transcript={transcript} onSeek={seekTo} hasVideo={!!outputUrl} />
+        {/* TRANSLATE_DUB: editor lời thoại song ngữ (sửa được) */}
+        {isDub && (
+          <TranscriptEditor
+            transcript={transcript}
+            onSeek={seekTo}
+            hasVideo={!!outputUrl}
+            onSave={handleSaveTranscript}
+            onRedub={handleRedub}
+            saving={savingTranscript}
+            redubbing={redubbing}
+            disabled={isActive}
+            error={transcriptError}
+          />
         )}
 
-        {/* TRANSLATE_DUB: editor vùng che hardsub */}
-        {isDub && regions.length > 0 && (
+        {/* TRANSLATE_DUB: editor vùng che hardsub (luôn hiển thị, có hướng dẫn khi rỗng) */}
+        {isDub && (
           <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
             <h3 className="text-base font-semibold text-white">Vùng che phụ đề gốc (hardsub)</h3>
-            <p className="text-xs text-slate-500 mt-1 mb-4">AI tự phát hiện từ OCR — bạn chỉnh tay trước khi render để che đúng chỗ.</p>
-            <SubRegionEditor
-              videoUrl={outputUrl}
-              regions={regions}
-              onChange={setRegions}
-              onSave={handleSaveRegions}
-              saving={savingRegions}
-              saveError={regionError}
-            />
+            <p className="text-xs text-slate-500 mt-1 mb-4">
+              {regions.length
+                ? 'AI tự phát hiện từ OCR — bạn chỉnh tay trước khi render để che đúng chỗ.'
+                : 'Chưa có vùng chữ nào được phát hiện. Bạn có thể khoanh thủ công vùng phụ đề gốc trên video, hoặc bỏ qua nếu video không có hardsub.'}
+            </p>
+            {outputUrl && (
+              <SubRegionEditor
+                videoUrl={outputUrl}
+                regions={regions}
+                onChange={setRegions}
+                onSave={handleSaveRegions}
+                saving={savingRegions}
+                saveError={regionError}
+              />
+            )}
           </div>
         )}
 
@@ -496,27 +557,97 @@ function InfoGrid({ project, isDub, params }) {
   );
 }
 
-function TranscriptView({ transcript, onSeek, hasVideo }) {
+function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, saving, redubbing, disabled, error }) {
+  const [edits, setEdits] = useState({});
+
+  const getTranslation = (seg) => (edits[seg.id] !== undefined ? edits[seg.id] : seg.translation);
+  const dirtyCount = transcript.filter((s) => edits[s.id] !== undefined && edits[s.id] !== s.translation).length;
+  const translatedCount = transcript.filter((s) => String(s.translation || '').trim()).length;
+
+  const changedPayload = () =>
+    transcript
+      .filter((s) => edits[s.id] !== undefined && edits[s.id] !== s.translation)
+      .map((s) => ({ id: s.id, translation: edits[s.id] }));
+
+  const handleSave = async () => {
+    const payload = changedPayload();
+    if (payload.length) await onSave(payload);
+  };
+
+  const handleRedub = async () => {
+    const payload = changedPayload();
+    if (payload.length) await onSave(payload);
+    setEdits({});
+    onRedub();
+  };
+
+  if (!transcript.length) {
+    return (
+      <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
+        <h3 className="text-base font-semibold text-white">Lời thoại song ngữ</h3>
+        <p className="text-sm text-slate-500 mt-2">
+          Chưa có lời thoại nào. Hãy chạy pipeline (hoặc nhấn <span className="text-blue-400">Chạy lại</span>) để AI nhận dạng và dịch video.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
-      <h3 className="text-base font-semibold text-white">Lời thoại song ngữ</h3>
-      <p className="text-xs text-slate-500 mt-1 mb-4">
-        Gốc ↔ bản dịch theo timestamp{hasVideo ? ' — nhấn vào câu để nhảy tới đoạn đó trong video' : ''}.
-      </p>
-      <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
-        {transcript.map((seg, i) => (
-          <button key={seg.id || i} onClick={() => onSeek(seg.startSec)}
-            className="w-full text-left p-3 rounded-xl bg-white/[0.02] border border-white/5 hover:border-blue-500/30 transition">
-            <div className="flex items-center gap-2 text-[11px] text-slate-500 mb-1.5">
-              <span className="tabular-nums">{fmtSec(seg.startSec)} → {fmtSec(seg.endSec)}</span>
-              {seg.speaker && (
-                <span className="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 font-medium">{seg.speaker}</span>
-              )}
-            </div>
-            <div className="text-sm text-slate-400 line-clamp-1">{seg.text}</div>
-            <div className="text-sm text-slate-200 mt-0.5 line-clamp-2">{seg.translation || <span className="italic text-slate-600">Chưa dịch</span>}</div>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+        <div>
+          <h3 className="text-base font-semibold text-white">Lời thoại song ngữ (chỉnh sửa được)</h3>
+          <p className="text-xs text-slate-500 mt-1">
+            Gốc ↔ bản dịch{hasVideo ? ' — nhấn vào giờ để nhảy tới đoạn đó trong video' : ''}. Đã dịch {translatedCount}/{transcript.length} câu.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={handleSave} disabled={saving || disabled || dirtyCount === 0}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 text-sm font-semibold transition disabled:opacity-50">
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+            Lưu chỉnh sửa{dirtyCount > 0 ? ` (${dirtyCount})` : ''}
           </button>
-        ))}
+          <button onClick={handleRedub} disabled={redubbing || disabled}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 text-sm font-semibold transition disabled:opacity-50">
+            {redubbing ? <Loader2 className="w-4 h-4 animate-spin" /> : <AudioLines className="w-4 h-4" />}
+            Chạy lại (lồng tiếng)
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mb-4 flex items-center gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+          <AlertCircle className="w-4 h-4 shrink-0" /> {error}
+        </div>
+      )}
+
+      <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1">
+        {transcript.map((seg, i) => {
+          const isDirty = edits[seg.id] !== undefined && edits[seg.id] !== seg.translation;
+          return (
+            <div key={seg.id || i} className="p-3 rounded-xl bg-white/[0.02] border border-white/5">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <button onClick={() => onSeek(seg.startSec)} disabled={!hasVideo}
+                  className="flex items-center gap-2 text-[11px] text-slate-500 hover:text-blue-400 transition disabled:hover:text-slate-500 disabled:cursor-default">
+                  <span className="tabular-nums">{fmtSec(seg.startSec)} → {fmtSec(seg.endSec)}</span>
+                  {seg.speaker && (
+                    <span className="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 font-medium">{seg.speaker}</span>
+                  )}
+                </button>
+                {isDirty && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">đã sửa</span>}
+              </div>
+              <div className="text-sm text-slate-400 line-clamp-1">{seg.text}</div>
+              <textarea
+                value={getTranslation(seg)}
+                onChange={(e) => setEdits((p) => ({ ...p, [seg.id]: e.target.value }))}
+                disabled={disabled}
+                rows={2}
+                placeholder={seg.translation ? '' : 'Chưa dịch — bạn có thể nhập bản dịch thủ công'}
+                className="mt-1.5 w-full resize-y rounded-lg bg-[#0F1117] border border-white/10 px-3 py-2 text-sm text-slate-200 leading-snug focus:outline-none focus:border-blue-500/50 disabled:opacity-60"
+              />
+            </div>
+          );
+        })}
       </div>
     </div>
   );

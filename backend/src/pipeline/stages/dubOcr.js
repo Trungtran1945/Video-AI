@@ -88,6 +88,30 @@ export async function dubOcr(ctx) {
     })
   }
 
+  // Fallback vùng mặc định đáy khung hình KHI OCR không phát hiện được box nào
+  // nhưng người dùng đã yêu cầu che phụ đề (maskMethod). Đảm bảo "làm mờ tất cả
+  // phụ đề" luôn có hiệu lực và phụ đề dịch được đặt đè đúng vị trí chữ gốc —
+  // ngay cả khi OCR bỏ sót (provider có cấu hình nhưng trả về 0 box).
+  if (!kept.length) {
+    let maskMethod = null
+    try { maskMethod = (project.params && JSON.parse(project.params).maskMethod) || null } catch (_) {}
+    if (maskMethod) {
+      await insert('ocr_regions', {
+        id: uuidv4(),
+        project_id: project.id,
+        start_sec: 0,
+        end_sec: round2(info.durationSec),
+        x: Math.round(dims.width * 0.05),
+        y: Math.round(dims.height * 0.80),
+        width: Math.round(dims.width * 0.90),
+        height: Math.round(dims.height * 0.15),
+        text: null,
+        confidence: null,
+        source: 'AUTO_DEFAULT',
+      })
+    }
+  }
+
   // Dọn frames sau khi OCR xong
   try { fs.rmSync(framesDir, { recursive: true, force: true }) } catch (_) {}
 

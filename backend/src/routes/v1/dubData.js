@@ -67,6 +67,45 @@ router.get('/projects/:id/mask-regions', requireProjectOwner, async (req, res) =
   }
 })
 
+// PUT /api/v1/projects/:id/transcript — lưu bản dịch đã chỉnh sửa của user.
+// Chỉ cập nhật cột `translation` (giữ nguyên text gốc & timing). Dùng trước
+// khi "Chạy lại (lồng tiếng)" để áp dụng chỉnh sửa vào video.
+// Body: { segments: [{ id, translation }] }
+router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => {
+  try {
+    if (!isDubMode(req.project.mode)) {
+      return sendError(res, 400, ERR.VALIDATION, 'Chỉ dự án TRANSLATE_DUB mới có transcript', { field: 'mode' })
+    }
+    const incoming = Array.isArray(req.body?.segments) ? req.body.segments : []
+    if (!incoming.length) return sendError(res, 400, ERR.VALIDATION, 'segments rỗng', { field: 'segments' })
+
+    const existing = await query('SELECT id, translation FROM transcript_segments WHERE project_id = ?', [req.project.id])
+    const existingIds = new Set(existing.map((r) => String(r.id)))
+    let updated = 0
+    for (const s of incoming) {
+      if (!s || typeof s !== 'object') continue
+      const id = String(s.id)
+      if (!existingIds.has(id)) continue
+      const translation = typeof s.translation === 'string' ? s.translation : null
+      await run(`UPDATE transcript_segments SET translation = ? WHERE id = ? AND project_id = ?`, [translation, id, req.project.id])
+      updated++
+    }
+
+    const rows = await query(
+      `SELECT id, index_num, start_sec, end_sec, text, speaker, language, translation
+       FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC`,
+      [req.project.id]
+    )
+    res.json({
+      updated,
+      segments: rows.map((r) => ({ ...r, index: r.index_num, startSec: r.start_sec, endSec: r.end_sec })),
+    })
+  } catch (err) {
+    console.error('Transcript PUT error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
 const NUM = (v, fallback = 0) => {
   const n = Number(v)
   return Number.isFinite(n) ? n : fallback

@@ -25,10 +25,28 @@ export async function dubRender(ctx) {
   const totalSec = round3(info.durationSec || project.target_duration_sec || 0)
 
   // ── 1. Mask hardsub theo OcrRegion (docs/05 §B.6) ─────────────────────
-  const regions = await query(
+  let regions = await query(
     'SELECT * FROM ocr_regions WHERE project_id = ? ORDER BY start_sec ASC',
     [project.id]
   )
+  // Mạng lưới an toàn: nếu người dùng yêu cầu che phụ đề (maskMethod) mà không có
+  // vùng OCR nào (OCR bỏ sót hoặc stage chưa chạy), sinh vùng mặc định đáy khung
+  // hình để vừa làm mờ chữ gốc, vừa định vị phụ đề dịch thay thế. Áp dụng cả với
+  // các project đã completed trước khi dubOcr được sửa (không cần chạy lại OCR).
+  const wantMask = params.maskMethod && params.maskMethod !== 'none'
+  if (wantMask && !regions.length) {
+    const vw = info.width || 1280
+    const vh = info.height || 720
+    regions = [{
+      start_sec: 0,
+      end_sec: round3(totalSec),
+      x: Math.round(vw * 0.05),
+      y: Math.round(vh * 0.80),
+      width: Math.round(vw * 0.90),
+      height: Math.round(vh * 0.15),
+      source: 'AUTO_DEFAULT',
+    }]
+  }
   let workingFile = src
   if (regions.length) {
     const maskedFile = path.join(dir, 'masked.mp4')

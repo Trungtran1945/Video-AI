@@ -7,7 +7,6 @@ import { tracked } from '../../providers/tracked.js'
 import { projectDir, extractJsonBlock, round2 } from '../context.js'
 
 const CONTEXT_WINDOW_SEC = 30 // docs/05 §B.4: gom ~30 giây thoại / lần gọi LLM
-const LENGTH_RATIO_MAX = 1.6 // bản dịch dài hơn 1.6× gốc → ép rút gọn lại 1 lần
 
 // dub.translate (docs/05 §B.4): LLM dịch theo StylePreset + context window.
 export async function dubTranslate(ctx) {
@@ -42,31 +41,29 @@ export async function dubTranslate(ctx) {
     const prompt =
       `Dịch các câu thoại dưới đây sang ${languageName(targetLanguage)}. ` +
       `Mỗi dòng có định dạng "index|thời gian|văn bản". ` +
-      `Giữ nguyên index, chỉ dịch phần văn bản. Bản dịch phải tự nhiên như lồng tiếng, ` +
-      `độ dài xấp xỉ bản gốc (±20%) để khớp thời lượng. Giữ tên riêng nhất quán toàn video.\n\n${lines}\n\n` +
+      `Giữ nguyên index, CHỈ dịch phần văn bản, tuyệt đối không dịch phần index/thời gian. ` +
+      `Yêu cầu: (1) DỊCH SÁT NGHĨA gốc, không bịa thêm thắt, không bỏ sót ý; ` +
+      `(2) giữ nguyên tên riêng, địa danh, số liệu; (3) tự nhiên như lồng tiếng. ` +
+      `Đừng so sánh độ dài — stage sau sẽ tự căn chỉnh thời lượng.\n\n${lines}\n\n` +
       `Trả về DUY NHẤT JSON: {"segments":[{"index":int,"translation":string}]}`
 
-    const res = await tracked(
-      { projectId: project.id, jobId: job.id, provider: llm.id, type: 'llm' },
-      () => llm.provider.complete({ system, prompt, json: true, temperature: 0.4 })
-    )
-
-    const parsed = extractJsonBlock(res.text) || {}
+    // Gọi LLM, thử lại 1 lần nếu parse không ra bản dịch nào (docs/05 §B.4).
+    const parsed = await translateGroup(llm, system, prompt, job, project.id)
     const list = Array.isArray(parsed.segments) ? parsed.segments : []
     const map = new Map()
     for (const item of list) {
       if (item && Number.isInteger(item.index) && typeof item.translation === 'string') {
-        map.set(item.index, item.translation.trim())
+        const t = item.translation.trim()
+        // Bỏ qua bản dịch rỗng hoặc trùng nguyên gốc (LLM không dịch được)
+        if (t && !group.find((s) => s.index_num === item.index && t === s.text)) {
+          map.set(item.index, t)
+        }
       }
     }
 
     for (const seg of group) {
-      let translation = map.get(seg.index_num)
+      const translation = map.get(seg.index_num)
       if (!translation) continue
-      // Ràng buộc độ dài (docs/05 §B.4): dài quá → yêu cầu rút gọn đúng 1 lần
-      if (seg.text && translation.length > seg.text.length * LENGTH_RATIO_MAX) {
-        translation = await shortenOnce(llm, system, seg.text, translation, job, project.id)
-      }
       await updateById('transcript_segments', seg.id, { translation })
       translations.set(seg.id, translation)
       translated++
@@ -111,24 +108,39 @@ async function writeSrt(project, cues) {
   })
 }
 
-async function shortenOnce(llm, system, originalText, tooLongTranslation, job, projectId) {
-  try {
-    const res = await tracked(
-      { jobId: job.id, provider: llm.id, type: 'llm' },
-      () => llm.provider.complete({
-        system,
-        prompt:
-          `Bản dịch sau dài hơn bản gốc "${originalText}" quá nhiều. ` +
-          `Hãy rút gọn còn ngắn tương đương bản gốc nhưng vẫn giữ ý chính:\n"${tooLongTranslation}"\n` +
-          `Trả về DUY NHẤT chuỗi bản dịch đã rút gọn, không giải thích.`,
-        temperature: 0.3,
-        maxOutputTokens: 300,
-      })
+// Gọi LLM dịch 1 nhóm, parse JSON bền vững (bỏ code fence ```json), thử lại 1 lần
+// nếu không ra bản dịch nào (docs/05 §B.4).
+async function translateGroup(llm, system, prompt, job, projectId) {
+  const call = (p) =>
+    tracked(
+      { projectId, jobId: job.id, provider: llm.id, type: 'llm' },
+      () => llm.provider.complete({ system, prompt: p, json: true, temperature: 0.4 })
     )
-    const cleaned = res.text.replace(/^["'\s]+|["'\s]+$/g, '')
-    return cleaned.length <= tooLongTranslation.length ? cleaned : tooLongTranslation
+
+  const sanitize = (text) =>
+    String(text || '')
+      .replace(/^[\s\S]*?```(?:json)?\s*/i, '')
+      .replace(/```[\s\S]*$/, '')
+      .trim()
+
+  const tryParse = (res) => {
+    const parsed = extractJsonBlock(sanitize(res.text)) || {}
+    const list = Array.isArray(parsed.segments) ? parsed.segments : []
+    return list.length ? parsed : null
+  }
+
+  const first = await call(prompt)
+  const ok = tryParse(first)
+  if (ok) return ok
+
+  // Retry 1 lần với nhắc rõ ràng hơn
+  try {
+    const retry = await call(
+      prompt + '\n\nLƯU Ý: trả về ĐÚNG định dạng JSON duy nhất, không thêm văn bản bên ngoài.'
+    )
+    return tryParse(retry) || { segments: [] }
   } catch (_) {
-    return tooLongTranslation
+    return { segments: [] }
   }
 }
 
