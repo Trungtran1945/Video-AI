@@ -135,7 +135,7 @@ Xem chi tiết `07_MODULE_FFMPEG.md`. Tóm tắt:
 # B. MODE TRANSLATE_DUB — Dịch thuật & Lồng tiếng
 
 Biến một video nước ngoài (có phụ đề cứng/hardsub) thành bản tiếng Việt: dịch phụ đề theo phong cách
-tuỳ chọn (12 StylePreset) và **(tuỳ chọn)** lồng tiếng AI, giữ nguyên hình ảnh gốc.
+tuỳ chọn (13 StylePreset) và **(tuỳ chọn)** lồng tiếng AI, giữ nguyên hình ảnh gốc.
 
 ## B.0. Tổng quan stage
 
@@ -177,11 +177,11 @@ Stage `translate` chỉ chạy khi cả hai xong: dịch dựa trên transcript,
   (vị trí phụ đề phổ biến).
 - User có thể chỉnh/tạo thêm region trên Canvas (`source='MANUAL'`) trước render.
 
-## B.4. Stage: translate (LLM + 12 StylePreset)
+## B.4. Stage: translate (LLM + 13 StylePreset)
 
 - **Context window**: gom nhóm TranscriptSegment (~10 câu / ~30 giây) gửi LLM một lần để bản dịch
   mạch lạc, không mất ngữ cảnh giữa chừng; giữ glossary tên riêng nhất quán toàn video.
-- **Routing 12 phong cách**: `StylePreset.systemPrompt` được inject vào System Prompt → AI điều chỉnh
+- **Routing 13 phong cách**: `StylePreset.systemPrompt` được inject vào System Prompt → AI điều chỉnh
   văn phong, đại từ nhân xưng và slang:
 
 | slug | Phong cách | Đặc trưng văn phong |
@@ -198,6 +198,7 @@ Stage `translate` chỉ chạy khi cả hai xong: dịch dựa trên transcript,
 | the-thao | Thể thao | sôi động, cảm thán |
 | cong-nghe | Công nghệ | chính xác thuật ngữ kỹ thuật |
 | tre-em | Thiếu nhi / gia đình | đơn giản, dễ hiểu |
+| sat-nghia | Sát nghĩa (Nguyên gốc) | dịch sát nguyên gốc, giữ nguyên cấu trúc câu, không thêm bớt ý |
 
 - **Ràng buộc output**: trả JSON `{ "segments": [{ "index", "translation" }] }`; độ dài bản dịch
   ≈ bản gốc (±20%) để không vỡ forced alignment ở stage sau.
@@ -262,7 +263,7 @@ method theo `params.maskMethod`:
 | Nguồn | 1 phim (cắt cảnh dựng review) | 1 video nước ngoài (giữ nguyên hình ảnh gốc) |
 | Nhánh AI | ASR + Vision + LLM viết kịch bản | ASR ‖ OCR song song + LLM dịch |
 | Đồng bộ | Align giọng ↔ cảnh (pack scene theo D) | Forced align dub ↔ slot timestamp gốc |
-| Văn phong | tone tự do từ user | 1 trong 12 StylePreset cố định |
+| Văn phong | tone tự do từ user | 1 trong 13 StylePreset cố định |
 | Che/b đè chữ | Không | Mask hardsub (blur/fill/inpaint) + burn-in sub mới |
 | TimelineClip | Có (ghép cảnh) | Không (render theo cue + OcrRegion) |
 | Độ dài đầu ra | 20–30 phút | Bằng đúng duration video gốc |

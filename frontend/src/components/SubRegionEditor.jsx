@@ -18,10 +18,13 @@ export default function SubRegionEditor({ videoUrl, regions = [], onChange, onSa
 
   const selected = regions.find((r) => r.id === selectedId) || null;
 
+  // Luôn gắn listener trên window; chỉ xử lý khi đang kéo (drag.current != null).
+  // (Trước đây effect early-return nếu drag.current rỗng — mà ref thay đổi không
+  // trigger re-render nên listener không bao giờ được gắn → không kéo/thả được.)
   useEffect(() => {
-    if (!drag.current) return undefined;
     const onMove = (e) => {
       const d = drag.current;
+      if (!d) return;
       const box = wrapRef.current?.getBoundingClientRect();
       if (!box || !videoSize) return;
       const scaleX = videoSize.w / box.width;

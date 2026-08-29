@@ -86,7 +86,7 @@ Wizard 2 mode khác nhau:
 1. **Chọn mode** = TRANSLATE_DUB.
 2. **Upload video** (≤ 2GB) — resumable, hiện % chunk đã nhận; rớt mạng resume không mất.
 3. **Ngôn ngữ**: nguồn (auto-detect hoặc chọn) → đích (mặc định tiếng Việt).
-4. **Phong cách dịch**: chọn 1 trong 12 StylePreset (card có mô tả + ví dụ văn phong).
+4. **Phong cách dịch**: chọn 1 trong 13 StylePreset (card có mô tả + ví dụ văn phong).
 5. **Lồng tiếng AI** (toggle): bật → chọn voice provider + giọng; tắt → chỉ thay phụ đề.
 6. **Nâng cao** (tuỳ chọn): method che chữ `blur`/`fill`/`inpaint`, vị trí phụ đề mới.
 7. **Generate** → start pipeline; theo dõi tiến trình realtime bằng SSE.

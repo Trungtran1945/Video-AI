@@ -125,6 +125,33 @@ export function sequenceSegments(segments) {
 }
 
 /**
+ * Neo mỗi đoạn giọng vào đúng start_sec gốc của câu (timeline video nguồn) và
+ * chặp thời lượng sao cho không chồng vào đoạn kế — KHÔNG dịch startAt về sau.
+ *
+ * Đây là phiên bản thay thế cho sequenceSegments trong dub.ttsAlign: giữ giọng
+ * đọc khớp tuyệt đối với thời điểm nhân vật nói trên video, triệt tiêu lệch
+ * (chạy trễ) cộng dồn trong hội thoại dày đặc.
+ *
+ * @param {Array<{startSec:number,endSec:number,effectiveDurSec:number}>} segments
+ * @returns {Array<{startAtSec:number, endAtSec:number, clipped:boolean}>}
+ */
+export function placeSegments(segments) {
+  const out = []
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]
+    const startAt = Number(seg.startSec) || 0
+    const slotDur = Math.max(0.2, (Number(seg.endSec) || 0) - startAt)
+    const nextStart = i + 1 < segments.length ? Number(segments[i + 1].startSec) : Infinity
+    // Thời lượng tối đa: vừa đủ lấp slot, nhưng không vượt quá start đoạn kế
+    let dur = Math.min(Number(seg.effectiveDurSec) || 0, slotDur)
+    if (startAt + dur > nextStart) dur = Math.max(0, nextStart - startAt)
+    const clipped = dur < (Number(seg.effectiveDurSec) || 0) - 1e-3
+    out.push({ startAtSec: round3(startAt), endAtSec: round3(startAt + Math.max(0, dur)), clipped })
+  }
+  return out
+}
+
+/**
  * Invariant check (docs/05): tổng lệch biên mỗi segment < 5% slot và
  * không có cặp nào chồng nhau quá MAX_OVERLAP.
  */

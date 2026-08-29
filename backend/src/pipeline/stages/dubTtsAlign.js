@@ -11,7 +11,7 @@ import { tracked } from '../../providers/tracked.js'
 import {
   projectDir, ensureDir, round3, clamp,
 } from '../context.js'
-import { fitSegment, sequenceSegments } from '../forcedAlignService.js'
+import { fitSegment, placeSegments } from '../forcedAlignService.js'
 
 // dub.ttsAlign (docs/05 §B.5 — KHÓ NHẤT): TTS + Forced Alignment ép khớp slot gốc.
 export async function dubTtsAlign(ctx) {
@@ -97,8 +97,13 @@ export async function dubTtsAlign(ctx) {
     setProgress(3 + Math.round(((i + 1) / segments.length) * 82))
   }
 
-  // Không cho chồng tiếng (docs/05 §B.5 invariant) — co biên khi tràn
-  const sequenced = sequenceSegments(
+  // Không cho chồng tiếng (docs/05 §B.5 invariant) — nhưng QUAN TRỌNG: neo mỗi
+  // đoạn giọng vào đúng start_sec gốc (timeline video nguồn), KHÔNG dùng
+  // sequenceSegments dịch startAt về sau khi gặp đoạn chồng lấp. Việc dịch này
+  // gây lệch (chạy trễ) và cộng dồn theo thời gian trong hội thoại dày đặc.
+  // Thay vào đó: startAt = start_sec gốc; effectiveDur bị chặp lại vừa đủ lấp
+  // slot [start_sec, end_sec] (hoặc đến start_sec đoạn kế) để không chồng tiếng.
+  const sequenced = placeSegments(
     fitted.map((f, i) => ({
       startSec: Number(segments[i].start_sec),
       endSec: Number(segments[i].end_sec),

@@ -85,7 +85,7 @@ Video nước ngoài (hardsub, ≤ 2GB)
    ▼  [ingest]        resumable upload → demux (audio/video) → normalize LUFS
    ├──▶ [stt]         ASR → transcript(timestamp, speaker)      ┐ SONG SONG
    └──▶ [ocr]         frame sampling 1–2fps → OCR → OcrRegion[] ┘ (hardsub bbox)
-   ▼  [translate]     LLM + StylePreset(12 phong cách) → bản dịch khớp context window
+   ▼  [translate]     LLM + StylePreset(13 phong cách) → bản dịch khớp context window
    ▼  [ttsAlign?]     TTS + Forced Alignment khớp slot gốc (tuỳ chọn enableDubbing)
    ▼  [composite]     mask hardsub (blur/fill/inpaint) → burn-in sub mới
                       → audio mix (dub voice + nền) → mux MP4/MKV (NVENC)

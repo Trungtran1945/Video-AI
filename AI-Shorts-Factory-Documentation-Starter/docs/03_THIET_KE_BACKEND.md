@@ -125,7 +125,7 @@ export const CreateTranslateDubSchema = z.object({
   title: z.string().min(3),
   sourceLanguage: z.enum(['auto', 'en', 'ja', 'ko', 'zh']).default('auto'),
   targetLanguage: z.enum(['vi', 'en']).default('vi'),
-  stylePreset: z.string(),            // slug của 1 trong 12 StylePreset
+  stylePreset: z.string(),            // slug của 1 trong 13 StylePreset
   enableDubbing: z.boolean().default(false),
   voiceId: z.string().optional(),     // bắt buộc khi enableDubbing
   maskMethod: z.enum(['blur', 'fill', 'inpaint']).default('fill'),

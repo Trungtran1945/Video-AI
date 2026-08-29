@@ -37,7 +37,7 @@ Base URL: `/api/v1`.
   "title": "Việt hoá anime short",
   "sourceLanguage": "auto",
   "targetLanguage": "vi",
-  "stylePreset": "bat-trend",            // slug của 1 trong 12 StylePreset
+  "stylePreset": "bat-trend",            // slug của 1 trong 13 StylePreset
   "enableDubbing": true,
   "voiceId": "vi-female-1",
   "maskMethod": "fill",                  // 'blur' | 'fill' | 'inpaint'
@@ -80,7 +80,7 @@ Base URL: `/api/v1`.
 | --- | --- | --- |
 | POST | `/projects/:id/summary/start` | bắt đầu pipeline SUMMARY |
 | POST | `/projects/:id/translate-dub/start` | bắt đầu pipeline TRANSLATE_DUB (enqueue dub.stt ‖ dub.ocr song song) |
-| GET | `/style-presets` | danh mục 12 phong cách dịch (slug, name, description) |
+| GET | `/style-presets` | danh mục 13 phong cách dịch (slug, name, description) |
 | GET | `/projects/:id/jobs` | trạng thái từng stage (`GenerationJob`) |
 | POST | `/projects/:id/jobs/:type/retry` | retry thủ công 1 stage |
 

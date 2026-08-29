@@ -22,7 +22,7 @@ User 1──* Project 1──* Asset
 
 User 1──* ApiKey
 User 1──1 Settings
-StylePreset (bảng dùng chung, seed 12 phong cách)
+StylePreset (bảng dùng chung, seed 13 phong cách)
 Project 1──* ProviderLog
 GenerationJob 1──* ProviderLog
 ```
@@ -199,7 +199,7 @@ model OcrRegion {          // TRANSLATE_DUB: vùng hardsub cần che/burn-in đ�
   project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }
 
-model StylePreset {        // 12 phong cách dịch, seed hệ thống
+model StylePreset {        // 13 phong cách dịch, seed hệ thống
   id           String  @id @default(uuid())
   slug         String  @unique // 'co-trang', 'bat-trend', 'review-phim'...
   name         String
@@ -314,7 +314,7 @@ Backend MVP chạy bằng sql.js (SQLite) thay vì Prisma; schema SQL mirror 1-1
 | Project hoàn thành dùng status `'completed'` | Ngoài enum `JobStatus` ở trên | Frontend lọc `'completed'`; khi migrate cân nhắc thêm giá trị này vào enum hoặc đổi sang `SUCCESS` |
 | Project lưu song song `_id` + `_key` | `sourceVideoId` tham chiếu Asset (mục 2), đồng thời giữ `source_video_key` vì API (`06`) nhận/trả storage key | Tương thích API hiện tại và tham chiếu chuẩn theo mục 2 |
 | Mode `TRANSLATE_DUB` lưu `'translate_dub'` | Giá trị mode lowercase có gạch dưới, thay cho `'style_edit'` cũ | Nhất quán với quy ước enum lowercase ở trên |
-| Bảng mới mirror 1-1 | `transcript_segments`, `ocr_regions`, `style_presets` (seed 12 preset khi migrate) | Đảm bảo schema MVP khớp thiết kế Prisma |
+| Bảng mới mirror 1-1 | `transcript_segments`, `ocr_regions`, `style_presets` (seed 13 preset khi migrate) | Đảm bảo schema MVP khớp thiết kế Prisma |
 | Bảng mở rộng `reset_tokens` | Flow quên mật khẩu (email + token + expires) | Không có trong schema gốc; xoá nếu bỏ flow forgot-password |
 | Xoá project | `provider_logs.project_id` đặt `NULL` (không xoá log); `youtube_uploads` dọn qua join `outputs`; các bảng con còn lại xoá trực tiếp | Đúng quyết định "ProviderLog độc lập"; FK cascade chỉ áp dụng cho bảng tạo mới |
-| Seed | Admin mặc định từ env `ADMIN_EMAIL`/`ADMIN_PASSWORD` (fallback dev) + row `settings` + 12 `style_presets` | Tương đương `prisma db seed` |
+| Seed | Admin mặc định từ env `ADMIN_EMAIL`/`ADMIN_PASSWORD` (fallback dev) + row `settings` + 13 `style_presets` | Tương đương `prisma db seed` |

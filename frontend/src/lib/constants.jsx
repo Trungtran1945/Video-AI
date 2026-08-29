@@ -80,6 +80,7 @@ export const STATUS_LABELS = {
     { slug: 'the-thao', name: 'Thể thao', description: 'Sôi động, cảm thán' },
     { slug: 'cong-nghe', name: 'Công nghệ', description: 'Chính xác thuật ngữ kỹ thuật' },
     { slug: 'tre-em', name: 'Thiếu nhi / gia đình', description: 'Đơn giản, dễ hiểu' },
+    { slug: 'sat-nghia', name: 'Sát nghĩa (Nguyên gốc)', description: 'Dịch sát nguyên gốc, giữ nguyên cấu trúc' },
   ];
 
   export const LANGUAGE_LABELS = {

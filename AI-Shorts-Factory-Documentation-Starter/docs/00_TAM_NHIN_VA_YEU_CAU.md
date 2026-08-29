@@ -32,7 +32,7 @@ Hệ thống phục vụ hai nhóm use-case:
 - Upload phim (SUMMARY) / video cần Việt hoá ≤ 2GB (TRANSLATE_DUB) qua dashboard,
   dùng **resumable upload** (chunk 5–10MB, kiểu TUS) chống rớt mạng.
 - Pipeline AI tự động: SUMMARY — transcribe, scene-detect, script review, align, TTS, subtitle,
-  render; TRANSLATE_DUB — STT & OCR hardsub **song song**, dịch LLM theo 12 phong cách,
+  render; TRANSLATE_DUB — STT & OCR hardsub **song song**, dịch LLM theo 13 phong cách,
   TTS + forced alignment (tuỳ chọn), masking/inpainting, burn-in, audio mix, mux.
 - Dashboard theo dõi tiến trình **real-time qua SSE**, xem kết quả, quản lý provider/API key.
 - Trình chỉnh vùng che chữ (khoanh vùng hardsub) trực tiếp trên trình duyệt (Canvas API).
@@ -80,7 +80,7 @@ Hệ thống phục vụ hai nhóm use-case:
 | FR-T2 | Demux FFmpeg: tách audio/video; chuẩn hoá âm lượng LUFS cho STT |
 | FR-T3 | STT: transcript + word timestamps + speaker diarization (nhiều nhân vật) |
 | FR-T4 | OCR hardsub: frame sampling 1–2 fps → bounding box + text gốc theo từng mốc thời gian |
-| FR-T5 | Dịch LLM gom theo context window, routing 1 trong 12 StylePreset (văn phong/xưng hô/slang) |
+| FR-T5 | Dịch LLM gom theo context window, routing 1 trong 13 StylePreset (văn phong/xưng hô/slang) |
 | FR-T6 | Sinh phụ đề đích (SRT/VTT/ASS) đồng bộ timestamp gốc |
 | FR-T7 | (Tuỳ chọn) TTS lồng tiếng + forced alignment khớp slot thời gian gốc |
 | FR-T8 | Che phụ đề gốc: blur / fill màu nền / AI inpainting theo bounding box |
@@ -123,7 +123,7 @@ Hệ thống phục vụ hai nhóm use-case:
 - **TranscriptSegment:** một câu/đoạn thoại do STT nhận dạng, có start/end, text và speaker.
 - **OcrRegion:** vùng chữ hardsub `{x, y, width, height}` tồn tại trong khoảng `[startSec, endSec]`,
   do OCR tự phát hiện hoặc user khoanh vùng tay trên Canvas.
-- **StylePreset:** 1 trong 12 phong cách dịch định nghĩa trước (system prompt + mô tả), quyết định
+- **StylePreset:** 1 trong 13 phong cách dịch định nghĩa trước (system prompt + mô tả), quyết định
   văn phong/xưng hô của bản dịch.
 - **Forced Alignment:** ép khớp thời lượng giọng TTS vào slot thời gian của câu gốc
   (tempo stretching / chèn lặng / rút gọn câu).

@@ -21,7 +21,7 @@ Dựa trên thiết kế tại [`01_KIEN_TRUC_TONG_THE.md`](01_KIEN_TRUC_TONG_TH
 - [ ] `dub.stt` — ASR + word timestamps + speaker diarization.
 - [ ] `dub.ocr` — frame sampling 1–2 fps → OCR → merge OcrRegion (IoU theo thời gian).
 - [ ] Chạy song song `dub.stt` ‖ `dub.ocr` trong TranslateDubPipeline.
-- [ ] `dub.translate` — LLM context window + 12 StylePreset routing.
+- [ ] `dub.translate` — LLM context window + 13 StylePreset routing.
 - [ ] `dub.ttsAlign` — TTS (tuỳ chọn) + ForcedAlignService (tempo/pause/rút gọn).
 - [ ] `dub.render` — mask hardsub (blur/fill/inpaint) → burn-in ASS → audio mix → mux NVENC.
 - [ ] SSE progress realtime (`/projects/:id/events`) + SubRegionEditor Canvas.
