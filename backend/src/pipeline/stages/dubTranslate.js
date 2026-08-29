@@ -47,18 +47,26 @@ export async function dubTranslate(ctx) {
       `Đừng so sánh độ dài — stage sau sẽ tự căn chỉnh thời lượng.\n\n${lines}\n\n` +
       `Trả về DUY NHẤT JSON: {"segments":[{"index":int,"translation":string}]}`
 
-    // Gọi LLM, thử lại 1 lần nếu parse không ra bản dịch nào (docs/05 §B.4).
-    const parsed = await translateGroup(llm, system, prompt, job, project.id)
-    const list = Array.isArray(parsed.segments) ? parsed.segments : []
+    // Ước lượng maxOutputTokens theo dung lượng nhóm để tránh JSON bị cắt ngắn
+    // (nguyên nhân "chỉ dịch được vài câu"). 1 ký tự ~1 token, nhân hệ số an toàn.
+    const estTokens = group.reduce((n, s) => n + Math.max(8, Math.ceil((s.text || '').length * 2.5)), 0) + 256
+    const maxOutputTokens = Math.min(65536, Math.max(1024, Math.ceil(estTokens * 1.5)))
+    // Chỉ yêu cầu dịch những câu có nội dung (bỏ qua câu rỗng).
+    const requiredIndexes = group.filter((s) => s.text && s.text.trim()).map((s) => s.index_num)
+
+    // Gọi LLM, tự động bù các index bị thiếu (docs/05 §B.4).
+    const collected = await translateGroup(llm, system, prompt, job, project.id, {
+      requiredIndexes,
+      maxOutputTokens,
+    })
+
     const map = new Map()
-    for (const item of list) {
-      if (item && Number.isInteger(item.index) && typeof item.translation === 'string') {
-        const t = item.translation.trim()
-        // Bỏ qua bản dịch rỗng hoặc trùng nguyên gốc (LLM không dịch được)
-        if (t && !group.find((s) => s.index_num === item.index && t === s.text)) {
-          map.set(item.index, t)
-        }
-      }
+    for (const [idx, t] of collected) {
+      const seg = group.find((s) => s.index_num === idx)
+      if (!seg) continue
+      const tt = String(t).trim()
+      // Bỏ qua bản dịch rỗng hoặc trùng nguyên gốc (LLM không dịch được)
+      if (tt && tt !== (seg.text || '').trim()) map.set(idx, tt)
     }
 
     for (const seg of group) {
@@ -108,13 +116,15 @@ async function writeSrt(project, cues) {
   })
 }
 
-// Gọi LLM dịch 1 nhóm, parse JSON bền vững (bỏ code fence ```json), thử lại 1 lần
-// nếu không ra bản dịch nào (docs/05 §B.4).
-async function translateGroup(llm, system, prompt, job, projectId) {
+// Gọi LLM dịch 1 nhóm, parse JSON bền vững (bỏ code fence ```json), và tự động
+// bù các index bị thiếu (JSON bị cắt ngắn do truncation → chỉ trả về vài câu đầu).
+// Trả về Map(index_num → bản dịch). docs/05 §B.4.
+export async function translateGroup(llm, system, prompt, job, projectId, opts = {}) {
+  const { requiredIndexes = null, maxOutputTokens = null } = opts
   const call = (p) =>
     tracked(
       { projectId, jobId: job.id, provider: llm.id, type: 'llm' },
-      () => llm.provider.complete({ system, prompt: p, json: true, temperature: 0.4 })
+      () => llm.provider.complete({ system, prompt: p, json: true, temperature: 0.4, maxOutputTokens })
     )
 
   const sanitize = (text) =>
@@ -123,25 +133,36 @@ async function translateGroup(llm, system, prompt, job, projectId) {
       .replace(/```[\s\S]*$/, '')
       .trim()
 
-  const tryParse = (res) => {
+  const parseToMap = (res) => {
     const parsed = extractJsonBlock(sanitize(res.text)) || {}
     const list = Array.isArray(parsed.segments) ? parsed.segments : []
-    return list.length ? parsed : null
+    const m = new Map()
+    for (const item of list) {
+      if (item && Number.isInteger(item.index) && typeof item.translation === 'string') {
+        const t = item.translation.trim()
+        if (t) m.set(item.index, t)
+      }
+    }
+    return m
   }
 
-  const first = await call(prompt)
-  const ok = tryParse(first)
-  if (ok) return ok
-
-  // Retry 1 lần với nhắc rõ ràng hơn
-  try {
-    const retry = await call(
-      prompt + '\n\nLƯU Ý: trả về ĐÚNG định dạng JSON duy nhất, không thêm văn bản bên ngoài.'
-    )
-    return tryParse(retry) || { segments: [] }
-  } catch (_) {
-    return { segments: [] }
+  const collected = new Map()
+  const MAX_ATTEMPTS = 3
+  let attempt = 0
+  while (attempt < MAX_ATTEMPTS) {
+    let p = prompt
+    if (attempt > 0) {
+      const missingNow = requiredIndexes.filter((i) => !collected.has(i))
+      p = `${prompt}\n\nLƯU Ý: trả về ĐÚNG định dạng JSON. Các index SAU CHƯA được dịch (bắt buộc phải có đủ): ${missingNow.join(', ')}.`
+    }
+    const m = parseToMap(await call(p))
+    for (const [idx, t] of m) if (!collected.has(idx)) collected.set(idx, t)
+    if (!requiredIndexes) break
+    const missingIndexes = requiredIndexes.filter((i) => !collected.has(i))
+    if (!missingIndexes.length) break
+    attempt++
   }
+  return collected
 }
 
 function buildSystemPrompt(preset, targetLanguage) {

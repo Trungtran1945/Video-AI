@@ -27,6 +27,16 @@ const region = {
   width: Math.round(VW * 0.90),
   height: Math.round(VH * 0.15),
 }
+// Vùng phụ đề thứ 2, vị trí khác (tái hiện pipeline ≥2 vùng — từng gây lỗi
+// double bracket [[ov0]] ở maskRegions method='blur').
+const region2 = {
+  start_sec: 0,
+  end_sec: 2,
+  x: Math.round(VW * 0.10),
+  y: Math.round(VH * 0.55),
+  width: Math.round(VW * 0.80),
+  height: Math.round(VH * 0.12),
+}
 
 function roiStats(file, x, y, w, h) {
   const raw = path.join(dir, 'roi.raw')
@@ -61,7 +71,7 @@ async function main() {
   ])
 
   // 2) Làm mờ vùng (maskMethod=blur) — tái hiện exactly pipeline gọi maskRegions
-  await maskRegions(SRC, [region], MASKED, { method: 'blur', videoDims: { width: VW, height: VH } })
+  await maskRegions(SRC, [region, region2], MASKED, { method: 'blur', videoDims: { width: VW, height: VH } })
 
   // 3) Chèn phụ đề dịch (ASS vẽ hình chữ nhật trắng, không cần font)
   fs.writeFileSync(ASS, [
@@ -87,19 +97,27 @@ async function main() {
   const maskedRoi = await roiStats(MASKED, region.x, region.y, region.width, region.height)
   const burnedRoi = await roiStats(BURNED, region.x, region.y, region.width, region.height)
 
+  const srcRoi2 = await roiStats(SRC, region2.x, region2.y, region2.width, region2.height)
+  const maskedRoi2 = await roiStats(MASKED, region2.x, region2.y, region2.width, region2.height)
+
   console.log('SRC  roi:', JSON.stringify(srcRoi))
   console.log('MASK roi:', JSON.stringify(maskedRoi))
   console.log('BURN roi:', JSON.stringify(burnedRoi))
+  console.log('SRC  roi2:', JSON.stringify(srcRoi2))
+  console.log('MASK roi2:', JSON.stringify(maskedRoi2))
 
   const blurOk = maskedRoi.std < srcRoi.std * 0.9
+  const blur2Ok = maskedRoi2.std < srcRoi2.std * 0.9
   const burnOk = burnedRoi.white > 0 && burnedRoi.white >= srcRoi.white
 
-  console.log('blur reduced variance :', blurOk, `(src=${srcRoi.std.toFixed(1)} -> masked=${maskedRoi.std.toFixed(1)})`)
+  console.log('blur reduced variance (vùng 1):', blurOk, `(src=${srcRoi.std.toFixed(1)} -> masked=${maskedRoi.std.toFixed(1)})`)
+  console.log('blur reduced variance (vùng 2):', blur2Ok, `(src=${srcRoi2.std.toFixed(1)} -> masked=${maskedRoi2.std.toFixed(1)})`)
   console.log('burn added white text :', burnOk, `(src white=${srcRoi.white}, burned white=${burnedRoi.white})`)
 
-  if (!blurOk) throw new Error('FAIL: blur không làm mờ vùng phụ đề')
+  if (!blurOk) throw new Error('FAIL: blur không làm mờ vùng phụ đề 1')
+  if (!blur2Ok) throw new Error('FAIL: blur không làm mờ vùng phụ đề 2 (lỗi double bracket [[ov0]])')
   if (!burnOk) throw new Error('FAIL: phụ đề dịch không được chèn')
-  console.log('\nPASS: maskRegions(blur) + burnSubtitlesStyled hoạt động đúng')
+  console.log('\nPASS: maskRegions(blur) + burnSubtitlesStyled hoạt động đúng (≥2 vùng)')
 }
 
 main().catch((e) => { console.error(e.message); process.exit(1) })

@@ -421,7 +421,7 @@ export async function maskRegions(src, regions, out, { method = 'fill', videoDim
       const radius = Math.max(1, Math.round(Math.min(bw, bh) / 6))
       filters.push(`[${prevLabel}]crop=${bw}:${bh}:${Math.round(r.x)}:${Math.round(r.y)},boxblur=luma_radius=${radius}:luma_power=2[b${i}]`)
       prevLabel = `ov${i}`
-      filters.push(`[${i === 0 ? '0:v' : `[ov${i - 1}]`}][b${i}]overlay=${Math.round(r.x)}:${Math.round(r.y)}:enable='between(t,${round2(r.start_sec)},${round2(r.end_sec)})'[${prevLabel}]`)
+      filters.push(`[${i === 0 ? '0:v' : `ov${i - 1}`}][b${i}]overlay=${Math.round(r.x)}:${Math.round(r.y)}:enable='between(t,${round2(r.start_sec)},${round2(r.end_sec)})'[${prevLabel}]`)
     })
     filters.push(`[${prevLabel}]setsar=1[vout]`)
     await ffmpeg([...inputs, '-filter_complex', filters.join(';'), '-map', '[vout]', '-an', ...(await encodeArgs()), '-movflags', '+faststart', out])

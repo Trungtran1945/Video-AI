@@ -1,6 +1,5 @@
 import fs from 'node:fs'
-
-const BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
+import { generateContent } from '../geminiClient.js'
 
 const DEFAULT_PROMPT =
   'Mô tả ngắn gọn cảnh này bằng tiếng Việt trong một câu (bối cảnh, nhân vật, hành động, không đoán tên thật).'
@@ -26,27 +25,12 @@ export class GeminiVision {
       ],
       generationConfig: { temperature: 0.4, maxOutputTokens: 200 },
     }
-    const res = await fetch(`${BASE}/${this.model}:generateContent?key=${encodeURIComponent(this.apiKey)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const json = await res.json().catch(() => null)
-    if (!res.ok) {
-      const message = json?.error?.message || `Gemini Vision HTTP ${res.status}`
-      throw new Error(`Vision (Gemini) lỗi: ${message}`)
-    }
-    const text = (json.candidates?.[0]?.content?.parts || [])
-      .map((p) => p.text || '')
-      .join('')
-      .trim()
+    const json = await generateContent({ model: this.model, apiKey: this.apiKey, body, label: 'Vision (Gemini)' })
+    const text = (json.text || '').trim()
     return {
       text,
       model: this.model,
-      usage: {
-        tokensIn: json.usageMetadata?.promptTokenCount ?? null,
-        tokensOut: json.usageMetadata?.candidatesTokenCount ?? null,
-      },
+      usage: json.usage,
     }
   }
 
@@ -75,17 +59,8 @@ export class GeminiVision {
       ],
       generationConfig: { temperature: 0.1, maxOutputTokens: 800, response_mime_type: 'application/json' },
     }
-    const res = await fetch(`${BASE}/${this.model}:generateContent?key=${encodeURIComponent(this.apiKey)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const json = await res.json().catch(() => null)
-    if (!res.ok) {
-      const message = json?.error?.message || `Gemini Vision HTTP ${res.status}`
-      throw new Error(`OCR (Gemini) lỗi: ${message}`)
-    }
-    const raw = (json.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim()
+    const json = await generateContent({ model: this.model, apiKey: this.apiKey, body, json: true, label: 'OCR (Gemini)' })
+    const raw = (json.text || '').trim()
     let parsed
     try {
       parsed = JSON.parse(raw)
@@ -108,10 +83,7 @@ export class GeminiVision {
         }))
         .filter((b) => b.width > 4 && b.height > 4),
       model: this.model,
-      usage: {
-        tokensIn: json.usageMetadata?.promptTokenCount ?? null,
-        tokensOut: json.usageMetadata?.candidatesTokenCount ?? null,
-      },
+      usage: json.usage,
     }
   }
 }
