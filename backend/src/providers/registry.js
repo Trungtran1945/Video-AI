@@ -8,6 +8,7 @@ import OpenAiTts from './tts/openaiTts.js'
 import EdgeTts from './tts/edgeTts.js'
 import GoogleTts from './tts/googleTts.js'
 import GeminiVision from './vision/geminiVision.js'
+import TesseractOcr from './vision/tesseractOcr.js'
 
 export class ProviderError extends Error {
   constructor(message, code = 'PROV_001') {
@@ -31,6 +32,7 @@ export const PROVIDER_LABELS = {
   google_tts: 'Google TTS',
   azure_speech: 'Azure Speech',
   clip: 'CLIP (local)',
+  tesseract: 'Tesseract (local, miễn phí)',
 }
 
 // Mỗi provider có thể có nhiều biến môi trường fallback (thử theo thứ tự).
@@ -46,8 +48,8 @@ const ENV_KEYS = {
   openai_tts: ['OPENAI_API_KEY'],
 }
 
-// Provider chạy không cần API key (Edge-TTS của Microsoft).
-const KEYLESS = new Set(['edge_tts', 'google_tts'])
+// Provider chạy không cần API key (Edge-TTS của Microsoft, Tesseract local).
+const KEYLESS = new Set(['edge_tts', 'google_tts', 'tesseract'])
 
 const REGISTRY = {
   llm: {
@@ -72,14 +74,15 @@ const REGISTRY = {
     gemini: (key) => new GeminiVision(key),
     clip: null,
   },
-  // OCR hardsub (docs/05 §B.3): dùng chung Gemini Vision, cùng key resolution.
+  // OCR hardsub (docs/05 §B.3): Gemini Vision (cần key) hoặc Tesseract local (keyless).
   ocr: {
     gemini: (key) => new GeminiVision(key),
+    tesseract: () => new TesseractOcr(),
     paddleocr: null,
   },
 }
 
-const DEFAULTS = { llm: 'gemini', asr: 'whisper', tts: 'edge_tts', vision: 'gemini', ocr: 'gemini' }
+const DEFAULTS = { llm: 'gemini', asr: 'whisper', tts: 'edge_tts', vision: 'gemini', ocr: 'tesseract' }
 
 const SETTINGS_COLUMN = {
   llm: ['active_llm_provider'],
@@ -134,6 +137,12 @@ export async function getProvider(userId, type, { id } = {}) {
   }
   const apiKey = await resolveApiKey(userId, providerId)
   if (!apiKey) {
+    // OCR: nếu provider yêu cầu key mà không có → tự động dùng Tesseract local
+    // (miễn phí, không key) thay vì báo lỗi, để pipeline vẫn chạy được.
+    if (type === 'ocr' && REGISTRY.ocr?.tesseract) {
+      console.warn(`[provider] ocr '${providerId}' thiếu API key — dùng Tesseract local`)
+      return { id: 'tesseract', provider: REGISTRY.ocr.tesseract(null) }
+    }
     throw new ProviderError(
       `Chưa cấu hình API key cho ${PROVIDER_LABELS[providerId] || providerId}. Thêm key tại trang API Keys (provider: ${providerId}) hoặc đặt biến môi trường ${(ENV_KEYS[providerId] || []).join(' / ')}`
     )

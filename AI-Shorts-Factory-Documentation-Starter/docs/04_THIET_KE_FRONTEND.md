@@ -88,7 +88,8 @@ Wizard 2 mode khác nhau:
 3. **Ngôn ngữ**: nguồn (auto-detect hoặc chọn) → đích (mặc định tiếng Việt).
 4. **Phong cách dịch**: chọn 1 trong 13 StylePreset (card có mô tả + ví dụ văn phong).
 5. **Lồng tiếng AI** (toggle): bật → chọn voice provider + giọng; tắt → chỉ thay phụ đề.
-6. **Nâng cao** (tuỳ chọn): method che chữ `blur`/`fill`/`inpaint`, vị trí phụ đề mới.
+6. **Nâng cao** (tuỳ chọn): method che chữ `blur`/`fill`/`inpaint` (inpaint là premium, xem `00`/`03`),
+   vị trí phụ đề mới (`Giữ nguyên` / `Top` / `Bottom` / `Custom`), và `maskStrength` mặc định.
 7. **Generate** → start pipeline; theo dõi tiến trình realtime bằng SSE.
 
 Wizard dùng `useWizard` (state machine đơn giản) + RHF mỗi bước; validate bằng Zod trước khi next.
@@ -102,6 +103,17 @@ khung hình preview:
 
 - Vẽ bằng **Canvas API** overlay trên `<video>` — user kéo/thêm/xoá/sửa bounding box
   (đặt đúng vùng hardsub mà OCR sót), đánh dấu `source='MANUAL'`.
+- **Tọa độ lưu theo TỶ LỆ %** (`ratioX/Y/W/H`, 0.0–1.0 so với kích thước video gốc) thay vì pixel
+  tuyệt đối → vùng che tự co giãn, không bị lệch khi render ở độ phân giải khác (xem `02` §2).
+- **Live preview hiệu ứng mask ngay trên player**: vùng được **làm mờ thực sự (blur)** + lớp phủ
+  mờ, không còn thấy rõ chữ gốc. Có **thanh kéo `maskStrength` (0–1)** cho vùng đang chọn để tăng/giảm
+  đồng thời bán kính blur và độ đục lớp phủ; giá trị lưu xuống `OcrRegion.maskStrength` để render khớp.
+- **"Áp dụng cho toàn bộ video"** (tick `isStatic`): cho hardsub tĩnh (logo, credit chạy suốt),
+  chỉ cần 1 record áp dụng từ `startSec=0` đến hết video — tránh sinh hàng chục region rời rạc.
+- **"Gộp vùng" (Merge Regions)**: hợp nhiều region nhỏ cùng hardsub thành 1 bbox bao trùm.
+- **Liên kết vị trí phụ đề mới**: khi user chọn che vùng hardsub, editor gợi ý/mặc định đặt phụ đề
+  dịch trùng khớp hoặc nằm ngay **trên** vùng đã mask (safe zone) để thẩm mỹ; user có thể đổi sang
+  "Giữ nguyên vị trí gốc" hoặc "Vị trí mới (Top/Bottom/Custom)" (xem `01` §3.2).
 - Preview từng region tại mốc thời gian: click region → player seek tới giữa `[startSec, endSec]`.
 - "Dùng mặc định AI" nếu không muốn chỉnh tay; PUT `/projects/:id/mask-regions` trước khi render.
 - Không phải editor timeline — chỉ chỉnh vùng chữ, giữ nguyên nguyên tắc tự động hoàn toàn.

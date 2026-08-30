@@ -64,8 +64,10 @@ Use-case gọi `resolveTts(settings.voiceProvider)` → **không biết** implem
 - `AlignService` — thuật toán đồng bộ giọng ↔ cảnh của SUMMARY (xem `05`).
 - `ForcedAlignService` — ép khớp thời lượng TTS vào slot timestamp gốc của TRANSLATE_DUB
   (tempo stretching / chèn lặng / yêu cầu rút gọn câu).
-- `SubtitleMaskService` — quản lý OcrRegion: merge bbox OCR, nhận region MANUAL từ Canvas,
-  chọn method blur/fill/inpaint.
+- `SubtitleMaskService` — quản lý OcrRegion: merge bbox OCR, nhận region MANUAL từ Canvas
+  (lưu `ratioX/Y/W/H` scale-invariant), chọn method `blur`/`fill`/`inpaint`, áp dụng `maskStrength`
+  (độ mờ: blur radius + độ đục lớp phủ), gộp hardsub tĩnh (`isStatic` → 1 record cho toàn video),
+  và tính vị trí phụ đề mới ưu tiên trùng/nằm ngay trên vùng đã mask (point 2, xem `01` §3.2).
 - `RenderService` — gọi `packages/media` sinh video.
 
 Ví dụ controller mỏng:
@@ -129,6 +131,11 @@ export const CreateTranslateDubSchema = z.object({
   enableDubbing: z.boolean().default(false),
   voiceId: z.string().optional(),     // bắt buộc khi enableDubbing
   maskMethod: z.enum(['blur', 'fill', 'inpaint']).default('fill'),
+  // ⚠️ inpaint là premium (gọi thêm Vision/Inpainting Provider, chậm & tốn cost);
+  // blur/fill là mặc định nhanh nhẹ (docs/00 FR-T8).
+  maskStrength: z.number().min(0).max(1).default(0.6), // độ mờ: blur radius + độ đục lớp phủ
+  subPosition: z.enum(['original', 'top', 'bottom', 'custom']).default('original'),
+  // 'original' = đè lên vùng mask; 'top'/'bottom' = safe zone; 'custom' = toạ độ riêng
   sourceVideoKey: z.string(),         // đã upload resumable xong
 });
 ```

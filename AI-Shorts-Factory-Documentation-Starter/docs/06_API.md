@@ -40,7 +40,9 @@ Base URL: `/api/v1`.
   "stylePreset": "bat-trend",            // slug của 1 trong 13 StylePreset
   "enableDubbing": true,
   "voiceId": "vi-female-1",
-  "maskMethod": "fill",                  // 'blur' | 'fill' | 'inpaint'
+  "maskMethod": "fill",                  // 'blur' | 'fill' | 'inpaint' (inpaint là premium)
+  "maskStrength": 0.6,                   // 0–1: blur radius + độ đục lớp phủ (thanh kéo editor)
+  "subPosition": "original",             // 'original' | 'top' | 'bottom' | 'custom'
   "sourceVideoKey": "uploads/short.mp4"
 }
 ```
@@ -51,6 +53,24 @@ Base URL: `/api/v1`.
 ### GET `/projects/:id/timeline` — `TimelineClip[]` (SUMMARY)
 ### GET `/projects/:id/transcript` — `TranscriptSegment[]` + bản dịch (TRANSLATE_DUB)
 ### GET/PUT `/projects/:id/mask-regions` — `OcrRegion[]`; PUT nhận region user chỉnh trên Canvas (`source='MANUAL'`)
+
+Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
+
+```jsonc
+{
+  "id": "uuid",
+  "startSec": 12.0, "endSec": 15.5,
+  "ratioX": 0.05, "ratioY": 0.80, "ratioW": 0.90, "ratioH": 0.15, // 0.0–1.0 so với kích thước video
+  "maskStrength": 0.6,   // 0–1: cường độ làm mờ (blur + độ đục lớp phủ)
+  "isStatic": false,      // true: hardsub tĩnh → áp dụng cho toàn bộ duration (1 record)
+  "text": "Original subtitle", "confidence": 0.91,
+  "source": "AUTO"        // 'AUTO' (OCR) | 'MANUAL' (user khoanh)
+}
+```
+
+- `GET` trả danh sách đã normalize (pixel cũ → ratio nếu DB còn bản ghi cũ).
+- `PUT` body `{ regions: [...] }` upsert theo `id`; region `id` mới (`tmp_...`) → thêm `MANUAL`;
+  `isStatic=true` → backend mở rộng `startSec=0, endSec=duration` khi render.
 ### POST `/projects/:id/regenerate` — chạy lại pipeline (từ stage lỗi hoặc đầu)
 
 ---

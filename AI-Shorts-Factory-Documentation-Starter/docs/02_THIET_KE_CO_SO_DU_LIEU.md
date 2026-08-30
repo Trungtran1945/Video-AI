@@ -185,18 +185,22 @@ model TranscriptSegment {  // TRANSLATE_DUB: 1 câu/đoạn thoại do STT nhậ
 }
 
 model OcrRegion {          // TRANSLATE_DUB: vùng hardsub cần che/burn-in đè lên
-  id         String   @id @default(uuid())
-  projectId  String
-  startSec   Float
-  endSec     Float
-  x          Int      // bounding box theo pixel khung hình
-  y          Int
-  width      Int
-  height     Int
-  text       String?  // text gốc OCR đọc được (phục vụ đối chiếu bản dịch)
-  confidence Float?
-  source     String   @default("AUTO") // 'AUTO' | 'MANUAL' (user khoanh trên Canvas)
-  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  id          String   @id @default(uuid())
+  projectId   String
+  startSec    Float
+  endSec      Float
+  // Tọa độ LƯU THEO TỶ LỆ (0.0–1.0) so với kích thước khung hình gốc → scale-invariant,
+  // không bị lệch khi render ở độ phân giải khác (4K nguồn → 1080p xuất, xem §1 lý do).
+  ratioX      Float    // 0.0–1.0 (tỷ lệ theo chiều rộng)
+  ratioY      Float    // 0.0–1.0 (tỷ lệ theo chiều cao)
+  ratioW      Float    // 0.0–1.0
+  ratioH      Float    // 0.0–1.0
+  maskStrength Float  @default(0.6)  // 0.0–1.0: cường độ làm mờ (blur radius) + độ đục lớp phủ
+  isStatic    Boolean  @default(false) // true: hardsub tĩnh → áp dụng cho toàn bộ duration (1 record)
+  text        String?  // text gốc OCR đọc được (phục vụ đối chiếu bản dịch)
+  confidence  Float?
+  source      String   @default("AUTO") // 'AUTO' | 'MANUAL' (user khoanh trên Canvas)
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }
 
 model StylePreset {        // 13 phong cách dịch, seed hệ thống
@@ -295,6 +299,9 @@ pnpm --filter @asf/database prisma db seed   # user admin mặc định, setting
 | --- | --- |
 | JSON cho `params/result/cues` | Linh hoạt, ít join, đủ với MVP |
 | `OcrRegion` là bảng riêng, không nhét JSON | User sửa/xoá từng region (MANUAL) và render truy vấn theo `[startSec, endSec]` |
+| `OcrRegion` lưu `ratioX/Y/W/H` (Float 0–1) thay vì pixel | Scale-invariant: vùng che không lệch khi nguồn 4K mà xuất 1080p; frontend lưu % và backend nhân `videoDims` khi render |
+| `OcrRegion.maskStrength` (0–1) | Điều khiển đồng thời bán kính blur và độ đục lớp phủ — 1 tham số duy nhất cho thanh kéo "độ mờ" trên editor |
+| `OcrRegion.isStatic` | Hardsub tĩnh (logo, credit) chỉ cần 1 record áp dụng cho toàn bộ video, tránh sinh hàng chục region rời rạc |
 | `StylePreset` bảng riêng + seed | Thêm/sửa phong cách dịch không cần deploy code |
 | `TimelineClip` chỉ SUMMARY | TRANSLATE_DUB render theo cue + OcrRegion, không dựng timeline |
 | `TranscriptSegment` giữ cả text gốc & dịch | Đối chiếu song ngữ, retry TTS không mất bản dịch |

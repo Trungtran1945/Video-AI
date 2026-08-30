@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { query, insert } from '../../db/query.js'
 import {
   maskRegions,
+  normalizeRegion,
   burnSubtitlesStyled,
   buildDubTrack,
   muxStream,
@@ -25,25 +26,25 @@ export async function dubRender(ctx) {
   const totalSec = round3(info.durationSec || project.target_duration_sec || 0)
 
   // ── 1. Mask hardsub theo OcrRegion (docs/05 §B.6) ─────────────────────
-  let regions = await query(
+  let regions = (await query(
     'SELECT * FROM ocr_regions WHERE project_id = ? ORDER BY start_sec ASC',
     [project.id]
-  )
+  )).map(normalizeRegion)
   // Mạng lưới an toàn: nếu người dùng yêu cầu che phụ đề (maskMethod) mà không có
   // vùng OCR nào (OCR bỏ sót hoặc stage chưa chạy), sinh vùng mặc định đáy khung
-  // hình để vừa làm mờ chữ gốc, vừa định vị phụ đề dịch thay thế. Áp dụng cả với
-  // các project đã completed trước khi dubOcr được sửa (không cần chạy lại OCR).
+  // hình (lưu TỶ LỆ, scale-invariant) để vừa làm mờ chữ gốc, vừa định vị phụ đề
+  // dịch thay thế. Áp dụng cả với các project đã completed trước khi dubOcr được sửa.
   const wantMask = params.maskMethod && params.maskMethod !== 'none'
   if (wantMask && !regions.length) {
-    const vw = info.width || 1280
-    const vh = info.height || 720
     regions = [{
-      start_sec: 0,
-      end_sec: round3(totalSec),
-      x: Math.round(vw * 0.05),
-      y: Math.round(vh * 0.80),
-      width: Math.round(vw * 0.90),
-      height: Math.round(vh * 0.15),
+      startSec: 0,
+      endSec: round3(totalSec),
+      ratioX: 0.05,
+      ratioY: 0.80,
+      ratioW: 0.90,
+      ratioH: 0.15,
+      maskStrength: 0.6,
+      isStatic: false,
       source: 'AUTO_DEFAULT',
     }]
   }
@@ -72,6 +73,7 @@ export async function dubRender(ctx) {
       width: info.width || 1280,
       height: info.height || 720,
       title: project.title,
+      subPosition: params.subPosition || 'original',
     })
     const burnedFile = path.join(dir, 'burned.mp4')
     await burnSubtitlesStyled(workingFile, assPath, burnedFile)
@@ -161,8 +163,9 @@ export async function dubRender(ctx) {
   }
 }
 
-// Sinh file ASS với Dialogue \pos định vị theo bbox hardsub tương ứng (docs/07 §2.14).
-function buildAss(dir, segments, regions, { width, height, title }) {
+// Sinh file ASS với Dialogue \pos định vị theo vùng mask (tính từ ratioX/Y/W/H).
+// subPosition: 'original' (đè lên vùng mask) | 'top' | 'bottom' | 'custom' (docs/01 §3.2).
+function buildAss(dir, segments, regions, { width, height, title, subPosition = 'original' }) {
   const header = [
     '[Script Info]',
     `Title: ${title || 'SubVideo AI dub'}`,
@@ -179,16 +182,31 @@ function buildAss(dir, segments, regions, { width, height, title }) {
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
   ].join('\n')
 
+  // Vị trí pixel từ tỷ lệ (scale-invariant): tâm ngang bbox, lệch lên trên 1 chút.
+  const centerOf = (r) => ({
+    cx: Math.round((Number(r.ratioX) + Number(r.ratioW) / 2) * width),
+    cy: Math.round((Number(r.ratioY) + Number(r.ratioH) * 0.72) * height),
+  })
   const lines = segments.map((seg) => {
     const region = pickRegion(regions, Number(seg.start_sec), Number(seg.end_sec))
     const text = escapeAssText(seg.translation)
     const end = alignEnd(seg, regions)
-    if (region) {
-      // Đặt giữa bbox cũ (docs/05 §B.7: phụ đề mới đè lên vị trí cũ)
-      const cx = Math.round(region.x + region.width / 2)
-      const cy = Math.round(region.y + region.height * 0.72)
+    if (region && subPosition === 'original') {
+      // Đè lên vùng mask cũ (docs/05 §B.7: phụ đề mới đè đúng chỗ hardsub gốc)
+      const { cx, cy } = centerOf(region)
       return `Dialogue: 0,${assTime(Number(seg.start_sec))},${assTime(end)},Dub,,0,0,0,,{\\an5\\pos(${cx},${cy})}${text}`
     }
+    if (subPosition === 'top') {
+      const cx = Math.round(width / 2)
+      const cy = Math.round(height * 0.12)
+      return `Dialogue: 0,${assTime(Number(seg.start_sec))},${assTime(end)},Dub,,0,0,0,,{\\an8\\pos(${cx},${cy})}${text}`
+    }
+    if (subPosition === 'bottom') {
+      const cx = Math.round(width / 2)
+      const cy = Math.round(height * 0.90)
+      return `Dialogue: 0,${assTime(Number(seg.start_sec))},${assTime(end)},Dub,,0,0,0,,{\\an2\\pos(${cx},${cy})}${text}`
+    }
+    // 'custom' (chưa có toạ độ riêng) hoặc không có region → mặc định đáy khung
     return `Dialogue: 0,${assTime(Number(seg.start_sec))},${assTime(end)},Dub,,0,0,0,,{\\an2}${text}`
   })
 

@@ -241,10 +241,12 @@ export async function initSchema() {
     project_id TEXT NOT NULL,
     start_sec REAL DEFAULT 0,
     end_sec REAL DEFAULT 0,
-    x INTEGER DEFAULT 0,
-    y INTEGER DEFAULT 0,
-    width INTEGER DEFAULT 0,
-    height INTEGER DEFAULT 0,
+    ratio_x REAL DEFAULT 0,  -- tọa độ TỶ LỆ (0..1) scale-invariant thay vì pixel
+    ratio_y REAL DEFAULT 0,
+    ratio_w REAL DEFAULT 0,
+    ratio_h REAL DEFAULT 0,
+    mask_strength REAL DEFAULT 0.6, -- 0..1: cường độ blur + độ đục lớp phủ
+    is_static INTEGER DEFAULT 0,    -- hardsub tĩnh: áp dụng cho toàn bộ video (1 record)
     text TEXT,
     confidence REAL,
     source TEXT DEFAULT 'AUTO'
@@ -291,6 +293,15 @@ export async function initSchema() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_transcript_segments_project ON transcript_segments(project_id, index_num)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_ocr_regions_project ON ocr_regions(project_id, start_sec)`)
+
+  // Migrate: thêm cột tỷ lệ / maskStrength / isStatic cho DB cũ (giữ nguyên cột pixel cũ nếu có).
+  const addCol = (t, c, def) => { try { db.run(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`) } catch (_) {} }
+  addCol('ocr_regions', 'ratio_x', 'REAL DEFAULT 0')
+  addCol('ocr_regions', 'ratio_y', 'REAL DEFAULT 0')
+  addCol('ocr_regions', 'ratio_w', 'REAL DEFAULT 0')
+  addCol('ocr_regions', 'ratio_h', 'REAL DEFAULT 0')
+  addCol('ocr_regions', 'mask_strength', 'REAL DEFAULT 0.6')
+  addCol('ocr_regions', 'is_static', 'INTEGER DEFAULT 0')
 
   save()
   console.log('[DB] Schema initialized (sql.js)')

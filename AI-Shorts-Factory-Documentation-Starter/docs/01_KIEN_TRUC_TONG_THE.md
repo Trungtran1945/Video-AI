@@ -87,9 +87,11 @@ Video nước ngoài (hardsub, ≤ 2GB)
    └──▶ [ocr]         frame sampling 1–2fps → OCR → OcrRegion[] ┘ (hardsub bbox)
    ▼  [translate]     LLM + StylePreset(13 phong cách) → bản dịch khớp context window
    ▼  [ttsAlign?]     TTS + Forced Alignment khớp slot gốc (tuỳ chọn enableDubbing)
-   ▼  [composite]     mask hardsub (blur/fill/inpaint) → burn-in sub mới
-                      → audio mix (dub voice + nền) → mux MP4/MKV (NVENC)
-   ▼  [upload?]       YouTube
+    ▼  [composite]     Xác định vị trí phụ đề mới (ưu tiên trùng khớp hoặc nằm ngay TRÊN
+                       vùng đã mask — safe zone; user chọn "Giữ nguyên" / "Top" / "Bottom" / "Custom")
+                       → mask hardsub (blur/fill/inpaint, dùng maskStrength) → burn-in sub mới
+                       → audio mix (dub voice + nền) → mux MP4/MKV (NVENC)
+    ▼  [upload?]       YouTube
 ```
 
 **Khác biệt cốt lõi:**
@@ -253,6 +255,8 @@ Mọi asset (phim nguồn, scene, audio, video, subtitle, output) lưu qua abstr
 | TTS trả `durationSec` chính xác | Làm Input cho `align`, tránh đoán thời lượng |
 | STT & OCR tách 2 job chạy song song | Độc lập dữ liệu → giảm latency tổng của TRANSLATE_DUB |
 | OCR trả region timeline (không phải bbox rời) | Mask & burn-in cần vùng ổn định theo `[startSec, endSec]` |
+| OcrRegion lưu `ratioX/Y/W/H` (0–1) + `maskStrength` + `isStatic` | Scale-invariant (không lệch giữa nguồn 4K và xuất 1080p); `maskStrength` 1 tham số cho thanh kéo "độ mờ"; `isStatic` gộp hardsub tĩnh thành 1 record |
+| Vị trí sub mới ưu tiên trùng/nằm trên vùng mask | Phụ đề dịch đè đúng chỗ hardsub gốc, thẩm mỹ & dễ đọc |
 | StylePreset lưu DB (không hardcode) | Thêm/sửa phong cách dịch không phải deploy lại code |
 | Job idempotent + DB mirror | Quan sát & tiếp tục từ stage lỗi |
 | Monorepo pnpm | Chia sẻ type/Zod giữa web & api, build nhất quán |

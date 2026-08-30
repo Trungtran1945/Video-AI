@@ -399,11 +399,61 @@ export async function sampleBackgroundColor(src, atSec, region, videoDims) {
   return `0x${hex(avg.r)}${hex(avg.g)}${hex(avg.b)}`
 }
 
+// Chuẩn hoá 1 row ocr_regions (DB cũ pixel hoặc mới ratio) → model ratio camelCase
+// dùng chung cho API (dubData) và render (dubRender). Xem docs/02 §2, docs/07 §2.13.
+export function normalizeRegion(row) {
+  const num = (v, fb = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fb }
+  const rx = num(row.ratio_x ?? row.ratioX)
+  const ry = num(row.ratio_y ?? row.ratioY)
+  const rw = num(row.ratio_w ?? row.ratioW)
+  const rh = num(row.ratio_h ?? row.ratioH)
+  return {
+    ...row,
+    id: row.id,
+    startSec: num(row.start_sec ?? row.startSec),
+    endSec: num(row.end_sec ?? row.endSec),
+    ratioX: rx,
+    ratioY: ry,
+    ratioW: rw,
+    ratioH: rh,
+    maskStrength: num(row.mask_strength ?? row.maskStrength ?? 0.6),
+    isStatic: !!(row.is_static ?? row.isStatic),
+    source: row.source || 'AUTO',
+    text: row.text ?? null,
+    confidence: num(row.confidence ?? null),
+  }
+}
+
+// Tính rect pixel (scale-invariant) từ ratio × videoDims.
+function regionRect(r, videoDims) {
+  const vw = videoDims?.width || 1280
+  const vh = videoDims?.height || 720
+  const x = Math.max(0, Math.round((Number(r.ratioX) || 0) * vw))
+  const y = Math.max(0, Math.round((Number(r.ratioY) || 0) * vh))
+  const w = Math.max(2, Math.round((Number(r.ratioW) || 0) * vw))
+  const h = Math.max(2, Math.round((Number(r.ratioH) || 0) * vh))
+  // Trả cả w/h và width/height (sampleBackgroundColor dùng width/height).
+  return { x, y, w, h, width: w, height: h }
+}
+
+function strengthOf(r) {
+  return clampNum(Number(r.maskStrength ?? 0.6), 0, 1)
+}
+
+// enable theo thời gian: isStatic → luôn bật ('1'); ngược lại between(t,start,end).
+function enableExpr(r) {
+  if (r.isStatic) return '1'
+  const s = round2(Number(r.startSec) || 0)
+  const e = round2(Number(r.endSec) || 0)
+  return `between(t,${s},${e})`
+}
+
 // Che vùng hardsub theo từng OcrRegion, chỉ bật trong khoảng thời gian của nó
 // (docs/07 §2.13). method: 'blur' | 'fill' | 'delogo'.
 export async function maskRegions(src, regions, out, { method = 'fill', videoDims } = {}) {
   ensureDir(out)
-  if (!regions.length) {
+  const norms = (regions || []).map(normalizeRegion)
+  if (!norms.length) {
     await ffmpeg(['-y', '-i', src, '-an', '-c', 'copy', '-movflags', '+faststart', out])
     return out
   }
@@ -413,15 +463,13 @@ export async function maskRegions(src, regions, out, { method = 'fill', videoDim
     const inputs = ['-i', src]
     const filters = []
     let prevLabel = '0:v'
-    regions.forEach((r, i) => {
-      const bw = Math.max(2, Math.round(r.width))
-      const bh = Math.max(2, Math.round(r.height))
-      // Tính radius bằng JS (không dùng biểu thức min(h,w) trong filter vì dấu phẩy
-      // sẽ phá cú pháp filtergraph ffmpeg → lỗi "No option name near ...").
-      const radius = Math.max(1, Math.round(Math.min(bw, bh) / 6))
-      filters.push(`[${prevLabel}]crop=${bw}:${bh}:${Math.round(r.x)}:${Math.round(r.y)},boxblur=luma_radius=${radius}:luma_power=2[b${i}]`)
+    norms.forEach((r, i) => {
+      const { x, y, w, h } = regionRect(r, videoDims)
+      // Bán kính tỷ lệ với maskStrength; tính bằng JS tránh biểu thức trong filtergraph.
+      const radius = Math.max(1, Math.round(strengthOf(r) * Math.min(w, h) / 4))
+      filters.push(`[${prevLabel}]crop=${w}:${h}:${x}:${y},boxblur=luma_radius=${radius}:luma_power=2[b${i}]`)
       prevLabel = `ov${i}`
-      filters.push(`[${i === 0 ? '0:v' : `ov${i - 1}`}][b${i}]overlay=${Math.round(r.x)}:${Math.round(r.y)}:enable='between(t,${round2(r.start_sec)},${round2(r.end_sec)})'[${prevLabel}]`)
+      filters.push(`[${i === 0 ? '0:v' : `ov${i - 1}`}][b${i}]overlay=${x}:${y}:enable='${enableExpr(r)}'[${prevLabel}]`)
     })
     filters.push(`[${prevLabel}]setsar=1[vout]`)
     await ffmpeg([...inputs, '-filter_complex', filters.join(';'), '-map', '[vout]', '-an', ...(await encodeArgs()), '-movflags', '+faststart', out])
@@ -429,21 +477,21 @@ export async function maskRegions(src, regions, out, { method = 'fill', videoDim
   }
 
   if (method === 'delogo') {
-    const chain = regions
-      .map((r) => `delogo=x=${Math.round(r.x)}:y=${Math.round(r.y)}:w=${Math.max(2, Math.round(r.width))}:h=${Math.max(2, Math.round(r.height))}:enable='between(t,${round2(r.start_sec)},${round2(r.end_sec)})'`)
+    const chain = norms
+      .map((r) => { const { x, y, w, h } = regionRect(r, videoDims); return `delogo=x=${x}:y=${y}:w=${w}:h=${h}:enable='${enableExpr(r)}'` })
       .concat('setsar=1')
       .join(',')
     await ffmpeg(['-y', '-i', src, '-vf', chain, '-an', ...(await encodeArgs()), '-movflags', '+faststart', out])
     return out
   }
 
-  // 'fill' — lấp màu nền sampling quanh bbox (mặc định, docs/05 §D)
+  // 'fill' — lấp màu nền sampling quanh bbox (mặc định, docs/05 §D). Độ đục theo maskStrength.
   const colors = []
-  for (const r of regions) {
-    colors.push(await sampleBackgroundColor(src, (r.start_sec + r.end_sec) / 2, r, videoDims))
+  for (const r of norms) {
+    colors.push(await sampleBackgroundColor(src, (Number(r.startSec) + Number(r.endSec)) / 2, regionRect(r, videoDims), videoDims))
   }
-  const chain = regions
-    .map((r, i) => `drawbox=x=${Math.round(r.x)}:y=${Math.round(r.y)}:w=${Math.max(2, Math.round(r.width))}:h=${Math.max(2, Math.round(r.height))}:color=${colors[i]}@1:t=fill:enable='between(t,${round2(r.start_sec)},${round2(r.end_sec)})'`)
+  const chain = norms
+    .map((r, i) => { const { x, y, w, h } = regionRect(r, videoDims); const op = (0.4 + strengthOf(r) * 0.6).toFixed(2); return `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${colors[i]}@${op}:t=fill:enable='${enableExpr(r)}'` })
     .concat('setsar=1')
     .join(',')
   await ffmpeg(['-y', '-i', src, '-vf', chain, '-an', ...(await encodeArgs()), '-movflags', '+faststart', out])

@@ -4,6 +4,7 @@ import { query, run } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { sendError, ERR } from '../../lib/httpError.js'
+import { normalizeRegion } from '../../media/mediaService.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -56,11 +57,7 @@ router.get('/projects/:id/mask-regions', requireProjectOwner, async (req, res) =
       `SELECT * FROM ocr_regions WHERE project_id = ? ORDER BY start_sec ASC`,
       [req.project.id]
     )
-    res.json(rows.map((r) => ({
-      ...r,
-      startSec: r.start_sec,
-      endSec: r.end_sec,
-    })))
+    res.json(rows.map((r) => normalizeRegion(r)))
   } catch (err) {
     console.error('Mask regions error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
@@ -112,8 +109,8 @@ const NUM = (v, fallback = 0) => {
 }
 
 // PUT /api/v1/projects/:id/mask-regions — lưu vùng che sau khi user chỉnh trên Canvas.
-// Body: { regions: [{id?, startSec, endSec, x, y, width, height, source?}] }
-// Ngữ nghĩa upsert:
+// Body: { regions: [{id?, startSec, endSec, ratioX, ratioY, ratioW, ratioH, maskStrength?, isStatic?, source?}] }
+// Toạ độ LƯU TỶ LỆ (ratioX/Y/W/H 0..1, scale-invariant). Ngữ nghĩa upsert:
 // - id khớp region đã có của project → cập nhật toạ độ/thời gian (giữ nguyên source gốc)
 // - id mới (tmp_...) → thêm mới với source='MANUAL'
 router.put('/projects/:id/mask-regions', requireProjectOwner, async (req, res) => {
@@ -128,26 +125,30 @@ router.put('/projects/:id/mask-regions', requireProjectOwner, async (req, res) =
     let inserted = 0
     for (const r of regions) {
       if (!r || typeof r !== 'object') continue
-      const values = [
-        NUM(r.startSec ?? r.start_sec),
-        NUM(r.endSec ?? r.end_sec),
-        Math.round(NUM(r.x)),
-        Math.round(NUM(r.y)),
-        Math.round(NUM(r.width)),
-        Math.round(NUM(r.height)),
-      ]
+      // clamp tỷ lệ về [0,1]
+      const clamp01 = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0 }
+      const ratioX = clamp01(r.ratioX ?? r.ratio_x)
+      const ratioY = clamp01(r.ratioY ?? r.ratio_y)
+      const ratioW = clamp01(r.ratioW ?? r.ratio_w)
+      const ratioH = clamp01(r.ratioH ?? r.ratio_h)
+      const maskStrength = Math.min(1, Math.max(0, NUM(r.maskStrength ?? r.mask_strength ?? 0.6)))
+      const isStatic = r.isStatic ?? r.is_static ? 1 : 0
+      const startSec = NUM(r.startSec ?? r.start_sec)
+      // isStatic → trải dài toàn bộ video (backend sẽ nhân endSec với duration khi render)
+      const endSec = isStatic ? NUM(r.endSec ?? r.end_sec) : NUM(r.endSec ?? r.end_sec)
+      const values = [startSec, endSec, ratioX, ratioY, ratioW, ratioH, maskStrength, isStatic]
       if (r.id && existingIds.has(String(r.id))) {
         // Cập nhật geometry/time cho region đã có (AUTO hoặc MANUAL)
         await run(
-          `UPDATE ocr_regions SET start_sec = ?, end_sec = ?, x = ?, y = ?, width = ?, height = ? WHERE id = ? AND project_id = ?`,
+          `UPDATE ocr_regions SET start_sec = ?, end_sec = ?, ratio_x = ?, ratio_y = ?, ratio_w = ?, ratio_h = ?, mask_strength = ?, is_static = ? WHERE id = ? AND project_id = ?`,
           [...values, String(r.id), req.project.id]
         )
         incomingIds.add(String(r.id))
         updated++
       } else {
         await run(
-          `INSERT INTO ocr_regions (id, project_id, start_sec, end_sec, x, y, width, height, text, confidence, source)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO ocr_regions (id, project_id, start_sec, end_sec, ratio_x, ratio_y, ratio_w, ratio_h, mask_strength, is_static, text, confidence, source)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [String(r.id || uuidv4()), req.project.id, ...values, r.text || null, null, 'MANUAL']
         )
         inserted++
@@ -162,7 +163,7 @@ router.put('/projects/:id/mask-regions', requireProjectOwner, async (req, res) =
     }
 
     const all = await query(`SELECT * FROM ocr_regions WHERE project_id = ? ORDER BY start_sec ASC`, [req.project.id])
-    res.json({ updated, insertedManual: inserted, regions: all })
+    res.json({ updated, insertedManual: inserted, regions: all.map((r) => normalizeRegion(r)) })
   } catch (err) {
     console.error('Mask regions PUT error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')

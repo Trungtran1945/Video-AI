@@ -25,7 +25,9 @@ export interface MediaService {
   // === TRANSLATE_DUB ===
   sampleFrames(src: string, fps: 1|2, outDir: string): Promise<Frame[]>;
   normalizeLoudness(inFile: string, out: string, targetLufs?: number): Promise<void>; // mặc định -16
-  maskRegions(inFile: string, regions: MaskRegion[], method: 'blur'|'fill'|'delogo', out: string): Promise<void>;
+  // MaskRegion: { startSec, endSec, ratioX, ratioY, ratioW, ratioH, maskStrength, isStatic? }
+  // pixel được tính từ ratio × videoDims tại runtime (scale-invariant).
+  maskRegions(inFile: string, regions: MaskRegion[], method: 'blur'|'fill'|'delogo', out: string, opts?: { videoDims?: {width:number;height:number} }): Promise<void>;
   burnSubtitlesStyled(inFile: string, assFile: string, out: string): Promise<void>;
   mixDubAudio(video: string, dubVoice: string|null, background: string|null, out: string): Promise<void>;
   muxStream(inVideo: string, inAudio: string, out: string, format?: 'mp4'|'mkv'): Promise<void>;
@@ -85,21 +87,27 @@ Hai pass chuẩn EBU R128: đo rồi áp
 và TTS mixing ổn định hơn.
 
 ### 2.13. maskRegions (TRANSLATE_DUB) ★
-Che vùng hardsub theo từng `OcrRegion { startSec, endSec, x, y, w, h }`, chỉ bật filter trong
-khoảng thời gian đó:
+Che vùng hardsub theo từng `OcrRegion { startSec, endSec, ratioX, ratioY, ratioW, ratioH, maskStrength, isStatic? }`;
+pixel được tính `x = round(ratioX * vw)`, ... từ `videoDims`, chỉ bật filter trong khoảng thời gian đó:
 
 | Method | Filter |
 | --- | --- |
-| `blur` | `boxblur=luma_radius=20` áp trên vùng crop bbox, overlay trả về |
-| `fill` | `drawbox=x:y:w:h:color=<nền>@1:t=fill` — màu nền lấy từ **background color sampling** quanh bbox (tránh vệt chữ lem còn sót khi blur) |
-| `delogo` | `delogo=x:y:w:h` — nội suy từ biên, tốt cho nền tĩnh |
+| `blur` | `boxblur=luma_radius=<R>` áp trên vùng crop bbox, overlay trả về — `R = clamp(round(maskStrength * min(bw,bh) / 4), 1, ...)` |
+| `fill` | `drawbox=x:y:w:h:color=<nền>@<op>:t=fill` — `op = 0.4 + maskStrength*0.6`, màu nền lấy từ **background color sampling** quanh bbox (tránh vệt chữ lem còn sót khi blur) |
+| `delogo` | `delogo=x:y:w:h` — nội suy từ biên, tốt cho nền tĩnh (dùng làm xấp xỉ `inpaint` khi chưa có model AI offline) |
+
+`maskStrength` (0–1) là **1 tham số duy nhất** điều khiển cả bán kính blur và độ đục lớp phủ — khớp
+với thanh kéo "độ mờ" trên `SubRegionEditor` (xem `04` §4.1). `isStatic=true` → mở rộng
+`enable='between(t,0,duration)'` cho toàn bộ video.
 
 AI inpainting (`method='inpaint'`) không chạy bằng ffmpeg: VisionProvider sinh frame đã lấp chữ,
-ffmpeg chỉ composite lại vào timeline gốc.
+ffmpeg chỉ composite lại vào timeline gốc. ⚠️ `inpaint` là **tùy chọn nâng cao (premium)** — gọi thêm
+Vision/Inpainting Provider, render lâu hơn và tốn chi phí API; `blur`/`fill` là mặc định nhanh nhẹ.
 
 ### 2.14. burnSubtitlesStyled (TRANSLATE_DUB)
-Burn file **ASS** (không phải SRT) vì cần `\pos` định vị đúng toạ độ bbox cũ (hoặc vị trí user
-chọn) + font/outline:
+Burn file **ASS** (không phải SRT) vì cần `\pos` định vị theo vùng mask: mặc định đè lên vị trí bbox
+cũ (tính từ `ratioX/Y/W/H` × `videoDims`), hoặc theo `subPosition` (`original`/`top`/`bottom`/`custom`)
+user chọn (xem `01` §3.2) + font/outline:
 `-vf "ass=subs.ass"` — giữ nguyên timing `[startSec, endSec]` của TranscriptSegment.
 
 ### 2.15. mixDubAudio & muxStream (TRANSLATE_DUB)

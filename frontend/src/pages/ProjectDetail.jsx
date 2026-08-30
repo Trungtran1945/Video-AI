@@ -38,6 +38,19 @@ const stageIcons = {
 };
 
 const SUMMARY_STAGES = ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'];
+
+// Helpers cho tọa độ tỷ lệ (ratio) của vùng che (docs/02 §2, docs/04 §4.1).
+function round1(v) {
+  return Math.round(Number(v) * 10) / 10
+}
+function round3(v) {
+  return Math.round(Number(v) * 1000) / 1000
+}
+function clamp01(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return 0
+  return Math.min(1, Math.max(0, n))
+}
 const DUB_STAGES_ALL = ['dub.ingest', 'dub.stt', 'dub.ocr', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
 
 const ACTIVE_STATUSES = ['pending', 'queued', 'generating', 'running'];
@@ -115,10 +128,12 @@ export default function ProjectDetail() {
           id: r.id,
           startSec: Number(r.startSec ?? r.start_sec) || 0,
           endSec: Number(r.endSec ?? r.end_sec) || 0,
-          x: Number(r.x) || 0,
-          y: Number(r.y) || 0,
-          width: Number(r.width ?? r.w) || 0,
-          height: Number(r.height ?? r.h) || 0,
+          ratioX: Number(r.ratioX ?? r.ratio_x) || 0,
+          ratioY: Number(r.ratioY ?? r.ratio_y) || 0,
+          ratioW: Number(r.ratioW ?? r.ratio_w) || 0,
+          ratioH: Number(r.ratioH ?? r.ratio_h) || 0,
+          maskStrength: Number(r.maskStrength ?? r.mask_strength ?? 0.6),
+          isStatic: !!(r.isStatic ?? r.is_static),
           text: r.text || '',
           source: r.source || 'AUTO',
         }))
@@ -208,12 +223,14 @@ export default function ProjectDetail() {
         id,
         regions.map((r) => ({
           id: String(r.id).startsWith('tmp_') ? undefined : r.id,
-          startSec: r.startSec,
-          endSec: r.endSec,
-          x: Math.round(r.x),
-          y: Math.round(r.y),
-          width: Math.round(r.width),
-          height: Math.round(r.height),
+          startSec: round1(r.startSec),
+          endSec: round1(r.endSec),
+          ratioX: round3(clamp01(r.ratioX)),
+          ratioY: round3(clamp01(r.ratioY)),
+          ratioW: round3(clamp01(r.ratioW)),
+          ratioH: round3(clamp01(r.ratioH)),
+          maskStrength: Math.min(1, Math.max(0, Number(r.maskStrength ?? 0.6))),
+          isStatic: !!r.isStatic,
           source: r.source,
         }))
       );

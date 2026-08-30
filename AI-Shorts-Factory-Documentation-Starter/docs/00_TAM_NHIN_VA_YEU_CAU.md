@@ -83,7 +83,7 @@ Hệ thống phục vụ hai nhóm use-case:
 | FR-T5 | Dịch LLM gom theo context window, routing 1 trong 13 StylePreset (văn phong/xưng hô/slang) |
 | FR-T6 | Sinh phụ đề đích (SRT/VTT/ASS) đồng bộ timestamp gốc |
 | FR-T7 | (Tuỳ chọn) TTS lồng tiếng + forced alignment khớp slot thời gian gốc |
-| FR-T8 | Che phụ đề gốc: blur / fill màu nền / AI inpainting theo bounding box |
+| FR-T8 | Che phụ đề gốc: blur / fill màu nền / AI inpainting theo bounding box. ⚠️ `blur` và `fill` là phương pháp **mặc định** (nhanh, nhẹ, không gọi thêm provider); `inpaint` là **tùy chọn nâng cao (premium)** — yêu cầu gọi thêm Vision/Inpainting Provider, thời gian render lâu hơn và có thể phát sinh chi phí API cao hơn |
 | FR-T9 | Burn-in phụ đề mới + audio mix (dub voice + nền) + mux MP4/MKV (NVENC) |
 | FR-T10 | Tiến trình real-time qua SSE; chỉnh vùng che chữ trên Canvas trước render |
 

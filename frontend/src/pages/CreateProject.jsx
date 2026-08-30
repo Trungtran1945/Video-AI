@@ -43,6 +43,8 @@ export default function CreateProject() {
     voiceProvider: 'elevenlabs',
     voiceName: '',
     maskMethod: 'fill',
+    maskStrength: 0.6,
+    subPosition: 'original',
   });
 
   const update = (key, val) => setForm((f) => ({ ...f, [key]: val }));
@@ -141,10 +143,12 @@ export default function CreateProject() {
           stylePreset: form.stylePreset,
           enableDubbing: form.enableDubbing,
           maskMethod: form.maskMethod,
+          maskStrength: Number(form.maskStrength) || 0.6,
+          subPosition: form.subPosition,
           sourceVideoKey: form.sourceVideoKey,
           params: form.enableDubbing
-            ? { voiceProvider: form.voiceProvider, voiceName: form.voiceName }
-            : undefined,
+            ? { voiceProvider: form.voiceProvider, voiceName: form.voiceName, subPosition: form.subPosition }
+            : { subPosition: form.subPosition },
         };
       }
       const project = await projectsApi.create(payload);
@@ -328,7 +332,7 @@ export default function CreateProject() {
                 </div>
               )}
 
-              {/* TRANSLATE_DUB: nâng cao — method che chữ */}
+              {/* TRANSLATE_DUB: nâng cao — method che chữ + vị trí phụ đề mới */}
               {isDub && step === 4 && (
                 <div>
                   <label className="text-sm font-medium text-slate-300 mb-2 block">Cách xử lý phụ đề gốc (hardsub)</label>
@@ -337,8 +341,21 @@ export default function CreateProject() {
                       <OptionCard key={code} selected={form.maskMethod === code} onClick={() => update('maskMethod', code)} title={m.label} desc={m.desc} />
                     ))}
                   </div>
+
+                  <label className="text-sm font-medium text-slate-300 mt-5 mb-2 block">Vị trí phụ đề dịch mới</label>
+                  <select
+                    value={form.subPosition}
+                    onChange={(e) => update('subPosition', e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-lg bg-[#0F1117] border border-white/10 text-slate-200 focus:outline-none focus:border-blue-500/50">
+                    <option value="original">Đè lên vùng đã che (trùng khớp hardsub gốc)</option>
+                    <option value="top">Phía trên (safe zone trên)</option>
+                    <option value="bottom">Phía dưới (safe zone dưới)</option>
+                    <option value="custom">Tuỳ chỉnh (để trống — chỉnh sau trên editor)</option>
+                  </select>
+
                   <p className="text-xs text-slate-500 mt-3 leading-relaxed">
-                    Sau khi pipeline quét OCR xong, bạn có thể chỉnh vùng che chữ trực tiếp trên trang chi tiết dự án.
+                    Mặc định phụ đề dịch đè lên vùng đã che để thẩm mỹ. Sau khi pipeline quét OCR xong, bạn có thể
+                    chỉnh vùng che, độ mờ và vị trí ngay trên trang chi tiết dự án.
                   </p>
                 </div>
               )}
