@@ -67,6 +67,7 @@ export async function initSchema() {
     `ALTER TABLE settings ADD COLUMN active_image_provider TEXT DEFAULT 'flux'`,
     `ALTER TABLE settings ADD COLUMN active_video_provider TEXT DEFAULT ''`,
     `ALTER TABLE settings ADD COLUMN active_subtitle_provider TEXT DEFAULT 'whisper'`,
+    `ALTER TABLE settings ADD COLUMN active_translate_provider TEXT DEFAULT 'google_translate'`,
   ]) {
     try { db.run(col) } catch (_) {}
   }

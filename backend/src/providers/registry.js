@@ -9,6 +9,7 @@ import EdgeTts from './tts/edgeTts.js'
 import GoogleTts from './tts/googleTts.js'
 import GeminiVision from './vision/geminiVision.js'
 import TesseractOcr from './vision/tesseractOcr.js'
+import GoogleTranslate from './translate/googleTranslate.js'
 
 export class ProviderError extends Error {
   constructor(message, code = 'PROV_001') {
@@ -33,6 +34,7 @@ export const PROVIDER_LABELS = {
   azure_speech: 'Azure Speech',
   clip: 'CLIP (local)',
   tesseract: 'Tesseract (local, miễn phí)',
+  google_translate: 'Google Translate (Apps Script)',
 }
 
 // Mỗi provider có thể có nhiều biến môi trường fallback (thử theo thứ tự).
@@ -46,10 +48,11 @@ const ENV_KEYS = {
   openai_whisper: ['WHISPER_API_KEY', 'GROQ_API_KEY', 'OPENAI_API_KEY'],
   elevenlabs: ['ELEVENLABS_API_KEY'],
   openai_tts: ['OPENAI_API_KEY'],
+  translate: ['GOOGLE_TRANSLATE_SCRIPT_URL'],
 }
 
-// Provider chạy không cần API key (Edge-TTS của Microsoft, Tesseract local).
-const KEYLESS = new Set(['edge_tts', 'google_tts', 'tesseract'])
+// Provider chạy không cần API key (Edge-TTS của Microsoft, Tesseract local, Google Translate via Apps Script).
+const KEYLESS = new Set(['edge_tts', 'google_tts', 'tesseract', 'google_translate'])
 
 const REGISTRY = {
   llm: {
@@ -80,9 +83,12 @@ const REGISTRY = {
     tesseract: () => new TesseractOcr(),
     paddleocr: null,
   },
+  translate: {
+    google_translate: (key) => new GoogleTranslate(key || process.env.GOOGLE_TRANSLATE_SCRIPT_URL),
+  },
 }
 
-const DEFAULTS = { llm: 'gemini', asr: 'whisper', tts: 'edge_tts', vision: 'gemini', ocr: 'tesseract' }
+const DEFAULTS = { llm: 'gemini', asr: 'whisper', tts: 'edge_tts', vision: 'gemini', ocr: 'tesseract', translate: 'google_translate' }
 
 const SETTINGS_COLUMN = {
   llm: ['active_llm_provider'],
@@ -90,6 +96,7 @@ const SETTINGS_COLUMN = {
   tts: ['active_voice_provider', 'voice_provider'],
   vision: [],
   ocr: [],
+  translate: ['active_translate_provider'],
 }
 
 async function resolveApiKey(userId, providerId) {

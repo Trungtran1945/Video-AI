@@ -127,19 +127,106 @@ khung hình preview:
 
 ---
 
-## 5. TimelinePreview & TranscriptView (trọng tâm UX)
+## 5. Layout & UX — Single-Screen Design (TRANSLATE_DUB)
 
-`ProjectDetail` hiển thị khác nhau theo mode:
+Mục tiêu: **tất cả nội dung vừa trong 1 khung màn hình duy nhất**, không cần scroll trang.
 
-**SUMMARY — TimelinePreview:** `TimelineClip[]` dạng track ngang:
-- Mỗi clip: thumbnail (từ Scene), thời lượng, transition icon, đoạn giọng đọc tương ứng.
-- Player đồng bộ: click clip → nhảy đến `startAtSec`.
-- **Chỉ xem**, không edit (theo yêu cầu tự động hoàn toàn). User có thể "Regenerate" nếu không ưng.
+### 5.1. Bố cục 2 Panel (Split-Panel Layout)
 
-**TRANSLATE_DUB — TranscriptView + SubRegionEditor:**
-- Danh sách câu song ngữ (gốc ↔ bản dịch) theo timestamp; click câu → player seek tới `startSec`;
-  badge speaker nếu có diarization.
-- Kèm `SubRegionEditor` (mục 4.1) để chỉnh vùng che chữ trước render.
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Breadcrumb: ← Quay lại dự án                                    │
+├─────────────────────────────────────────────────────────────────┤
+│ Header: [Title] [Status] [Xoá] [Chạy lại] [Xem video] [Tải]   │
+├─────────────────────────────────────────────────────────────────┤
+│ InfoBar (compact 1 dòng): Mode | Lang | Style | Dubbing | Mask │
+├───────────────────────────────────────┬─────────────────────────┤
+│                                       │                         │
+│   VIDEO PLAYER + SubRegionEditor      │  Pipeline Progress      │
+│   (chiếm ~65% chiều rộng)             │  (compact, horizontal)  │
+│                                       │                         │
+│   - Video player lớn                   ├─────────────────────────┤
+│   - Overlay mask regions              │                         │
+│   - Mask controls (toolbar)           │  TRANSCRIPT EDITOR      │
+│                                       │  (scrollable panel)     │
+│                                       │                         │
+├───────────────────────────────────────┴─────────────────────────┤
+│  TIMELINE BAR (horizontal, full-width)                          │
+│  [◄] [▶/❚❚] [►] [====•====================] [00:45 / 03:20]   │
+│  [Segment markers] [Current segment info]                       │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 5.2. TimelineBar Component (Mới)
+
+Thanh timeline full-width ở bottom, bao gồm:
+
+**Playback Controls:**
+- Play/Pause button
+- Skip backward/forward ±5s
+- Playback speed selector (0.5x, 1x, 1.5x, 2x)
+- Volume control
+
+**Scrubber Bar:**
+- Thanh kéo chính hiển thị progress
+- Timestamp hiện tại / tổng thời lượng
+- Hover tooltip hiển thị thời gian tại vị trí con trỏ
+
+**Segment Track:**
+- Mỗi câu transcript là 1 segment marker trên timeline
+- Hiển thị text gốc (hoặc bản dịch) trên segment
+- Click segment → jump đến câu đó trong transcript
+- Color-code theo speaker (nếu có diarization)
+- Drag mép trái/phải của segment block để điều chỉnh startSec/endSec (drag-to-resize)
+- Ghost preview hiển thị thời gian mới khi đang kéo
+- Double-click segment để mở inline timing editor
+
+**Zoom Controls:**
+- +/- button để phóng to/thu nhỏ timeline
+- Fit all segments / Fit current segment
+
+**Keyboard Shortcuts:**
+- Space: Play/Pause
+- ←/→: Seek ±5s
+- ↑/↓: Navigate segments
+- +/-: Zoom timeline
+
+### 5.3. TranscriptView + SubRegionEditor
+
+**Panel Trái (Video + Mask):**
+- Video player lớn, chiếm không gian tối đa
+- SubRegionEditor overlay trên video (compact mode)
+- Toolbar mask (Thêm/Gộp/Xoá vùng) compact
+- Region controls hiển thị khi chọn region
+
+**Panel Phải (Pipeline + Transcript):**
+- Pipeline Progress: Hiển thị compact dạng badges/horizontal stepper
+**TRANSLATE_DUB — Hybrid Subtitle Editor:**
+
+**Danh sách song ngữ:**
+- Hiển thị text gốc ↔ translation, kèm badge speaker
+- Highlight segment đang active (tương ứng với thời gian video hiện tại)
+
+**Điều chỉnh thời gian (Timing Control):**
+- Mỗi segment có input số cho phép nhập chính xác `startSec` và `endSec` (định dạng `HH:MM:SS.mmm`)
+- Badge hiển thị nếu segment đã được chỉnh sửa thủ công (`isTimeManuallyAdjusted`)
+- Nút "Reset to AI" để hoàn nguyên thời gian tự động
+
+**Cảnh báo trực quan (Visual Warnings):**
+- Nếu `CPS > 25` ký tự/giây: hiển thị icon cảnh báo màu vàng với tooltip "Reading too fast"
+- Nếu `CPS > 35` ký tự/giây: hiển thị icon màu đỏ với tooltip "Unreadable speed"
+- Nếu 2 segment bị chồng lấn thời gian: hiển thị viền đỏ cả 2 segment
+
+**Đồng bộ Player:**
+- Click vào segment → player seek đến `startSec` và highlight segment đó
+- Kéo thanh timeline → segment đang hiển thị được auto-select
+
+### 5.4. TimelinePreview (SUMMARY Mode — không thay đổi)
+
+- TimelineClip[] dạng track ngang
+- Mỗi clip: thumbnail, thời lượng, transition icon
+- Player đồng bộ: click clip → nhảy đến `startAtSec`
+- **Chỉ xem**, không edit
 
 ---
 

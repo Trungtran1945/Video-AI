@@ -181,6 +181,8 @@ model TranscriptSegment {  // TRANSLATE_DUB: 1 câu/đoạn thoại do STT nhậ
   translation String?  // bản dịch đích (stage translate điền)
   ttsAudioId  String?  // audio dub đã ép khớp slot (nếu enableDubbing)
   subtitleId  String?
+  isTimeManuallyAdjusted Boolean @default(false) // Đánh dấu nếu user tự sửa start/end
+  wpmWarning       Boolean @default(false)       // Cảnh báo tốc độ đọc quá nhanh
   project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }
 
@@ -305,6 +307,8 @@ pnpm --filter @asf/database prisma db seed   # user admin mặc định, setting
 | `StylePreset` bảng riêng + seed | Thêm/sửa phong cách dịch không cần deploy code |
 | `TimelineClip` chỉ SUMMARY | TRANSLATE_DUB render theo cue + OcrRegion, không dựng timeline |
 | `TranscriptSegment` giữ cả text gốc & dịch | Đối chiếu song ngữ, retry TTS không mất bản dịch |
+| `TranscriptSegment.isTimeManuallyAdjusted` | Phân biệt thời gian AI tự căn chỉnh vs user sửa thủ công; backend dùng để quyết định có cần chạy lại ForcedAlignService hay không |
+| `TranscriptSegment.wpmWarning` | Đánh dấu segment có cảnh báo tốc độ đọc, giúp UI hiển thị icon cảnh báo trực quan |
 | `ProviderLog` độc lập | Analytics không phụ thuộc project còn tồn tại |
 | SQLite → Postgres không đổi schema | Đổi `datasource` là đủ |
 

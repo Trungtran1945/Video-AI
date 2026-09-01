@@ -18,7 +18,8 @@ Không dùng bất kỳ dịch vụ/BaaS bên ngoài nào — mọi dữ liệu 
 - `src/lib/AuthContext.jsx`: trạng thái đăng nhập (localStorage access/refresh token).
 - `src/lib/constants.jsx`: nhãn trạng thái, stage pipeline, ngôn ngữ/phong cách dịch (13 preset)/giọng đọc.
 - `src/pages/CreateProject.jsx`: wizard tạo dự án 2 mode (SUMMARY / TRANSLATE_DUB) — đặc tả tại `../AI-Shorts-Factory-Documentation-Starter/docs/04_THIET_KE_FRONTEND.md` mục 4.
-- `src/pages/ProjectDetail.jsx`: tiến trình pipeline (SSE realtime, fallback polling jobs), transcript song ngữ + SubRegionEditor Canvas (TRANSLATE_DUB), timeline preview (SUMMARY), output.
+- `src/pages/ProjectDetail.jsx`: tiến trình pipeline (SSE realtime, fallback polling jobs), transcript song ngữ + SubRegionEditor Canvas (TRANSLATE_DUB), timeline preview (SUMMARY), output. **TRANSLATE_DUB sử dụng layout 2-panel (video + mask bên trái, pipeline + transcript bên phải) và TimelineBar ở dưới cùng.**
+- `src/components/TimelineBar.jsx`: thanh timeline full-width với playback controls, scrubber bar, segment markers (hiển thị text), zoom controls, keyboard shortcuts, speaker color coding.
 - `vite.config.js`: alias `@` → `src/`, proxy `/api` → `http://localhost:3001`.
 
 ## API Contract

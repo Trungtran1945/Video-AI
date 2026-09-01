@@ -40,8 +40,7 @@ Hệ thống phục vụ hai nhóm use-case:
 
 ### 2.2. Ngoài phạm vi (MVP)
 
-- Không có editor timeline thủ công (theo yêu cầu tự động hoàn toàn; riêng TRANSLATE_DUB chỉ cho
-  chỉnh **vùng che chữ**, không chỉnh timeline).
+- Không có editor cắt ghép video (video trimming/splicing) thủ công. Tuy nhiên, hỗ trợ điều chỉnh thủ công thời gian (start/end) của từng đoạn phụ đề (TranscriptSegment) trong chế độ TRANSLATE_DUB để đảm bảo đồng bộ tuyệt đối với giọng nói gốc.
 - Không hỗ trợ live-streaming.
 - Không có hệ thống thanh toán / ví điểm thưởng — mọi tính năng mở cho user đã đăng nhập.
 - PostgreSQL chỉ bật ở bản production (MVP dùng SQLite).
@@ -86,6 +85,7 @@ Hệ thống phục vụ hai nhóm use-case:
 | FR-T8 | Che phụ đề gốc: blur / fill màu nền / AI inpainting theo bounding box. ⚠️ `blur` và `fill` là phương pháp **mặc định** (nhanh, nhẹ, không gọi thêm provider); `inpaint` là **tùy chọn nâng cao (premium)** — yêu cầu gọi thêm Vision/Inpainting Provider, thời gian render lâu hơn và có thể phát sinh chi phí API cao hơn |
 | FR-T9 | Burn-in phụ đề mới + audio mix (dub voice + nền) + mux MP4/MKV (NVENC) |
 | FR-T10 | Tiến trình real-time qua SSE; chỉnh vùng che chữ trên Canvas trước render |
+| FR-T11 | Điều chỉnh thủ công thời gian phụ đề: cho phép người dùng sửa startSec/endSec của từng TranscriptSegment; cảnh báo CPS (Characters Per Second) > 25 ký tự/giây; kiểm tra chồng lấn thời gian giữa các segment liền kề |
 
 ### 3.4. Quản trị & quan sát
 

@@ -11,7 +11,7 @@ let tmpSeq = 0
  * - Thanh kéo maskStrength (0..1) tăng/giảm ĐỒNG THỜI bán kính blur và độ đục lớp phủ.
  * - "Áp dụng cho toàn bộ video" (isStatic) cho hardsub tĩnh; "Gộp vùng" (Merge) gộp nhiều region.
  */
-export default function SubRegionEditor({ videoUrl, regions = [], onChange, onSave, saving, saveError }) {
+export default function SubRegionEditor({ videoUrl, regions = [], onChange, onSave, saving, saveError, compact = false }) {
   const videoRef = useRef(null)
   const wrapRef = useRef(null)
   const [videoSize, setVideoSize] = useState(null); // { w, h } intrinsic
@@ -152,6 +152,124 @@ export default function SubRegionEditor({ videoUrl, regions = [], onChange, onSa
   const blurOf = (s) => Math.round(4 + clamp(Number(s) ?? 0.6, 0, 1) * 18) // 4–22px
   const opacityOf = (s) => 0.1 + clamp(Number(s) ?? 0.6, 0, 1) * 0.75 // 0.1–0.85
 
+  // Compact mode for2-panel layout (video handled by parent)
+  if (compact) {
+    return (
+      <div className="h-full flex flex-col">
+        {/* Compact toolbar */}
+        <div className="shrink-0 flex items-center justify-between gap-2 p-2 bg-black/50 backdrop-blur-sm">
+          <div className="flex gap-1 shrink-0">
+            <button onClick={addRegion}
+              className="flex items-center gap-1 px-2 py-1 rounded border border-white/10 text-slate-300 hover:border-white/25 text-[10px] font-medium transition">
+              <Plus className="w-3 h-3" /> Thêm
+            </button>
+            <button onClick={mergeRegions} disabled={regions.length < 2}
+              className="flex items-center gap-1 px-2 py-1 rounded border border-white/10 text-slate-300 hover:border-white/25 text-[10px] font-medium transition disabled:opacity-30">
+              <Merge className="w-3 h-3" /> Gộp
+            </button>
+            <button onClick={removeSelected} disabled={!selected}
+              className="flex items-center gap-1 px-2 py-1 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 text-[10px] font-medium transition disabled:opacity-30">
+              <Trash2 className="w-3 h-3" /> Xoá
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-500 flex items-center gap-1">
+            <ScanText className="w-3 h-3 shrink-0" />
+            Kéo/thả vùng che chữ
+          </p>
+        </div>
+
+        {/* Region overlays on parent's video */}
+        <div ref={wrapRef} className="relative flex-1 min-h-0 select-none" />
+
+        {/* Selected region controls */}
+        {selected && (
+          <div className="shrink-0 p-2 bg-black/50 backdrop-blur-sm space-y-1">
+            <div className="flex items-center gap-2 text-[10px]">
+              <label className="flex items-center gap-1">
+                <span className="text-slate-500">Bắt đầu:</span>
+                <input type="number" step="0.1" min="0" value={selected.startSec}
+                  disabled={selected.isStatic}
+                  onChange={(e) => updateSelectedTime('startSec', e.target.value)}
+                  className="w-16 px-1.5 py-0.5 rounded bg-[#0F1117] border border-white/10 text-slate-200 text-[10px] focus:outline-none focus:border-blue-500/50 disabled:opacity-40" />
+              </label>
+              <label className="flex items-center gap-1">
+                <span className="text-slate-500">Kết thúc:</span>
+                <input type="number" step="0.1" min="0" value={selected.endSec}
+                  disabled={selected.isStatic}
+                  onChange={(e) => updateSelectedTime('endSec', e.target.value)}
+                  className="w-16 px-1.5 py-0.5 rounded bg-[#0F1117] border border-white/10 text-slate-200 text-[10px] focus:outline-none focus:border-blue-500/50 disabled:opacity-40" />
+              </label>
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input type="checkbox" checked={!!selected.isStatic} onChange={toggleStatic}
+                  className="accent-blue-500 w-3 h-3" />
+                <span className="text-slate-300"><Layers className="w-3 h-3 inline" /> Toàn bộ</span>
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-slate-400">Độ mờ: {Math.round((Number(selected.maskStrength) || 0.6) * 100)}%</span>
+              <Slider
+                value={[Number(selected.maskStrength) || 0.6]}
+                min={0} max={1} step={0.01}
+                onValueChange={(v) => updateSelected('maskStrength', v[0])}
+                className="flex-1"
+              />
+              <button onClick={onSave} disabled={saving || !onSave}
+                className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-medium transition disabled:opacity-40">
+                {saving ? '...' : 'Lưu'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Region count */}
+        {!selected && (
+          <div className="shrink-0 flex items-center justify-between p-2 bg-black/50 backdrop-blur-sm">
+            <p className="text-[10px] text-slate-600">{regions.length} vùng che chữ</p>
+            <button onClick={onSave} disabled={saving || !onSave}
+              className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-medium transition disabled:opacity-40">
+              {saving ? '...' : 'Lưu'}
+            </button>
+          </div>
+        )}
+
+        {saveError && <p className="text-[10px] text-red-400 px-2">{saveError}</p>}
+
+        {/* Overlay regions (after wrapRef is mounted) */}
+        {regions.map((r) => {
+          const isSel = r.id === selectedId
+          const blur = blurOf(r.maskStrength)
+          const op = opacityOf(r.maskStrength)
+          return (
+            <div key={r.id}
+              onPointerDown={(e) => startDrag(e, r, 'move')}
+              className={`absolute cursor-move ${isSel ? 'border-2 border-blue-400' : 'border-2 border-emerald-400/70 hover:border-emerald-300'}`}
+              style={{
+                left: `${r.ratioX * 100}%`,
+                top: `${r.ratioY * 100}%`,
+                width: `${r.ratioW * 100}%`,
+                height: `${r.ratioH * 100}%`,
+                backdropFilter: `blur(${blur}px)`,
+                WebkitBackdropFilter: `blur(${blur}px)`,
+                backgroundColor: `rgba(15,17,23,${op})`,
+              }}
+              title={r.source === 'MANUAL' ? 'Vùng thủ công' : `OCR: ${r.text || '(không đọc được)'}`}>
+              {isSel && (
+                <>
+                  <span className={`absolute -top-0.5 -left-0.5 w-2 h-2 ${r.source === 'MANUAL' ? 'bg-blue-400' : 'bg-emerald-400'} rounded-tl`} />
+                  <span
+                    onPointerDown={(e) => startDrag(e, r, 'resize')}
+                    className="absolute -bottom-1 -right-1 w-3 h-3 bg-blue-400 border-2 border-[#161922] rounded-full cursor-nwse-resize"
+                  />
+                </>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+
+  // Full mode (original)
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">

@@ -8,7 +8,10 @@ import { projectDir, extractJsonBlock, round2 } from '../context.js'
 
 const CONTEXT_WINDOW_SEC = 30 // docs/05 §B.4: gom ~30 giây thoại / lần gọi LLM
 
-// dub.translate (docs/05 §B.4): LLM dịch theo StylePreset + context window.
+// dub.translate (docs/05 §B.4): Hybrid Google Translate + LLM restyle.
+// Bước 1: Google Translate dịch sát nghĩa (accurate base translation).
+// Bước 2: Nếu có style preset → LLM chỉ "viết lại" theo style (giữ nguyên nghĩa).
+// Nếu không có style preset → dùng kết quả Google Translate trực tiếp.
 export async function dubTranslate(ctx) {
   const { project, job, setProgress } = ctx
   const params = parseParams(project.params)
@@ -25,61 +28,92 @@ export async function dubTranslate(ctx) {
     : null
 
   const targetLanguage = params.targetLanguage || 'vi'
-  const llm = await getProvider(project.user_id, 'llm')
+  const sourceLanguage = params.sourceLanguage || 'auto'
+  const hasStyle = !!preset?.system_prompt
+
+  // Lấy Google Translate provider (keyless, dùng Apps Script URL)
+  const gt = await getProvider(project.user_id, 'translate').catch(() => null)
+  // LLM provider cho bước restyle (chỉ cần khi có style preset)
+  const llm = hasStyle ? await getProvider(project.user_id, 'llm').catch(() => null) : null
+
+  if (!gt) {
+    throw new Error(
+      'Không có Google Translate provider. Kiểm tra GOOGLE_TRANSLATE_SCRIPT_URL trong file .env'
+    )
+  }
+
   const system = buildSystemPrompt(preset, targetLanguage)
   setProgress(5)
 
-  // Gom nhóm theo context window ~30s (docs/05 §B.4)
-  const groups = groupByWindow(segments, CONTEXT_WINDOW_SEC)
-  let translated = 0
-  const translations = new Map() // segment id → bản dịch
-  for (let g = 0; g < groups.length; g++) {
-    const group = groups[g]
-    const lines = group
-      .map((s) => `${s.index_num}|${round2(s.start_sec)}-${round2(s.end_sec)}|${s.text}`)
-      .join('\n')
-    const prompt =
-      `Dịch các câu thoại dưới đây sang ${languageName(targetLanguage)}. ` +
-      `Mỗi dòng có định dạng "index|thời gian|văn bản". ` +
-      `Giữ nguyên index, CHỈ dịch phần văn bản, tuyệt đối không dịch phần index/thời gian. ` +
-      `Yêu cầu: (1) DỊCH SÁT NGHĨA gốc, không bịa thêm thắt, không bỏ sót ý; ` +
-      `(2) giữ nguyên tên riêng, địa danh, số liệu; (3) tự nhiên như lồng tiếng. ` +
-      `Đừng so sánh độ dài — stage sau sẽ tự căn chỉnh thời lượng.\n\n${lines}\n\n` +
-      `Trả về DUY NHẤT JSON: {"segments":[{"index":int,"translation":string}]}`
+  // BƯỚC 1: Google Translate — dịch sát nghĩa từng câu
+  const gtResults = new Map() // index_num → bản dịch Google Translate
+  const segmentsToTranslate = segments.filter((s) => s.text && s.text.trim())
 
-    // Ước lượng maxOutputTokens theo dung lượng nhóm để tránh JSON bị cắt ngắn
-    // (nguyên nhân "chỉ dịch được vài câu"). 1 ký tự ~1 token, nhân hệ số an toàn.
-    const estTokens = group.reduce((n, s) => n + Math.max(8, Math.ceil((s.text || '').length * 2.5)), 0) + 256
-    const maxOutputTokens = Math.min(65536, Math.max(1024, Math.ceil(estTokens * 1.5)))
-    // Chỉ yêu cầu dịch những câu có nội dung (bỏ qua câu rỗng).
-    const requiredIndexes = group.filter((s) => s.text && s.text.trim()).map((s) => s.index_num)
-
-    // Gọi LLM, tự động bù các index bị thiếu (docs/05 §B.4).
-    const collected = await translateGroup(llm, system, prompt, job, project.id, {
-      requiredIndexes,
-      maxOutputTokens,
-    })
-
-    const map = new Map()
-    for (const [idx, t] of collected) {
-      const seg = group.find((s) => s.index_num === idx)
-      if (!seg) continue
-      const tt = String(t).trim()
-      // Bỏ qua bản dịch rỗng hoặc trùng nguyên gốc (LLM không dịch được)
-      if (tt && tt !== (seg.text || '').trim()) map.set(idx, tt)
+  for (let i = 0; i < segmentsToTranslate.length; i++) {
+    const seg = segmentsToTranslate[i]
+    const text = (seg.text || '').trim()
+    if (!text) continue
+    try {
+      const translated = await gt.provider.translate(text, sourceLanguage, targetLanguage)
+      if (translated && translated !== text) {
+        gtResults.set(seg.index_num, translated.trim())
+      }
+    } catch (err) {
+      console.warn(`[dubTranslate] Google Translate lỗi segment #${seg.index_num}: ${err.message}`)
     }
-
-    for (const seg of group) {
-      const translation = map.get(seg.index_num)
-      if (!translation) continue
-      await updateById('transcript_segments', seg.id, { translation })
-      translations.set(seg.id, translation)
-      translated++
-    }
-    setProgress(5 + Math.round(((g + 1) / groups.length) * 85))
+    setProgress(5 + Math.round(((i + 1) / segmentsToTranslate.length) * 40))
   }
 
-  if (!translated) throw new Error('LLM không trả về bản dịch hợp lệ nào')
+  if (!gtResults.size) throw new Error('Google Translate không trả về bản dịch hợp lệ nào')
+
+  // BƯỚC 2: LLM restyle (chỉ khi có style preset VÀ có LLM)
+  const translations = new Map() // segment id → bản dịch cuối cùng
+
+  if (hasStyle && llm) {
+    // Có style preset + có LLM → LLM viết lại theo style
+    const restyleSystem = buildRestyleSystemPrompt(preset, targetLanguage)
+    const groups = groupByWindow(segments, CONTEXT_WINDOW_SEC)
+    let restyled = 0
+    for (let g = 0; g < groups.length; g++) {
+      const group = groups[g]
+      const groupTranslations = []
+      for (const seg of group) {
+        const gtText = gtResults.get(seg.index_num)
+        if (gtText) {
+          groupTranslations.push({ index: seg.index_num, original: seg.text, translation: gtText })
+        }
+      }
+      if (!groupTranslations.length) continue
+
+      const restyledGroup = await restyleGroup(llm, restyleSystem, groupTranslations, preset, job, project.id)
+
+      for (const seg of group) {
+        const restyledText = restyledGroup.get(seg.index_num)
+        if (restyledText) {
+          await updateById('transcript_segments', seg.id, { translation: restyledText })
+          translations.set(seg.id, restyledText)
+          restyled++
+        }
+      }
+      setProgress(45 + Math.round(((g + 1) / groups.length) * 45))
+    }
+    if (!restyled) throw new Error('LLM không trả về bản dịch restyle hợp lệ nào')
+  } else {
+    // Không có style preset HOẶC không có LLM → dùng Google Translate trực tiếp
+    if (hasStyle && !llm) {
+      console.warn('[dubTranslate] Có style preset nhưng thiếu LLM provider — dùng Google Translate trực tiếp')
+    }
+    for (const seg of segments) {
+      const gtText = gtResults.get(seg.index_num)
+      if (gtText) {
+        await updateById('transcript_segments', seg.id, { translation: gtText })
+        translations.set(seg.id, gtText)
+      }
+    }
+    setProgress(90)
+  }
+
+  if (!translations.size) throw new Error('Không có bản dịch hợp lệ nào')
 
   // Sinh SRT từ timing gốc + bản dịch (docs/05 FR-T6)
   const cues = segments
@@ -88,11 +122,74 @@ export async function dubTranslate(ctx) {
   if (cues.length) await writeSrt(project, cues)
 
   return {
-    translatedCount: translated,
+    translatedCount: translations.size,
     segmentCount: segments.length,
     presetSlug: preset?.slug || null,
     targetLanguage,
+    method: hasStyle ? 'google_translate + llm_restyle' : 'google_translate',
   }
+}
+
+// LLM restyle: chỉ viết lại bản dịch đã chính xác theo style preset.
+// KHÔNG dịch lại — giữ nguyên nghĩa, chỉ thay văn phong.
+async function restyleGroup(llm, system, groupTranslations, preset, job, projectId) {
+  const input = groupTranslations
+    .map((t) => `${t.index}|${t.translation}`)
+    .join('\n')
+
+  const prompt =
+    `Viết lại các câu lồng tiếng dưới đây theo phong cách: ${preset.name}.\n` +
+    `Bản dịch gốc đã ĐÚNG NGHĨA — KHÔNG được thay đổi ý, chỉ thay đổi văn phong.\n` +
+    `Mỗi dòng có định dạng "index|bản dịch". Giữ nguyên index, CHỈ viết lại phần bản dịch.\n\n` +
+    `${input}\n\n` +
+    `Trả về DUY NHẤT JSON: {"segments":[{"index":int,"translation":string}]}`
+
+  const requiredIndexes = groupTranslations.map((t) => t.index)
+  const estTokens = groupTranslations.reduce((n, t) => n + Math.max(8, Math.ceil((t.translation || '').length * 2.5)), 0) + 256
+  const maxOutputTokens = Math.min(65536, Math.max(1024, Math.ceil(estTokens * 1.5)))
+
+  const collected = new Map()
+  const MAX_ATTEMPTS = 3
+  let attempt = 0
+  while (attempt < MAX_ATTEMPTS) {
+    let p = prompt
+    if (attempt > 0) {
+      const missingNow = requiredIndexes.filter((i) => !collected.has(i))
+      p = `${prompt}\n\nLƯU Ý: trả về ĐÚNG định dạng JSON. Các index SAU CHƯA được viết lại (bắt buộc phải có đủ): ${missingNow.join(', ')}.`
+    }
+    const call = (pp) =>
+      tracked(
+        { projectId, jobId: job.id, provider: llm.id, type: 'llm' },
+        () => llm.provider.complete({ system, prompt: pp, json: true, temperature: 0.4, maxOutputTokens })
+      )
+
+    const sanitize = (text) =>
+      String(text || '')
+        .replace(/^[\s\S]*?```(?:json)?\s*/i, '')
+        .replace(/```[\s\S]*$/, '')
+        .trim()
+
+    const parseToMap = (res) => {
+      const parsed = extractJsonBlock(sanitize(res.text)) || {}
+      const list = Array.isArray(parsed.segments) ? parsed.segments : []
+      const m = new Map()
+      for (const item of list) {
+        if (item && Number.isInteger(item.index) && typeof item.translation === 'string') {
+          const t = item.translation.trim()
+          if (t) m.set(item.index, t)
+        }
+      }
+      return m
+    }
+
+    const m = parseToMap(await call(p))
+    for (const [idx, t] of m) if (!collected.has(idx)) collected.set(idx, t)
+
+    const missingIndexes = requiredIndexes.filter((i) => !collected.has(i))
+    if (!missingIndexes.length) break
+    attempt++
+  }
+  return collected
 }
 
 async function writeSrt(project, cues) {
@@ -116,9 +213,7 @@ async function writeSrt(project, cues) {
   })
 }
 
-// Gọi LLM dịch 1 nhóm, parse JSON bền vững (bỏ code fence ```json), và tự động
-// bù các index bị thiếu (JSON bị cắt ngắn do truncation → chỉ trả về vài câu đầu).
-// Trả về Map(index_num → bản dịch). docs/05 §B.4.
+// Giữ lại translateGroup làm fallback (nếu Google Translate lỗi)
 export async function translateGroup(llm, system, prompt, job, projectId, opts = {}) {
   const { requiredIndexes = null, maxOutputTokens = null } = opts
   const call = (p) =>
@@ -167,8 +262,17 @@ export async function translateGroup(llm, system, prompt, job, projectId, opts =
 
 function buildSystemPrompt(preset, targetLanguage) {
   const base =
-    `Bạn là biên tập viên lồng tiếng chuyên nghiệp. Nhiệm vụ: dịch thoại video sang ${languageName(targetLanguage)}.` +
+    `Bạn là biên tập viên lồng tiếng chuyên nghiệp. Nhiệm vụ: viết lại câu lồng tiếng sang ${languageName(targetLanguage)}.` +
     ` Luôn giữ ý nghĩa gốc, không bịa thêm chi tiết.`
+  if (preset?.system_prompt) return `${base} Văn phong bắt buộc — ${preset.name}: ${preset.system_prompt}`
+  return `${base} Văn phong trung tính tự nhiên.`
+}
+
+function buildRestyleSystemPrompt(preset, targetLanguage) {
+  const base =
+    `Bạn là biên tập viên lồng tiếng chuyên nghiệp. Nhiệm vụ: VIẾT LẠI câu lồng tiếng đã được dịch sẵn sang ${languageName(targetLanguage)}.` +
+    ` BẢN DỊCH GỐC ĐÃ ĐÚNG NGHĨA — bạn CHỈ thay đổi văn phong, KHÔNG được thay đổi ý nghĩa.` +
+    ` KHÔNG thêm bớt nội dung, KHÔNG dịch lại từ đầu.`
   if (preset?.system_prompt) return `${base} Văn phong bắt buộc — ${preset.name}: ${preset.system_prompt}`
   return `${base} Văn phong trung tính tự nhiên.`
 }

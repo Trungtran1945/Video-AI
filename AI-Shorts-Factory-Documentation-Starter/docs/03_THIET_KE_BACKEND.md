@@ -64,6 +64,14 @@ Use-case gọi `resolveTts(settings.voiceProvider)` → **không biết** implem
 - `AlignService` — thuật toán đồng bộ giọng ↔ cảnh của SUMMARY (xem `05`).
 - `ForcedAlignService` — ép khớp thời lượng TTS vào slot timestamp gốc của TRANSLATE_DUB
   (tempo stretching / chèn lặng / yêu cầu rút gọn câu).
+  - **Overlap Detection**: Khi người dùng điều chỉnh `startSec`/`endSec` của segment N, hệ thống phải kiểm tra:
+    - `endSec` của segment N-1 không được lớn hơn `startSec` của segment N (trừ khi có khoảng lặng hợp lý ≥ 0.1s)
+    - Nếu chồng lấn, tự động đẩy `startSec` của segment N+1 hoặc trả về lỗi validation
+    
+  - **CPS Validation (Characters Per Second)**: Trước khi render, tính `CPS = length(translation) / (endSec - startSec)`. Nếu `CPS > 25` và `isTimeManuallyAdjusted == true`, trả về warning trong `GenerationJob.result`:
+    ```json
+    { "warnings": [{ "segmentId": "...", "type": "reading_speed", "cps": 32.5, "threshold": 25 }] }
+    ```
 - `SubtitleMaskService` — quản lý OcrRegion: merge bbox OCR, nhận region MANUAL từ Canvas
   (lưu `ratioX/Y/W/H` scale-invariant), chọn method `blur`/`fill`/`inpaint`, áp dụng `maskStrength`
   (độ mờ: blur radius + độ đục lớp phủ), gộp hardsub tĩnh (`isStatic` → 1 record cho toàn video),
@@ -137,6 +145,14 @@ export const CreateTranslateDubSchema = z.object({
   subPosition: z.enum(['original', 'top', 'bottom', 'custom']).default('original'),
   // 'original' = đè lên vùng mask; 'top'/'bottom' = safe zone; 'custom' = toạ độ riêng
   sourceVideoKey: z.string(),         // đã upload resumable xong
+});
+
+export const UpdateSegmentTimingSchema = z.object({
+  segmentId: z.string().uuid(),
+  startSec: z.number().min(0),
+  endSec: z.number().min(0),
+}).refine(data => data.endSec > data.startSec, {
+  message: "endSec must be greater than startSec"
 });
 ```
 

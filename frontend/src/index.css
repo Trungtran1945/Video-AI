@@ -111,4 +111,29 @@
   ::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.2);
   }
+
+  /* Timeline & Layout utilities */
+  .line-clamp-1 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+  }
+  .line-clamp-2 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  /* Timeline segment hover effects */
+  .timeline-segment {
+    transition: all 0.15s ease;
+  }
+  .timeline-segment:hover {
+    filter: brightness(1.2);
+  }
+  .timeline-segment.active {
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5);
+  }
 }

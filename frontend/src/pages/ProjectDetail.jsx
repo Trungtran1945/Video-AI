@@ -4,6 +4,7 @@ import { projectsApi } from '@/api/projects';
 import Layout from '@/components/Layout';
 import Loading from '@/components/Loading';
 import SubRegionEditor from '@/components/SubRegionEditor';
+import TimelineBar from '@/components/TimelineBar';
 import { motion } from 'framer-motion';
 import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, ScanText, Languages, AudioLines } from 'lucide-react';
 import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, MASK_METHODS, SOURCE_LANGUAGES, TARGET_LANGUAGES } from '@/lib/constants';
@@ -91,6 +92,13 @@ export default function ProjectDetail() {
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState('');
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [volume, setVolume] = useState(1);
+  const [muted, setMuted] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const videoRef = useRef(null);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -98,6 +106,89 @@ export default function ProjectDetail() {
   const { events: sseEvents, sseAvailable } = useJobEvents(id, !!project && ACTIVE_STATUSES.includes(project?.status));
 
   const isDub = project?.mode === 'TRANSLATE_DUB' || project?.mode === 'translate_dub';
+
+  // Playback control functions
+  const handlePlayPause = useCallback(() => {
+    const video = document.getElementById('output-video');
+    if (!video) return;
+    if (video.paused) {
+      video.play().catch(() => {});
+    } else {
+      video.pause();
+    }
+  }, []);
+
+  const handleSeek = useCallback((time) => {
+    const video = document.getElementById('output-video');
+    if (video) {
+      video.currentTime = time;
+      setCurrentTime(time);
+    }
+  }, []);
+
+  const handleSpeedChange = useCallback((speed) => {
+    const video = document.getElementById('output-video');
+    if (video) {
+      video.playbackRate = speed;
+      setPlaybackSpeed(speed);
+    }
+  }, []);
+
+  const handleVolumeChange = useCallback((vol) => {
+    const video = document.getElementById('output-video');
+    if (video) {
+      video.volume = vol;
+      setVolume(vol);
+      if (vol > 0 && muted) {
+        video.muted = false;
+        setMuted(false);
+      }
+    }
+  }, [muted]);
+
+  const handleMuteToggle = useCallback(() => {
+    const video = document.getElementById('output-video');
+    if (video) {
+      video.muted = !video.muted;
+      setMuted(!muted);
+    }
+  }, [muted]);
+
+  const handleSegmentClick = useCallback((segmentId) => {
+    const segment = transcript.find(s => s.id === segmentId);
+    if (segment) {
+      handleSeek(segment.startSec);
+    }
+  }, [transcript, handleSeek]);
+
+  // Sync video state
+  useEffect(() => {
+    const video = document.getElementById('output-video');
+    if (!video) return;
+
+    const onTimeUpdate = () => setCurrentTime(video.currentTime);
+    const onDurationChange = () => setDuration(video.duration || 0);
+    const onPlay = () => setIsPlaying(true);
+    const onPause = () => setIsPlaying(false);
+    const onLoadedMetadata = () => {
+      setDuration(video.duration || 0);
+      video.playbackRate = playbackSpeed;
+    };
+
+    video.addEventListener('timeupdate', onTimeUpdate);
+    video.addEventListener('durationchange', onDurationChange);
+    video.addEventListener('play', onPlay);
+    video.addEventListener('pause', onPause);
+    video.addEventListener('loadedmetadata', onLoadedMetadata);
+
+    return () => {
+      video.removeEventListener('timeupdate', onTimeUpdate);
+      video.removeEventListener('durationchange', onDurationChange);
+      video.removeEventListener('play', onPlay);
+      video.removeEventListener('pause', onPause);
+      video.removeEventListener('loadedmetadata', onLoadedMetadata);
+    };
+  }, [playbackSpeed]);
 
   const load = useCallback(async () => {
     try {
@@ -306,6 +397,225 @@ export default function ProjectDetail() {
     }
   };
 
+  // Find active segment for timeline
+  const activeSegmentId = transcript.find(s => currentTime >= s.startSec && currentTime < s.endSec)?.id || null;
+
+  // TRANSLATE_DUB: Two-panel layout
+  if (isDub) {
+    return (
+      <Layout>
+        <div className="h-screen flex flex-col bg-[#0F1117]">
+          {/* Header */}
+          <div className="shrink-0 px-4 py-3 border-b border-white/5 bg-[#0B0E14]">
+            <Link to="/projects" className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-white mb-2 transition">
+              <ArrowLeft className="w-3 h-3" /> Quay lại dự án
+            </Link>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <h1 className="text-lg font-bold text-white truncate">{project.title}</h1>
+                <StatusBadge status={project.status} />
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button onClick={() => setConfirmDelete(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs font-medium transition">
+                  <Trash2 className="w-3.5 h-3.5" /> Xoá
+                </button>
+                {canRegenerate && (
+                  <button onClick={handleRegenerate} disabled={regenerating}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 text-xs font-medium transition disabled:opacity-50">
+                    {regenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />} Chạy lại
+                  </button>
+                )}
+                {outputUrl && (
+                  <>
+                    <a href={outputUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition">
+                      <Play className="w-3.5 h-3.5" /> Xem
+                    </a>
+                    <a href={outputUrl} download className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 hover:border-white/20 text-slate-300 text-xs font-medium transition">
+                      <Download className="w-3.5 h-3.5" /> Tải
+                    </a>
+                  </>
+                )}
+              </div>
+            </div>
+            {error && (
+              <div className="mt-2 flex items-center gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {error}
+              </div>
+            )}
+          </div>
+
+          {/* Compact InfoBar */}
+          <div className="shrink-0 flex items-center gap-3 px-4 py-2 bg-[#161922] border-b border-white/5 text-xs">
+            <span className="text-slate-500">{MODE_LABELS[project.mode] || project.mode}</span>
+            <span className="text-slate-600">|</span>
+            <span className="text-slate-400">
+              {SOURCE_LANGUAGES[params.sourceLanguage ?? params.source_language] || params.sourceLanguage || 'Auto'} → {TARGET_LANGUAGES[params.targetLanguage ?? params.target_language] || project.language || 'vi'}
+            </span>
+            <span className="text-slate-600">|</span>
+            <span className="text-slate-400">{params.stylePreset ?? params.style_preset ?? '—'}</span>
+            <span className="text-slate-600">|</span>
+            <span className="text-slate-400">{(params.enableDubbing ?? params.enable_dubbing) ? 'Lồng tiếng' : 'Chỉ phụ đề'}</span>
+            <span className="text-slate-600">|</span>
+            <span className="text-slate-400">{MASK_METHODS[params.maskMethod ?? params.mask_method]?.label || params.maskMethod || '—'}</span>
+          </div>
+
+          <div className="flex-1 flex min-h-0">
+            {/* Left Panel: Video + SubRegionEditor */}
+            <div className="w-[65%] flex flex-col min-h-0 border-r border-white/5">
+              {outputUrl ? (
+                <div className="flex-1 flex flex-col min-h-0 p-3">
+                  <div className="relative flex-1 min-h-0 bg-black rounded-xl overflow-hidden">
+                    <video
+                      ref={videoRef}
+                      id="output-video"
+                      src={outputUrl}
+                      className="w-full h-full object-contain"
+                      onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+                    />
+                    {/* SubRegionEditor overlay */}
+                    <div className="absolute inset-0 pointer-events-none">
+                      <div className="pointer-events-auto h-full">
+                        <SubRegionEditor
+                          videoUrl={outputUrl}
+                          regions={regions}
+                          onChange={setRegions}
+                          onSave={handleSaveRegions}
+                          saving={savingRegions}
+                          saveError={regionError}
+                          compact
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex-1 flex items-center justify-center text-sm text-slate-500">
+                  Chưa có video output
+                </div>
+              )}
+            </div>
+
+            {/* Right Panel: Pipeline + Transcript */}
+            <div className="w-[35%] flex flex-col min-h-0 bg-[#161922]">
+              {/* Pipeline Progress Compact */}
+              <div className="p-3 border-b border-white/5">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-semibold text-white">Pipeline</h3>
+                  {isActive && (
+                    <span className="inline-flex items-center gap-1 text-[10px] text-blue-400">
+                      <Loader2 className="w-2.5 h-2.5 animate-spin" /> {sseAvailable ? 'SSE' : 'Polling'}
+                    </span>
+                  )}
+                </div>
+                {typeof project.progress === 'number' && (
+                  <div className="mb-2">
+                    <div className="h-1 rounded-full bg-white/5 overflow-hidden">
+                      <motion.div
+                        className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500"
+                        initial={{ width: 0 }}
+                        animate={{ width: `${Math.min(100, Math.max(0, project.progress))}%` }}
+                        transition={{ duration: 0.4 }}
+                      />
+                    </div>
+                    <div className="text-[10px] text-slate-500 mt-0.5 text-right">{project.progress}%</div>
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-1">
+                  {stages.map((stageKey) => {
+                    const stage = STAGE_LABELS[stageKey];
+                    const Icon = stageIcons[stageKey] || Circle;
+                    const job = jobByStage[stageKey];
+                    const isCurrent = job?.status === 'running';
+                    const isDone = job?.status === 'success';
+                    const isError = ['failed', 'error', 'timeout'].includes(job?.status);
+                    return (
+                      <div
+                        key={stageKey}
+                        className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] ${
+                          isCurrent ? 'bg-blue-500/10 text-blue-400' :
+                          isDone ? 'bg-emerald-500/10 text-emerald-400' :
+                          isError ? 'bg-red-500/10 text-red-400' :
+                          'bg-white/5 text-slate-500'
+                        }`}
+                      >
+                        {isDone ? <CheckCircle className="w-2.5 h-2.5" /> :
+                         isError ? <AlertCircle className="w-2.5 h-2.5" /> :
+                         isCurrent ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> :
+                         <Icon className="w-2.5 h-2.5" />}
+                        <span className="truncate max-w-[80px]">{stage?.label || stageKey.split('.').pop()}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Transcript Editor */}
+              <div className="flex-1 min-h-0 overflow-hidden">
+                <TranscriptEditor
+                  transcript={transcript}
+                  onSeek={handleSeek}
+                  hasVideo={!!outputUrl}
+                  onSave={handleSaveTranscript}
+                  onRedub={handleRedub}
+                  saving={savingTranscript}
+                  redubbing={redubbing}
+                  disabled={isActive}
+                  error={transcriptError}
+                  compact
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Timeline Bar */}
+          {transcript.length > 0 && (
+            <TimelineBar
+              transcript={transcript}
+              currentTime={currentTime}
+              duration={duration}
+              isPlaying={isPlaying}
+              playbackSpeed={playbackSpeed}
+              volume={volume}
+              muted={muted}
+              onSeek={handleSeek}
+              onPlayPause={handlePlayPause}
+              onSpeedChange={handleSpeedChange}
+              onVolumeChange={handleVolumeChange}
+              onMuteToggle={handleMuteToggle}
+              onSegmentClick={handleSegmentClick}
+              activeSegmentId={activeSegmentId}
+            />
+          )}
+
+          <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+            <AlertDialogContent className="bg-[#161922] border-white/10 text-slate-200">
+              <AlertDialogHeader>
+                <AlertDialogTitle className="text-white">Xoá dự án này?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Dự án "{project.title}" cùng video nguồn, giọng đọc, phụ đề và video render sẽ bị xoá vĩnh viễn khỏi kho lưu trữ. Hành động này không thể hoàn tác.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel className="bg-transparent border-white/10 text-slate-300 hover:bg-white/5 hover:text-white">
+                  Huỷ
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={(e) => { e.preventDefault(); handleDelete(); }}
+                  disabled={deleting}
+                  className="bg-red-600 hover:bg-red-500 text-white"
+                >
+                  {deleting ? 'Đang xoá...' : 'Xoá vĩnh viễn'}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+      </Layout>
+    );
+  }
+
+  // SUMMARY: Original layout
   return (
     <Layout>
       <div className="p-6 lg:p-8 max-w-5xl mx-auto">
@@ -574,7 +884,7 @@ function InfoGrid({ project, isDub, params }) {
   );
 }
 
-function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, saving, redubbing, disabled, error }) {
+function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, saving, redubbing, disabled, error, compact = false }) {
   const [edits, setEdits] = useState({});
 
   const getTranslation = (seg) => (edits[seg.id] !== undefined ? edits[seg.id] : seg.translation);
@@ -598,6 +908,80 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
     onRedub();
   };
 
+  // Compact mode for2-panel layout
+  if (compact) {
+    if (!transcript.length) {
+      return (
+        <div className="h-full flex flex-col items-center justify-center p-4 text-center">
+          <p className="text-xs text-slate-500">
+            Chưa có lời thoại. Hãy chạy pipeline.
+          </p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="h-full flex flex-col">
+        {/* Header */}
+        <div className="shrink-0 p-3 border-b border-white/5">
+          <div className="flex items-center justify-between gap-2 mb-1">
+            <h3 className="text-xs font-semibold text-white">Lời thoại</h3>
+            <span className="text-[10px] text-slate-500">{translatedCount}/{transcript.length}</span>
+          </div>
+          {error && (
+            <div className="mb-2 flex items-center gap-1 text-[10px] text-red-400 bg-red-500/10 rounded px-2 py-1">
+              <AlertCircle className="w-2.5 h-2.5 shrink-0" /> {error}
+            </div>
+          )}
+          <div className="flex gap-1">
+            <button onClick={handleSave} disabled={saving || disabled || dirtyCount === 0}
+              className="flex items-center gap-1 px-2 py-1 rounded border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 text-[10px] font-medium transition disabled:opacity-50">
+              {saving ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <CheckCircle className="w-2.5 h-2.5" />}
+              Lưu{dirtyCount > 0 ? ` (${dirtyCount})` : ''}
+            </button>
+            <button onClick={handleRedub} disabled={redubbing || disabled}
+              className="flex items-center gap-1 px-2 py-1 rounded border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 text-[10px] font-medium transition disabled:opacity-50">
+              {redubbing ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <AudioLines className="w-2.5 h-2.5" />}
+              Lồng tiếng
+            </button>
+          </div>
+        </div>
+
+        {/* Transcript list */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
+          {transcript.map((seg, i) => {
+            const isDirty = edits[seg.id] !== undefined && edits[seg.id] !== seg.translation;
+            return (
+              <div key={seg.id || i} className={`p-2 rounded-lg border transition ${
+                isDirty ? 'bg-amber-500/5 border-amber-500/20' : 'bg-white/[0.02] border-white/5'
+              }`}>
+                <div className="flex items-center justify-between gap-1 mb-1">
+                  <button onClick={() => onSeek(seg.startSec)} disabled={!hasVideo}
+                    className="text-[10px] text-slate-500 hover:text-blue-400 transition disabled:cursor-default tabular-nums">
+                    {fmtSec(seg.startSec)} → {fmtSec(seg.endSec)}
+                  </button>
+                  {seg.speaker && (
+                    <span className="text-[8px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-300">{seg.speaker}</span>
+                  )}
+                </div>
+                <div className="text-[11px] text-slate-400 line-clamp-1 mb-1">{seg.text}</div>
+                <textarea
+                  value={getTranslation(seg)}
+                  onChange={(e) => setEdits((p) => ({ ...p, [seg.id]: e.target.value }))}
+                  disabled={disabled}
+                  rows={1}
+                  placeholder={seg.translation ? '' : '...'}
+                  className="w-full resize-none rounded bg-[#0F1117] border border-white/10 px-2 py-1 text-[11px] text-slate-200 leading-snug focus:outline-none focus:border-blue-500/50 disabled:opacity-60"
+                />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // Full mode (original)
   if (!transcript.length) {
     return (
       <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">

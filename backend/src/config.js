@@ -20,6 +20,7 @@ export const config = {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
   },
+  googleTranslateScriptUrl: process.env.GOOGLE_TRANSLATE_SCRIPT_URL || '',
   storageDir,
 }
 
