@@ -13,7 +13,9 @@ export class GoogleTranslate {
 
   async translate(text, sourceLang = 'auto', targetLang = 'vi') {
     if (!text?.trim()) return ''
-    const params = new URLSearchParams({ text: text.trim(), source: sourceLang, target: targetLang })
+    const p = { text: text.trim(), target: targetLang }
+    if (sourceLang && sourceLang !== 'auto') p.source = sourceLang
+    const params = new URLSearchParams(p)
     const url = `${this.scriptUrl}?${params}`
 
     let lastError = null

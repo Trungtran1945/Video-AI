@@ -211,6 +211,22 @@ async function loadJob(projectId, type) {
   )
 }
 
+function withTimeout(promise, ms, label = 'Stage') {
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} bị timeout sau ${Math.round(ms / 1000)}s – có thể FFmpeg đang treo.`)), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
+
+const STAGE_TIMEOUTS = {
+  'summary.render': 30 * 60 * 1000,
+  'dub.render': 30 * 60 * 1000,
+  'summary.align': 15 * 60 * 1000,
+  'dub.ttsAlign': 15 * 60 * 1000,
+}
+const DEFAULT_STAGE_TIMEOUT = 15 * 60 * 1000
+
 // Execute ONE stage end-to-end (reset → running → impl → success/fail).
 // Trả về true nếu thành công/skip, false nếu thất bại.
 async function executeStage(project, job, settings, setProgress, results, isFirstExecutedStage) {
@@ -235,7 +251,12 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
 
     const impl = STAGE_IMPL[job.type]
     if (!impl) throw new Error(`Stage không được hỗ trợ: ${job.type}`)
-    const result = await impl({ project, job, settings, setProgress, results })
+    const stageTimeout = STAGE_TIMEOUTS[job.type] || DEFAULT_STAGE_TIMEOUT
+    const result = await withTimeout(
+      impl({ project, job, settings, setProgress, results }),
+      stageTimeout,
+      job.type
+    )
     results[job.type] = result
 
     await updateById('generation_jobs', job.id, {

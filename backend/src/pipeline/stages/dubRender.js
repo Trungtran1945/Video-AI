@@ -17,6 +17,10 @@ import {
 } from '../context.js'
 
 // dub.render (docs/05 §B.6–B.7): mask hardsub → burn-in ASS → audio mix → mux NVENC.
+const MASK_TIMEOUT = 20 * 60 * 1000
+const BURN_TIMEOUT = 20 * 60 * 1000
+const DUB_TRACK_TIMEOUT = 15 * 60 * 1000
+
 export async function dubRender(ctx) {
   const { project, setProgress } = ctx
   const params = parseParams(project.params)
@@ -57,6 +61,7 @@ export async function dubRender(ctx) {
     await maskRegions(src, regions, maskedFile, {
       method: maskMethodMap[params.maskMethod] || 'fill',
       videoDims: { width: info.width, height: info.height },
+      timeout: MASK_TIMEOUT,
     })
     workingFile = maskedFile
   }
@@ -76,7 +81,7 @@ export async function dubRender(ctx) {
       subPosition: params.subPosition || 'original',
     })
     const burnedFile = path.join(dir, 'burned.mp4')
-    await burnSubtitlesStyled(workingFile, assPath, burnedFile)
+    await burnSubtitlesStyled(workingFile, assPath, burnedFile, { timeout: BURN_TIMEOUT })
     if (workingFile !== src) {
       try { fs.unlinkSync(workingFile) } catch (_) {}
     }
@@ -119,7 +124,9 @@ export async function dubRender(ctx) {
       totalSec,
       out: dubTrackWav,
       backgroundVolume: 0.25,
+      timeout: DUB_TRACK_TIMEOUT,
     })
+    setProgress(75)
     await muxStream(workingFile, dubTrackWav, finalFile, { format: ext === '.mkv' ? 'mkv' : 'mp4' })
     try { fs.unlinkSync(dubTrackWav) } catch (_) {}
   } else {
@@ -140,10 +147,13 @@ export async function dubRender(ctx) {
   // ── 4. Thumbnail + outputs row ─────────────────────────────────────────
   const thumbPath = path.join(dir, 'thumb.jpg')
   await makeThumbnail(finalFile, Math.max(0, Math.min(totalSec / 2, totalSec - 0.5)), thumbPath)
+  setProgress(90)
 
   const outputKey = toStorageKey(finalFile)
   const thumbKey = toStorageKey(thumbPath)
   const finalInfo = await probe(finalFile)
+  setProgress(95)
+
   await insert('outputs', {
     id: uuidv4(),
     project_id: project.id,
@@ -152,6 +162,7 @@ export async function dubRender(ctx) {
     duration_sec: round3(finalInfo.durationSec),
     thumbnail_key: thumbKey,
   })
+  setProgress(100)
 
   return {
     outputKey,

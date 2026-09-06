@@ -450,11 +450,11 @@ function enableExpr(r) {
 
 // Che vùng hardsub theo từng OcrRegion, chỉ bật trong khoảng thời gian của nó
 // (docs/07 §2.13). method: 'blur' | 'fill' | 'delogo'.
-export async function maskRegions(src, regions, out, { method = 'fill', videoDims } = {}) {
+export async function maskRegions(src, regions, out, { method = 'fill', videoDims, timeout = 0 } = {}) {
   ensureDir(out)
   const norms = (regions || []).map(normalizeRegion)
   if (!norms.length) {
-    await ffmpeg(['-y', '-i', src, '-an', '-c', 'copy', '-movflags', '+faststart', out])
+    await ffmpeg(['-y', '-i', src, '-an', '-c', 'copy', '-movflags', '+faststart', out], { timeout })
     return out
   }
 
@@ -472,7 +472,7 @@ export async function maskRegions(src, regions, out, { method = 'fill', videoDim
       filters.push(`[${i === 0 ? '0:v' : `ov${i - 1}`}][b${i}]overlay=${x}:${y}:enable='${enableExpr(r)}'[${prevLabel}]`)
     })
     filters.push(`[${prevLabel}]setsar=1[vout]`)
-    await ffmpeg([...inputs, '-filter_complex', filters.join(';'), '-map', '[vout]', '-an', ...(await encodeArgs()), '-movflags', '+faststart', out])
+    await ffmpeg([...inputs, '-filter_complex', filters.join(';'), '-map', '[vout]', '-an', ...(await encodeArgs()), '-movflags', '+faststart', out], { timeout })
     return out
   }
 
@@ -481,7 +481,7 @@ export async function maskRegions(src, regions, out, { method = 'fill', videoDim
       .map((r) => { const { x, y, w, h } = regionRect(r, videoDims); return `delogo=x=${x}:y=${y}:w=${w}:h=${h}:enable='${enableExpr(r)}'` })
       .concat('setsar=1')
       .join(',')
-    await ffmpeg(['-y', '-i', src, '-vf', chain, '-an', ...(await encodeArgs()), '-movflags', '+faststart', out])
+    await ffmpeg(['-y', '-i', src, '-vf', chain, '-an', ...(await encodeArgs()), '-movflags', '+faststart', out], { timeout })
     return out
   }
 
@@ -494,18 +494,18 @@ export async function maskRegions(src, regions, out, { method = 'fill', videoDim
     .map((r, i) => { const { x, y, w, h } = regionRect(r, videoDims); const op = (0.4 + strengthOf(r) * 0.6).toFixed(2); return `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${colors[i]}@${op}:t=fill:enable='${enableExpr(r)}'` })
     .concat('setsar=1')
     .join(',')
-  await ffmpeg(['-y', '-i', src, '-vf', chain, '-an', ...(await encodeArgs()), '-movflags', '+faststart', out])
+  await ffmpeg(['-y', '-i', src, '-vf', chain, '-an', ...(await encodeArgs()), '-movflags', '+faststart', out], { timeout })
   return out
 }
 
 // Burn-in phụ đề ASS có \pos định vị theo bbox cũ (docs/07 §2.14).
-export async function burnSubtitlesStyled(inFile, assPath, out) {
+export async function burnSubtitlesStyled(inFile, assPath, out, { timeout = 0 } = {}) {
   ensureDir(out)
   const cwd = path.dirname(assPath)
   const base = path.basename(assPath)
   await ffmpeg(
     ['-y', '-i', inFile, '-vf', `ass=${base}`, ...(await encodeArgs()), '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out],
-    { cwd }
+    { cwd, timeout }
   )
   return out
 }
@@ -524,7 +524,7 @@ export async function applyTempoAudio(inFile, out, { tempo = 1, padBeforeSec = 0
 
 // Ghép các segment dub theo offset + trộn với audio gốc làm nền (ducking −12dB ≈ ×0.25).
 // originalMedia: file video/audio nguồn để lấy background; entries: [{file, offsetSec}].
-export async function buildDubTrack({ originalMedia, entries = [], totalSec, out, backgroundVolume = 0.25 } = {}) {
+export async function buildDubTrack({ originalMedia, entries = [], totalSec, out, backgroundVolume = 0.25, timeout = 0 } = {}) {
   ensureDir(out)
   const info = await probe(originalMedia)
   const inputs = ['-i', originalMedia] // [0] background gốc
@@ -561,7 +561,7 @@ export async function buildDubTrack({ originalMedia, entries = [], totalSec, out
     mapLabel = '[aout]'
   }
 
-  await ffmpeg([...inputs, '-filter_complex', filters.join(';'), '-map', mapLabel, '-ac', '2', '-ar', '48000', '-c:a', 'pcm_s16le', out])
+  await ffmpeg([...inputs, '-filter_complex', filters.join(';'), '-map', mapLabel, '-ac', '2', '-ar', '48000', '-c:a', 'pcm_s16le', out], { timeout })
   return out
 }
 

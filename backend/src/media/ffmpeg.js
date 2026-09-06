@@ -50,11 +50,24 @@ function resolveFromPath(name) {
 export const FFMPEG_BIN = resolveBin('FFMPEG_PATH', 'ffmpeg')
 export const FFPROBE_BIN = resolveBin('FFPROBE_PATH', 'ffprobe')
 
-function runBin(bin, args, { captureStdout = false, cwd } = {}) {
+function runBin(bin, args, { captureStdout = false, cwd, timeout = 0 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { cwd, windowsHide: true })
     let stdout = ''
     let stderr = ''
+    let settled = false
+    let timer = null
+
+    if (timeout > 0) {
+      timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        try { child.kill('SIGTERM') } catch (_) {}
+        setTimeout(() => { try { child.kill('SIGKILL') } catch (_) {} }, 5000)
+        reject(new Error(`"${bin}" bị timeout sau ${Math.round(timeout / 1000)}s – có thể FFmpeg đang treo.`))
+      }, timeout)
+    }
+
     child.stdout.on('data', (d) => {
       if (captureStdout) stdout += d
     })
@@ -63,9 +76,15 @@ function runBin(bin, args, { captureStdout = false, cwd } = {}) {
       if (stderr.length > 128 * 1024) stderr = stderr.slice(-64 * 1024)
     })
     child.on('error', (err) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
       reject(new Error(`Không chạy được "${bin}". Hãy cài FFmpeg hoặc đặt FFMPEG_PATH trong .env. Chi tiết: ${err.message}`))
     })
     child.on('close', (code) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
       if (code === 0) resolve({ stdout, stderr })
       else {
         // Ưu tiên dòng chứa "Error" để dễ chẩn đoán, thay vì chỉ lấy đuôi bị cắt ngắn.
@@ -90,7 +109,8 @@ function enqueue(task) {
 }
 
 export function ffmpeg(args, opts = {}) {
-  return enqueue(() => runBin(FFMPEG_BIN, args, opts))
+  const { timeout, ...spawnOpts } = opts
+  return enqueue(() => runBin(FFMPEG_BIN, args, { ...spawnOpts, timeout }))
 }
 
 export async function ffmpegAvailable() {
