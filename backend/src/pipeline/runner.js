@@ -12,6 +12,29 @@ import {
 import eventBus from './eventBus.js'
 import { notifyQueue } from '../queue/notifyQueue.js'
 
+function isRateLimitError(err) {
+  if (err?.name === 'RateLimitExhaustedError') return true
+  const msg = (err?.message || '').toLowerCase()
+  return msg.includes('429') || msg.includes('rate limit') || msg.includes('quota')
+    || msg.includes('insufficient_quota') || msg.includes('retry-after')
+}
+
+function parseRetryAfter(err) {
+  const msg = err?.message || ''
+  const match = msg.match(/retry[_-]?after[:\s]*(\d+)/i)
+  if (match) return parseInt(match[1], 10)
+  return null
+}
+
+async function getNextRetryAt(provider) {
+  const limit = await queryOne(
+    `SELECT requests_per_minute FROM provider_rate_limits WHERE provider = ? AND tier = 'free' LIMIT 1`,
+    [provider]
+  )
+  // Next RPM reset = now + 60s (conservative)
+  return new Date(Date.now() + 60 * 1000).toISOString()
+}
+
 import summaryTranscribe from './stages/summaryTranscribe.js'
 import summarySceneDetect from './stages/summarySceneDetect.js'
 import summaryAnalyze from './stages/summaryAnalyze.js'
@@ -233,9 +256,17 @@ const DEFAULT_STAGE_TIMEOUT = 15 * 60 * 1000
 async function executeStage(project, job, settings, setProgress, results, isFirstExecutedStage, signal) {
   const projectId = project.id
   try {
+    // Check if this is a retry-stage waiting for cooldown
+    if (job.status === 'retry' && job.next_retry_at) {
+      const retryAt = new Date(job.next_retry_at)
+      if (Date.now() < retryAt.getTime()) {
+        return true
+      }
+    }
+
     await clearArtifacts(projectId, RESETS[job.type] || [])
 
-    if (job.status !== 'pending') {
+    if (job.status !== 'pending' && job.status !== 'retry') {
       await updateById('generation_jobs', job.id, { status: 'pending', error_message: null })
     }
     await updateById('generation_jobs', job.id, {
@@ -274,6 +305,37 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
     eventBus.publish(projectId, { stage: job.type, status: 'success', percent: 100 })
     return true
   } catch (err) {
+    if (isRateLimitError(err)) {
+      // Rate-limited: retry with scheduled nextRetryAt (docs/11 §4.2)
+      const MAX_RATE_LIMIT_RETRIES = 5
+      const attempts = (job.attempts || 0) + 1
+
+      if (attempts >= MAX_RATE_LIMIT_RETRIES) {
+        await failJob(job, projectId, `PROV_002: Tất cả key cho provider đã hết quota sau ${attempts} lần retry`)
+        return false
+      }
+
+      const retryAfter = parseRetryAfter(err)
+      const nextRetryAt = retryAfter
+        ? new Date(Date.now() + retryAfter * 1000).toISOString()
+        : await getNextRetryAt(STAGE_PROVIDER[job.type] || 'unknown')
+
+      await updateById('generation_jobs', job.id, {
+        status: 'retry',
+        step: 'rate_limited',
+        attempts,
+        next_retry_at: nextRetryAt,
+        error_message: `Rate limited: ${err.message}`,
+      })
+      eventBus.publish(projectId, {
+        stage: job.type,
+        status: 'retry',
+        nextRetryAt,
+        percent: 0,
+      })
+      return true
+    }
+
     await failJob(job, projectId, err.message)
     return false
   }
