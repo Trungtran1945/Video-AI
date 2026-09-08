@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { insert, run } from '../../db/query.js'
 import { sampleFrames, probe } from '../../media/mediaService.js'
 import { getProvider, ProviderError } from '../../providers/registry.js'
-import { tracked } from '../../providers/tracked.js'
+import { callProvider } from '../../lib/callProvider.js'
 import { projectDir, requireSourceFile, round2, round3 } from '../context.js'
 import fs from 'node:fs'
 
@@ -65,10 +65,17 @@ export async function dubOcr(ctx) {
   for (let i = 0; i < frames.length; i += CONCURRENCY) {
     const batch = frames.slice(i, i + CONCURRENCY)
     const results = await Promise.all(batch.map((f) =>
-      tracked(
-        { projectId: project.id, jobId: job.id, provider: ocr.id, type: 'ocr' },
-        () => ocr.provider.detectSubtitle({ imagePath: f.file, width: dims.width, height: dims.height })
-      ).then((r) => ({ t: f.t, boxes: r.boxes })).catch(() => ({ t: f.t, boxes: [] }))
+      callProvider({
+        provider: ocr.id,
+        type: 'ocr',
+        model: ocr.provider.model || ocr.id,
+        input: { imagePath: f.file, width: dims.width, height: dims.height },
+        fn: () => ocr.provider.detectSubtitle({ imagePath: f.file, width: dims.width, height: dims.height }),
+        userId: project.user_id,
+        apiKeyId: ocr.apiKeyId,
+        projectId: project.id,
+        jobId: job.id,
+      }).then((r) => ({ t: f.t, boxes: r.boxes })).catch(() => ({ t: f.t, boxes: [] }))
     ))
     boxesPerFrame.push(...results)
     setProgress(10 + Math.round(((i + batch.length) / frames.length) * 70))

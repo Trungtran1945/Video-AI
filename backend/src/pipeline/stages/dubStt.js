@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { insert, updateById } from '../../db/query.js'
 import { extractAudio, sliceAudio, probe, compressAudioForUpload } from '../../media/mediaService.js'
 import { getProvider } from '../../providers/registry.js'
-import { tracked } from '../../providers/tracked.js'
+import { callProvider } from '../../lib/callProvider.js'
 import { projectDir, tmpDirOf, ensureDir, requireSourceFile, round2 } from '../context.js'
 
 const CHUNK_SEC = 600
@@ -60,10 +60,17 @@ export async function dubStt(ctx) {
     // Upload bản MP3 nén thay vì WAV gốc (tránh vượt giới hạn dung lượng của Groq)
     const uploadFile = path.join(tmp, `dub_up_${i}.mp3`)
     await compressAudioForUpload(chunks[i].file, uploadFile)
-    const res = await tracked(
-      { projectId: project.id, jobId: job.id, provider: asr.id, type: 'asr' },
-      () => asr.provider.transcribe(uploadFile, { language: languageHint })
-    )
+    const res = await callProvider({
+      provider: asr.id,
+      type: 'asr',
+      model: asr.provider.model || asr.id,
+      input: { file: uploadFile, language: languageHint },
+      fn: () => asr.provider.transcribe(uploadFile, { language: languageHint }),
+      userId: project.user_id,
+      apiKeyId: asr.apiKeyId,
+      projectId: project.id,
+      jobId: job.id,
+    })
     try { fs.unlinkSync(uploadFile) } catch (_) {}
     if (!language || language === 'unknown') language = res.language
     for (const s of res.segments || []) {

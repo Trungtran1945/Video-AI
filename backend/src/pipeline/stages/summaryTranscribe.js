@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'path'
 import { extractAudio, sliceAudio, probe } from '../../media/mediaService.js'
 import { getProvider } from '../../providers/registry.js'
-import { tracked } from '../../providers/tracked.js'
+import { callProvider } from '../../lib/callProvider.js'
 import { projectDir, tmpDirOf, ensureDir, requireSourceFile, writeJson, toStorageKey, round2 } from '../context.js'
 
 const CHUNK_SEC = 600
@@ -41,10 +41,17 @@ export async function summaryTranscribe(ctx) {
   let language = null
   const segments = []
   for (let i = 0; i < chunks.length; i++) {
-    const res = await tracked(
-      { projectId: project.id, jobId: job.id, provider: asr.id, type: 'asr' },
-      () => asr.provider.transcribe(chunks[i].file, { language: project.language || undefined })
-    )
+    const res = await callProvider({
+      provider: asr.id,
+      type: 'asr',
+      model: asr.provider.model || asr.id,
+      input: { file: chunks[i].file, language: project.language || undefined },
+      fn: () => asr.provider.transcribe(chunks[i].file, { language: project.language || undefined }),
+      userId: project.user_id,
+      apiKeyId: asr.apiKeyId,
+      projectId: project.id,
+      jobId: job.id,
+    })
     if (!language || language === 'unknown') language = res.language
     for (const s of res.segments) {
       segments.push({

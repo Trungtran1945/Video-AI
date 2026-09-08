@@ -2,7 +2,7 @@ import path from 'path'
 import { query, run } from '../../db/query.js'
 import { makeThumbnail } from '../../media/mediaService.js'
 import { getProvider } from '../../providers/registry.js'
-import { tracked } from '../../providers/tracked.js'
+import { callProvider } from '../../lib/callProvider.js'
 import { textEmbedding } from '../alignService.js'
 import { projectDir, ensureDir, requireSourceFile, toStorageKey } from '../context.js'
 
@@ -43,10 +43,17 @@ export async function summaryAnalyze(ctx) {
   for (const scene of keys) {
     const thumbPath = path.join(thumbsDir, `${scene.id}.jpg`)
     await makeThumbnail(src, (scene.start_sec + scene.end_sec) / 2, thumbPath)
-    const described = await tracked(
-      { projectId: project.id, jobId: job.id, provider: vision.id, type: 'vision' },
-      () => vision.provider.describeImage({ imagePath: thumbPath })
-    )
+    const described = await callProvider({
+      provider: vision.id,
+      type: 'vision',
+      model: vision.provider.model || vision.id,
+      input: { imagePath: thumbPath },
+      fn: () => vision.provider.describeImage({ imagePath: thumbPath }),
+      userId: project.user_id,
+      apiKeyId: vision.apiKeyId,
+      projectId: project.id,
+      jobId: job.id,
+    })
     await run(`UPDATE scenes SET thumbnail_key = ?, description = ?, embedding = ? WHERE id = ?`, [
       toStorageKey(thumbPath),
       described.text.slice(0, 500),

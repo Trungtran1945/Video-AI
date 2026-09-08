@@ -2,7 +2,7 @@ import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import { query, updateById } from '../../db/query.js'
 import { getProvider } from '../../providers/registry.js'
-import { tracked } from '../../providers/tracked.js'
+import { callProvider } from '../../lib/callProvider.js'
 import { packSegment, buildTimelineRows, textEmbedding } from '../alignService.js'
 import { projectDir, ensureDir, parseJsonSafe, toStorageKey, round2, insertMany } from '../context.js'
 
@@ -31,10 +31,17 @@ export async function summaryAlign(ctx) {
     // Check abort signal
     if (signal?.aborted) throw new Error('Cancelled')
     setProgress(3 + Math.round((segmentsMeta.length / segments.length) * 55))
-    const synth = await tracked(
-      { projectId: project.id, jobId: job.id, provider: tts.id, type: 'tts' },
-      () => tts.provider.synthesize({ text: seg.narration, outPath: path.join(audioDir, `seg_${seg.index_num}.mp3`) })
-    )
+    const synth = await callProvider({
+      provider: tts.id,
+      type: 'tts',
+      model: tts.provider.model || tts.id,
+      input: { text: seg.narration, outPath: path.join(audioDir, `seg_${seg.index_num}.mp3`) },
+      fn: () => tts.provider.synthesize({ text: seg.narration, outPath: path.join(audioDir, `seg_${seg.index_num}.mp3`) }),
+      userId: project.user_id,
+      apiKeyId: tts.apiKeyId,
+      projectId: project.id,
+      jobId: job.id,
+    })
 
     const refs = (parseJsonSafe(seg.scene_refs, []) || [])
       .map((r) => ({ scene: scenesById.get(r.sceneId), weight: Number(r.weight) || 0.6 }))

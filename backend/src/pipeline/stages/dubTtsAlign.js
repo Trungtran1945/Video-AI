@@ -7,7 +7,7 @@ import {
   probe,
 } from '../../media/mediaService.js'
 import { getProvider } from '../../providers/registry.js'
-import { tracked } from '../../providers/tracked.js'
+import { callProvider } from '../../lib/callProvider.js'
 import {
   projectDir, ensureDir, round3, clamp,
 } from '../context.js'
@@ -55,11 +55,11 @@ export async function dubTtsAlign(ctx) {
     // Sinh audio + căn chỉnh cho 1 bản dịch. Nếu provider hỗ trợ tốc độ native,
     // synthesize lại đúng tốc độ (speed = tempo cần thiết) thay vì dùng atempo.
     const makeAudio = async (text) => {
-      let audio = await synth(tts, text, path.join(segDir, `seg_${String(i).padStart(5, '0')}.mp3`), job, project.id, 1)
+      let audio = await synth(tts, text, path.join(segDir, `seg_${String(i).padStart(5, '0')}.mp3`), job, project.id, 1, project.user_id)
       let fit = fitSegment(audio.durationSec, slotDur)
       if (supportsNativeSpeed && fit.tempo !== 1) {
         const speed = clamp(fit.tempo, SPEED_MIN, SPEED_MAX)
-        audio = await synth(tts, text, audio.audioPath, job, project.id, speed)
+        audio = await synth(tts, text, audio.audioPath, job, project.id, speed, project.user_id)
         fit = fitSegment(audio.durationSec, slotDur)
       }
       return { audio, fit }
@@ -70,7 +70,7 @@ export async function dubTtsAlign(ctx) {
     // Đọc dài hơn cả khi hớt tốc độ tối đa → rút gọn bản dịch rồi TTS lại (tối đa 2 lần)
     let attempt = 0
     while (fit.action === 'shorten' && llm && attempt < 2) {
-      const shortened = await shortenTranslation(llm, translation, fit.targetCharsRatio, job, project.id, attempt)
+      const shortened = await shortenTranslation(llm, translation, fit.targetCharsRatio, job, project.id, attempt, project.user_id)
       if (!shortened || shortened === translation) break
       translation = shortened
       ;({ audio, fit } = await makeAudio(translation))
@@ -146,25 +146,45 @@ export async function dubTtsAlign(ctx) {
   }
 }
 
-async function synth(tts, text, outPath, job, projectId, speed = 1) {
-  return tracked(
-    { projectId, jobId: job.id, provider: tts.id, type: 'tts' },
-    () => tts.provider.synthesize({ text, outPath, speed })
-  )
+async function synth(tts, text, outPath, job, projectId, speed = 1, userId = null) {
+  return callProvider({
+    provider: tts.id,
+    type: 'tts',
+    model: tts.provider.model || tts.id,
+    input: { text, outPath, speed },
+    fn: () => tts.provider.synthesize({ text, outPath, speed }),
+    userId,
+    apiKeyId: tts.apiKeyId,
+    projectId,
+    jobId: job.id,
+  })
 }
 
-async function shortenTranslation(llm, translation, ratio, job, projectId, attempt = 0) {
+async function shortenTranslation(llm, translation, ratio, job, projectId, attempt = 0, userId = null) {
   try {
-    const res = await tracked(
-      { projectId, jobId: job.id, provider: llm.id, type: 'llm' },
-      () => llm.provider.complete({
+    const res = await callProvider({
+      provider: llm.id,
+      type: 'llm',
+      model: llm.provider.model || llm.id,
+      input: {
         prompt:
           `Rút gọn câu lồng tiếng sau còn khoảng ${Math.round(ratio * 100)}% độ dài nhưng GIỮ NGUYÊN Ý CHÍNH, tự nhiên như lồng tiếng:\n"${translation}"\n` +
           `Trả về DUY NHẤT chuỗi kết quả, không giải thích${attempt > 0 ? ', cắt gọn hơn nữa' : ''}.`,
         temperature: 0.3,
         maxOutputTokens: 200,
-      })
-    )
+      },
+      fn: () => llm.provider.complete({
+        prompt:
+          `Rút gọn câu lồng tiếng sau còn khoảng ${Math.round(ratio * 100)}% độ dài nhưng GIỮ NGUYÊN Ý CHÍNH, tự nhiên như lồng tiếng:\n"${translation}"\n` +
+          `Trả về DUY NHẤT chuỗi kết quả, không giải thích${attempt > 0 ? ', cắt gọn hơn nữa' : ''}.`,
+        temperature: 0.3,
+        maxOutputTokens: 200,
+      }),
+      userId,
+      apiKeyId: llm.apiKeyId,
+      projectId,
+      jobId: job.id,
+    })
     const cleaned = res.text.replace(/^["'\s]+|["'\s]+$/g, '').trim()
     return cleaned || null
   } catch (_) {

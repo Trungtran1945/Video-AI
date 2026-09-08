@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne, updateById, insert, run } from '../../db/query.js'
 import { getProvider } from '../../providers/registry.js'
-import { tracked } from '../../providers/tracked.js'
+import { callProvider } from '../../lib/callProvider.js'
 import { projectDir, extractJsonBlock, round2 } from '../context.js'
 
 const CONTEXT_WINDOW_SEC = 30 // docs/05 §B.4: gom ~30 giây thoại / lần gọi LLM
@@ -88,7 +88,7 @@ export async function dubTranslate(ctx) {
       }
       if (!groupTranslations.length) continue
 
-      const restyledGroup = await restyleGroup(llm, restyleSystem, groupTranslations, preset, job, project.id)
+      const restyledGroup = await restyleGroup(llm, restyleSystem, groupTranslations, preset, job, project.id, project.user_id)
 
       for (const seg of group) {
         const restyledText = restyledGroup.get(seg.index_num)
@@ -135,7 +135,7 @@ export async function dubTranslate(ctx) {
 
 // LLM restyle: chỉ viết lại bản dịch đã chính xác theo style preset.
 // KHÔNG dịch lại — giữ nguyên nghĩa, chỉ thay văn phong.
-async function restyleGroup(llm, system, groupTranslations, preset, job, projectId) {
+async function restyleGroup(llm, system, groupTranslations, preset, job, projectId, userId) {
   const input = groupTranslations
     .map((t) => `${t.index}|${t.translation}`)
     .join('\n')
@@ -161,10 +161,17 @@ async function restyleGroup(llm, system, groupTranslations, preset, job, project
       p = `${prompt}\n\nLƯU Ý: trả về ĐÚNG định dạng JSON. Các index SAU CHƯA được viết lại (bắt buộc phải có đủ): ${missingNow.join(', ')}.`
     }
     const call = (pp) =>
-      tracked(
-        { projectId, jobId: job.id, provider: llm.id, type: 'llm' },
-        () => llm.provider.complete({ system, prompt: pp, json: true, temperature: 0.4, maxOutputTokens })
-      )
+      callProvider({
+        provider: llm.id,
+        type: 'llm',
+        model: llm.provider.model || llm.id,
+        input: { system, prompt: pp, json: true, temperature: 0.4, maxOutputTokens },
+        fn: () => llm.provider.complete({ system, prompt: pp, json: true, temperature: 0.4, maxOutputTokens }),
+        userId,
+        apiKeyId: llm.apiKeyId,
+        projectId,
+        jobId: job.id,
+      })
 
     const sanitize = (text) =>
       String(text || '')
@@ -218,12 +225,19 @@ async function writeSrt(project, cues) {
 
 // Giữ lại translateGroup làm fallback (nếu Google Translate lỗi)
 export async function translateGroup(llm, system, prompt, job, projectId, opts = {}) {
-  const { requiredIndexes = null, maxOutputTokens = null } = opts
+  const { requiredIndexes = null, maxOutputTokens = null, userId = null } = opts
   const call = (p) =>
-    tracked(
-      { projectId, jobId: job.id, provider: llm.id, type: 'llm' },
-      () => llm.provider.complete({ system, prompt: p, json: true, temperature: 0.4, maxOutputTokens })
-    )
+    callProvider({
+      provider: llm.id,
+      type: 'llm',
+      model: llm.provider.model || llm.id,
+      input: { system, prompt: p, json: true, temperature: 0.4, maxOutputTokens },
+      fn: () => llm.provider.complete({ system, prompt: p, json: true, temperature: 0.4, maxOutputTokens }),
+      userId,
+      apiKeyId: llm.apiKeyId,
+      projectId,
+      jobId: job.id,
+    })
 
   const sanitize = (text) =>
     String(text || '')

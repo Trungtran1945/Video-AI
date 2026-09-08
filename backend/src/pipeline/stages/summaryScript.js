@@ -2,7 +2,7 @@ import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import { query } from '../../db/query.js'
 import { getProvider } from '../../providers/registry.js'
-import { tracked } from '../../providers/tracked.js'
+import { callProvider } from '../../lib/callProvider.js'
 import { projectDir, readJson, extractJsonBlock, clamp, parseJsonSafe, insertMany } from '../context.js'
 
 const SYSTEM_PROMPT =
@@ -69,10 +69,17 @@ export async function summaryScript(ctx) {
   })
 
   const llm = await getProvider(project.user_id, 'llm')
-  const res = await tracked(
-    { projectId: project.id, jobId: job.id, provider: llm.id, type: 'llm' },
-    () => llm.provider.complete({ system: SYSTEM_PROMPT, prompt, json: true, maxOutputTokens: 8000 })
-  )
+  const res = await callProvider({
+    provider: llm.id,
+    type: 'llm',
+    model: llm.provider.model || llm.id,
+    input: { system: SYSTEM_PROMPT, prompt, json: true, maxOutputTokens: 8000 },
+    fn: () => llm.provider.complete({ system: SYSTEM_PROMPT, prompt, json: true, maxOutputTokens: 8000 }),
+    userId: project.user_id,
+    apiKeyId: llm.apiKeyId,
+    projectId: project.id,
+    jobId: job.id,
+  })
   setProgress(70)
 
   const parsed = extractJsonBlock(res.text)
