@@ -6,7 +6,12 @@ import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
 import { projectDir, extractJsonBlock, round2 } from '../context.js'
 
-const CONTEXT_WINDOW_SEC = 30 // docs/05 §B.4: gom ~30 giây thoại / lần gọi LLM
+// Wider context window for free tier = fewer LLM calls (docs/11 §3.1)
+function getContextWindowSec(project) {
+  let tier = 'free'
+  try { tier = JSON.parse(project.params || '{}').tier || 'free' } catch (_) {}
+  return tier === 'free' ? 45 : 30
+}
 
 // dub.translate (docs/05 §B.4): Hybrid Google Translate + LLM restyle.
 // Bước 1: Google Translate dịch sát nghĩa (accurate base translation).
@@ -75,7 +80,7 @@ export async function dubTranslate(ctx) {
   if (hasStyle && llm) {
     // Có style preset + có LLM → LLM viết lại theo style
     const restyleSystem = buildRestyleSystemPrompt(preset, targetLanguage)
-    const groups = groupByWindow(segments, CONTEXT_WINDOW_SEC)
+    const groups = groupByWindow(segments, getContextWindowSec(project))
     let restyled = 0
     for (let g = 0; g < groups.length; g++) {
       const group = groups[g]

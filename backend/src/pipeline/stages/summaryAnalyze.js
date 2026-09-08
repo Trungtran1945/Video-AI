@@ -40,28 +40,50 @@ export async function summaryAnalyze(ctx) {
   setProgress(5)
 
   let done = 0
-  for (const scene of keys) {
-    const thumbPath = path.join(thumbsDir, `${scene.id}.jpg`)
-    await makeThumbnail(src, (scene.start_sec + scene.end_sec) / 2, thumbPath)
-    const described = await callProvider({
+  const BATCH_SIZE = 5
+  for (let i = 0; i < keys.length; i += BATCH_SIZE) {
+    const batch = keys.slice(i, i + BATCH_SIZE)
+
+    // Generate all thumbnails in parallel
+    const thumbEntries = await Promise.all(batch.map(scene => {
+      const thumbPath = path.join(thumbsDir, `${scene.id}.jpg`)
+      return makeThumbnail(src, (scene.start_sec + scene.end_sec) / 2, thumbPath)
+        .then(() => ({ scene, thumbPath }))
+    }))
+
+    // Single callProvider call — if provider supports batch, use it;
+    // otherwise sequential within one call for caching benefit
+    const results = await callProvider({
       provider: vision.id,
       type: 'vision',
       model: vision.provider.model || vision.id,
-      input: { imagePath: thumbPath },
-      fn: () => vision.provider.describeImage({ imagePath: thumbPath }),
+      input: { imagePaths: thumbEntries.map(t => t.thumbPath) },
+      fn: async () => {
+        if (typeof vision.provider.describeBatch === 'function') {
+          return vision.provider.describeBatch({ imagePaths: thumbEntries.map(t => t.thumbPath) })
+        }
+        return Promise.all(thumbEntries.map(t =>
+          vision.provider.describeImage({ imagePath: t.thumbPath })
+        ))
+      },
       userId: project.user_id,
       apiKeyId: vision.apiKeyId,
       projectId: project.id,
       jobId: job.id,
     })
-    await run(`UPDATE scenes SET thumbnail_key = ?, description = ?, embedding = ? WHERE id = ?`, [
-      toStorageKey(thumbPath),
-      described.text.slice(0, 500),
-      JSON.stringify(textEmbedding(described.text)),
-      scene.id,
-    ])
-    done++
-    setProgress(5 + Math.round((done / keys.length) * 92))
+
+    const describedList = Array.isArray(results) ? results : [results]
+    for (let j = 0; j < batch.length; j++) {
+      const described = describedList[j]
+      await run(`UPDATE scenes SET thumbnail_key = ?, description = ?, embedding = ? WHERE id = ?`, [
+        toStorageKey(thumbEntries[j].thumbPath),
+        described.text.slice(0, 500),
+        JSON.stringify(textEmbedding(described.text)),
+        batch[j].id,
+      ])
+      done++
+      setProgress(5 + Math.round((done / keys.length) * 92))
+    }
   }
 
   return { keySceneCount: done }

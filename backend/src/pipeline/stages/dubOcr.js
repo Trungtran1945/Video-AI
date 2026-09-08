@@ -8,7 +8,12 @@ import { callProvider } from '../../lib/callProvider.js'
 import { projectDir, requireSourceFile, round2, round3 } from '../context.js'
 import fs from 'node:fs'
 
-const FRAME_FPS = 2
+// Cloud free-tier OCR: reduce fps to save quota (docs/11 §3.1)
+function getFrameFps(ocrId) {
+  const isCloudOcr = ocrId !== 'tesseract'
+  if (isCloudOcr) return Number(process.env.OCR_SAMPLE_FPS) || 0.5
+  return 2 // local Tesseract: full fps
+}
 const FRAME_CAP = 600
 const IOU_THRESHOLD = 0.7
 const MIN_REGION_SEC = 0.5
@@ -27,9 +32,6 @@ export async function dubOcr(ctx) {
 
   const info = await probe(src)
   const dims = { width: info.width || 1280, height: info.height || 720 }
-
-  const frames = await sampleFrames(src, framesDir, { fps: FRAME_FPS, cap: FRAME_CAP })
-  setProgress(10)
 
   let ocr
   try {
@@ -60,6 +62,10 @@ export async function dubOcr(ctx) {
     throw err
   }
 
+  const FRAME_FPS = getFrameFps(ocr.id)
+  const frames = await sampleFrames(src, framesDir, { fps: FRAME_FPS, cap: FRAME_CAP })
+  setProgress(10)
+
   // OCR từng frame (song song CONCURRENCY, local Tesseract không bị quota)
   const boxesPerFrame = []
   for (let i = 0; i < frames.length; i += CONCURRENCY) {
@@ -82,7 +88,7 @@ export async function dubOcr(ctx) {
   }
 
   // Merge box liên tiếp có IoU > 0.7 thành region timeline (docs/05 §B.3)
-  const regions = mergeBoxes(boxesPerFrame)
+  const regions = mergeBoxes(boxesPerFrame, FRAME_FPS)
   const kept = regions.filter((r) => r.endSec - r.startSec >= MIN_REGION_SEC)
 
   // Giữ MANUAL regions người dùng đã lưu trước đó (không xoá khi re-run)
@@ -137,19 +143,19 @@ export async function dubOcr(ctx) {
 
 // Gộp box theo thời gian: cùng vị trí (IoU > ngưỡng) và cách nhau ≤ 1.5 lần
 // khoảng lấy frame → cùng một region hiển thị liên tục trên màn hình.
-function mergeBoxes(boxesPerFrame) {
+function mergeBoxes(boxesPerFrame, frameFps) {
   const regions = []
   for (const { t, boxes } of boxesPerFrame) {
     for (const b of boxes) {
       const last = regions[regions.length - 1]
       if (
         last &&
-        t - last.endSec <= (1 / FRAME_FPS) * 1.6 &&
+        t - last.endSec <= (1 / frameFps) * 1.6 &&
         iou(last.samples[last.samples.length - 1], b) > IOU_THRESHOLD
       ) {
         last.endSec = t
         last.samples.push(b)
-      } else if (last && t - last.endSec <= (1 / FRAME_FPS) * 1.6 && overlapsAny(last, b)) {
+      } else if (last && t - last.endSec <= (1 / frameFps) * 1.6 && overlapsAny(last, b)) {
         last.endSec = t
         last.samples.push(b)
       } else {
