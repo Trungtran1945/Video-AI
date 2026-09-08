@@ -4,9 +4,9 @@ import { projectsApi } from '@/api/projects';
 import Layout from '@/components/Layout';
 import Loading from '@/components/Loading';
 import SubRegionEditor from '@/components/SubRegionEditor';
-import TimelineBar from '@/components/TimelineBar';
-import { motion } from 'framer-motion';
-import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, ScanText, Languages, AudioLines } from 'lucide-react';
+import { VideoTimeline } from '@/components/timeline';
+import { motion, AnimatePresence } from 'framer-motion';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, ScanText, Languages, AudioLines } from 'lucide-react';
 import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, MASK_METHODS, SOURCE_LANGUAGES, TARGET_LANGUAGES } from '@/lib/constants';
 import { useJobEvents } from '@/hooks/useJobEvents';
 import {
@@ -98,6 +98,8 @@ export default function ProjectDetail() {
   const [muted, setMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [globalMaskOpacity, setGlobalMaskOpacity] = useState(70);
+  const [targetLanguage, setTargetLanguage] = useState('vi');
   const videoRef = useRef(null);
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -106,20 +108,27 @@ export default function ProjectDetail() {
   const { events: sseEvents, sseAvailable } = useJobEvents(id, !!project && ACTIVE_STATUSES.includes(project?.status));
 
   const isDub = project?.mode === 'TRANSLATE_DUB' || project?.mode === 'translate_dub';
+  const outputUrl = project?.output?.storage_key ? `/storage/${project.output.storage_key}` : null;
+  const isVideoOutput = /\.(mp4|webm|mov|m4v|mkv)$/i.test(project?.output?.storage_key || '');
 
   // Playback control functions
   const handlePlayPause = useCallback(() => {
-    const video = document.getElementById('output-video');
+    const video = videoRef.current || document.getElementById('output-video');
     if (!video) return;
     if (video.paused) {
-      video.play().catch(() => {});
+      video.play().then(() => {
+        setIsPlaying(true);
+      }).catch((err) => {
+        console.warn('Video play failed:', err);
+      });
     } else {
       video.pause();
+      setIsPlaying(false);
     }
   }, []);
 
   const handleSeek = useCallback((time) => {
-    const video = document.getElementById('output-video');
+    const video = videoRef.current || document.getElementById('output-video');
     if (video) {
       video.currentTime = time;
       setCurrentTime(time);
@@ -127,7 +136,7 @@ export default function ProjectDetail() {
   }, []);
 
   const handleSpeedChange = useCallback((speed) => {
-    const video = document.getElementById('output-video');
+    const video = videoRef.current || document.getElementById('output-video');
     if (video) {
       video.playbackRate = speed;
       setPlaybackSpeed(speed);
@@ -135,7 +144,7 @@ export default function ProjectDetail() {
   }, []);
 
   const handleVolumeChange = useCallback((vol) => {
-    const video = document.getElementById('output-video');
+    const video = videoRef.current || document.getElementById('output-video');
     if (video) {
       video.volume = vol;
       setVolume(vol);
@@ -147,7 +156,7 @@ export default function ProjectDetail() {
   }, [muted]);
 
   const handleMuteToggle = useCallback(() => {
-    const video = document.getElementById('output-video');
+    const video = videoRef.current || document.getElementById('output-video');
     if (video) {
       video.muted = !video.muted;
       setMuted(!muted);
@@ -163,7 +172,7 @@ export default function ProjectDetail() {
 
   // Sync video state
   useEffect(() => {
-    const video = document.getElementById('output-video');
+    const video = videoRef.current || document.getElementById('output-video');
     if (!video) return;
 
     const onTimeUpdate = () => setCurrentTime(video.currentTime);
@@ -188,7 +197,7 @@ export default function ProjectDetail() {
       video.removeEventListener('pause', onPause);
       video.removeEventListener('loadedmetadata', onLoadedMetadata);
     };
-  }, [playbackSpeed]);
+  }, [playbackSpeed, outputUrl]);
 
   const load = useCallback(async () => {
     try {
@@ -334,6 +343,13 @@ export default function ProjectDetail() {
     }
   };
 
+  // Apply global mask opacity to all regions
+  const handleGlobalMaskOpacityChange = (value) => {
+    setGlobalMaskOpacity(value);
+    const opacity = value / 100;
+    setRegions((prev) => prev.map((r) => ({ ...r, maskStrength: opacity })));
+  };
+
   const handleSaveTranscript = async (edits) => {
     if (savingTranscript) return;
     setSavingTranscript(true);
@@ -366,6 +382,14 @@ export default function ProjectDetail() {
     }
   };
 
+  // Sync targetLanguage from project params once loaded
+  useEffect(() => {
+    if (project?.params) {
+      const lang = project.params.targetLanguage ?? project.params.target_language;
+      if (lang) setTargetLanguage(lang);
+    }
+  }, [project?.params]);
+
   if (loading) return <Layout><Loading /></Layout>;
   if (!project) return <Layout><div className="p-8 text-center text-slate-400">Không tìm thấy dự án.</div></Layout>;
 
@@ -386,11 +410,9 @@ export default function ProjectDetail() {
     ? DUB_STAGES_ALL.filter((s) => s !== 'dub.ttsAlign' || enableDubbing)
     : SUMMARY_STAGES;
   const timeline = project.timeline || [];
-  const outputUrl = project.output?.storage_key ? `/storage/${project.output.storage_key}` : null;
-  const isVideoOutput = /\.(mp4|webm|mov|m4v|mkv)$/i.test(project.output?.storage_key || '');
 
   const seekTo = (sec) => {
-    const el = document.getElementById('output-video');
+    const el = videoRef.current || document.getElementById('output-video');
     if (el) {
       el.currentTime = sec;
       el.play?.().catch(() => {});
@@ -464,8 +486,25 @@ export default function ProjectDetail() {
             {/* Left Panel: Video + SubRegionEditor */}
             <div className="w-[65%] flex flex-col min-h-0 border-r border-white/5">
               {outputUrl ? (
-                <div className="flex-1 flex flex-col min-h-0 p-3">
-                  <div className="relative flex-1 min-h-0 bg-black rounded-xl overflow-hidden">
+                <div className="flex-1 flex flex-col min-h-0 p-3 gap-2">
+                  {/* Global Mask Opacity Control - above video, not overlapping */}
+                  <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 bg-[#161922] rounded-lg border border-white/5">
+                    <ScanText className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                    <span className="text-[10px] text-slate-400 shrink-0">Độ mờ vùng che:</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={globalMaskOpacity}
+                      onChange={(e) => handleGlobalMaskOpacityChange(Number(e.target.value))}
+                      className="flex-1 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                      title={`Độ mờ vùng che: ${globalMaskOpacity}%`}
+                    />
+                    <span className="text-[10px] font-mono text-zinc-400 w-8 text-right">{globalMaskOpacity}%</span>
+                  </div>
+
+                  {/* Video Container */}
+                  <div className="relative flex-1 min-h-0 bg-black rounded-xl overflow-hidden group">
                     <video
                       ref={videoRef}
                       id="output-video"
@@ -473,6 +512,40 @@ export default function ProjectDetail() {
                       className="w-full h-full object-contain"
                       onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
                     />
+                    {/* Play/Pause Overlay Button */}
+                    <AnimatePresence>
+                      {!isPlaying && (
+                        <motion.button
+                          initial={{ opacity: 0, scale: 0.8 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.8 }}
+                          transition={{ duration: 0.15 }}
+                          onClick={handlePlayPause}
+                          className="absolute inset-0 flex items-center justify-center z-10"
+                        >
+                          <div className="w-16 h-16 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/10 hover:bg-white/30 transition-colors">
+                            <Play className="w-7 h-7 text-white fill-white ml-1" />
+                          </div>
+                        </motion.button>
+                      )}
+                    </AnimatePresence>
+                    {/* Pause indicator on hover when playing */}
+                    <AnimatePresence>
+                      {isPlaying && (
+                        <motion.button
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 0 }}
+                          whileHover={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          onClick={handlePlayPause}
+                          className="absolute inset-0 flex items-center justify-center z-10"
+                        >
+                          <div className="w-16 h-16 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center border border-white/10">
+                            <Pause className="w-7 h-7 text-white" />
+                          </div>
+                        </motion.button>
+                      )}
+                    </AnimatePresence>
                     {/* SubRegionEditor overlay */}
                     <div className="absolute inset-0 pointer-events-none">
                       <div className="pointer-events-auto h-full">
@@ -563,15 +636,16 @@ export default function ProjectDetail() {
                   disabled={isActive}
                   error={transcriptError}
                   compact
+                  targetLanguage={targetLanguage}
+                  onLanguageChange={setTargetLanguage}
                 />
               </div>
             </div>
           </div>
 
-          {/* Timeline Bar */}
-          {transcript.length > 0 && (
-            <TimelineBar
-              transcript={transcript}
+          {/* Video Editing Timeline */}
+          <div className="shrink-0">
+            <VideoTimeline
               currentTime={currentTime}
               duration={duration}
               isPlaying={isPlaying}
@@ -585,8 +659,12 @@ export default function ProjectDetail() {
               onMuteToggle={handleMuteToggle}
               onSegmentClick={handleSegmentClick}
               activeSegmentId={activeSegmentId}
+              transcript={transcript}
+              project={project}
+              outputUrl={outputUrl}
+              className="rounded-none border-x-0 border-b-0 border-t border-white/10"
             />
-          )}
+          </div>
 
           <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
             <AlertDialogContent className="bg-[#161922] border-white/10 text-slate-200">
@@ -753,6 +831,8 @@ export default function ProjectDetail() {
             redubbing={redubbing}
             disabled={isActive}
             error={transcriptError}
+            targetLanguage={targetLanguage}
+            onLanguageChange={setTargetLanguage}
           />
         )}
 
@@ -884,7 +964,7 @@ function InfoGrid({ project, isDub, params }) {
   );
 }
 
-function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, saving, redubbing, disabled, error, compact = false }) {
+function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, saving, redubbing, disabled, error, compact = false, targetLanguage = 'vi', onLanguageChange }) {
   const [edits, setEdits] = useState({});
 
   const getTranslation = (seg) => (edits[seg.id] !== undefined ? edits[seg.id] : seg.translation);
@@ -928,6 +1008,22 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
             <h3 className="text-xs font-semibold text-white">Lời thoại</h3>
             <span className="text-[10px] text-slate-500">{translatedCount}/{transcript.length}</span>
           </div>
+          {/* Language Selector */}
+          <div className="flex items-center gap-1.5 mb-2">
+            <Languages className="w-3 h-3 text-slate-500 shrink-0" />
+            <select
+              value={targetLanguage}
+              onChange={(e) => onLanguageChange?.(e.target.value)}
+              disabled={disabled}
+              className="flex-1 bg-[#0F1117] border border-white/10 rounded px-2 py-0.5 text-[10px] text-slate-300 focus:outline-none focus:border-blue-500/50 disabled:opacity-60"
+            >
+              <option value="vi">Tiếng Việt</option>
+              <option value="en">Tiếng Anh</option>
+              <option value="ja">Tiếng Nhật</option>
+              <option value="ko">Tiếng Hàn</option>
+              <option value="zh">Tiếng Trung</option>
+            </select>
+          </div>
           {error && (
             <div className="mb-2 flex items-center gap-1 text-[10px] text-red-400 bg-red-500/10 rounded px-2 py-1">
               <AlertCircle className="w-2.5 h-2.5 shrink-0" /> {error}
@@ -952,9 +1048,23 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
           {transcript.map((seg, i) => {
             const isDirty = edits[seg.id] !== undefined && edits[seg.id] !== seg.translation;
             return (
-              <div key={seg.id || i} className={`p-2 rounded-lg border transition ${
-                isDirty ? 'bg-amber-500/5 border-amber-500/20' : 'bg-white/[0.02] border-white/5'
-              }`}>
+              <div
+                key={seg.id || i}
+                draggable={!disabled}
+                onDragStart={(e) => {
+                  e.dataTransfer.setData('application/x-transcript-segment', JSON.stringify({
+                    id: seg.id,
+                    text: seg.translation || seg.text,
+                    startSec: seg.startSec,
+                    endSec: seg.endSec,
+                    duration: seg.endSec - seg.startSec,
+                  }));
+                  e.dataTransfer.effectAllowed = 'copy';
+                }}
+                className={`p-2 rounded-lg border transition cursor-grab active:cursor-grabbing ${
+                  isDirty ? 'bg-amber-500/5 border-amber-500/20' : 'bg-white/[0.02] border-white/5'
+                }`}
+              >
                 <div className="flex items-center justify-between gap-1 mb-1">
                   <button onClick={() => onSeek(seg.startSec)} disabled={!hasVideo}
                     className="text-[10px] text-slate-500 hover:text-blue-400 transition disabled:cursor-default tabular-nums">
@@ -1002,7 +1112,23 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
             Gốc ↔ bản dịch{hasVideo ? ' — nhấn vào giờ để nhảy tới đoạn đó trong video' : ''}. Đã dịch {translatedCount}/{transcript.length} câu.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Language Selector */}
+          <div className="flex items-center gap-1.5">
+            <Languages className="w-3.5 h-3.5 text-slate-500" />
+            <select
+              value={targetLanguage}
+              onChange={(e) => onLanguageChange?.(e.target.value)}
+              disabled={disabled}
+              className="bg-[#0F1117] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-blue-500/50 disabled:opacity-60"
+            >
+              <option value="vi">Tiếng Việt</option>
+              <option value="en">Tiếng Anh</option>
+              <option value="ja">Tiếng Nhật</option>
+              <option value="ko">Tiếng Hàn</option>
+              <option value="zh">Tiếng Trung</option>
+            </select>
+          </div>
           <button onClick={handleSave} disabled={saving || disabled || dirtyCount === 0}
             className="flex items-center gap-2 px-3 py-2 rounded-xl border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 text-sm font-semibold transition disabled:opacity-50">
             {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
@@ -1026,7 +1152,21 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
         {transcript.map((seg, i) => {
           const isDirty = edits[seg.id] !== undefined && edits[seg.id] !== seg.translation;
           return (
-            <div key={seg.id || i} className="p-3 rounded-xl bg-white/[0.02] border border-white/5">
+            <div
+              key={seg.id || i}
+              draggable={!disabled}
+              onDragStart={(e) => {
+                e.dataTransfer.setData('application/x-transcript-segment', JSON.stringify({
+                  id: seg.id,
+                  text: seg.translation || seg.text,
+                  startSec: seg.startSec,
+                  endSec: seg.endSec,
+                  duration: seg.endSec - seg.startSec,
+                }));
+                e.dataTransfer.effectAllowed = 'copy';
+              }}
+              className="p-3 rounded-xl bg-white/[0.02] border border-white/5 cursor-grab active:cursor-grabbing"
+            >
               <div className="flex items-center justify-between gap-2 mb-1.5">
                 <button onClick={() => onSeek(seg.startSec)} disabled={!hasVideo}
                   className="flex items-center gap-2 text-[11px] text-slate-500 hover:text-blue-400 transition disabled:hover:text-slate-500 disabled:cursor-default">

@@ -25,6 +25,7 @@ import ProviderSettings from '@/pages/ProviderSettings';
 import ApiKeys from '@/pages/ApiKeys';
 import Logs from '@/pages/Logs';
 import Admin from '@/pages/Admin';
+import TimelineDemo from '@/pages/TimelineDemo';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -58,6 +59,7 @@ const AuthenticatedApp = () => {
       <Route path="/register" element={<Register />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/timeline" element={<TimelineDemo />} />
       <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} />}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/projects" element={<Projects />} />
