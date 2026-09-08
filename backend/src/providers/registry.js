@@ -22,6 +22,11 @@ export class ProviderError extends Error {
   }
 }
 
+export const ERROR_CODES = {
+  PROV_001: 'PROV_001', // Missing API key
+  PROV_002: 'PROV_002', // All keys for provider exhausted
+}
+
 export const PROVIDER_LABELS = {
   gemini: 'Google Gemini',
   openai: 'OpenAI',
@@ -109,20 +114,20 @@ const SETTINGS_COLUMN = {
 
 async function resolveApiKey(userId, providerId) {
   const rows = await query(
-    `SELECT encrypted_key FROM api_keys WHERE user_id = ? AND provider = ? AND is_active = 1 ORDER BY created_date DESC`,
+    `SELECT id, encrypted_key FROM api_keys WHERE user_id = ? AND provider = ? AND is_active = 1 ORDER BY created_date DESC`,
     [userId, providerId]
   )
   for (const row of rows) {
     if (!row.encrypted_key) continue
     try {
       const key = decrypt(row.encrypted_key)
-      if (key) return key
+      if (key) return { key, apiKeyId: row.id }
     } catch (_) {}
   }
   for (const envName of ENV_KEYS[providerId] || []) {
-    if (process.env[envName]) return process.env[envName]
+    if (process.env[envName]) return { key: process.env[envName], apiKeyId: null }
   }
-  return null
+  return { key: null, apiKeyId: null }
 }
 
 async function getUserChoice(userId, type) {
@@ -148,21 +153,21 @@ export async function getProvider(userId, type, { id } = {}) {
     )
   }
   if (KEYLESS.has(providerId)) {
-    return { id: providerId, provider: factory(null) }
+    return { id: providerId, provider: factory(null), apiKeyId: null }
   }
-  const apiKey = await resolveApiKey(userId, providerId)
+  const { key: apiKey, apiKeyId } = await resolveApiKey(userId, providerId)
   if (!apiKey) {
-    // OCR: nếu provider yêu cầu key mà không có → tự động dùng Tesseract local
-    // (miễn phí, không key) thay vì báo lỗi, để pipeline vẫn chạy được.
+    // OCR: fallback to Tesseract local if no key
     if (type === 'ocr' && REGISTRY.ocr?.tesseract) {
       console.warn(`[provider] ocr '${providerId}' thiếu API key — dùng Tesseract local`)
-      return { id: 'tesseract', provider: REGISTRY.ocr.tesseract(null) }
+      return { id: 'tesseract', provider: REGISTRY.ocr.tesseract(null), apiKeyId: null }
     }
     throw new ProviderError(
-      `Chưa cấu hình API key cho ${PROVIDER_LABELS[providerId] || providerId}. Thêm key tại trang API Keys (provider: ${providerId}) hoặc đặt biến môi trường ${(ENV_KEYS[providerId] || []).join(' / ')}`
+      `Chưa cấu hình API key cho ${PROVIDER_LABELS[providerId] || providerId}. Thêm key tại trang API Keys (provider: ${providerId}) hoặc đặt biến môi trường ${(ENV_KEYS[providerId] || []).join(' / ')}`,
+      'PROV_001'
     )
   }
-  return { id: providerId, provider: factory(apiKey) }
+  return { id: providerId, provider: factory(apiKey), apiKeyId }
 }
 
 export default { getProvider, PROVIDER_LABELS, ProviderError }

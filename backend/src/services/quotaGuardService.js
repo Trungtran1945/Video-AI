@@ -35,11 +35,20 @@ export async function getQuotaSnapshot(userId, provider) {
   )
   const usedThisMinute = minuteResult?.cnt || 0
 
-  // Get rate limit config (default: no limit)
-  const limitToday = null // Can be configured per provider tier
-  const limitThisMinute = null
+  // Get rate limit config from provider_rate_limits table
+  const limit = await queryOne(
+    `SELECT * FROM provider_rate_limits
+     WHERE provider = ? AND (user_id = ? OR user_id IS NULL)
+     ORDER BY user_id DESC LIMIT 1`,
+    [provider, userId]
+  )
+  const limitToday = limit?.requests_per_day || null
+  const limitThisMinute = limit?.requests_per_minute || null
 
-  const percentUsed = limitToday ? (usedToday / limitToday) * 100 : 0
+  // percentUsed = max(daily%, minute%)
+  const pctDaily = limitToday ? usedToday / limitToday : 0
+  const pctMinute = limitThisMinute ? usedThisMinute / limitThisMinute : 0
+  const percentUsed = Math.max(pctDaily, pctMinute) * 100
 
   return {
     provider,
