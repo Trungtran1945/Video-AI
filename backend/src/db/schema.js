@@ -128,6 +128,8 @@ export async function initSchema() {
   try { db.run(`ALTER TABLE generation_jobs ADD COLUMN progress INTEGER DEFAULT 0`) } catch (_) {}
   // Group 1: Cancel timestamp
   try { db.run(`ALTER TABLE generation_jobs ADD COLUMN cancelled_at TEXT`) } catch (_) {}
+  // Group 5: Retry scheduling for rate-limited jobs (docs/11 §4.2)
+  try { db.run(`ALTER TABLE generation_jobs ADD COLUMN next_retry_at TEXT`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS scenes (
     id TEXT PRIMARY KEY,
