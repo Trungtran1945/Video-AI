@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { query } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { sendError } from '../../lib/httpError.js'
+import { getQuotaSnapshot } from '../../services/quotaGuardService.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -74,6 +75,17 @@ router.get('/', async (req, res) => {
     })
   } catch (err) {
     console.error('Providers error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
+// GET /api/v1/providers/:provider/quota — quota usage for current user
+router.get('/:provider/quota', async (req, res) => {
+  try {
+    const snapshot = await getQuotaSnapshot(req.user.id, req.params.provider)
+    res.json(snapshot)
+  } catch (err) {
+    console.error('Quota error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })
