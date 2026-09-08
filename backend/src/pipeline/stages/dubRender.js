@@ -22,10 +22,14 @@ const BURN_TIMEOUT = 20 * 60 * 1000
 const DUB_TRACK_TIMEOUT = 15 * 60 * 1000
 
 export async function dubRender(ctx) {
-  const { project, setProgress } = ctx
+  const { project, setProgress, signal } = ctx
   const params = parseParams(project.params)
   const src = requireSourceFile(project.source_video_key, 'Video nguồn')
   const dir = ensureDir(projectDir(project.id))
+
+  // Check abort signal
+  if (signal?.aborted) throw new Error('Cancelled')
+
   const info = await probe(src)
   const totalSec = round3(info.durationSec || project.target_duration_sec || 0)
 

@@ -6,11 +6,14 @@ import { projectDir, tmpDirOf, ensureDir, requireSourceFile, toStorageKey } from
 
 // dub.ingest (docs/05 §B.1): demux + chuẩn hoá LUFS cho STT.
 export async function dubIngest(ctx) {
-  const { project, setProgress } = ctx
+  const { project, setProgress, signal } = ctx
   const src = requireSourceFile(project.source_video_key, 'Video nguồn')
   const tmp = ensureDir(tmpDirOf(project.id))
   const dir = ensureDir(projectDir(project.id))
   setProgress(5)
+
+  // Check abort signal
+  if (signal?.aborted) throw new Error('Cancelled')
 
   const info = await probe(src)
   if (!info.durationSec) throw new Error('Không đọc được thời lượng video nguồn')

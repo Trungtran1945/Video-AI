@@ -6,7 +6,7 @@ import Loading from '@/components/Loading';
 import SubRegionEditor from '@/components/SubRegionEditor';
 import { VideoTimeline } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, ScanText, Languages, AudioLines } from 'lucide-react';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, ScanText, Languages, AudioLines, XCircle } from 'lucide-react';
 import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, MASK_METHODS, SOURCE_LANGUAGES, TARGET_LANGUAGES } from '@/lib/constants';
 import { useJobEvents } from '@/hooks/useJobEvents';
 import {
@@ -282,6 +282,7 @@ export default function ProjectDetail() {
 
   const isActive = project && ACTIVE_STATUSES.includes(project.status);
   const canRegenerate = project && ['completed', 'failed'].includes(project.status);
+  const canCancel = project && ['running', 'queued', 'pending'].includes(project.status); // Group 1: Cancel
 
   const handleRegenerate = async () => {
     if (regenerating) return;
@@ -294,6 +295,15 @@ export default function ProjectDetail() {
       setError('Không thể chạy lại pipeline: ' + (e?.response?.data?.message || e.message));
     } finally {
       setRegenerating(false);
+    }
+  };
+
+  const handleCancel = async () => { // Group 1: Cancel handler
+    try {
+      await projectsApi.cancel(id);
+      await load();
+    } catch (e) {
+      setError('Không thể huỷ project: ' + (e?.response?.data?.message || e.message));
     }
   };
 
@@ -442,6 +452,12 @@ export default function ProjectDetail() {
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs font-medium transition">
                   <Trash2 className="w-3.5 h-3.5" /> Xoá
                 </button>
+                {canCancel && ( // Group 1: Cancel button
+                  <button onClick={handleCancel}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-orange-500/30 text-orange-400 hover:bg-orange-500/10 text-xs font-medium transition">
+                    <XCircle className="w-3.5 h-3.5" /> Huỷ
+                  </button>
+                )}
                 {canRegenerate && (
                   <button onClick={handleRegenerate} disabled={regenerating}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 text-xs font-medium transition disabled:opacity-50">
@@ -718,6 +734,12 @@ export default function ProjectDetail() {
               className="flex items-center gap-2 px-4 py-2 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 text-sm font-semibold transition">
               <Trash2 className="w-4 h-4" /> Xoá
             </button>
+            {canCancel && ( // Group 1: Cancel button
+              <button onClick={handleCancel}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-orange-500/30 text-orange-400 hover:bg-orange-500/10 text-sm font-semibold transition">
+                <XCircle className="w-4 h-4" /> Huỷ
+              </button>
+            )}
             {canRegenerate && (
               <button onClick={handleRegenerate} disabled={regenerating}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 text-sm font-semibold transition disabled:opacity-50">

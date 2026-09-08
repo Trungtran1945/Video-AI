@@ -2,12 +2,16 @@ import { query, queryOne } from '../db/query.js'
 import { decrypt } from '../lib/crypto.js'
 import GeminiLlm from './llm/gemini.js'
 import OpenAiLlm from './llm/openai.js'
+import MockLlm from './llm/mockLlm.js'
 import OpenAiWhisperAsr from './asr/openaiWhisper.js'
+import MockAsr from './asr/mockAsr.js'
 import ElevenLabsTts from './tts/elevenlabs.js'
 import OpenAiTts from './tts/openaiTts.js'
 import EdgeTts from './tts/edgeTts.js'
 import GoogleTts from './tts/googleTts.js'
+import MockTts from './tts/mockTts.js'
 import GeminiVision from './vision/geminiVision.js'
+import MockVision from './vision/mockVision.js'
 import TesseractOcr from './vision/tesseractOcr.js'
 import GoogleTranslate from './translate/googleTranslate.js'
 
@@ -21,6 +25,7 @@ export class ProviderError extends Error {
 export const PROVIDER_LABELS = {
   gemini: 'Google Gemini',
   openai: 'OpenAI',
+  mock: 'Mock (dev/CI)',
   anthropic: 'Anthropic',
   huggingface: 'HuggingFace',
   whisper: 'OpenAI Whisper',
@@ -30,7 +35,6 @@ export const PROVIDER_LABELS = {
   openai_tts: 'OpenAI TTS',
   edge_tts: 'Edge TTS (miễn phí)',
   google_tts: 'Google TTS (miễn phí)',
-  google_tts: 'Google TTS',
   azure_speech: 'Azure Speech',
   clip: 'CLIP (local)',
   tesseract: 'Tesseract (local, miễn phí)',
@@ -51,19 +55,21 @@ const ENV_KEYS = {
   translate: ['GOOGLE_TRANSLATE_SCRIPT_URL'],
 }
 
-// Provider chạy không cần API key (Edge-TTS của Microsoft, Tesseract local, Google Translate via Apps Script).
-const KEYLESS = new Set(['edge_tts', 'google_tts', 'tesseract', 'google_translate'])
+// Provider chạy không cần API key (Edge-TTS của Microsoft, Tesseract local, Google Translate via Apps Script, Mock providers).
+const KEYLESS = new Set(['edge_tts', 'google_tts', 'tesseract', 'google_translate', 'mock'])
 
 const REGISTRY = {
   llm: {
     gemini: (key) => new GeminiLlm(key),
     openai: (key) => new OpenAiLlm(key),
+    mock: (key) => new MockLlm(key),
     anthropic: null,
     huggingface: null,
   },
   asr: {
     whisper: (key) => new OpenAiWhisperAsr(key),
     openai_whisper: (key) => new OpenAiWhisperAsr(key),
+    mock: (key) => new MockAsr(key),
     faster_whisper: null,
   },
   tts: {
@@ -71,10 +77,12 @@ const REGISTRY = {
     elevenlabs: (key) => new ElevenLabsTts(key),
     openai_tts: (key) => new OpenAiTts(key),
     google_tts: (key) => new GoogleTts(key),
+    mock: (key) => new MockTts(key),
     azure_speech: null,
   },
   vision: {
     gemini: (key) => new GeminiVision(key),
+    mock: (key) => new MockVision(key),
     clip: null,
   },
   // OCR hardsub (docs/05 §B.3): Gemini Vision (cần key) hoặc Tesseract local (keyless).

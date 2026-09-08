@@ -13,12 +13,14 @@ import logsRouter from './logs.js'
 import adminRouter from './admin.js'
 import dubDataRouter from './dubData.js'
 import eventsRouter from './events.js'
+import confirmPreviewRouter from './confirmPreview.js'
 
 const router = Router()
 
 router.use('/auth', authRouter)
 router.use('/projects', projectsRouter)
 router.use('/projects', generationRouter)
+router.use('/projects', confirmPreviewRouter) // FR-J2: POST /projects/:id/translate-dub/confirm-preview
 router.use('/', dubDataRouter) // /style-presets + /projects/:id/transcript|mask-regions
 router.use('/', eventsRouter) // SSE GET /projects/:id/events
 router.use('/upload', uploadRouter) // legacy multipart

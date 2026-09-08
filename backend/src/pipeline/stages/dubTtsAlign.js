@@ -15,8 +15,11 @@ import { fitSegment, placeSegments } from '../forcedAlignService.js'
 
 // dub.ttsAlign (docs/05 §B.5 — KHÓ NHẤT): TTS + Forced Alignment ép khớp slot gốc.
 export async function dubTtsAlign(ctx) {
-  const { project, job, setProgress } = ctx
+  const { project, job, setProgress, signal } = ctx
   const params = parseParams(project.params)
+
+  // Check abort signal
+  if (signal?.aborted) throw new Error('Cancelled')
 
   if (!params.enableDubbing) {
     return { skipped: true, reason: 'enableDubbing=false' }

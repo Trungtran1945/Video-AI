@@ -5,7 +5,9 @@ import { authMiddleware, requireRole } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { runPipeline, isPipelineRunning } from '../../pipeline/runner.js'
 import { deleteProjectFiles, collectProjectKeys } from '../../services/projectCleanup.js'
+import { cancelProjectUseCase } from '../../usecases/cancelProjectUseCase.js'
 import { sendError, ERR } from '../../lib/httpError.js'
+import { config } from '../../config.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -32,6 +34,25 @@ router.post('/', async (req, res) => {
     }
     if (!b.sourceVideoKey) {
       return sendError(res, 400, ERR.VALIDATION, 'sourceVideoKey is required', { field: 'sourceVideoKey' })
+    }
+
+    // Group 1: Copyright validation
+    if (b.copyrightAcknowledged !== true) {
+      return sendError(res, 400, ERR.COPYRIGHT_MISSING,
+        'Bạn phải xác nhận quyền sử dụng nội dung nguồn trước khi tạo project',
+        { field: 'copyrightAcknowledged' })
+    }
+
+    // Group 1: Concurrency limit check
+    const running = await queryOne(
+      `SELECT COUNT(*) as cnt FROM projects WHERE user_id = ? AND status = 'running'`,
+      [req.user.id]
+    )
+    const runningCount = running?.cnt || 0
+    const maxConcurrent = config.maxConcurrentProjectsPerUser
+    let status = 'pending'
+    if (runningCount >= maxConcurrent) {
+      status = 'queued'
     }
 
     // Merge params phẳng của TRANSLATE_DUB vào params JSON (docs/02 Project.params)
@@ -62,12 +83,17 @@ router.post('/', async (req, res) => {
       params.outputFormat = ['mp4', 'mkv'].includes(b.outputFormat) ? b.outputFormat : 'mp4'
     }
 
+    // Calculate expires_at based on retention policy
+    const expiresAt = new Date()
+    expiresAt.setDate(expiresAt.getDate() + config.projectRetentionDays)
+    const now = new Date().toISOString()
+
     const project = await insert('projects', {
       id: uuidv4(),
       user_id: req.user.id,
       mode,
       title: b.title.trim(),
-      status: 'pending',
+      status,
       language: b.language || (mode === 'TRANSLATE_DUB' ? (params.targetLanguage || 'vi') : 'vi'),
       style: b.style || (mode === 'SUMMARY' ? 'cinematic' : (params.stylePreset || null)),
       target_duration_sec: Number(b.targetDurationSec) || (mode === 'SUMMARY' ? 1500 : 60),
@@ -75,10 +101,15 @@ router.post('/', async (req, res) => {
       params: JSON.stringify(params),
       source_video_key: b.sourceVideoKey || null,
       template_video_key: null, // legacy STYLE_EDIT — ngừng ghi (docs/00 §2.2)
+      copyright_acknowledged: 1,
+      copyright_ack_at: now,
+      expires_at: expiresAt.toISOString(),
     })
 
-    // Kick off the real pipeline asynchronously
-    runPipeline(project.id).catch((e) => console.error('[Pipeline] start failed', e))
+    // Kick off the real pipeline asynchronously (only if not queued)
+    if (status === 'pending') {
+      runPipeline(project.id).catch((e) => console.error('[Pipeline] start failed', e))
+    }
 
     res.status(202).json({ ...project, params })
   } catch (err) {
@@ -148,6 +179,17 @@ router.get('/:id', async (req, res) => {
 router.get('/:id/timeline', requireProjectOwner, async (req, res) => {
   const timeline = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [req.params.id])
   res.json(timeline)
+})
+
+// POST /api/v1/projects/:id/cancel — FR-J1: Cancel running pipeline
+router.post('/:id/cancel', requireProjectOwner, async (req, res) => {
+  try {
+    const project = await cancelProjectUseCase(req.params.id)
+    res.json(project)
+  } catch (err) {
+    console.error('Cancel project error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', err.message || 'Internal server error')
+  }
 })
 
 // POST /api/v1/projects/:id/regenerate — rerun pipeline from the first failed

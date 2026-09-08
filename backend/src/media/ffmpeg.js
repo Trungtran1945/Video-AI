@@ -50,13 +50,34 @@ function resolveFromPath(name) {
 export const FFMPEG_BIN = resolveBin('FFMPEG_PATH', 'ffmpeg')
 export const FFPROBE_BIN = resolveBin('FFPROBE_PATH', 'ffprobe')
 
-function runBin(bin, args, { captureStdout = false, cwd, timeout = 0 } = {}) {
+function runBin(bin, args, { captureStdout = false, cwd, timeout = 0, signal } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { cwd, windowsHide: true })
     let stdout = ''
     let stderr = ''
     let settled = false
     let timer = null
+
+    // AbortSignal support: kill process on cancel
+    if (signal) {
+      if (signal.aborted) {
+        try { child.kill('SIGTERM') } catch (_) {}
+        setTimeout(() => { try { child.kill('SIGKILL') } catch (_) {} }, 5000)
+        settled = true
+        if (timer) clearTimeout(timer)
+        return reject(new Error('Cancelled'))
+      }
+      const onAbort = () => {
+        try { child.kill('SIGTERM') } catch (_) {}
+        setTimeout(() => { try { child.kill('SIGKILL') } catch (_) {} }, 5000)
+        if (!settled) {
+          settled = true
+          if (timer) clearTimeout(timer)
+          reject(new Error('Cancelled'))
+        }
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+    }
 
     if (timeout > 0) {
       timer = setTimeout(() => {
@@ -109,8 +130,8 @@ function enqueue(task) {
 }
 
 export function ffmpeg(args, opts = {}) {
-  const { timeout, ...spawnOpts } = opts
-  return enqueue(() => runBin(FFMPEG_BIN, args, { ...spawnOpts, timeout }))
+  const { timeout, signal, ...spawnOpts } = opts
+  return enqueue(() => runBin(FFMPEG_BIN, args, { ...spawnOpts, timeout, signal }))
 }
 
 export async function ffmpegAvailable() {

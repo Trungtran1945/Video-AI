@@ -38,11 +38,14 @@ function digestTranscript(segments) {
 }
 
 export async function summaryScript(ctx) {
-  const { project, job, setProgress } = ctx
+  const { project, job, setProgress, signal } = ctx
   const transcript = readJson(path.join(projectDir(project.id), 'transcript.json'))
   if (!transcript?.segments?.length) {
     throw new Error('Chưa có transcript — hãy retry từ stage summary.transcribe')
   }
+
+  // Check abort signal
+  if (signal?.aborted) throw new Error('Cancelled')
 
   const allScenes = await query('SELECT * FROM scenes WHERE project_id = ? ORDER BY start_sec ASC', [project.id])
   const described = allScenes.filter((s) => s.description)

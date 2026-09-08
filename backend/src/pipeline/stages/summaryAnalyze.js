@@ -24,12 +24,15 @@ export function selectKeyScenes(rows) {
 }
 
 export async function summaryAnalyze(ctx) {
-  const { project, job, setProgress } = ctx
+  const { project, job, setProgress, signal } = ctx
   const src = requireSourceFile(project.source_video_key, 'Video nguồn (phim)')
   const rows = await query('SELECT * FROM scenes WHERE project_id = ? ORDER BY start_sec ASC', [project.id])
   if (!rows.length) {
     throw new Error('Chưa có cảnh nào — hãy retry từ stage summary.sceneDetect')
   }
+
+  // Check abort signal
+  if (signal?.aborted) throw new Error('Cancelled')
 
   const keys = selectKeyScenes(rows)
   const vision = await getProvider(project.user_id, 'vision')

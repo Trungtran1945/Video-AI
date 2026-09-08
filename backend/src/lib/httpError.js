@@ -5,6 +5,9 @@ export const ERR = {
   AUTH_TOKEN: 'AUTH_001',        // thiếu / hết hạn token
   AUTH_FORBIDDEN: 'AUTH_002',    // không đủ quyền
   VALIDATION: 'VAL_001',         // validate thất bại (kèm field khi có)
+  OVERLAP_CONFLICT: 'VAL_002',   // overlap timing không tự giải quyết được
+  CONCURRENCY_LIMIT: 'LIMIT_001', // đạt giới hạn concurrency
+  COPYRIGHT_MISSING: 'COPYRIGHT_001', // thiếu xác nhận bản quyền
   PROJECT_NOT_FOUND: 'PROJ_001', // project không tồn tại
   PROVIDER: 'PROV_001',          // provider lỗi (xem ProviderLog)
   JOB_NOT_RETRYABLE: 'JOB_001',  // job thất bại không thể retry

@@ -13,8 +13,11 @@ const CONTEXT_WINDOW_SEC = 30 // docs/05 §B.4: gom ~30 giây thoại / lần g�
 // Bước 2: Nếu có style preset → LLM chỉ "viết lại" theo style (giữ nguyên nghĩa).
 // Nếu không có style preset → dùng kết quả Google Translate trực tiếp.
 export async function dubTranslate(ctx) {
-  const { project, job, setProgress } = ctx
+  const { project, job, setProgress, signal } = ctx
   const params = parseParams(project.params)
+
+  // Check abort signal
+  if (signal?.aborted) throw new Error('Cancelled')
 
   const segments = await query(
     'SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC',

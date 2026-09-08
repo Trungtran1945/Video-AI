@@ -25,6 +25,7 @@ export default function CreateProject() {
   const [uploadPercent, setUploadPercent] = useState(0);
   const [error, setError] = useState('');
   const [presets, setPresets] = useState(STYLE_PRESETS_FALLBACK);
+  const [copyrightAck, setCopyrightAck] = useState(false); // Group 1: Copyright checkbox
   const [form, setForm] = useState({
     mode: null, // 'SUMMARY' | 'TRANSLATE_DUB'
     title: '',
@@ -132,6 +133,7 @@ export default function CreateProject() {
           style: form.style,
           targetDurationSec: form.targetDurationSec,
           sourceVideoKey: form.sourceVideoKey,
+          copyrightAcknowledged: copyrightAck, // Group 1: Copyright
           params: { tone: form.tone, spoilerAllowed: form.spoilerAllowed, voiceProvider: form.voiceProvider, voiceName: form.voiceName },
         };
       } else {
@@ -146,6 +148,7 @@ export default function CreateProject() {
           maskStrength: Number(form.maskStrength) || 0.6,
           subPosition: form.subPosition,
           sourceVideoKey: form.sourceVideoKey,
+          copyrightAcknowledged: copyrightAck, // Group 1: Copyright
           params: form.enableDubbing
             ? { voiceProvider: form.voiceProvider, voiceName: form.voiceName, subPosition: form.subPosition }
             : { subPosition: form.subPosition },
@@ -370,6 +373,20 @@ export default function CreateProject() {
                     <h3 className="text-lg font-semibold text-white">Sẵn sàng tạo!</h3>
                     <p className="text-sm text-slate-400 mt-1">Kiểm tra cấu hình rồi nhấn tạo để AI chạy pipeline.</p>
                   </div>
+                  {/* Group 1: Copyright checkbox */}
+                  <div className="mb-4">
+                    <label className="flex items-start gap-3 p-3 rounded-xl bg-[#0F1117] border border-white/5 cursor-pointer hover:border-blue-500/30 transition">
+                      <input
+                        type="checkbox"
+                        checked={copyrightAck}
+                        onChange={(e) => setCopyrightAck(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 rounded border-white/20 bg-[#0F1117] text-blue-500 focus:ring-blue-500/50"
+                      />
+                      <span className="text-sm text-slate-300 leading-relaxed">
+                        Tôi xác nhận quyền sử dụng nội dung nguồn và chịu trách nhiệm về pháp lý đối với nội dung đầu ra.
+                      </span>
+                    </label>
+                  </div>
                   <div className="space-y-3">
                     <input value={form.title} onChange={(e) => update('title', e.target.value)} placeholder="Tên dự án (tùy chọn)"
                       className="w-full px-4 py-2.5 rounded-xl bg-[#0F1117] border border-white/5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50" />
@@ -429,7 +446,7 @@ export default function CreateProject() {
           ) : (
             <button
               onClick={handleCreate}
-              disabled={creating || uploading}
+              disabled={creating || uploading || !copyrightAck}
               className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-sm font-semibold transition shadow-lg shadow-blue-600/30 disabled:opacity-50"
             >
               {creating ? <><Loader2 className="w-4 h-4 animate-spin" /> Đang tạo...</> : <><Wand2 className="w-4 h-4" /> Bắt đầu tạo</>}

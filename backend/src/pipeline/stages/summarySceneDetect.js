@@ -5,8 +5,11 @@ import { requireSourceFile, insertMany, round2 } from '../context.js'
 const MAX_SCENES = 600
 
 export async function summarySceneDetect(ctx) {
-  const { project, setProgress } = ctx
+  const { project, setProgress, signal } = ctx
   const src = requireSourceFile(project.source_video_key, 'Video nguồn (phim)')
+
+  // Check abort signal
+  if (signal?.aborted) throw new Error('Cancelled')
 
   let threshold = Number(process.env.SCENE_THRESHOLD) || 0.4
   let scenes = await detectScenes(src, { threshold, minSceneSec: 2 })

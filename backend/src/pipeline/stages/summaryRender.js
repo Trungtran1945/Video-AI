@@ -36,13 +36,16 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 export async function summaryRender(ctx) {
-  const { project, setProgress } = ctx
+  const { project, setProgress, signal } = ctx
   const src = requireSourceFile(project.source_video_key, 'Video nguồn (phim)')
   const clips = await query(
     'SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC',
     [project.id]
   )
   if (!clips.length) throw new Error('Chưa có timeline — hãy retry từ stage summary.align')
+
+  // Check abort signal
+  if (signal?.aborted) throw new Error('Cancelled')
 
   const scenes = await query('SELECT id FROM scenes WHERE project_id = ?', [project.id])
   const sceneIds = new Set(scenes.map((s) => s.id))

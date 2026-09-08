@@ -12,11 +12,14 @@ const CHUNK_SEC = 600
 // dub.stt (docs/05 §B.2): ASR trên audio đã normalize LUFS → transcript_segments.
 // Speaker diarization: cột speaker để NULL ở v1 (Whisper API không trả speaker).
 export async function dubStt(ctx) {
-  const { project, job, setProgress, results } = ctx
+  const { project, job, setProgress, results, signal } = ctx
   const ingest = results['dub.ingest'] || {}
   const src = requireSourceFile(project.source_video_key, 'Video nguồn')
   const tmp = ensureDir(tmpDirOf(project.id))
   setProgress(2)
+
+  // Check abort signal
+  if (signal?.aborted) throw new Error('Cancelled')
 
   // Ưu tiên audio đã chuẩn hoá ở stage ingest; thiếu → tách lại từ nguồn
   let fullWav

@@ -18,9 +18,12 @@ const CONCURRENCY = Number(process.env.OCR_CONCURRENCY) || Math.min(os.cpus().le
 
 // dub.ocr (docs/05 §B.3): frame sampling → OCR hardsub → merge OcrRegion.
 export async function dubOcr(ctx) {
-  const { project, job, setProgress } = ctx
+  const { project, job, setProgress, signal } = ctx
   const src = requireSourceFile(project.source_video_key, 'Video nguồn')
   const framesDir = path.join(projectDir(project.id), 'frames')
+
+  // Check abort signal
+  if (signal?.aborted) throw new Error('Cancelled')
 
   const info = await probe(src)
   const dims = { width: info.width || 1280, height: info.height || 720 }

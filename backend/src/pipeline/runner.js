@@ -10,6 +10,7 @@ import {
   getUserSettings,
 } from './context.js'
 import eventBus from './eventBus.js'
+import { notifyQueue } from '../queue/notifyQueue.js'
 
 import summaryTranscribe from './stages/summaryTranscribe.js'
 import summarySceneDetect from './stages/summarySceneDetect.js'
@@ -229,7 +230,7 @@ const DEFAULT_STAGE_TIMEOUT = 15 * 60 * 1000
 
 // Execute ONE stage end-to-end (reset → running → impl → success/fail).
 // Trả về true nếu thành công/skip, false nếu thất bại.
-async function executeStage(project, job, settings, setProgress, results, isFirstExecutedStage) {
+async function executeStage(project, job, settings, setProgress, results, isFirstExecutedStage, signal) {
   const projectId = project.id
   try {
     await clearArtifacts(projectId, RESETS[job.type] || [])
@@ -249,11 +250,16 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       checkInputs(project)
     }
 
+    // Check if already cancelled
+    if (signal && signal.aborted) {
+      throw new Error('Cancelled')
+    }
+
     const impl = STAGE_IMPL[job.type]
     if (!impl) throw new Error(`Stage không được hỗ trợ: ${job.type}`)
     const stageTimeout = STAGE_TIMEOUTS[job.type] || DEFAULT_STAGE_TIMEOUT
     const result = await withTimeout(
-      impl({ project, job, settings, setProgress, results }),
+      impl({ project, job, settings, setProgress, results, signal }),
       stageTimeout,
       job.type
     )
@@ -274,9 +280,15 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
 }
 
 const activeRuns = new Set()
+const abortControllers = new Map() // projectId → AbortController
 
 export function isPipelineRunning(projectId) {
   return activeRuns.has(projectId)
+}
+
+export function abortPipeline(projectId) {
+  const ac = abortControllers.get(projectId)
+  if (ac) ac.abort()
 }
 
 export async function runPipeline(projectId, fromStage = null) {
@@ -284,6 +296,11 @@ export async function runPipeline(projectId, fromStage = null) {
   const project = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
   if (!project) return
   activeRuns.add(projectId)
+
+  // Create AbortController for this pipeline run
+  const abortController = new AbortController()
+  abortControllers.set(projectId, abortController)
+  const { signal } = abortController
 
   try {
     const stageGroups = STAGES[project.mode] || []
@@ -330,7 +347,8 @@ export async function runPipeline(projectId, fromStage = null) {
             eventBus.publish(projectId, { stage: job.type, status: 'running', percent: p })
           },
           results,
-          isFirstExecutedStage
+          isFirstExecutedStage,
+          signal
         )
         isFirstExecutedStage = false
         if (!ok) groupFailed = true
@@ -347,7 +365,8 @@ export async function runPipeline(projectId, fromStage = null) {
               eventBus.publish(projectId, { stage: job.type, status: 'running', percent: p })
             },
             results,
-            false
+            false,
+            signal
           ).then((ok) => ({ job, ok }))
         )
         const settled = await Promise.all(tasks)
@@ -375,12 +394,45 @@ export async function runPipeline(projectId, fromStage = null) {
 
     await updateById('projects', projectId, { status: 'completed', progress: 100 })
     eventBus.publish(projectId, { stage: '__project__', status: 'success', percent: 100 })
+
+    // Group 2: Send notification on success
+    try {
+      const user = await queryOne('SELECT email FROM users WHERE id = ?', [project.user_id])
+      if (user?.email) {
+        await notifyQueue.add('projectDone', {
+          projectId,
+          projectTitle: project.title,
+          userEmail: user.email,
+          status: 'success',
+          mode: project.mode,
+        })
+      }
+    } catch (notifyErr) {
+      console.error('[Pipeline] Notification failed:', notifyErr.message)
+    }
   } catch (err) {
     console.error('[Pipeline] lỗi:', err)
     await updateById('projects', projectId, { status: 'failed' })
     eventBus.publish(projectId, { stage: '__project__', status: 'failed', percent: 0 })
+
+    // Group 2: Send notification on failure
+    try {
+      const user = await queryOne('SELECT email FROM users WHERE id = ?', [project.user_id])
+      if (user?.email) {
+        await notifyQueue.add('projectDone', {
+          projectId,
+          projectTitle: project.title,
+          userEmail: user.email,
+          status: 'failed',
+          mode: project.mode,
+        })
+      }
+    } catch (notifyErr) {
+      console.error('[Pipeline] Notification failed:', notifyErr.message)
+    }
   } finally {
     activeRuns.delete(projectId)
+    abortControllers.delete(projectId)
   }
 }
 

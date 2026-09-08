@@ -8,11 +8,14 @@ import { projectDir, tmpDirOf, ensureDir, requireSourceFile, writeJson, toStorag
 const CHUNK_SEC = 600
 
 export async function summaryTranscribe(ctx) {
-  const { project, job, setProgress } = ctx
+  const { project, job, setProgress, signal } = ctx
   const src = requireSourceFile(project.source_video_key, 'Video nguồn (phim)')
   const dir = projectDir(project.id)
   const tmp = ensureDir(tmpDirOf(project.id))
   setProgress(2)
+
+  // Check abort signal
+  if (signal?.aborted) throw new Error('Cancelled')
 
   const info = await probe(src)
   if (!info.durationSec) throw new Error('Không đọc được thời lượng video nguồn')

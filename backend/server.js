@@ -11,6 +11,11 @@ import { config } from './src/config.js'
 import { ffmpegAvailable } from './src/media/ffmpeg.js'
 import v1Router from './src/routes/v1/index.js'
 
+// Group 1: Queue workers (lazy import to avoid crash if Redis unavailable)
+let drainQueuedWorker = null
+let notifyWorker = null
+let cleanupWorker = null
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 const PORT = config.port
@@ -59,6 +64,38 @@ async function start() {
   console.log('[DB] SQLite initialized')
   await initSchema()
   await seed()
+
+  // Group 1: Start queue workers (graceful fallback if Redis unavailable)
+  try {
+    const drainMod = await import('./src/queue/workers/drainQueued.js')
+    drainQueuedWorker = drainMod.default
+    console.log('[Queue] DrainQueued worker started')
+  } catch (e) {
+    console.warn('[Queue] DrainQueued worker failed to start:', e.message)
+  }
+
+  try {
+    const notifyMod = await import('./src/queue/workers/notifyWorker.js')
+    notifyWorker = notifyMod.default
+    console.log('[Queue] Notify worker started')
+  } catch (e) {
+    console.warn('[Queue] Notify worker failed to start:', e.message)
+  }
+
+  try {
+    const cleanupMod = await import('./src/queue/workers/cleanupWorker.js')
+    cleanupWorker = cleanupMod.default
+    // Schedule cleanup to run every hour
+    const { cleanupQueue } = await import('./src/queue/cleanupQueue.js')
+    await cleanupQueue.add('sweep', {}, {
+      repeat: { every: 60 * 60 * 1000 }, // every hour
+      removeOnComplete: true,
+    })
+    console.log('[Queue] Cleanup worker started (every hour)')
+  } catch (e) {
+    console.warn('[Queue] Cleanup worker failed to start:', e.message)
+  }
+
   await tryListen(PORT)
 }
 

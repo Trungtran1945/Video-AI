@@ -7,7 +7,7 @@ import { packSegment, buildTimelineRows, textEmbedding } from '../alignService.j
 import { projectDir, ensureDir, parseJsonSafe, toStorageKey, round2, insertMany } from '../context.js'
 
 export async function summaryAlign(ctx) {
-  const { project, job, setProgress } = ctx
+  const { project, job, setProgress, signal } = ctx
   const segments = await query(
     'SELECT * FROM script_segments WHERE project_id = ? ORDER BY index_num ASC',
     [project.id]
@@ -28,6 +28,8 @@ export async function summaryAlign(ctx) {
   const audioRows = []
 
   for (const seg of segments) {
+    // Check abort signal
+    if (signal?.aborted) throw new Error('Cancelled')
     setProgress(3 + Math.round((segmentsMeta.length / segments.length) * 55))
     const synth = await tracked(
       { projectId: project.id, jobId: job.id, provider: tts.id, type: 'tts' },

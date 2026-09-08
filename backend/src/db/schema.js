@@ -95,6 +95,11 @@ export async function initSchema() {
   try { db.run(`ALTER TABLE projects ADD COLUMN progress INTEGER DEFAULT 0`) } catch (_) {}
   try { db.run(`ALTER TABLE projects ADD COLUMN source_video_id TEXT`) } catch (_) {}
   try { db.run(`ALTER TABLE projects ADD COLUMN template_video_id TEXT`) } catch (_) {}
+  // Group 1: Copyright & lifecycle columns
+  try { db.run(`ALTER TABLE projects ADD COLUMN copyright_acknowledged INTEGER DEFAULT 0`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN copyright_ack_at TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN cancelled_at TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN expires_at TEXT`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS assets (
     id TEXT PRIMARY KEY,
@@ -121,6 +126,8 @@ export async function initSchema() {
 
   // Add new columns if upgrading from an older schema
   try { db.run(`ALTER TABLE generation_jobs ADD COLUMN progress INTEGER DEFAULT 0`) } catch (_) {}
+  // Group 1: Cancel timestamp
+  try { db.run(`ALTER TABLE generation_jobs ADD COLUMN cancelled_at TEXT`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS scenes (
     id TEXT PRIMARY KEY,
@@ -205,6 +212,10 @@ export async function initSchema() {
     is_active INTEGER DEFAULT 1,
     created_date TEXT DEFAULT (datetime('now'))
   )`)
+  // Group 4: Multi-API-key round-robin fields
+  try { db.run(`ALTER TABLE api_keys ADD COLUMN tier TEXT DEFAULT 'free'`) } catch (_) {}
+  try { db.run(`ALTER TABLE api_keys ADD COLUMN priority INTEGER DEFAULT 0`) } catch (_) {}
+  try { db.run(`ALTER TABLE api_keys ADD COLUMN last_used_at TEXT`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS provider_logs (
     id TEXT PRIMARY KEY,
@@ -222,6 +233,32 @@ export async function initSchema() {
     created_date TEXT DEFAULT (datetime('now'))
   )`)
 
+  // Group 5: ProviderRateLimit (docs/11 §2.1)
+  db.run(`CREATE TABLE IF NOT EXISTS provider_rate_limits (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    tier TEXT DEFAULT 'free',
+    requests_per_minute INTEGER DEFAULT 10,
+    requests_per_day INTEGER,
+    tokens_per_minute INTEGER,
+    concurrency INTEGER DEFAULT 1,
+    user_id TEXT,
+    updated_date TEXT DEFAULT (datetime('now'))
+  )`)
+
+  // Group 5: ProviderCache (docs/11 §3.2)
+  db.run(`CREATE TABLE IF NOT EXISTS provider_cache (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    type TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    result TEXT,
+    created_date TEXT DEFAULT (datetime('now')),
+    expires_date TEXT
+  )`)
+  try { db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_cache_hash ON provider_cache(provider, type, input_hash)`) } catch (_) {}
+  try { db.run(`CREATE INDEX IF NOT EXISTS idx_provider_cache_input ON provider_cache(input_hash)`) } catch (_) {}
+
   // ── TRANSLATE_DUB tables (docs/02) ────────────────────────────────────
   db.run(`CREATE TABLE IF NOT EXISTS transcript_segments (
     id TEXT PRIMARY KEY,
@@ -236,6 +273,9 @@ export async function initSchema() {
     tts_audio_id TEXT,
     subtitle_id TEXT
   )`)
+  // Group 1: Overlap detection fields
+  try { db.run(`ALTER TABLE transcript_segments ADD COLUMN is_time_manually_adjusted INTEGER DEFAULT 0`) } catch (_) {}
+  try { db.run(`ALTER TABLE transcript_segments ADD COLUMN wpm_warning TEXT`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS ocr_regions (
     id TEXT PRIMARY KEY,
@@ -294,6 +334,24 @@ export async function initSchema() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_transcript_segments_project ON transcript_segments(project_id, index_num)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_ocr_regions_project ON ocr_regions(project_id, start_sec)`)
+  // Group 1: Indexes for concurrency limit and cleanup
+  db.run(`CREATE INDEX IF NOT EXISTS idx_projects_user_status ON projects(user_id, status)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_projects_expires_at ON projects(expires_at)`)
+
+  // Group 5: Seed default provider rate limits (docs/11 §2.1)
+  // Safety margin: ~20% below published limits
+  const seedRateLimit = (provider, tier, rpm, rpd, concurrency) => {
+    const existing = db.exec(`SELECT COUNT(*) as cnt FROM provider_rate_limits WHERE provider = '${provider}' AND tier = '${tier}'`)
+    if (!existing.length || existing[0].values[0][0] === 0) {
+      db.run(`INSERT INTO provider_rate_limits (id, provider, tier, requests_per_minute, requests_per_day, concurrency) VALUES (?, ?, ?, ?, ?, ?)`,
+        [`${provider}-${tier}`, provider, tier, rpm, rpd, concurrency])
+    }
+  }
+  seedRateLimit('gemini', 'free', 10, 250, 1)
+  seedRateLimit('openai', 'free', 3, 200, 1)
+  seedRateLimit('elevenlabs', 'free', 2, null, 1)
+  seedRateLimit('huggingface', 'free', 5, null, 1)
+  seedRateLimit('azure_tts', 'free', 20, null, 2)
 
   // Migrate: thêm cột tỷ lệ / maskStrength / isStatic cho DB cũ (giữ nguyên cột pixel cũ nếu có).
   const addCol = (t, c, def) => { try { db.run(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`) } catch (_) {} }
