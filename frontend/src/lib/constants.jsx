@@ -8,6 +8,7 @@ export const STATUS_LABELS = {
     pending: { label: 'Chờ xử lý', color: 'bg-yellow-500/15 text-yellow-400' },
     running: { label: 'Đang chạy', color: 'bg-blue-500/15 text-blue-400' },
     retrying: { label: 'Đang thử lại', color: 'bg-orange-500/15 text-orange-400' },
+    retry: { label: 'Đang chờ retry', color: 'text-amber-400', bg: 'bg-amber-500/10' },
     success: { label: 'Thành công', color: 'bg-emerald-500/15 text-emerald-400' },
     error: { label: 'Lỗi', color: 'bg-red-500/15 text-red-400' },
     timeout: { label: 'Quá hạn', color: 'bg-orange-500/15 text-orange-400' },

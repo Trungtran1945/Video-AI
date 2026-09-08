@@ -6,7 +6,7 @@ import Loading from '@/components/Loading';
 import SubRegionEditor from '@/components/SubRegionEditor';
 import { VideoTimeline } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, ScanText, Languages, AudioLines, XCircle } from 'lucide-react';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, ScanText, Languages, AudioLines, XCircle, Clock } from 'lucide-react';
 import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, MASK_METHODS, SOURCE_LANGUAGES, TARGET_LANGUAGES } from '@/lib/constants';
 import { useJobEvents } from '@/hooks/useJobEvents';
 import {
@@ -618,6 +618,7 @@ export default function ProjectDetail() {
                     const isCurrent = job?.status === 'running';
                     const isDone = job?.status === 'success';
                     const isError = ['failed', 'error', 'timeout'].includes(job?.status);
+                    const isRetry = job?.status === 'retry';
                     return (
                       <div
                         key={stageKey}
@@ -625,11 +626,13 @@ export default function ProjectDetail() {
                           isCurrent ? 'bg-blue-500/10 text-blue-400' :
                           isDone ? 'bg-emerald-500/10 text-emerald-400' :
                           isError ? 'bg-red-500/10 text-red-400' :
+                          isRetry ? 'bg-amber-500/10 text-amber-400' :
                           'bg-white/5 text-slate-500'
                         }`}
                       >
                         {isDone ? <CheckCircle className="w-2.5 h-2.5" /> :
                          isError ? <AlertCircle className="w-2.5 h-2.5" /> :
+                         isRetry ? <Clock className="w-2.5 h-2.5" /> :
                          isCurrent ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> :
                          <Icon className="w-2.5 h-2.5" />}
                         <span className="truncate max-w-[80px]">{stage?.label || stageKey.split('.').pop()}</span>
@@ -809,6 +812,7 @@ export default function ProjectDetail() {
               const isCurrent = job?.status === 'running';
               const isDone = job?.status === 'success';
               const isError = ['failed', 'error', 'timeout'].includes(job?.status);
+              const isRetry = job?.status === 'retry';
 
               return (
                 <motion.div
@@ -822,15 +826,22 @@ export default function ProjectDetail() {
                   <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
                     isDone ? 'bg-emerald-500/15 text-emerald-400' :
                     isError ? 'bg-red-500/15 text-red-400' :
+                    isRetry ? 'bg-amber-500/15 text-amber-400' :
                     isCurrent ? 'bg-blue-500/15 text-blue-400' : 'bg-white/5 text-slate-500'
                   }`}>
                     {isDone ? <CheckCircle className="w-4 h-4" /> :
                      isError ? <AlertCircle className="w-4 h-4" /> :
+                     isRetry ? <Clock className="w-4 h-4" /> :
                      isCurrent ? <Loader2 className="w-4 h-4 animate-spin" /> :
                      <Icon className="w-4 h-4" />}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-slate-200">{stage?.label || stageKey}</div>
+                    {isRetry && job?.next_retry_at && (
+                      <div className="text-xs text-amber-400 flex items-center gap-1 mt-0.5">
+                        <Clock className="w-3 h-3" /> Đang chờ quota hồi phục lúc {new Date(job.next_retry_at).toLocaleTimeString('vi-VN')}
+                      </div>
+                    )}
                     {job?.error_message && <div className="text-xs text-red-400 truncate">{job.error_message}</div>}
                     {job && <div className="text-xs text-slate-500">{formatDate(job.created_date)}{job.attempts > 1 ? ` • ${job.attempts} lần thử` : ''}</div>}
                   </div>

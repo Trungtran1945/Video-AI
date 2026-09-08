@@ -6,7 +6,7 @@ import PageHeader from '@/components/PageHeader';
 import Loading from '@/components/Loading';
 import EmptyState from '@/components/EmptyState';
 import { motion } from 'framer-motion';
-import { ListOrdered, RefreshCw } from 'lucide-react';
+import { ListOrdered, RefreshCw, Clock } from 'lucide-react';
 import { StatusBadge, STAGE_LABELS, formatDate, formatDuration } from '@/lib/constants';
 
 export default function Queue() {
@@ -54,7 +54,16 @@ export default function Queue() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-slate-200">{stage.label}</span>
-                      <StatusBadge status={job.status} />
+                      {job.status === 'retry' ? (
+                        <div className="flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-amber-400" />
+                          <span className="text-xs text-amber-400">
+                            Đang chờ quota hồi phục{job.next_retry_at ? ` lúc ${new Date(job.next_retry_at).toLocaleTimeString('vi-VN')}` : ''}
+                          </span>
+                        </div>
+                      ) : (
+                        <StatusBadge status={job.status} />
+                      )}
                     </div>
                     <div className="text-xs text-slate-500 mt-0.5">
                       {job.provider || '—'} • {formatDate(job.created_date)} • {formatDuration(job.duration_ms)}

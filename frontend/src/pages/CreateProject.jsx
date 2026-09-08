@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, Languages, AlertCircle, AudioLines, Eraser } from 'lucide-react';
+import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, Languages, AlertCircle, AudioLines, Eraser, AlertTriangle } from 'lucide-react';
 import {
   LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS,
   MODE_LABELS, MASK_METHODS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
@@ -10,6 +10,25 @@ import {
 import { projectsApi } from '@/api/projects';
 import { uploadApi } from '@/api/upload';
 import Layout from '@/components/Layout';
+
+function FreeTierWarning({ mode, estimatedDuration }) {
+  const thresholds = { SUMMARY: 60 * 60, TRANSLATE_DUB: 20 * 60 }
+  const threshold = thresholds[mode]
+  if (!threshold || !estimatedDuration || estimatedDuration <= threshold) return null
+
+  return (
+    <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 mb-4">
+      <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+      <div>
+        <p className="text-sm text-amber-200 font-medium">Cảnh báo free tier</p>
+        <p className="text-xs text-amber-300/70 mt-1">
+          Với API key miễn phí, xử lý nội dung dài có thể chậm hơn nhiều do giới hạn tốc độ của nhà cung cấp.
+          Khuyến nghị test với clip ngắn (≤ 10 phút) trước.
+        </p>
+      </div>
+    </div>
+  )
+}
 
 const SUMMARY_DURATIONS = [
   { value: 1200, label: '20 phút', desc: 'Ngắn gọn' },
@@ -387,6 +406,7 @@ export default function CreateProject() {
                       </span>
                     </label>
                   </div>
+                  <FreeTierWarning mode={form.mode} estimatedDuration={isDub ? form.targetDurationSec : form.targetDurationSec} />
                   <div className="space-y-3">
                     <input value={form.title} onChange={(e) => update('title', e.target.value)} placeholder="Tên dự án (tùy chọn)"
                       className="w-full px-4 py-2.5 rounded-xl bg-[#0F1117] border border-white/5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50" />
