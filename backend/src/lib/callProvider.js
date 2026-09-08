@@ -21,8 +21,20 @@ import { getRateLimiter, RateLimitExhaustedError } from '../lib/rateLimiter.js'
  * @param {*} input
  * @returns {string} hex hash
  */
+function normalizeInput(input) {
+  if (typeof input === 'string') return input.trim()
+  if (typeof input !== 'object' || input === null) return input
+  if (Array.isArray(input)) return input.map(normalizeInput)
+  const sorted = {}
+  for (const key of Object.keys(input).sort()) {
+    sorted[key] = normalizeInput(input[key])
+  }
+  return sorted
+}
+
 function inputHash(provider, type, model, input) {
-  const payload = JSON.stringify({ provider, type, model, input })
+  const normalized = normalizeInput(input)
+  const payload = JSON.stringify({ provider, type, model, input: normalized })
   return crypto.createHash('sha256').update(payload).digest('hex')
 }
 
