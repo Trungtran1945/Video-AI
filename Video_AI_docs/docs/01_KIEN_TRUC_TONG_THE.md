@@ -136,6 +136,11 @@ Tương tự: `AIProvider` (LLM), `AsrProvider` (transcribe + word timestamps + 
 `container.resolve('tts', settings.voiceProvider)`. Thêm provider = thêm 1 file implement + đăng ký,
 **không sửa** business logic.
 
+> ⚠️ Mọi cuộc gọi qua provider thật (LLM/ASR/TTS/OCR/Vision) đều đi qua lớp `RateLimiter` +
+> `ProviderCache` trước khi chạm mạng, đặc biệt quan trọng khi user dùng **API key miễn phí**
+> (RPM/RPD thấp). Xem chi tiết cơ chế throttle, cache, đa key round-robin và provider `mock` cho
+> dev/CI tại `11_RATE_LIMIT_VA_FREE_TIER.md`.
+
 ---
 
 ## 5. Hàng đợi (BullMQ + Redis)
@@ -161,13 +166,52 @@ API ──enqueue──▶ Redis/BullMQ ──▶ Worker (per stage)
 | `dub.ingest` | media (demux + LUFS) | 2 |
 | `dub.stt` | asr (+ diarization) | 3 |
 | `dub.ocr` | ocr (frame sampling) | 3 |
+| `dub.merge` | api (barrier, không gọi provider) | 1 |
 | `dub.translate` | llm + StylePreset | 3 |
 | `dub.ttsAlign` | tts + ForcedAlignService | 3 |
 | `dub.render` | media (mask/burn-in/mix/mux) | 2 |
 | `output.uploadYoutube` | api | 2 |
 
+> Riêng các job gọi provider bên ngoài (`summary.analyze`, `summary.script`, `summary.tts`,
+> `dub.stt`, `dub.ocr`, `dub.translate`, `dub.ttsAlign`), khi provider trả `429`/hết quota, job
+> chuyển `RETRY` với `nextRetryAt` theo lịch reset của provider (không phải backoff cố định như
+> bảng trên) — xem `11_RATE_LIMIT_VA_FREE_TIER.md` §4.2.
+
 Mỗi job **idempotent**: key theo `(projectId, stage)`. Thất bại → tự động retry; hết retry → đánh dấu
 `GenerationJob.status = FAILED` và thông báo user.
+
+### 5.1. Cơ chế barrier `dub.stt` ‖ `dub.ocr` → `dub.translate`
+
+BullMQ không có "chờ 2 job cha" built-in một cách an toàn nếu chỉ dùng `Promise.all` phía API (rủi ro
+mất trạng thái nếu API restart giữa chừng). Thiết kế dùng **BullMQ Flow Producer**:
+
+```
+FlowProducer.add({
+  name: 'dub.merge',
+  queue: 'dub',
+  children: [
+    { name: 'dub.stt', queue: 'dub', data: { projectId } },
+    { name: 'dub.ocr', queue: 'dub', data: { projectId } },
+  ],
+});
+```
+
+- `dub.merge` là job cha, chỉ chạy khi **cả hai** job con `dub.stt` và `dub.ocr` hoàn tất thành công
+  (BullMQ tự động chờ, lưu trạng thái trong Redis — sống sót qua restart API).
+- `dub.merge` không gọi provider, chỉ kiểm tra `TranscriptSegment[]` và `OcrRegion[]` đã có trong DB
+  rồi enqueue tiếp `dub.translate`.
+- Nếu 1 trong 2 job con `FAILED` sau hết retry, `dub.merge` không chạy → `Project.status = FAILED`,
+  hiển thị đúng job nào lỗi để user retry thủ công (`POST /projects/:id/jobs/:type/retry`).
+
+### 5.2. Huỷ (Cancel) và thông báo hoàn thành
+
+- **Cancel**: `POST /projects/:id/cancel` → API gọi `job.remove()` cho mọi job `PENDING` của project
+  trong BullMQ và gửi tín hiệu dừng cho job `RUNNING` (worker kiểm tra cờ `cancelled` định kỳ giữa các
+  bước con, đặc biệt trong FFmpeg — dùng `child_process.kill()` an toàn). `GenerationJob.status` các
+  job liên quan chuyển `FAILED` với `error = 'CANCELLED_BY_USER'`; file tạm được dọn ngay.
+- **Thông báo**: khi `Project.status` chuyển `SUCCESS`/`FAILED`, hệ thống enqueue job nhẹ
+  `notify.projectDone` gửi email (hoặc push nếu có) cho user — không phụ thuộc SSE, để user không
+  cần giữ tab mở với pipeline dài (2–3h phim SUMMARY).
 
 ---
 
@@ -220,9 +264,10 @@ sequenceDiagram
   U->>W: Upload video resumable + chọn preset/dubbing
   W->>A: POST /projects + start TRANSLATE_DUB
   A->>D: Tạo Project(mode=TRANSLATE_DUB)
-  A->>Q: enqueue dub.stt ‖ dub.ocr (song song)
+  A->>Q: FlowProducer: dub.merge cha ← [dub.stt, dub.ocr] con (song song)
   Q->>P: ASR(audio LUFS) ; OCR(frames 1–2fps)
   P-->>D: TranscriptSegment[] ; OcrRegion[]
+  Q->>Q: dub.merge chạy khi cả 2 con SUCCESS
   A->>Q: enqueue dub.translate
   Q->>P: LLM dịch theo StylePreset (context window)
   P-->>D: translation gắn vào transcript
@@ -260,3 +305,7 @@ Mọi asset (phim nguồn, scene, audio, video, subtitle, output) lưu qua abstr
 | StylePreset lưu DB (không hardcode) | Thêm/sửa phong cách dịch không phải deploy lại code |
 | Job idempotent + DB mirror | Quan sát & tiếp tục từ stage lỗi |
 | Monorepo pnpm | Chia sẻ type/Zod giữa web & api, build nhất quán |
+| BullMQ Flow Producer cho `dub.merge` | Barrier an toàn qua restart, thay vì `Promise.all` phía API (dễ mất trạng thái) |
+| Job huỷ được (cancel) | Tránh lãng phí tài nguyên GPU/CPU khi user đổi ý giữa pipeline dài |
+| Thông báo qua email/push, không chỉ SSE | Pipeline SUMMARY có thể chạy 20–30 phút, user không nhất thiết giữ tab mở |
+| Rate Limiter + Cache bọc mọi provider thật | Free-tier API key (Gemini/OpenAI/ElevenLabs...) có RPM/RPD rất thấp; không throttle chủ động sẽ vỡ pipeline liên tục khi test nhiều lần (`11`) |

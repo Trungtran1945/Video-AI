@@ -42,7 +42,7 @@ generator client { provider = "prisma-client-js" }
 
 enum Role       { USER ADMIN GUEST }
 enum ProjectMode { SUMMARY TRANSLATE_DUB }
-enum JobStatus  { PENDING RUNNING SUCCESS FAILED RETRY }
+enum JobStatus  { PENDING QUEUED RUNNING SUCCESS FAILED RETRY CANCELLED }
 enum AssetKind  { VIDEO IMAGE AUDIO }
 enum AudioKind  { VOICE MUSIC SFX }
 
@@ -64,8 +64,39 @@ model ApiKey {
   provider   String   // 'gemini' | 'openai' | 'elevenlabs'...
   label      String
   encryptedKey String // mã hoá AES-256 tại rest
+  tier       String   @default("free")  // liên kết ProviderRateLimit.tier; xem `11`
+  priority   Int      @default(0)       // số nhỏ hơn = ưu tiên dùng trước (đa key round-robin)
+  isActive   Boolean  @default(true)    // tự tắt khi cooldown do 429 liên tục, hoặc bị revoke
+  lastUsedAt DateTime?
   createdAt  DateTime @default(now())
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ProviderRateLimit {   // giới hạn RPM/RPD theo provider — bảo vệ free tier (xem `11`)
+  id                String   @id @default(uuid())
+  provider          String
+  tier              String   @default("free")  // 'free' | 'paid' | 'custom'
+  requestsPerMinute Int
+  requestsPerDay    Int?
+  tokensPerMinute   Int?
+  concurrency       Int      @default(1)
+  userId            String?  // null = mặc định hệ thống; có giá trị = override riêng của user
+  updatedAt         DateTime @updatedAt
+
+  @@unique([provider, tier, userId])
+}
+
+model ProviderCache {      // cache kết quả provider theo nội dung — tiết kiệm quota khi test lặp lại
+  id         String   @id @default(uuid())
+  provider   String
+  type       String        // 'llm' | 'tts' | 'vision' | 'asr' | 'ocr'
+  inputHash  String        // SHA-256(provider + type + model + normalized input)
+  result     String        // JSON kết quả
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime?
+
+  @@unique([provider, type, inputHash])
+  @@index([inputHash])
 }
 
 model Settings {
@@ -89,8 +120,12 @@ model Project {
                                // { sourceLanguage, stylePreset, enableDubbing,
                                //   voiceId, maskMethod, subPosition }
   sourceVideoId    String?     // SUMMARY: phim gốc | TRANSLATE_DUB: video cần Việt hoá
+  copyrightAcknowledged Boolean @default(false) // user xác nhận quyền sử dụng nội dung nguồn (xem `00` §5)
+  copyrightAckAt   DateTime?
+  cancelledAt      DateTime?   // set khi user gọi POST /projects/:id/cancel
+  expiresAt        DateTime?   // mốc tự động dọn file trung gian/nguồn (retention policy)
   createdAt        DateTime    @default(now())
-  user             User        @relation(fields: [userId], references: [id])
+  user             User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   assets           Asset[]
   jobs             GenerationJob[]
   scenes           Scene[]
@@ -267,7 +302,8 @@ model ProviderLog {      // quan sát mọi cuộc gọi AI
   tokensOut  Int?
   costUsd    Float?
   durationMs Int?
-  status     String   // 'ok' | 'error'
+  status     String   // 'ok' | 'error' | 'rate_limited' — 'rate_limited' phân biệt hết quota
+                       // tạm thời (429/quota-exceeded) với lỗi thật, xem `11` §4.2
   error      String?
   createdAt  DateTime @default(now())
   project    Project? @relation(fields: [projectId], references: [id])
@@ -283,6 +319,12 @@ model ProviderLog {      // quan sát mọi cuộc gọi AI
 - `TimelineClip(projectId, order)` — xuất timeline tuần tự.
 - `ProviderLog(createdAt)` — báo cáo cost/analytics.
 - `Scene(embedding)` — MVP lưu JSON; PostgreSQL có thể chuyển `vector` extension để tìm cảnh ngữ nghĩa.
+- `Project(expiresAt)` — cho cron job dọn dẹp file trung gian/nguồn quá hạn retention (xem `08` §6).
+- `Project(userId, status)` — đếm nhanh số project `RUNNING` đồng thời của user để áp NFR-12
+  (giới hạn concurrency).
+- `ProviderLog(provider, status, createdAt)` — `QuotaGuardService` đếm nhanh số request theo phút/ngày
+  cho từng provider để tính `percentUsed` (xem `11` §4.1), tránh full-scan bảng log.
+- `ProviderCache(inputHash)` — tra cache O(1) trước mỗi lời gọi provider thật (xem `11` §3.2).
 
 ---
 
@@ -311,6 +353,14 @@ pnpm --filter @asf/database prisma db seed   # user admin mặc định, setting
 | `TranscriptSegment.wpmWarning` | Đánh dấu segment có cảnh báo tốc độ đọc, giúp UI hiển thị icon cảnh báo trực quan |
 | `ProviderLog` độc lập | Analytics không phụ thuộc project còn tồn tại |
 | SQLite → Postgres không đổi schema | Đổi `datasource` là đủ |
+| `Project.copyrightAcknowledged` | Bắt buộc user xác nhận quyền nội dung trước khi xử lý (NFR-14, `00` §5) — tránh trách nhiệm pháp lý mơ hồ |
+| `Project.expiresAt` + cron dọn dẹp | File nguồn 2GB/2-3h phim tốn storage nhanh; retention rõ ràng tránh phình dung lượng vô hạn (NFR-13) |
+| `Project.cancelledAt` + `JobStatus.CANCELLED` | Phân biệt job dừng do lỗi hệ thống vs dừng theo yêu cầu user, phục vụ analytics & UX (FR-J1) |
+| Thêm `QUEUED` vào `JobStatus` | Phân biệt job đã enqueue nhưng đang chờ do giới hạn concurrency (NFR-12) với `PENDING` (chưa enqueue) |
+| `ApiKey.tier/priority/isActive` | Hỗ trợ đa key round-robin + cooldown tự động khi 1 key bị rate-limit liên tục (`11` §5) |
+| `ProviderRateLimit` bảng riêng, không hardcode | RPM/RPD của free tier hay thay đổi theo nhà cung cấp; admin/user override được mà không deploy lại (`11` §2.1) |
+| `ProviderCache` theo `inputHash` | Test lặp lại pipeline nhiều lần (nhu cầu thực tế khi dùng free key) không tốn quota cho nội dung đã xử lý (`11` §3.2) |
+| `ProviderLog.status='rate_limited'` | Tách bạch "hết quota tạm thời" khỏi "lỗi hệ thống" trong Analytics/Admin |
 
 ---
 
@@ -321,11 +371,11 @@ Backend MVP chạy bằng sql.js (SQLite) thay vì Prisma; schema SQL mirror 1-1
 
 | Lệch | Chi tiết | Lý do |
 | --- | --- | --- |
-| Enum giá trị **lowercase** | DB/API lưu `'user'`, `'pending'`, `'completed'`, `'failed'`... thay vì `USER`, `PENDING`, `SUCCESS`... | SQLite không có enum native; frontend đang so sánh lowercase. Khi chuyển Postgres/Prisma phải map lại hoặc cập nhật toàn bộ consumer |
+| Enum giá trị **lowercase** | DB/API lưu `'user'`, `'pending'`, `'completed'`, `'failed'`, `'cancelled'`, `'queued'`... thay vì `USER`, `PENDING`, `SUCCESS`... | SQLite không có enum native; frontend đang so sánh lowercase. Khi chuyển Postgres/Prisma phải map lại hoặc cập nhật toàn bộ consumer |
 | Project hoàn thành dùng status `'completed'` | Ngoài enum `JobStatus` ở trên | Frontend lọc `'completed'`; khi migrate cân nhắc thêm giá trị này vào enum hoặc đổi sang `SUCCESS` |
 | Project lưu song song `_id` + `_key` | `sourceVideoId` tham chiếu Asset (mục 2), đồng thời giữ `source_video_key` vì API (`06`) nhận/trả storage key | Tương thích API hiện tại và tham chiếu chuẩn theo mục 2 |
 | Mode `TRANSLATE_DUB` lưu `'translate_dub'` | Giá trị mode lowercase có gạch dưới, thay cho `'style_edit'` cũ | Nhất quán với quy ước enum lowercase ở trên |
-| Bảng mới mirror 1-1 | `transcript_segments`, `ocr_regions`, `style_presets` (seed 13 preset khi migrate) | Đảm bảo schema MVP khớp thiết kế Prisma |
+| Bảng mới mirror 1-1 | `transcript_segments`, `ocr_regions`, `style_presets` (seed 13 preset khi migrate), `provider_rate_limits` (seed giá trị free-tier mặc định), `provider_cache` (xem `11`) | Đảm bảo schema MVP khớp thiết kế Prisma |
 | Bảng mở rộng `reset_tokens` | Flow quên mật khẩu (email + token + expires) | Không có trong schema gốc; xoá nếu bỏ flow forgot-password |
 | Xoá project | `provider_logs.project_id` đặt `NULL` (không xoá log); `youtube_uploads` dọn qua join `outputs`; các bảng con còn lại xoá trực tiếp | Đúng quyết định "ProviderLog độc lập"; FK cascade chỉ áp dụng cho bảng tạo mới |
-| Seed | Admin mặc định từ env `ADMIN_EMAIL`/`ADMIN_PASSWORD` (fallback dev) + row `settings` + 13 `style_presets` | Tương đương `prisma db seed` |
+| Seed | Admin mặc định từ env `ADMIN_EMAIL`/`ADMIN_PASSWORD` (fallback dev) + row `settings` + 13 `style_presets` + `provider_rate_limits` mặc định (free tier, xem `11` §2.1) | Tương đương `prisma db seed` |

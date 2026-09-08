@@ -64,9 +64,17 @@ Use-case gọi `resolveTts(settings.voiceProvider)` → **không biết** implem
 - `AlignService` — thuật toán đồng bộ giọng ↔ cảnh của SUMMARY (xem `05`).
 - `ForcedAlignService` — ép khớp thời lượng TTS vào slot timestamp gốc của TRANSLATE_DUB
   (tempo stretching / chèn lặng / yêu cầu rút gọn câu).
-  - **Overlap Detection**: Khi người dùng điều chỉnh `startSec`/`endSec` của segment N, hệ thống phải kiểm tra:
-    - `endSec` của segment N-1 không được lớn hơn `startSec` của segment N (trừ khi có khoảng lặng hợp lý ≥ 0.1s)
-    - Nếu chồng lấn, tự động đẩy `startSec` của segment N+1 hoặc trả về lỗi validation
+  - **Overlap Detection**: Khi người dùng điều chỉnh `startSec`/`endSec` của segment N, hệ thống kiểm tra
+    và xử lý theo **một quy tắc thống nhất** (không để 2 hướng xử lý mơ hồ như trước):
+    1. Validate trước: `endSec` của segment N-1 phải ≤ `startSec` của segment N (cho phép khoảng lặng
+       hợp lý ≥ 0.1s). Nếu vi phạm với segment N-1 → **từ chối** request, trả lỗi `VAL_002`
+       (segment trước là "quá khứ", không được tự ý đẩy lùi vì có thể phá đồng bộ đã xác nhận).
+    2. Với segment N+1 trở về sau (chưa được user xác nhận thủ công, `isTimeManuallyAdjusted=false`):
+       hệ thống **tự động đẩy** `startSec`/`endSec` của các segment liền sau theo đúng độ lệch, miễn
+       không vượt slot của segment kế tiếp đó — trả về danh sách segment bị ảnh hưởng trong response
+       để UI hiển thị rõ (`{ adjustedSegments: [...] }`).
+    3. Nếu segment kế tiếp **đã** được user tự chỉnh tay (`isTimeManuallyAdjusted=true`) và việc đẩy
+       sẽ đè lên nó → từ chối request với `VAL_002`, yêu cầu user tự giải quyết xung đột thủ công.
     
   - **CPS Validation (Characters Per Second)**: Trước khi render, tính `CPS = length(translation) / (endSec - startSec)`. Nếu `CPS > 25` và `isTimeManuallyAdjusted == true`, trả về warning trong `GenerationJob.result`:
     ```json
@@ -77,6 +85,20 @@ Use-case gọi `resolveTts(settings.voiceProvider)` → **không biết** implem
   (độ mờ: blur radius + độ đục lớp phủ), gộp hardsub tĩnh (`isStatic` → 1 record cho toàn video),
   và tính vị trí phụ đề mới ưu tiên trùng/nằm ngay trên vùng đã mask (point 2, xem `01` §3.2).
 - `RenderService` — gọi `packages/media` sinh video.
+- `CancelProjectUseCase` — huỷ job `PENDING`/`RUNNING` của 1 project (BullMQ `job.remove()` +
+  cờ `cancelled` cho worker đang chạy), đặt `Project.status = FAILED`, `cancelledAt = now()`,
+  dọn file tạm liên quan (xem `01` §5.2).
+- **Giới hạn concurrency (NFR-12)**: `CreateProjectUseCase` kiểm tra
+  `count(Project where userId=X and status='RUNNING') < MAX_CONCURRENT_PROJECTS` (mặc định 2,
+  cấu hình qua env `MAX_CONCURRENT_PROJECTS_PER_USER`) trước khi enqueue stage đầu; vượt ngưỡng →
+  Project tạo với `status=QUEUED`, một cron/worker nhẹ định kỳ quét và enqueue project `QUEUED`
+  cũ nhất khi có slot trống.
+- `QuotaGuardService` — kiểm tra mức dùng provider trước khi enqueue các stage tốn nhiều request
+  (`analyze`, `tts`, `ttsAlign`, `translate`, `ocr`); cảnh báo sớm khi gần chạm giới hạn free tier.
+  Chi tiết thuật toán, `RateLimiter` (Token Bucket + Sliding Window), `ProviderCache` và đa key
+  round-robin nằm ở `11_RATE_LIMIT_VA_FREE_TIER.md` — **bắt buộc đọc trước khi cài đặt bất kỳ
+  provider client nào**, vì mọi lời gọi provider thật phải đi qua các lớp bọc này thay vì gọi SDK
+  trực tiếp.
 
 Ví dụ controller mỏng:
 
@@ -154,13 +176,22 @@ export const UpdateSegmentTimingSchema = z.object({
 }).refine(data => data.endSec > data.startSec, {
   message: "endSec must be greater than startSec"
 });
+
+export const CreateProjectBaseSchema = z.object({
+  // ... các field theo mode (xem CreateSummarySchema / CreateTranslateDubSchema) +
+  copyrightAcknowledged: z.literal(true, {
+    errorMap: () => ({ message: "Bạn phải xác nhận quyền sử dụng nội dung nguồn trước khi tạo project" }),
+  }),
+});
 ```
 
 ---
 
 ## 6. Logging & quan sát (ProviderLog)
 
-Dùng **Pino** cho app log. Mọi cuộc gọi provider bọc bởi `tracked(provider, type, fn)`:
+Dùng **Pino** cho app log. Mọi cuộc gọi provider bọc bởi `tracked(provider, type, fn)` —
+**và trước đó** bởi `RateLimiter.acquire()`/`ProviderCache` (xem `11_RATE_LIMIT_VA_FREE_TIER.md` §2.3
+cho lớp `callProvider()` bọc ngoài `tracked()`):
 
 ```ts
 export async function tracked<T>(meta: ProviderMeta, fn: () => Promise<T>): Promise<T> {
@@ -170,13 +201,16 @@ export async function tracked<T>(meta: ProviderMeta, fn: () => Promise<T>): Prom
     await logProvider({ ...meta, status: 'ok', durationMs: Date.now() - start });
     return r;
   } catch (e) {
-    await logProvider({ ...meta, status: 'error', error: String(e), durationMs: Date.now() - start });
+    const status = isRateLimitError(e) ? 'rate_limited' : 'error'; // phân biệt hết quota tạm thời
+    await logProvider({ ...meta, status, error: String(e), durationMs: Date.now() - start });
     throw e;
   }
 }
 ```
 
 `logProvider` ghi vào bảng `ProviderLog` (provider, model, tokensIn/Out, costUsd, durationMs, status).
+Giá trị `status='rate_limited'` giúp `QuotaGuardService` và trang `Logs`/`Analytics` phân biệt rõ
+"đang chờ tài nguyên bên ngoài hồi phục" với "lỗi cần sửa code/cấu hình".
 
 ---
 
@@ -185,6 +219,10 @@ export async function tracked<T>(meta: ProviderMeta, fn: () => Promise<T>): Prom
 - Lỗi tập trung tại `error.ts` → format chuẩn `{ error: { code, message } }`.
 - Mỗi job BullMQ có `jobId = `${projectId}:${stage}`` → không chạy trùng.
 - Khi worker crash, BullMQ retry; `GenerationJob` lưu `attempts` & `error`.
+- **Riêng lỗi rate-limit/quota** (xem `11` §4.2): job không dùng backoff cố định như lỗi thường —
+  `nextRetryAt` được tính theo `Retry-After` của provider hoặc chu kỳ reset RPM/RPD đã biết trước,
+  và số lần retry cho phép cao hơn (mặc định 5) vì bản chất là chờ tài nguyên hồi phục, không phải
+  lỗi logic cần sửa code.
 
 ---
 
@@ -204,3 +242,7 @@ export async function tracked<T>(meta: ProviderMeta, fn: () => Promise<T>): Prom
 | Zod ở shared | web & api đồng bộ schema, tránh lệch |
 | AES API key | bảo mật secrets tại rest |
 | Pino thay console | structured log, tốc độ cao |
+| Overlap: từ chối đè lên segment N-1 / segment đã tự chỉnh, tự đẩy segment N+1 chưa chỉnh | Một quy tắc duy nhất, tránh nhập nhằng giữa "tự động sửa" và "báo lỗi" như thiết kế trước |
+| Giới hạn `MAX_CONCURRENT_PROJECTS_PER_USER` | Tránh 1 user chiếm hết worker GPU/CPU khi chưa có hệ thống gói cước (NFR-12) |
+| `copyrightAcknowledged` bắt buộc ở schema tạo project | Ép xác nhận bản quyền ngay tại validation layer, không thể bỏ qua qua client (NFR-14) |
+| Mọi provider client đi qua `callProvider()` (RateLimiter + Cache) | Free-tier API key có RPM/RPD thấp; không throttle chủ động sẽ vỡ pipeline khi test nhiều lần (`11`) |

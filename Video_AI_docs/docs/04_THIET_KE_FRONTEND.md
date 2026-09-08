@@ -63,7 +63,7 @@ apps/web/
 | CreateProject | **Wizard** (dưới) |
 | Queue | Bảng job đang chạy/thất bại, retry thủ công |
 | Outputs | Thư viện video, download, đẩy YouTube |
-| Settings / ProviderSettings / ApiKeys | Cấu hình user & provider |
+| Settings / ProviderSettings / ApiKeys | Cấu hình user & provider; **ApiKeys** hỗ trợ khai báo nhiều key/1 provider (label + priority) cho round-robin khi dùng free tier, hiển thị mức dùng RPM/RPD hiện tại theo từng key (`11` §5) |
 | Logs | Bảng ProviderLog (cost, token, status) |
 | Analytics | Biểu đồ theo thời gian |
 | Admin | Quản lý user, provider global, hệ thống |
@@ -80,7 +80,11 @@ Wizard 2 mode khác nhau:
 3. **Độ dài** (20–30 phút).
 4. **Phong cách / Giọng review** (tone: nghiêm túc, hài hước...; cho phép spoil?).
 5. **Giọng đọc** (chọn voice provider + giọng).
-6. **Generate** → gọi `POST /projects` + start.
+6. **Xác nhận bản quyền** (checkbox bắt buộc): "Tôi xác nhận có quyền sử dụng/tái sản xuất nội dung
+   phim đã tải lên" — không tick thì nút Generate bị disable (xem `00` §5, `03` §5).
+7. Nếu provider đang chọn ở `tier=free` và phim > 60 phút, hiển thị cảnh báo mềm khuyến nghị test
+   với clip ngắn trước (xem `11` §3.3) — không chặn, chỉ nhắc.
+8. **Generate** → gọi `POST /projects` + start.
 
 ### Mode `TRANSLATE_DUB` (Dịch thuật & Lồng tiếng)
 1. **Chọn mode** = TRANSLATE_DUB.
@@ -90,7 +94,14 @@ Wizard 2 mode khác nhau:
 5. **Lồng tiếng AI** (toggle): bật → chọn voice provider + giọng; tắt → chỉ thay phụ đề.
 6. **Nâng cao** (tuỳ chọn): method che chữ `blur`/`fill`/`inpaint` (inpaint là premium, xem `00`/`03`),
    vị trí phụ đề mới (`Giữ nguyên` / `Top` / `Bottom` / `Custom`), và `maskStrength` mặc định.
-7. **Generate** → start pipeline; theo dõi tiến trình realtime bằng SSE.
+7. **Xác nhận bản quyền** (checkbox bắt buộc, tương tự SUMMARY).
+8. Nếu provider đang chọn ở `tier=free` và video > 20 phút, hiển thị cảnh báo mềm tương tự SUMMARY.
+9. **Generate** → start pipeline; theo dõi tiến trình realtime bằng SSE.
+
+Sau khi stage `dub.translate` (và `dub.ocr` nếu cần chỉnh mask) hoàn tất, wizard cho phép
+**"Xem trước & Xác nhận"** (FR-J2) — hiển thị transcript đã dịch + preview mask trên vài khung hình
+mẫu — trước khi user bấm **"Render bản cuối"** để enqueue `dub.ttsAlign`/`dub.render`. Điều này tránh
+render lãng phí (tốn NVENC + thời gian) nếu bản dịch hoặc vùng che chưa đúng ý.
 
 Wizard dùng `useWizard` (state machine đơn giản) + RHF mỗi bước; validate bằng Zod trước khi next.
 
@@ -124,6 +135,14 @@ khung hình preview:
   (fallback polling TanStack Query nếu SSE lỗi).
 - Mỗi event `{ stage, status, percent }` cập nhật stepper pipeline + progress bar không cần F5:
   ingest → stt ‖ ocr (hiện 2 nhánh song song) → translate → ttsAlign? → render.
+- Nút **"Huỷ"** ở header gọi `POST /projects/:id/cancel`; SSE nhận event `{ stage, status:'CANCELLED' }`
+  và dừng stepper, hiển thị trạng thái đã huỷ (FR-J1).
+- Vì pipeline có thể chạy 20–30 phút (SUMMARY), dashboard hiển thị banner nhắc user có thể đóng tab —
+  hệ thống sẽ gửi email/thông báo khi xong (FR-J3), không bắt buộc giữ SSE mở.
+- Khi `GenerationJob.result.warnings` chứa cảnh báo `quota_risk` (xem `11` §4.1), stepper hiển thị
+  icon vàng "Sắp chạm giới hạn API — có thể chậm hơn dự kiến" thay vì để user chờ mà không rõ lý do.
+  Khi job chuyển `RETRY` do rate-limit, hiển thị **"Đang chờ quota provider hồi phục lúc HH:mm"**
+  (không phải icon lỗi đỏ) để tránh hiểu nhầm hệ thống bị hỏng.
 
 ---
 
@@ -137,7 +156,7 @@ Mục tiêu: **tất cả nội dung vừa trong 1 khung màn hình duy nhất**
 ┌─────────────────────────────────────────────────────────────────┐
 │ Breadcrumb: ← Quay lại dự án                                    │
 ├─────────────────────────────────────────────────────────────────┤
-│ Header: [Title] [Status] [Xoá] [Chạy lại] [Xem video] [Tải]   │
+│ Header: [Title] [Status] [Huỷ] [Xoá] [Chạy lại] [Xem video] [Tải]│
 ├─────────────────────────────────────────────────────────────────┤
 │ InfoBar (compact 1 dòng): Mode | Lang | Style | Dubbing | Mask │
 ├───────────────────────────────────────┬─────────────────────────┤
@@ -259,3 +278,8 @@ Input type sinh từ Zod schema (`z.infer`) → **web & api đồng bộ kiểu*
 | Wizard state riêng | tách biệt mode, dễ mở rộng |
 | TimelinePreview read-only | đúng yêu cầu tự động; vẫn cho Regenerate |
 | Schema share từ packages/shared | type-safety đầu-cuối |
+| Checkbox bản quyền bắt buộc trong wizard | Ép user xác nhận trước khi hệ thống xử lý nội dung có thể có bản quyền (NFR-14) |
+| Bước "Xem trước & Xác nhận" trước render cuối (TRANSLATE_DUB) | Tránh lãng phí NVENC/thời gian nếu bản dịch/mask sai từ đầu (FR-J2) |
+| Nút Huỷ pipeline + thông báo ngoài SSE | UX tốt hơn cho pipeline dài, tránh phải giữ tab mở (FR-J1, FR-J3) |
+| Cảnh báo quota (`quota_risk`) hiển thị riêng biệt với lỗi thật | Free-tier user cần biết pipeline chậm vì giới hạn ngoài, không phải hệ thống lỗi (`11` §4) |
+| ApiKeys page hỗ trợ nhiều key/1 provider | Cho phép user tự tăng thông lượng hiệu dụng khi chỉ có các key miễn phí (`11` §5) |

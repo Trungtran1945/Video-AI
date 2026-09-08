@@ -43,10 +43,22 @@ Base URL: `/api/v1`.
   "maskMethod": "fill",                  // 'blur' | 'fill' | 'inpaint' (inpaint là premium)
   "maskStrength": 0.6,                   // 0–1: blur radius + độ đục lớp phủ (thanh kéo editor)
   "subPosition": "original",             // 'original' | 'top' | 'bottom' | 'custom'
-  "sourceVideoKey": "uploads/short.mp4"
+  "sourceVideoKey": "uploads/short.mp4",
+  "copyrightAcknowledged": true          // bắt buộc = true, xem `00` §5 và `03` §5
 }
 ```
-→ `202 Accepted` + `Project` (status PENDING).
+→ `202 Accepted` + `Project` (status `PENDING`, hoặc `QUEUED` nếu user đã đạt giới hạn concurrency —
+xem `03` §3 NFR-12).
+
+### POST `/projects/:id/cancel` — huỷ pipeline đang chạy
+Không cần body. Huỷ mọi job `PENDING`/`RUNNING` của project, dọn file tạm liên quan.
+→ `200 OK` + `Project` (status `FAILED`, `cancelledAt` được set). Idempotent: gọi lại trên project
+đã kết thúc trả về trạng thái hiện tại, không lỗi.
+
+### POST `/projects/:id/translate-dub/confirm-preview` — xác nhận sau bước xem trước (TRANSLATE_DUB)
+Chạy sau khi `dub.translate` xong, trước khi enqueue `dub.ttsAlign`/`dub.render` (FR-J2 — xem `04` §4).
+Body tuỳ chọn `{ regions: [...] }` để cập nhật mask lần cuối (tương đương PUT mask-regions gộp bước).
+→ `202 Accepted`, enqueue render.
 
 ### GET `/projects` — danh sách (phân trang, filter `?mode=`)
 ### GET `/projects/:id` — chi tiết (kèm stages, timeline/transcript, output)
@@ -124,6 +136,7 @@ Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 | GET | `/queue` | job đang chạy/thất bại (toàn hệ với ADMIN) |
 | GET | `/analytics` | `{ videos, minutesTranslated, byProvider, byDay }` |
 | GET | `/providers` | danh sách provider + health status |
+| GET | `/providers/:provider/quota` | `{ usedToday, limitToday, usedThisMinute, limitThisMinute, percentUsed }` theo user hiện tại — dùng cho banner cảnh báo quota trên UI (`11` §4.1) |
 
 ---
 
@@ -132,7 +145,7 @@ Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 | Method | Path | Mô tả |
 | --- | --- | --- |
 | GET/PUT | `/settings` | cấu hình user |
-| GET/POST | `/api-keys` | quản lý API key (trả về đã mã hoá ẩn) |
+| GET/POST | `/api-keys` | quản lý API key (trả về đã mã hoá ẩn); `POST` chấp nhận nhiều key cùng `provider` với `label`/`priority` khác nhau để round-robin (`11` §5) |
 | DELETE | `/api-keys/:id` | thu hồi |
 | GET | `/logs` | `ProviderLog` (project của user / toàn hệ nếu ADMIN) |
 | GET/PUT | `/admin/users` | quản lý user (ADMIN) |
@@ -165,7 +178,8 @@ Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
     ],
     "ocrRegions": [
       { "id": "r_1", "startSec": 0.4, "endSec": 3.1,
-        "x": 120, "y": 980, "width": 840, "height": 90, "source": "AUTO" }
+        "ratioX": 0.0625, "ratioY": 0.9074, "ratioW": 0.4375, "ratioH": 0.0833,
+        "maskStrength": 0.6, "isStatic": false, "source": "AUTO" }
     ],
     "output": null
   }
@@ -184,6 +198,10 @@ Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 | `PROJ_001` | project không tồn tại |
 | `PROV_001` | provider lỗi (xem ProviderLog) |
 | `JOB_001` | job thất bại không thể retry |
+| `VAL_002` | chỉnh thời gian segment gây chồng lấn không thể tự động giải quyết (xem `03` §3 Overlap Detection) |
+| `LIMIT_001` | user đã đạt giới hạn số project chạy đồng thời (`MAX_CONCURRENT_PROJECTS_PER_USER`); project được tạo với status `QUEUED` |
+| `COPYRIGHT_001` | thiếu xác nhận `copyrightAcknowledged` khi tạo project |
+| `PROV_002` | tất cả API key của provider đã cạn quota (429/quota-exceeded); job chuyển `RETRY` với lịch chờ, xem `11` §4.2 |
 
 ---
 

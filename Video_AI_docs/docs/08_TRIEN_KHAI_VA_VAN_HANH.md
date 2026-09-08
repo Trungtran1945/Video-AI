@@ -90,6 +90,17 @@ YOUTUBE_CLIENT_ID=...
 YOUTUBE_CLIENT_SECRET=...
 STORAGE_DRIVER=local               # hoặc s3
 AWS_S3_BUCKET=...
+MAX_CONCURRENT_PROJECTS_PER_USER=2 # NFR-12, xem `03` §3
+PROJECT_RETENTION_DAYS=30          # NFR-13, xem `02` §5 và §6 dưới đây
+SMTP_HOST=...                      # cho notify.projectDone (FR-J3, xem `01` §5.2)
+SMTP_USER=...
+SMTP_PASSWORD=...
+NOTIFY_FROM_EMAIL=no-reply@ai-shorts-factory.example
+PROVIDER_RATE_LIMIT_SAFETY_MARGIN=0.8   # xem `11_RATE_LIMIT_VA_FREE_TIER.md`
+PROVIDER_CACHE_ENABLED=true
+PROVIDER_CACHE_TTL_DAYS=90
+QUOTA_WARNING_THRESHOLD=0.8
+DEFAULT_PROVIDER_MODE=live              # 'live' | 'mock' — dùng 'mock' cho CI/dev, không tốn quota
 ```
 
 ---
@@ -131,6 +142,28 @@ AWS_S3_BUCKET=...
 - Cảnh báo: job FAILED quá N lần → notify admin.
 - Backup: `pg_dump` định kỳ; volume `storage/` mount persistent.
 
+### 6.1. Dọn dẹp tự động (Retention & Cleanup Cron)
+
+Do file nguồn (phim 2-3h, video ≤2GB) và file trung gian (mezzanine, audio tách, frame OCR) chiếm
+dung lượng lớn, hệ thống chạy 1 cron job định kỳ (mỗi giờ, qua BullMQ repeatable job `cleanup.sweep`):
+
+1. Quét `Project` có `expiresAt < now()` (mặc định `createdAt + PROJECT_RETENTION_DAYS`) và
+   `status IN (SUCCESS, FAILED)` → xoá file trung gian trong `storage/tmp/{projectId}` qua
+   `StorageProvider.delete`, giữ lại `Output` (video kết quả) trừ khi user xoá project hẳn.
+- Storage/S3 lifecycle rule tương đương cũng có thể cấu hình song song ở tầng hạ tầng cho production.
+2. Với project `CANCELLED`/`FAILED` ngay sau khi huỷ (xem `01` §5.2), dọn file tạm **ngay lập tức**,
+   không chờ tới chu kỳ cron.
+3. Ghi log số byte đã giải phóng vào `ProviderLog`-style record (hoặc bảng `CleanupLog` riêng nếu cần
+   audit) để theo dõi qua Analytics.
+
+### 6.2. Notification Service
+
+Worker riêng nhẹ (`notify` queue, không cần GPU/CPU nặng) tiêu thụ job `notify.projectDone`:
+- Gửi email qua SMTP (cấu hình ở §3) khi `Project.status` chuyển `SUCCESS`/`FAILED`.
+- Nội dung: tên project, trạng thái, link trực tiếp tới `ProjectDetail` hoặc `Outputs`.
+- Không chặn pipeline chính; job này độc lập, retry riêng (2 lần), lỗi gửi mail không làm
+  `Project.status` bị ảnh hưởng.
+
 ---
 
 ## 7. Quyết định triển khai
@@ -141,3 +174,6 @@ AWS_S3_BUCKET=...
 | env qua secret Manager | bảo mật, không commit |
 | postgres production / sqlite MVP | nâng cấp không đổi schema |
 | CI chạy lint+typecheck+test | đảm bảo chất lượng trước deploy |
+| Cron `cleanup.sweep` theo `expiresAt` | Kiểm soát chi phí lưu trữ chủ động thay vì dọn thủ công (NFR-13) |
+| Notification worker tách riêng khỏi pipeline chính | Lỗi gửi mail không ảnh hưởng trạng thái project; dễ scale độc lập |
+| `DEFAULT_PROVIDER_MODE=mock` cho CI/dev | Kiểm thử luồng pipeline không phụ thuộc/tốn quota free tier bên ngoài (`11` §6) |

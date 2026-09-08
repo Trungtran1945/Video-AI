@@ -125,7 +125,24 @@ user chọn (xem `01` §3.2) + font/outline:
 - Tách worker **CPU** (ffmpeg: demux, mask, burn-in, mux) và worker **GPU/AI** (ASR, OCR, TTS,
   inpainting) — render nặng không tranh chấp VRAM với inference (xem `08_TRIEN_KHAI_VA_VAN_HANH.md`).
 - Giới hạn concurrent render (semaphore) theo CPU/RAM; video dài chia chunk song song.
-- File trung gian lưu `storage/tmp`, dọn sau khi xuất.
+- File trung gian lưu `storage/tmp`, dọn sau khi xuất hoặc theo retention policy (`Project.expiresAt`,
+  xem `08` §6 và `02` §5).
+
+### 3.1. Huỷ tiến trình FFmpeg giữa chừng (Cancel)
+
+Mọi hàm `MediaService` chạy lâu (render, concat, mask, burn-in) nhận thêm tham số tuỳ chọn
+`signal?: AbortSignal`:
+
+```ts
+concatClips(clips: ConcatInput[], out: string, opts: ConcatOpts, signal?: AbortSignal): Promise<void>;
+```
+
+- Khi worker nhận tín hiệu huỷ (từ `CancelProjectUseCase`, xem `03` §3 và `01` §5.2), `AbortController`
+  tương ứng được `abort()`; wrapper FFmpeg lắng nghe sự kiện này và gọi `child_process.kill('SIGTERM')`
+  lên tiến trình `ffmpeg` con, sau đó `SIGKILL` nếu không thoát trong 5s.
+- File output dở dang bị xoá ngay; `GenerationJob.status = FAILED`, `error = 'CANCELLED_BY_USER'`.
+- Vì FFmpeg không hỗ trợ resume giữa chừng một lệnh đơn, huỷ luôn đồng nghĩa phải chạy lại từ đầu
+  stage đó nếu user muốn tiếp tục sau này (khác với upload resumable ở tầng ingest).
 
 ---
 
@@ -140,3 +157,4 @@ user chọn (xem `01` §3.2) + font/outline:
 | Mask theo `enable='between(t,...)'` | chỉ xử lý đúng đoạn có hardsub, không đè toàn video |
 | Burn-in bằng ASS thay SRT | cần `\pos` khớp bbox cũ + style chữ nhất quán |
 | NVENC ưu tiên khi mux | render 1080p/4K nhanh gấp nhiều lần so với libx264 CPU |
+| `AbortSignal` xuyên suốt `MediaService` | Cho phép huỷ job render giữa chừng an toàn (FR-J1), giải phóng CPU/GPU ngay thay vì chờ hết pipeline |

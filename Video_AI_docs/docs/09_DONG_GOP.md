@@ -80,7 +80,28 @@ packages/<name>/
 - **TranslateService**: cùng input, khác StylePreset → assert đúng systemPrompt được inject và
   output khớp JSON schema `{segments:[{index, translation}]}`.
 - **API**: test controller qua supertest + mock use-case.
-- **E2E pipeline**: dùng video ngắn (30s) thay phim 2–3h để chạy nhanh.
+- **E2E pipeline dùng video 30s**: mặc định chạy với `DEFAULT_PROVIDER_MODE=mock` trong CI (xem
+  `11` §6) để tách biệt hoàn toàn khỏi rate limit của provider thật — CI **luôn xanh** bất kể free
+  tier bên ngoài có bị giới hạn hay không.
+- **CancelProjectUseCase**: assert job `PENDING` bị remove khỏi BullMQ, job `RUNNING` nhận tín hiệu
+  `AbortSignal`, file tạm bị xoá, `Project.status = FAILED` với `cancelledAt` được set.
+- **Overlap Detection (UpdateSegmentTimingSchema)**: fixture 3 segment liên tiếp — assert đè lên
+  N-1 bị từ chối (`VAL_002`), đè lên N+1 chưa chỉnh tay thì tự đẩy đúng offset, đè lên N+1 đã
+  `isTimeManuallyAdjusted=true` thì bị từ chối.
+- **Concurrency limit**: tạo > `MAX_CONCURRENT_PROJECTS_PER_USER` project cùng lúc → assert project
+  vượt ngưỡng có `status=QUEUED` thay vì enqueue ngay; assert cron dequeue đúng thứ tự FIFO khi có
+  slot trống.
+- **Cleanup cron**: fixture project có `expiresAt` trong quá khứ → assert file trong `storage/tmp`
+  bị xoá, `Output` không bị ảnh hưởng.
+- **RateLimiter (Token Bucket)**: fixture RPM=2 → gọi `acquire()` 5 lần liên tiếp, assert 2 lần đầu
+  resolve ngay, các lần sau bị delay đúng theo cửa sổ; chạm `requestsPerDay` → assert throw
+  `RateLimitExhaustedError` thay vì tiếp tục chờ vô hạn.
+- **ProviderCache**: gọi `callProvider()` 2 lần với input giống hệt → assert lần 2 không tạo thêm
+  `ProviderLog`, không gọi `fn()` thật, trả đúng kết quả cache.
+- **Đa key round-robin**: fixture 2 `ApiKey` cùng provider, 1 key trả liên tiếp lỗi 429 → assert
+  hệ thống tự chuyển sang key còn lại mà không làm job `FAILED`.
+- **QuotaGuardService**: fixture `ProviderLog` gần chạm `requestsPerDay` → assert `getSnapshot()`
+  trả `percentUsed ≥ 0.8` và job liên quan có `warnings` chứa `quota_risk`.
 
 ---
 

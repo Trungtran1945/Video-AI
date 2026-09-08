@@ -45,6 +45,9 @@ Hệ thống phục vụ hai nhóm use-case:
 - Không có hệ thống thanh toán / ví điểm thưởng — mọi tính năng mở cho user đã đăng nhập.
 - PostgreSQL chỉ bật ở bản production (MVP dùng SQLite).
 - Upload YouTube dùng OAuth thủ công của user (không auto-publish không kiểm soát).
+- Không tự động kiểm duyệt bản quyền nội dung nguồn (xem §6 — trách nhiệm thuộc về user).
+- Không giới hạn số project chạy song song theo gói cước (MVP không có gói cước), nhưng có giới hạn
+  **kỹ thuật** theo hàng đợi/tài nguyên (xem NFR-12, NFR-13).
 
 ---
 
@@ -93,6 +96,15 @@ Hệ thống phục vụ hai nhóm use-case:
 - Trang: Projects, Project Detail (xem timeline + player), Queue, Outputs, Settings, Provider Settings, API Keys, Logs, Analytics, Admin.
 - Xem log cuộc gọi AI (ProviderLog) và lỗi.
 
+### 3.5. Kiểm soát vòng đời Job (bổ sung)
+
+| Mã | Chức năng |
+| --- | --- |
+| FR-J1 | User có thể **huỷ (cancel)** một project đang chạy pipeline ở bất kỳ stage nào; job đang xử lý bị dừng an toàn, tài nguyên tạm được dọn |
+| FR-J2 | User có thể **xem trước (preview)** kết quả trung gian trước khi render cuối: script/scene (SUMMARY), transcript đã dịch + mask preview (TRANSLATE_DUB) — tránh lãng phí thời gian render nếu sai từ đầu |
+| FR-J3 | Hệ thống gửi **thông báo hoàn thành/thất bại** qua email hoặc push khi pipeline dài (>10 phút) kết thúc, không bắt buộc user phải giữ tab mở |
+| FR-J4 | Hệ thống tự động **dọn dẹp file trung gian** (audio tách, frame OCR, mezzanine) sau khi project hoàn thành hoặc quá hạn lưu trữ (retention policy, mặc định 30 ngày cho file nguồn) |
+
 ---
 
 ## 4. Yêu cầu phi chức năng (Non-functional Requirements)
@@ -110,10 +122,27 @@ Hệ thống phục vụ hai nhóm use-case:
 | NFR-9 | **i18n** — đa ngôn ngữ cho cả giọng đọc và UI |
 | NFR-10 | **Real-time UX** — tiến trình job đẩy qua SSE/WebSocket, không cần refresh |
 | NFR-11 | **Upload bền** — resumable upload (chunk, kiểu TUS) cho file ≤ 2GB, resume sau rớt mạng |
+| NFR-12 | **Kiểm soát tài nguyên** — giới hạn số project `RUNNING` đồng thời/user (mặc định 2); giới hạn số job GPU đồng thời toàn hệ theo cấu hình, hàng đợi vượt ngưỡng phải xếp `QUEUED` thay vì spawn vô hạn worker |
+| NFR-13 | **Có thể huỷ & dọn dẹp** — mọi job dài phải hỗ trợ cancel giữa chừng; file trung gian có retention policy, dọn tự động theo lịch (cron) |
+| NFR-14 | **Tuân thủ bản quyền** — hệ thống hiển thị cảnh báo & yêu cầu user xác nhận quyền sử dụng nội dung nguồn trước khi xử lý; không tự động public/đẩy YouTube nếu chưa xác nhận |
+| NFR-15 | **Chịu được giới hạn API key miễn phí** — mọi lời gọi provider ngoài phải qua rate limiter + cache nội dung; hệ thống chủ động throttle/cảnh báo trước khi cạn quota thay vì để pipeline vỡ giữa chừng (chi tiết `11_RATE_LIMIT_VA_FREE_TIER.md`) |
 
 ---
 
-## 5. Định nghĩa từ khoá
+## 5. Trách nhiệm nội dung & bản quyền (Content Liability)
+
+- Hệ thống **không kiểm duyệt tự động** bản quyền của phim/video nguồn do user tải lên.
+- Khi tạo project, user phải **tick xác nhận** đã có quyền sử dụng/tái sản xuất nội dung nguồn
+  (checkbox bắt buộc, lưu `Project.copyrightAcknowledged: true` kèm timestamp).
+- Output do AI sinh ra (video review, video lồng tiếng) thuộc trách nhiệm pháp lý của user khi
+  công khai/phát hành; hệ thống chỉ đóng vai trò công cụ sản xuất.
+- Chức năng đẩy YouTube (FR-S10) hiển thị lại cảnh báo bản quyền trước khi cho phép publish.
+- Điều khoản dịch vụ (Terms of Service) cần nêu rõ giới hạn trách nhiệm của nền tảng — nằm ngoài
+  phạm vi tài liệu kỹ thuật này, nhưng UI phải có nơi liên kết tới ToS/Privacy Policy.
+
+---
+
+## 6. Định nghĩa từ khoá
 
 - **Scene:** một đoạn phim gốc liên tục giữa hai điểm cắt cảnh (cut).
 - **ScriptSegment:** một đoạn lời review trong kịch bản, có thời lượng mục tiêu.
