@@ -5,7 +5,7 @@ import PageHeader from '@/components/PageHeader';
 import Loading from '@/components/Loading';
 import EmptyState from '@/components/EmptyState';
 import { motion } from 'framer-motion';
-import { KeyRound, Plus, Trash2, Eye, EyeOff } from 'lucide-react';
+import { KeyRound, Plus, Trash2, Eye, EyeOff, Zap, BarChart3 } from 'lucide-react';
 
 const providerLabels = {
   gemini: 'Gemini', openai: 'OpenAI', anthropic: 'Anthropic', huggingface: 'HuggingFace',
@@ -18,12 +18,18 @@ const providerLabels = {
 const categories = ['llm', 'image', 'video', 'voice', 'subtitle', 'platform'];
 const providers = Object.keys(providerLabels);
 
+const TIER_OPTIONS = [
+  { value: 'free', label: 'Free', desc: 'API key miễn phí, bị giới hạn RPM/quota' },
+  { value: 'paid', label: 'Paid', desc: 'API key trả phí, không bị rate limit' },
+];
+
 export default function ApiKeys() {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [visibleKeys, setVisibleKeys] = useState({});
-  const [form, setForm] = useState({ provider: 'gemini', category: 'llm', api_key_encrypted: '' });
+  const [form, setForm] = useState({ provider: 'gemini', category: 'llm', api_key_encrypted: '', tier: 'free', priority: 0 });
+  const [quotas, setQuotas] = useState({});
 
   useEffect(() => {
     (async () => {
@@ -33,13 +39,28 @@ export default function ApiKeys() {
     })();
   }, []);
 
+  const loadQuota = async (provider) => {
+    try {
+      const q = await apiKeysApi.quota(provider);
+      setQuotas(prev => ({ ...prev, [provider]: q }));
+    } catch (_) {}
+  };
+
+  useEffect(() => {
+    const providers = [...new Set(keys.map(k => k.provider))];
+    providers.forEach(loadQuota);
+  }, [keys]);
+
   const handleAdd = async () => {
     if (!form.api_key_encrypted.trim()) return;
     try {
-      const created = await apiKeysApi.create(form.provider, form.category, form.api_key_encrypted);
+      const created = await apiKeysApi.create(form.provider, form.category, form.api_key_encrypted, {
+        tier: form.tier,
+        priority: Number(form.priority),
+      });
       setKeys([created, ...keys]);
       setShowAdd(false);
-      setForm({ provider: 'gemini', category: 'llm', api_key_encrypted: '' });
+      setForm({ provider: 'gemini', category: 'llm', api_key_encrypted: '', tier: 'free', priority: 0 });
     } catch (e) { console.error(e); alert('Không thể thêm khóa: ' + (e.message || '')); }
   };
 
@@ -57,7 +78,37 @@ export default function ApiKeys() {
     } catch (e) { console.error(e); }
   };
 
+  const updateTier = async (key, tier) => {
+    try {
+      const updated = await apiKeysApi.update(key.id, { tier });
+      setKeys(keys.map(k => k.id === key.id ? { ...k, ...updated } : k));
+    } catch (e) { console.error(e); }
+  };
+
+  const updatePriority = async (key, priority) => {
+    try {
+      const updated = await apiKeysApi.update(key.id, { priority: Number(priority) });
+      setKeys(keys.map(k => k.id === key.id ? { ...k, ...updated } : k));
+    } catch (e) { console.error(e); }
+  };
+
   const maskKey = (k) => k ? k.slice(0, 4) + '••••••••' + k.slice(-4) : '—';
+
+  const QuotaBar = ({ provider }) => {
+    const q = quotas[provider];
+    if (!q || q.limitToday === null) return null;
+    const pct = Math.min(q.percentUsed || 0, 100);
+    const isHigh = pct >= 80;
+    return (
+      <div className="flex items-center gap-2 mt-1.5">
+        <BarChart3 className={`w-3 h-3 ${isHigh ? 'text-amber-400' : 'text-slate-500'}`} />
+        <div className="flex-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
+          <div className={`h-full rounded-full transition-all ${isHigh ? 'bg-amber-500' : 'bg-blue-500'}`} style={{ width: `${pct}%` }} />
+        </div>
+        <span className="text-[10px] text-slate-500">{q.usedToday}/{q.limitToday}</span>
+      </div>
+    );
+  };
 
   return (
     <Layout>
@@ -89,6 +140,21 @@ export default function ApiKeys() {
             <input type="password" value={form.api_key_encrypted} onChange={e => setForm(f => ({ ...f, api_key_encrypted: e.target.value }))}
               placeholder="Dán khóa API vào đây..."
               className="w-full px-3 py-2 rounded-lg bg-[#0F1117] border border-white/5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50 mb-3" />
+            <div className="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Tier</label>
+                <select value={form.tier} onChange={e => setForm(f => ({ ...f, tier: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg bg-[#0F1117] border border-white/5 text-sm text-slate-200 focus:outline-none focus:border-blue-500/50">
+                  {TIER_OPTIONS.map(t => <option key={t.value} value={t.value}>{t.label} — {t.desc}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Ưu tiên (0 = thấp nhất)</label>
+                <input type="number" min="0" max="100" value={form.priority}
+                  onChange={e => setForm(f => ({ ...f, priority: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg bg-[#0F1117] border border-white/5 text-sm text-slate-200 focus:outline-none focus:border-blue-500/50" />
+              </div>
+            </div>
             <div className="flex gap-2">
               <button onClick={handleAdd} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">Lưu khóa</button>
               <button onClick={() => setShowAdd(false)} className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white transition">Hủy</button>
@@ -110,6 +176,16 @@ export default function ApiKeys() {
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-semibold text-white">{providerLabels[k.provider] || k.provider}</span>
                     <span className="px-1.5 py-0.5 rounded bg-white/5 text-[10px] text-slate-400 uppercase">{k.label || k.provider}</span>
+                    {k.tier === 'free' && (
+                      <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-[10px] text-amber-400 flex items-center gap-0.5">
+                        <Zap className="w-2.5 h-2.5" /> Free
+                      </span>
+                    )}
+                    {k.priority > 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-blue-500/10 text-[10px] text-blue-400">
+                        P{k.priority}
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 mt-1">
                     <code className="text-xs text-slate-500 font-mono">
@@ -119,6 +195,16 @@ export default function ApiKeys() {
                       {visibleKeys[k.id] ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
                     </button>
                   </div>
+                  <QuotaBar provider={k.provider} />
+                </div>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <select value={k.tier || 'free'} onChange={e => updateTier(k, e.target.value)}
+                    className="px-2 py-1 rounded-lg bg-[#0F1117] border border-white/5 text-[11px] text-slate-300 focus:outline-none focus:border-blue-500/50 cursor-pointer">
+                    {TIER_OPTIONS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </select>
+                  <input type="number" min="0" max="100" value={k.priority ?? 0}
+                    onChange={e => updatePriority(k, e.target.value)}
+                    className="w-14 px-2 py-1 rounded-lg bg-[#0F1117] border border-white/5 text-[11px] text-slate-300 text-center focus:outline-none focus:border-blue-500/50" />
                 </div>
                 <button onClick={() => toggleActive(k)}
                   className={`relative w-11 h-6 rounded-full transition ${k.is_active ? 'bg-emerald-600' : 'bg-white/10'}`}>

@@ -23,10 +23,12 @@ export const settingsApi = {
 
 export const apiKeysApi = {
   list: () => api.get('/api-keys').then((r) => r.data),
-  create: (provider, label, key) =>
-    api.post('/api-keys', { provider, label, key }).then((r) => r.data),
+  create: (provider, label, key, { tier, priority } = {}) =>
+    api.post('/api-keys', { provider, label, key, tier, priority }).then((r) => r.data),
   remove: (id) => api.delete(`/api-keys/${id}`).then((r) => r.data),
   toggle: (id, isActive) => api.put(`/api-keys/${id}`, { isActive }).then((r) => r.data),
+  update: (id, patch) => api.put(`/api-keys/${id}`, patch).then((r) => r.data),
+  quota: (provider) => api.get(`/providers/${provider}/quota`).then((r) => r.data),
 }
 
 export const adminApi = {
