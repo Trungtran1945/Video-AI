@@ -44,9 +44,17 @@ export async function logProviderCall(entry) {
     tokens_out: Number.isFinite(entry.tokensOut) ? entry.tokensOut : null,
     cost_usd: Number.isFinite(entry.costUsd) ? entry.costUsd : 0,
     duration_ms: Number.isFinite(entry.durationMs) ? entry.durationMs : null,
-    status: entry.status === 'error' ? 'error' : 'ok',
+    status: entry.status === 'rate_limited' ? 'rate_limited'
+      : entry.status === 'error' ? 'error' : 'ok',
     error_message: entry.error ? String(entry.error).slice(0, 500) : null,
   })
+}
+
+function isRateLimitError(err) {
+  if (err?.name === 'RateLimitExhaustedError') return true
+  const msg = (err?.message || '').toLowerCase()
+  return msg.includes('429') || msg.includes('rate limit') || msg.includes('quota')
+    || msg.includes('insufficient_quota') || msg.includes('retry-after')
 }
 
 export async function tracked(meta, fn) {
@@ -73,7 +81,7 @@ export async function tracked(meta, fn) {
     await logProviderCall({
       ...meta,
       durationMs: Date.now() - start,
-      status: 'error',
+      status: isRateLimitError(err) ? 'rate_limited' : 'error',
       error: err.message,
     })
     throw err
