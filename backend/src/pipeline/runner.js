@@ -46,25 +46,20 @@ import summaryRender from './stages/summaryRender.js'
 
 import dubIngest from './stages/dubIngest.js'
 import dubStt from './stages/dubStt.js'
-import dubOcr from './stages/dubOcr.js'
+
 import dubMerge from './stages/dubMerge.js'
 import dubTranslate from './stages/dubTranslate.js'
 import dubTtsAlign from './stages/dubTtsAlign.js'
 import dubRender from './stages/dubRender.js'
 
-// Flow Producer integration (docs/01 §5.1)
-// Dub.stt và dub.ocr chạy song song, dub.merge kiểm tra DB rồi enqueue dub.translate
 async function startDubParallel(project, setProgress, results, signal) {
   const projectId = project.id
   await ensureStageJob(projectId, 'dub.stt')
-  await ensureStageJob(projectId, 'dub.ocr')
   await ensureStageJob(projectId, 'dub.merge')
 
-  // Chạy dub.stt và dub.ocr song song
   const sttJob = await loadJob(projectId, 'dub.stt')
-  const ocrJob = await loadJob(projectId, 'dub.ocr')
 
-  const sttPromise = executeStage(
+  const sttOk = await executeStage(
     project, sttJob, {},
     (pct) => {
       const p = Math.max(0, Math.min(99, Math.round(pct)))
@@ -76,22 +71,7 @@ async function startDubParallel(project, setProgress, results, signal) {
     signal
   )
 
-  const ocrPromise = executeStage(
-    project, ocrJob, {},
-    (pct) => {
-      const p = Math.max(0, Math.min(99, Math.round(pct)))
-      updateById('generation_jobs', ocrJob.id, { progress: p }).catch(() => {})
-      eventBus.publish(projectId, { stage: 'dub.ocr', status: 'running', percent: p })
-    },
-    results,
-    false,
-    signal
-  )
-
-  const [sttOk, ocrOk] = await Promise.all([sttPromise, ocrPromise])
-
-  // Chạy dub.merge kiểm tra DB (chỉ khi cả 2 job con thành công)
-  if (sttOk && ocrOk) {
+  if (sttOk) {
     const mergeJob = await loadJob(projectId, 'dub.merge')
     const mergeOk = await executeStage(
       project, mergeJob, {},
@@ -112,7 +92,7 @@ async function startDubParallel(project, setProgress, results, signal) {
 
 // Stage lists mirror docs/01 §3 + docs/05 §B.
 // A nested array marks a PARALLEL GROUP: members run concurrently via Promise.all
-// (docs/05 §B.0 — dub.stt ‖ dub.ocr độc lập dữ liệu).
+// (docs/05 §B.0 — dub.stt chạy trước, dub.merge kiểm tra barrier).
 export const STAGES = {
   SUMMARY: [
     'summary.transcribe',
@@ -126,7 +106,7 @@ export const STAGES = {
   ],
   TRANSLATE_DUB: [
     'dub.ingest',
-    ['dub.stt', 'dub.ocr', 'dub.merge'],
+    ['dub.stt', 'dub.merge'],
     'dub.translate',
     'dub.ttsAlign',
     'dub.render',
@@ -149,7 +129,7 @@ const STAGE_IMPL = {
   'summary.render': summaryRender,
   'dub.ingest': dubIngest,
   'dub.stt': dubStt,
-  'dub.ocr': dubOcr,
+
   'dub.merge': dubMerge,
   'dub.translate': dubTranslate,
   'dub.ttsAlign': dubTtsAlign,
@@ -167,7 +147,7 @@ const STAGE_PROVIDER = {
   'summary.render': 'ffmpeg',
   'dub.ingest': 'ffmpeg',
   'dub.stt': 'asr',
-  'dub.ocr': 'ocr',
+
   'dub.merge': 'core',
   'dub.translate': 'llm',
   'dub.ttsAlign': 'tts',
@@ -186,7 +166,7 @@ const RESETS = {
   // TRANSLATE_DUB (docs/02: TranscriptSegment / OcrRegion riêng cho từng mode)
   'dub.ingest': ['transcriptSegments', 'ocrRegions', 'audios', 'subtitles', 'outputs'],
   'dub.stt': ['transcriptSegments', 'audios', 'subtitles', 'outputs'],
-  'dub.ocr': ['ocrRegions', 'outputs'],
+
   'dub.merge': [], // dub.merge chỉ kiểm tra DB, không tạo artifacts
   'dub.translate': ['audios', 'subtitles', 'outputs'],
   'dub.ttsAlign': ['audios', 'outputs'],
@@ -477,8 +457,7 @@ export async function runPipeline(projectId, fromStage = null) {
         isFirstExecutedStage = false
         if (!ok) groupFailed = true
       } else {
-        // Nhóm song song (docs/05 §B.0): dub.stt ‖ dub.ocr chạy Promise.all
-        // dub.merge kiểm tra barrier trước khi tiếp tục
+        // Nhóm song song (docs/05 §B.0): dub.stt chạy trước, dub.merge kiểm tra barrier
         const ok = await startDubParallel(
           currentProject,
           (pct) => {
