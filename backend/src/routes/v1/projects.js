@@ -7,6 +7,7 @@ import { runPipeline, isPipelineRunning } from '../../pipeline/runner.js'
 import { deleteProjectFiles, collectProjectKeys } from '../../services/projectCleanup.js'
 import { cancelProjectUseCase } from '../../usecases/cancelProjectUseCase.js'
 import { sendError, ERR } from '../../lib/httpError.js'
+import { normalizeRegion } from '../../media/mediaService.js'
 import { config } from '../../config.js'
 
 const router = Router()
@@ -166,7 +167,7 @@ router.get('/:id', async (req, res) => {
       extras.scriptSegments = await query('SELECT * FROM script_segments WHERE project_id = ? ORDER BY index_num ASC', [project.id])
     } else if (isDubMode(project.mode)) {
       // docs/06 §7: TRANSLATE_DUB trả thêm ocrRegions (transcript qua endpoint riêng)
-      extras.ocrRegions = await query('SELECT * FROM ocr_regions WHERE project_id = ? ORDER BY start_sec ASC', [project.id])
+      extras.ocrRegions = (await query('SELECT * FROM ocr_regions WHERE project_id = ? ORDER BY start_sec ASC', [project.id])).map(normalizeRegion)
     }
     res.json({ ...project, params: project.params ? JSON.parse(project.params) : null, jobs, timeline, output, ...extras })
   } catch (err) {

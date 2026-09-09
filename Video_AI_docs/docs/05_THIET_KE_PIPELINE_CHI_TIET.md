@@ -172,7 +172,7 @@ Stage `translate` chỉ chạy khi cả hai xong: dịch dựa trên transcript,
   đủ thưa để tiết kiệm GPU.
 - `OcrProvider.detect(frame)` → bounding box `{x, y, width, height, text, confidence}`.
 - **Merge boxes liên tiếp**: box cùng vị trí (IoU > 0.7) qua các frame liền kề được gộp thành
-  `OcrRegion { startSec, endSec, x, y, width, height, text }`.
+  `OcrBox { x, y, width, height, text, confidence }` (format thô từ OCR provider, chưa phải model OcrRegion đã lưu DB — sau đó `toRatio()` chuyển sang `ratioX/ratioY/ratioW/ratioH` trước khi insert).
 - Lọc nhiễu: bỏ region hiện < 0.5s hoặc confidence thấp; vùng dưới 1/3 khung hình được ưu tiên
   (vị trí phụ đề phổ biến).
 - User có thể chỉnh/tạo thêm region trên Canvas (`source='MANUAL'`) trước render.

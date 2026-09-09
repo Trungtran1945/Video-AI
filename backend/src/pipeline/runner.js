@@ -47,9 +47,68 @@ import summaryRender from './stages/summaryRender.js'
 import dubIngest from './stages/dubIngest.js'
 import dubStt from './stages/dubStt.js'
 import dubOcr from './stages/dubOcr.js'
+import dubMerge from './stages/dubMerge.js'
 import dubTranslate from './stages/dubTranslate.js'
 import dubTtsAlign from './stages/dubTtsAlign.js'
 import dubRender from './stages/dubRender.js'
+
+// Flow Producer integration (docs/01 §5.1)
+// Dub.stt và dub.ocr chạy song song, dub.merge kiểm tra DB rồi enqueue dub.translate
+async function startDubParallel(project, setProgress, results, signal) {
+  const projectId = project.id
+  await ensureStageJob(projectId, 'dub.stt')
+  await ensureStageJob(projectId, 'dub.ocr')
+  await ensureStageJob(projectId, 'dub.merge')
+
+  // Chạy dub.stt và dub.ocr song song
+  const sttJob = await loadJob(projectId, 'dub.stt')
+  const ocrJob = await loadJob(projectId, 'dub.ocr')
+
+  const sttPromise = executeStage(
+    project, sttJob, {},
+    (pct) => {
+      const p = Math.max(0, Math.min(99, Math.round(pct)))
+      updateById('generation_jobs', sttJob.id, { progress: p }).catch(() => {})
+      eventBus.publish(projectId, { stage: 'dub.stt', status: 'running', percent: p })
+    },
+    results,
+    false,
+    signal
+  )
+
+  const ocrPromise = executeStage(
+    project, ocrJob, {},
+    (pct) => {
+      const p = Math.max(0, Math.min(99, Math.round(pct)))
+      updateById('generation_jobs', ocrJob.id, { progress: p }).catch(() => {})
+      eventBus.publish(projectId, { stage: 'dub.ocr', status: 'running', percent: p })
+    },
+    results,
+    false,
+    signal
+  )
+
+  const [sttOk, ocrOk] = await Promise.all([sttPromise, ocrPromise])
+
+  // Chạy dub.merge kiểm tra DB (chỉ khi cả 2 job con thành công)
+  if (sttOk && ocrOk) {
+    const mergeJob = await loadJob(projectId, 'dub.merge')
+    const mergeOk = await executeStage(
+      project, mergeJob, {},
+      (pct) => {
+        const p = Math.max(0, Math.min(99, Math.round(pct)))
+        updateById('generation_jobs', mergeJob.id, { progress: p }).catch(() => {})
+        eventBus.publish(projectId, { stage: 'dub.merge', status: 'running', percent: p })
+      },
+      results,
+      false,
+      signal
+    )
+    return mergeOk
+  }
+
+  return false
+}
 
 // Stage lists mirror docs/01 §3 + docs/05 §B.
 // A nested array marks a PARALLEL GROUP: members run concurrently via Promise.all
@@ -67,7 +126,7 @@ export const STAGES = {
   ],
   TRANSLATE_DUB: [
     'dub.ingest',
-    ['dub.stt', 'dub.ocr'],
+    ['dub.stt', 'dub.ocr', 'dub.merge'],
     'dub.translate',
     'dub.ttsAlign',
     'dub.render',
@@ -91,6 +150,7 @@ const STAGE_IMPL = {
   'dub.ingest': dubIngest,
   'dub.stt': dubStt,
   'dub.ocr': dubOcr,
+  'dub.merge': dubMerge,
   'dub.translate': dubTranslate,
   'dub.ttsAlign': dubTtsAlign,
   'dub.render': dubRender,
@@ -108,6 +168,7 @@ const STAGE_PROVIDER = {
   'dub.ingest': 'ffmpeg',
   'dub.stt': 'asr',
   'dub.ocr': 'ocr',
+  'dub.merge': 'core',
   'dub.translate': 'llm',
   'dub.ttsAlign': 'tts',
   'dub.render': 'ffmpeg',
@@ -126,6 +187,7 @@ const RESETS = {
   'dub.ingest': ['transcriptSegments', 'ocrRegions', 'audios', 'subtitles', 'outputs'],
   'dub.stt': ['transcriptSegments', 'audios', 'subtitles', 'outputs'],
   'dub.ocr': ['ocrRegions', 'outputs'],
+  'dub.merge': [], // dub.merge chỉ kiểm tra DB, không tạo artifacts
   'dub.translate': ['audios', 'subtitles', 'outputs'],
   'dub.ttsAlign': ['audios', 'outputs'],
   'dub.render': ['outputs'],
@@ -416,24 +478,19 @@ export async function runPipeline(projectId, fromStage = null) {
         if (!ok) groupFailed = true
       } else {
         // Nhóm song song (docs/05 §B.0): dub.stt ‖ dub.ocr chạy Promise.all
-        const jobs = []
-        for (const type of types) jobs.push(await loadJob(projectId, type))
-        const tasks = jobs.map((job) =>
-          executeStage(
-            currentProject, job, settings,
-            (pct) => {
-              const p = Math.max(0, Math.min(99, Math.round(pct)))
-              updateById('generation_jobs', job.id, { progress: p }).catch(() => {})
-              eventBus.publish(projectId, { stage: job.type, status: 'running', percent: p })
-            },
-            results,
-            false,
-            signal
-          ).then((ok) => ({ job, ok }))
+        // dub.merge kiểm tra barrier trước khi tiếp tục
+        const ok = await startDubParallel(
+          currentProject,
+          (pct) => {
+            // Progress chung cho nhóm
+            const p = Math.max(0, Math.min(99, Math.round(pct)))
+            eventBus.publish(projectId, { stage: '__parallel__', status: 'running', percent: p })
+          },
+          results,
+          signal
         )
-        const settled = await Promise.all(tasks)
         isFirstExecutedStage = false
-        if (settled.some((s) => !s.ok)) groupFailed = true
+        if (!ok) groupFailed = true
       }
 
       if (groupFailed) {

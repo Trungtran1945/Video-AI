@@ -150,7 +150,7 @@ Hệ thống phục vụ hai nhóm use-case:
 - **Align:** thuật toán đồng bộ lời review với cảnh phim (xem `05_THIET_KE_PIPELINE_CHI_TIET.md`).
 - **Hardsub:** phụ đề được "đốt" sẵn vào hình ảnh video gốc, không tách rời được như softsub.
 - **TranscriptSegment:** một câu/đoạn thoại do STT nhận dạng, có start/end, text và speaker.
-- **OcrRegion:** vùng chữ hardsub `{x, y, width, height}` tồn tại trong khoảng `[startSec, endSec]`,
+- **OcrRegion:** vùng chữ hardsub `{ratioX, ratioY, ratioW, ratioH}` (tỷ lệ 0.0–1.0 so với kích thước khung hình) tồn tại trong khoảng `[startSec, endSec]`,
   do OCR tự phát hiện hoặc user khoanh vùng tay trên Canvas.
 - **StylePreset:** 1 trong 13 phong cách dịch định nghĩa trước (system prompt + mô tả), quyết định
   văn phong/xưng hô của bản dịch.
