@@ -9,12 +9,13 @@ import { cancelProjectUseCase } from '../../usecases/cancelProjectUseCase.js'
 import { sendError, ERR } from '../../lib/httpError.js'
 import { normalizeRegion } from '../../media/mediaService.js'
 import { config } from '../../config.js'
+import { projectDir } from '../../pipeline/context.js'
 
 const router = Router()
 router.use(authMiddleware)
 
 const MODES = ['SUMMARY', 'TRANSLATE_DUB']
-const MASK_METHODS = ['blur', 'fill', 'inpaint']
+
 
 const isDubMode = (mode) => {
   const m = String(mode || '').toUpperCase().replace('-', '_')
@@ -59,10 +60,7 @@ router.post('/', async (req, res) => {
     // Merge params phẳng của TRANSLATE_DUB vào params JSON (docs/02 Project.params)
     let params = b.params && typeof b.params === 'object' ? { ...b.params } : {}
     if (mode === 'TRANSLATE_DUB') {
-      const maskMethod = b.maskMethod || params.maskMethod || 'fill'
-      if (!MASK_METHODS.includes(maskMethod)) {
-        return sendError(res, 400, ERR.VALIDATION, `maskMethod must be one of ${MASK_METHODS.join(', ')}`, { field: 'maskMethod' })
-      }
+
       const presetSlug = b.stylePreset || params.stylePreset
       if (!presetSlug) {
         return sendError(res, 400, ERR.VALIDATION, 'stylePreset is required for TRANSLATE_DUB projects', { field: 'stylePreset' })
@@ -80,7 +78,7 @@ router.post('/', async (req, res) => {
         console.warn('[Projects] TRANSLATE_DUB enableDubbing=true nhưng chưa chọn voice; dùng voice mặc định của provider')
       }
       params.voiceId = b.voiceId || params.voiceId || null
-      params.maskMethod = maskMethod
+
       params.outputFormat = ['mp4', 'mkv'].includes(b.outputFormat) ? b.outputFormat : 'mp4'
     }
 
@@ -105,6 +103,7 @@ router.post('/', async (req, res) => {
       copyright_acknowledged: 1,
       copyright_ack_at: now,
       expires_at: expiresAt.toISOString(),
+      video_hash: b.videoHash || null,
     })
 
     // Kick off the real pipeline asynchronously (only if not queued)
@@ -112,7 +111,60 @@ router.post('/', async (req, res) => {
       runPipeline(project.id).catch((e) => console.error('[Pipeline] start failed', e))
     }
 
-    res.status(202).json({ ...project, params })
+    // Duplicate detection: check for existing project with same video hash + same target language
+    let cachedProjectId = null
+    if (b.videoHash && mode === 'TRANSLATE_DUB') {
+      const targetLang = params.targetLanguage || 'vi'
+      const cached = await queryOne(
+        `SELECT id FROM projects
+         WHERE user_id = ? AND video_hash = ? AND mode = 'TRANSLATE_DUB'
+         AND status = 'completed' AND id != ?
+         AND JSON_EXTRACT(params, '$.targetLanguage') = ?
+         ORDER BY created_date DESC LIMIT 1`,
+        [req.user.id, b.videoHash, project.id, targetLang]
+      )
+      if (cached) cachedProjectId = cached.id
+    }
+
+    // Copy OCR regions and transcript segments from cached project
+    if (cachedProjectId) {
+      // Copy OCR regions
+      const ocrRegions = await query('SELECT * FROM ocr_regions WHERE project_id = ?', [cachedProjectId])
+      for (const r of ocrRegions) {
+        await insert('ocr_regions', {
+          id: uuidv4(),
+          project_id: project.id,
+          start_sec: r.start_sec,
+          end_sec: r.end_sec,
+          ratio_x: r.ratio_x,
+          ratio_y: r.ratio_y,
+          ratio_w: r.ratio_w,
+          ratio_h: r.ratio_h,
+          mask_strength: r.mask_strength,
+          is_static: r.is_static,
+          text: r.text,
+          confidence: r.confidence,
+          source: r.source,
+        })
+      }
+      // Copy transcript segments (including translations)
+      const transcriptSegments = await query('SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC', [cachedProjectId])
+      for (const s of transcriptSegments) {
+        await insert('transcript_segments', {
+          id: uuidv4(),
+          project_id: project.id,
+          index_num: s.index_num,
+          start_sec: s.start_sec,
+          end_sec: s.end_sec,
+          text: s.text,
+          speaker: s.speaker,
+          language: s.language,
+          translation: s.translation,
+        })
+      }
+    }
+
+    res.status(202).json({ ...project, params, cachedProjectId })
   } catch (err) {
     console.error('Create project error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
