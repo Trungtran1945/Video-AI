@@ -27,7 +27,6 @@ export const STATUS_LABELS = {
     // TRANSLATE_DUB pipeline
     'dub.ingest': { label: 'Tách âm thanh & chuẩn hoá', icon: 'FileAudio' },
     'dub.stt': { label: 'Nhận dạng giọng nói', icon: 'Mic' },
-    'dub.ocr': { label: 'Quét phụ đề cứng (OCR)', icon: 'ScanText' },
     'dub.translate': { label: 'Dịch theo phong cách', icon: 'Languages' },
     'dub.ttsAlign': { label: 'Lồng tiếng & khớp thời gian', icon: 'AudioLines' },
     'dub.render': { label: 'Che chữ & xuất video', icon: 'Video' },
@@ -35,7 +34,7 @@ export const STATUS_LABELS = {
 
   export const STAGE_ORDER = [
     ...['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'],
-    ...['dub.ingest', 'dub.stt', 'dub.ocr', 'dub.translate', 'dub.ttsAlign', 'dub.render'],
+    ...['dub.ingest', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'],
   ];
 
   export const MODE_LABELS = {
@@ -46,7 +45,7 @@ export const STATUS_LABELS = {
     translate_dub: 'Dịch & Lồng tiếng',
   };
 
-  export const DUB_STAGES = ['dub.ingest', 'dub.stt', 'dub.ocr', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
+  export const DUB_STAGES = ['dub.ingest', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
 
   export const MASK_METHODS = {
     blur: { label: 'Làm mờ', desc: 'Nhanh, rẻ — có thể còn vệt chữ lem' },
