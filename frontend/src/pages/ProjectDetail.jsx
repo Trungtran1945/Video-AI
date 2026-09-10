@@ -32,7 +32,6 @@ const stageIcons = {
   'summary.render': Video,
   'dub.ingest': FileAudio,
   'dub.stt': Mic,
-  'dub.ocr': ScanText,
   'dub.translate': Languages,
   'dub.ttsAlign': AudioLines,
   'dub.render': Video,
@@ -52,7 +51,7 @@ function clamp01(v) {
   if (!Number.isFinite(n)) return 0
   return Math.min(1, Math.max(0, n))
 }
-const DUB_STAGES_ALL = ['dub.ingest', 'dub.stt', 'dub.ocr', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
+const DUB_STAGES_ALL = ['dub.ingest', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
 
 const ACTIVE_STATUSES = ['pending', 'queued', 'generating', 'running'];
 
