@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, Languages, AlertCircle, AudioLines, Eraser, AlertTriangle } from 'lucide-react';
+import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, Languages, AlertCircle, AudioLines, AlertTriangle } from 'lucide-react';
 import {
   LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS,
-  MODE_LABELS, MASK_METHODS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
+  MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
   STYLE_PRESETS_FALLBACK,
 } from '@/lib/constants';
 import { projectsApi } from '@/api/projects';
@@ -50,6 +50,7 @@ export default function CreateProject() {
     title: '',
     sourceVideoKey: null,
     sourceFileName: '',
+    videoHash: null,
     language: 'vi',
     targetDurationSec: 1500,
     style: 'cinematic',
@@ -62,8 +63,6 @@ export default function CreateProject() {
     enableDubbing: false,
     voiceProvider: 'elevenlabs',
     voiceName: '',
-    maskMethod: 'fill',
-    maskStrength: 0.6,
     subPosition: 'original',
   });
 
@@ -82,7 +81,6 @@ export default function CreateProject() {
     { key: 'language', label: 'Ngôn ngữ', icon: Globe },
     { key: 'preset', label: 'Phong cách dịch', icon: Languages },
     { key: 'dubbing', label: 'Lồng tiếng AI', icon: Mic },
-    { key: 'advanced', label: 'Nâng cao', icon: Eraser },
     { key: 'generate', label: 'Tạo', icon: Wand2 },
   ];
   const steps = form.mode === 'SUMMARY' ? summarySteps : dubSteps;
@@ -112,6 +110,7 @@ export default function CreateProject() {
       const res = await uploadApi.upload(file, { onProgress: setUploadPercent });
       update('sourceVideoKey', res.key);
       update('sourceFileName', file.name);
+      update('videoHash', res.videoHash || null);
     } catch (err) {
       setError('Tải phim thất bại: ' + (err?.response?.data?.message || err.message));
     } finally {
@@ -135,7 +134,6 @@ export default function CreateProject() {
     if (step === 1) return !!form.targetLanguage;
     if (step === 2) return !!form.stylePreset;
     if (step === 3) return !form.enableDubbing || !!form.voiceProvider;
-    if (step === 4) return !!form.maskMethod;
     return true;
   };
 
@@ -152,6 +150,7 @@ export default function CreateProject() {
           style: form.style,
           targetDurationSec: form.targetDurationSec,
           sourceVideoKey: form.sourceVideoKey,
+          videoHash: form.videoHash,
           copyrightAcknowledged: copyrightAck, // Group 1: Copyright
           params: { tone: form.tone, spoilerAllowed: form.spoilerAllowed, voiceProvider: form.voiceProvider, voiceName: form.voiceName },
         };
@@ -163,10 +162,9 @@ export default function CreateProject() {
           targetLanguage: form.targetLanguage,
           stylePreset: form.stylePreset,
           enableDubbing: form.enableDubbing,
-          maskMethod: form.maskMethod,
-          maskStrength: Number(form.maskStrength) || 0.6,
           subPosition: form.subPosition,
           sourceVideoKey: form.sourceVideoKey,
+          videoHash: form.videoHash,
           copyrightAcknowledged: copyrightAck, // Group 1: Copyright
           params: form.enableDubbing
             ? { voiceProvider: form.voiceProvider, voiceName: form.voiceName, subPosition: form.subPosition }
@@ -199,7 +197,7 @@ export default function CreateProject() {
               onClick={() => update('mode', 'TRANSLATE_DUB')}
               icon={Languages}
               title="Dịch Thuật & Lồng Tiếng"
-              desc="Tải video nước ngoài có phụ đề cứng, AI quét OCR + dịch tiếng Việt theo 12 phong cách, tuỳ chọn lồng giọng AI — giữ nguyên hình ảnh gốc."
+              desc="Tải video nước ngoài có phụ đề cứng, dịch tiếng Việt theo 12 phong cách, tuỳ chọn lồng giọng AI — giữ nguyên hình ảnh gốc. Bạn tự khoanh vùng che phụ đề trên editor."
             />
           </div>
         </div>
@@ -354,36 +352,8 @@ export default function CreateProject() {
                 </div>
               )}
 
-              {/* TRANSLATE_DUB: nâng cao — method che chữ + vị trí phụ đề mới */}
-              {isDub && step === 4 && (
-                <div>
-                  <label className="text-sm font-medium text-slate-300 mb-2 block">Cách xử lý phụ đề gốc (hardsub)</label>
-                  <div className="space-y-3">
-                    {Object.entries(MASK_METHODS).map(([code, m]) => (
-                      <OptionCard key={code} selected={form.maskMethod === code} onClick={() => update('maskMethod', code)} title={m.label} desc={m.desc} />
-                    ))}
-                  </div>
-
-                  <label className="text-sm font-medium text-slate-300 mt-5 mb-2 block">Vị trí phụ đề dịch mới</label>
-                  <select
-                    value={form.subPosition}
-                    onChange={(e) => update('subPosition', e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-lg bg-[#0F1117] border border-white/10 text-slate-200 focus:outline-none focus:border-blue-500/50">
-                    <option value="original">Đè lên vùng đã che (trùng khớp hardsub gốc)</option>
-                    <option value="top">Phía trên (safe zone trên)</option>
-                    <option value="bottom">Phía dưới (safe zone dưới)</option>
-                    <option value="custom">Tuỳ chỉnh (để trống — chỉnh sau trên editor)</option>
-                  </select>
-
-                  <p className="text-xs text-slate-500 mt-3 leading-relaxed">
-                    Mặc định phụ đề dịch đè lên vùng đã che để thẩm mỹ. Sau khi pipeline quét OCR xong, bạn có thể
-                    chỉnh vùng che, độ mờ và vị trí ngay trên trang chi tiết dự án.
-                  </p>
-                </div>
-              )}
-
               {/* Generate */}
-              {(form.mode === 'SUMMARY' && step === 5) || (isDub && step === 5) ? (
+              {(form.mode === 'SUMMARY' && step === 5) || (isDub && step === 4) ? (
                 <div>
                   <div className="text-center mb-6">
                     <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-600/30">
@@ -418,7 +388,6 @@ export default function CreateProject() {
                             ['Ngôn ngữ', `${SOURCE_LANGUAGES[form.sourceLanguage]} → ${TARGET_LANGUAGES[form.targetLanguage]}`],
                             ['Phong cách dịch', selectedPreset ? `${selectedPreset.name}` : form.stylePreset],
                             ['Lồng tiếng AI', form.enableDubbing ? `Bật (${VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider})` : 'Tắt'],
-                            ['Che chữ gốc', MASK_METHODS[form.maskMethod]?.label],
                           ]
                         : [
                             ['Chế độ', MODE_LABELS.SUMMARY],
