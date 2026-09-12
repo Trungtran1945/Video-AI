@@ -1,3 +1,7 @@
 # Claude Instructions
 
-Follow SOLID, Clean Architecture, TypeScript strict mode, Provider Pattern, and incremental delivery.
+Follow the instructions in `AGENTS.md`.
+
+**Implementation notes:**
+- Follow SOLID, Clean Architecture, Provider Pattern, and incremental delivery.
+- Current implementation uses JavaScript (not TypeScript) with sql.js (not Prisma).

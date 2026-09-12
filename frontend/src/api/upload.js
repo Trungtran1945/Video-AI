@@ -40,7 +40,7 @@ async function uploadResumable(file, { onProgress, signal } = {}) {
   }
 
   const done = await api.post(`/uploads/${uploadId}/complete`).then((r) => r.data)
-  return { key: done.storageKey || done.storage_key || done.key, url: done.url, filename: file.name, size: file.size }
+  return { key: done.storageKey || done.storage_key || done.key, url: done.url, filename: file.name, size: file.size, videoHash: done.videoHash }
 }
 
 function uploadMultipart(file, { onProgress, signal } = {}) {

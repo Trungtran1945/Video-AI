@@ -3,6 +3,7 @@ import multer from 'multer'
 import express from 'express'
 import path from 'path'
 import fs from 'node:fs'
+import crypto from 'node:crypto'
 import { v4 as uuidv4 } from 'uuid'
 import { config } from '../../config.js'
 import { authMiddleware } from '../../middleware/auth.js'
@@ -129,7 +130,7 @@ router.post('/:id/complete', async (req, res) => {
     if (!session || session.user_id !== req.user.id) return sendError(res, 404, 'NOT_FOUND', 'Session not found')
 
     if (session.status === 'completed' && session.storage_key) {
-      return res.json({ storageKey: session.storage_key, url: `/storage/${session.storage_key}`, filename: session.filename, size: session.size })
+      return res.json({ storageKey: session.storage_key, url: `/storage/${session.storage_key}`, filename: session.filename, size: session.size, videoHash: session.video_hash })
     }
 
     const tmpPath = sessionTmpPath(session)
@@ -150,6 +151,16 @@ router.post('/:id/complete', async (req, res) => {
       status: 'completed',
       storage_key: rel,
       size: session.bytes_received,
+      video_hash: videoHash,
+    })
+
+    // Compute SHA-256 hash of the uploaded video for consistency caching
+    const videoHash = await new Promise((resolve, reject) => {
+      const h = crypto.createHash('sha256')
+      const stream = fs.createReadStream(finalAbs)
+      stream.on('data', (d) => h.update(d))
+      stream.on('end', () => resolve(h.digest('hex')))
+      stream.on('error', reject)
     })
 
     res.json({
@@ -157,6 +168,7 @@ router.post('/:id/complete', async (req, res) => {
       url: `/storage/${rel}`,
       filename: session.filename,
       size: session.bytes_received,
+      videoHash,
     })
   } catch (err) {
     console.error('Upload complete error:', err)

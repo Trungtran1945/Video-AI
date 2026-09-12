@@ -1,6 +1,9 @@
 # 04 — Thiết kế Frontend (Dashboard)
 
-Frontend (`apps/web`) là **React 19 + Vite + TypeScript**, giao diện SaaS hiện đại, tối (dark mode),
+> **Lưu ý Triển khai:** Thiết kế target dùng React 19 + TypeScript + `apps/web/`.
+> Triển khai hiện tại dùng React 18 + JavaScript (JSX) + `frontend/`.
+
+Frontend (`apps/web`) là **React 19 + Vite + TypeScript** (target), giao diện SaaS hiện đại, tối (dark mode),
 thẻ bo góc, accent xanh, animation mượt (Framer Motion), responsive & mobile-friendly.
 
 ---
@@ -170,45 +173,82 @@ Mục tiêu: **tất cả nội dung vừa trong 1 khung màn hình duy nhất**
 │                                       │  (scrollable panel)     │
 │                                       │                         │
 ├───────────────────────────────────────┴─────────────────────────┤
-│  TIMELINE BAR (horizontal, full-width)                          │
-│  [◄] [▶/❚❚] [►] [====•====================] [00:45 / 03:20]   │
-│  [Segment markers] [Current segment info]                       │
+│  VIDEOTIMELINE (multi-track editor, full-width)                  │
+│  [◀][▶/❚❚][►] [Snapping:ON][Gắn liền:ON] [+V][+A][+T] [zoom]    │
+│  TrackSidebar | Video track  ▓▓▓▓▓▓ | Audio track  ▓▓▓▓ | Text   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 5.2. TimelineBar Component (Mới)
+### 5.2. VideoTimeline — Video Editing Timeline (Multi-Track, kiểu CapCut)
 
-Thanh timeline full-width ở bottom, bao gồm:
+Thanh timeline full-width ở bottom của `ProjectDetail` (TRANSLATE_DUB) là một **editor đa-track
+tương tác** (`frontend/src/components/timeline/`), không phải thanh preview read-only. User thao tác
+trực tiếp để rà soát/điều chỉnh bố cục clip trước khi tinh chỉnh transcript.
 
-**Playback Controls:**
-- Play/Pause button
-- Skip backward/forward ±5s
-- Playback speed selector (0.5x, 1x, 1.5x, 2x)
-- Volume control
+**Kiến trúc component:**
 
-**Scrubber Bar:**
-- Thanh kéo chính hiển thị progress
-- Timestamp hiện tại / tổng thời lượng
-- Hover tooltip hiển thị thời gian tại vị trí con trỏ
+| Component | Vai trò |
+| --- | --- |
+| `VideoTimeline` | Container chính: header controls, thân timeline cuộn ngang, footer, resize handle |
+| `TrackSidebar` | Sidebar trái cố định (72px): lock/mute/delete từng track |
+| `TimeRuler` | Thước thời gian sticky, tick lớn/nhỏ thay đổi theo zoom, click/scrub để seek |
+| `Playhead` | Đường playhead đỏ + handle kéo, guide line trắng "SNAP" khi magnetic snapping |
+| `TimelineClip` | Một clip trên track: render theo type, drag-to-move, trim trái/phải, waveform |
+| `FloatingToolbar` | Toolbar nổi trên clip đang chọn: Split, Speed, Volume, Delete |
+| `timelineStore` | Zustand store: state + actions (dưới) |
+| `timelineUtils` | Hàm thuần: format timecode, magnetic snap, handle snap, generate waveform |
 
-**Segment Track:**
-- Mỗi câu transcript là 1 segment marker trên timeline
-- Hiển thị text gốc (hoặc bản dịch) trên segment
-- Click segment → jump đến câu đó trong transcript
-- Color-code theo speaker (nếu có diarization)
-- Drag mép trái/phải của segment block để điều chỉnh startSec/endSec (drag-to-resize)
-- Ghost preview hiển thị thời gian mới khi đang kéo
-- Double-click segment để mở inline timing editor
+**State & actions (`useTimelineStore` — Zustand):**
 
-**Zoom Controls:**
-- +/- button để phóng to/thu nhỏ timeline
-- Fit all segments / Fit current segment
+- **Core:** `currentTime` (giây), `zoomLevel` (px/giây, mặc định 50), `tracks[]`, `clips[]`,
+  `selectedClipId`.
+- **Playback & snapping:** `isPlaying`, `snappingGuide`, `snappingEnabled` (mặc định true),
+  `autoSnapEdges` (mặc định true).
+- **Actions:** `setCurrentTime`, `setZoomLevel` (clamp 15–200), `setSelectedClipId`,
+  `toggleSnapping`, `toggleAutoSnapEdges`, `togglePlayPause`, `setClips`, `setTracks`,
+  `initTimeline`, `updateClip`, `deleteClip`, `splitClip`, `addTrack`, `toggleTrackLock`,
+  `toggleTrackMute`, `deleteTrack`, `snapEdgesForTrack`.
 
-**Keyboard Shortcuts:**
-- Space: Play/Pause
-- ←/→: Seek ±5s
-- ↑/↓: Navigate segments
-- +/-: Zoom timeline
+**3 track mặc định:** Video · Lồng tiếng (Audio) · Phụ đề (Text). Header cho phép **add thêm**
+track Video / Audio / Text (thứ tự động đếm `#2, #3…`); sidebar có thể lock (chống chỉnh), mute
+và delete track.
+
+**Sinh dữ liệu từ transcript & video thật (zero mock):**
+- Khi `ProjectDetail` truyền `outputUrl`/`duration`, một clip **video track** đại diện toàn bộ
+  output (`clip-video-main`, 0 → duration).
+- Khi truyền `transcript[]`, mỗi segment (có `startSec`/`endSec` từ STT) trở thành **một clip text**
+  trên track Phụ đề (`sub-<id>`, kèm `segmentId` + `speaker`).
+- User có thể **drag-drop một dòng segment** từ Transcript panel vào một track bất kỳ để tạo clip
+  (data transfer `application/x-transcript-segment`) — tạo các clip phụ đề/cảnh thủ công.
+
+**Các thao tác clip:**
+
+- **Drag-to-move:** kéo clip dọc track; khi `snappingEnabled` bật, dùng `getMagneticSnap` chụp về
+  các điểm snap (0, playhead, start/end các clip khác) trong ngưỡng **10px**; kéo xong chạy
+  `snapEdgesForTrack` — các clip liền kề cùng mà + `autoSnapEdges` sẽ tự khít không để hở.
+- **Trim:** kéo handle trái/phải (`getHandleSnap` — snap tương tự); cận dưới độ dài clip **0.25s**;
+  clip đang chọn có viền trắng highlight, toolbar nổi hiện phía trên.
+- **Split:** nút `S` hoặc toolbar; chia clip tại playhead thành 2 (clip phải đổi tên thêm `(Part 2)`);
+  chỉ split khi playhead nằm **trong** clip (> 0.1s cách mép), nếu không hiện cảnh báo vàng.
+- **Delete:** phím `Delete`/`Backspace` hoặc toolbar.
+- **Speed / Volume:** toolbar xoay vòng speed (`0.5x–1x–1.25x–1.5x–2x`), mute/unmute clip.
+
+**Zoom:** slider 20–150 px/s + nút ±, hiển thị `%` so với mặc định 50px/s; ruler đổi mật độ tick
+theo zoom (10/5/2/1s major). Zoom tối đa 150 (UI sidebar) / 200 (store clamp).
+
+**Playback & đồng bộ player:**
+- `ProjectDetail` dùng chế độ **controlled**: truyền `currentTime`/`isPlaying` từ player; khi video
+  phát, `VideoTimeline` đồng bộ playhead bằng `requestAnimationFrame` đọc `video.currentTime`
+  (bỏ qua throttle của `timeupdate`).
+- Chế độ uncontrolled (demo page `/timeline`): vòng lặp RAF nội bộ, tự quay đầu khi hết clip.
+- Click clip có `segmentId` → gọi `onSegmentClick` (seek transcript); `activeSegmentId` highlight
+  clip đang phát bằng viền vàng.
+
+**Keyboard Shortcuts:** `Space` Play/Pause · `S` Split · `Delete`/`Backspace` Delete selected ·
+`←/→` scrub playhead (0.1s, `Shift` + 1s).
+
+**Khác:** chia lại chiều cao timeline bằng thanh kéo ngang phía dưới (`h-1.5`), lưu vào `localStorage`
+(`timeline-height`, clamp 120–600); grid lane phụ (50px) theo zoom; footer hiển thị gợi ý phím tắt.
 
 ### 5.3. TranscriptView + SubRegionEditor
 
@@ -240,12 +280,14 @@ Thanh timeline full-width ở bottom, bao gồm:
 - Click vào segment → player seek đến `startSec` và highlight segment đó
 - Kéo thanh timeline → segment đang hiển thị được auto-select
 
-### 5.4. TimelinePreview (SUMMARY Mode — không thay đổi)
+### 5.4. TimelinePreview (SUMMARY Mode — read-only)
 
-- TimelineClip[] dạng track ngang
-- Mỗi clip: thumbnail, thời lượng, transition icon
-- Player đồng bộ: click clip → nhảy đến `startAtSec`
-- **Chỉ xem**, không edit
+`VideoTimeline` editor ở trên dành riêng cho **TRANSLATE_DUB**. Với **SUMMARY**, layout giữ nguyên
+một thanh preview **chỉ xem** (khác bản chất, không dùng chung `VideoTimeline`):
+
+- `TimelineClip[]` dạng track ngang (mỗi clip: thumbnail, thời lượng, transition icon).
+- Player đồng bộ: click clip → nhảy đến `startAtSec`.
+- **Chỉ xem**, không edit — phù hợp nguyên tắc tự động hoá (tạo xong là xem), vẫn cho Regenerate.
 
 ---
 
@@ -276,7 +318,8 @@ Input type sinh từ Zod schema (`z.infer`) → **web & api đồng bộ kiểu*
 | --- | --- |
 | TanStack Query thay Redux | ít boilerplate, cache & polling sẵn |
 | Wizard state riêng | tách biệt mode, dễ mở rộng |
-| TimelinePreview read-only | đúng yêu cầu tự động; vẫn cho Regenerate |
+| TimelinePreview read-only (SUMMARY) | đúng yêu cầu tự động; vẫn cho Regenerate |
+| `VideoTimeline` multi-track editor (TRANSLATE_DUB) | Phù hợp bản chất "vừa dịch vừa dựng" — user cần rà soát/điều chỉnh bố cục clip song song với chỉnh transcript; store Zustand gọn, zero mock, đồng bộ player qua RAF |
 | Schema share từ packages/shared | type-safety đầu-cuối |
 | Checkbox bản quyền bắt buộc trong wizard | Ép user xác nhận trước khi hệ thống xử lý nội dung có thể có bản quyền (NFR-14) |
 | Bước "Xem trước & Xác nhận" trước render cuối (TRANSLATE_DUB) | Tránh lãng phí NVENC/thời gian nếu bản dịch/mask sai từ đầu (FR-J2) |

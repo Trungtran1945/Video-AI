@@ -1,7 +1,7 @@
 import path from 'path'
 import os from 'node:os'
 import { v4 as uuidv4 } from 'uuid'
-import { insert, run } from '../../db/query.js'
+import { insert, run, query } from '../../db/query.js'
 import { sampleFrames, probe } from '../../media/mediaService.js'
 import { getProvider, ProviderError } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
@@ -29,6 +29,15 @@ export async function dubOcr(ctx) {
 
   // Check abort signal
   if (signal?.aborted) throw new Error('Cancelled')
+
+  // Skip OCR if regions already exist (video hash cache — copied from duplicate project)
+  const existingRegions = await query(
+    'SELECT COUNT(*) as cnt FROM ocr_regions WHERE project_id = ? AND source != ?',
+    [project.id, 'MANUAL']
+  )
+  if (existingRegions[0]?.cnt > 0) {
+    return { regionCount: existingRegions[0].cnt, skipped: true, reason: 'cached' }
+  }
 
   const info = await probe(src)
   const dims = { width: info.width || 1280, height: info.height || 720 }

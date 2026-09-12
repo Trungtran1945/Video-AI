@@ -1,5 +1,9 @@
 # 02 — Thiết kế cơ sở dữ liệu
 
+> **Lưu ý Triển khai:** Thiết kế target dùng Prisma ORM.
+> Triển khai hiện tại dùng sql.js với raw SQL trực tiếp (`backend/src/db/schema.js`).
+> Schema SQL mirror 1-1 các model Prisma, nhưng enum giá trị lowercase (không có native enum trong SQLite).
+
 Hệ thống dùng **Prisma ORM**. MVP: **SQLite**; production: **PostgreSQL** (chỉ đổi `provider` trong
 `datasource`, schema không đổi). Tất cả thời gian lưu dạng `Float` (giây) hoặc `DateTime`.
 

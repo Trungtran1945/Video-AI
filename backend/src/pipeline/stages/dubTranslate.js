@@ -30,6 +30,25 @@ export async function dubTranslate(ctx) {
   )
   if (!segments.length) throw new Error('Không có transcript để dịch — stage dub.stt chưa chạy hoặc rỗng')
 
+  // Skip translation if all segments already have translations (video hash cache — copied from duplicate project)
+  const untranslated = segments.filter((s) => s.text && !s.translation)
+  if (untranslated.length === 0 && segments.length > 0) {
+    // Build SRT from existing translations
+    const cues = segments
+      .filter((s) => s.translation)
+      .map((s) => ({ start: Number(s.start_sec), end: Number(s.end_sec), text: s.translation }))
+    if (cues.length) await writeSrt(project, cues)
+    return {
+      translatedCount: segments.length,
+      segmentCount: segments.length,
+      skipped: true,
+      reason: 'cached',
+      presetSlug: params.stylePreset || null,
+      targetLanguage: params.targetLanguage || 'vi',
+      method: 'cached',
+    }
+  }
+
   const presetSlug = params.stylePreset
   const preset = presetSlug
     ? await queryOne('SELECT * FROM style_presets WHERE slug = ?', [presetSlug])

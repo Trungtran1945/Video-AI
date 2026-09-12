@@ -1,5 +1,8 @@
 # 03 — Thiết kế Backend
 
+> **Lưu ý Triển khai:** Thiết kế target dùng TypeScript strict + `apps/api/`.
+> Triển khai hiện tại dùng JavaScript (ES modules) + `backend/` với sql.js thay vì Prisma.
+
 Backend (`apps/api`) là Express + TypeScript (strict), tổ chức theo **Clean Architecture** và
 **Dependency Injection**. Mọi logic nghiệp vụ nằm ở `packages/core`; API chỉ là lớp biên (boundary).
 

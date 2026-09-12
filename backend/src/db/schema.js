@@ -100,6 +100,7 @@ export async function initSchema() {
   try { db.run(`ALTER TABLE projects ADD COLUMN copyright_ack_at TEXT`) } catch (_) {}
   try { db.run(`ALTER TABLE projects ADD COLUMN cancelled_at TEXT`) } catch (_) {}
   try { db.run(`ALTER TABLE projects ADD COLUMN expires_at TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN video_hash TEXT`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS assets (
     id TEXT PRIMARY KEY,
@@ -315,6 +316,7 @@ export async function initSchema() {
     bytes_received INTEGER DEFAULT 0,
     status TEXT DEFAULT 'pending',
     storage_key TEXT,
+    video_hash TEXT,
     created_date TEXT DEFAULT (datetime('now'))
   )`)
 
@@ -339,6 +341,7 @@ export async function initSchema() {
   // Group 1: Indexes for concurrency limit and cleanup
   db.run(`CREATE INDEX IF NOT EXISTS idx_projects_user_status ON projects(user_id, status)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_projects_expires_at ON projects(expires_at)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_projects_video_hash ON projects(video_hash)`)
 
   // Group 5: Seed default provider rate limits (docs/11 §2.1)
   // Safety margin: ~20% below published limits

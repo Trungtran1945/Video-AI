@@ -1,5 +1,9 @@
 # 01 — Kiến trúc tổng thể
 
+> **Lưu ý Triển khai:** Tài liệu này mô tả thiết kế target (monorepo với `apps/` + `packages/`).
+> Triển khai hiện tại dùng cấu trúc phẳng `backend/` + `frontend/` với JavaScript (không TypeScript).
+> Xem `docs/superpowers/plans/` cho chi tiết gap giữa thiết kế và triển khai.
+
 Tài liệu này là **trọng tâm** của bộ thiết kế: mô tả cấu trúc monorepo, luồng dữ liệu của hai pipeline,
 mô hình Provider Pattern, hàng đợi và các sơ đồ trình tự.
 

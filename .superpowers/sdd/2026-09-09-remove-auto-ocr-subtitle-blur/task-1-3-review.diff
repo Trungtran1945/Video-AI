@@ -1,0 +1,303 @@
+﻿diff --git a/backend/src/pipeline/runner.js b/backend/src/pipeline/runner.js
+index 5681754..7c04223 100644
+--- a/backend/src/pipeline/runner.js
++++ b/backend/src/pipeline/runner.js
+@@ -46,25 +46,20 @@ import summaryRender from './stages/summaryRender.js'
+ 
+ import dubIngest from './stages/dubIngest.js'
+ import dubStt from './stages/dubStt.js'
+-import dubOcr from './stages/dubOcr.js'
++
+ import dubMerge from './stages/dubMerge.js'
+ import dubTranslate from './stages/dubTranslate.js'
+ import dubTtsAlign from './stages/dubTtsAlign.js'
+ import dubRender from './stages/dubRender.js'
+ 
+-// Flow Producer integration (docs/01 ┬º5.1)
+-// Dub.stt v├á dub.ocr chß║íy song song, dub.merge kiß╗âm tra DB rß╗ôi enqueue dub.translate
+ async function startDubParallel(project, setProgress, results, signal) {
+   const projectId = project.id
+   await ensureStageJob(projectId, 'dub.stt')
+-  await ensureStageJob(projectId, 'dub.ocr')
+   await ensureStageJob(projectId, 'dub.merge')
+ 
+-  // Chß║íy dub.stt v├á dub.ocr song song
+   const sttJob = await loadJob(projectId, 'dub.stt')
+-  const ocrJob = await loadJob(projectId, 'dub.ocr')
+ 
+-  const sttPromise = executeStage(
++  const sttOk = await executeStage(
+     project, sttJob, {},
+     (pct) => {
+       const p = Math.max(0, Math.min(99, Math.round(pct)))
+@@ -76,22 +71,7 @@ async function startDubParallel(project, setProgress, results, signal) {
+     signal
+   )
+ 
+-  const ocrPromise = executeStage(
+-    project, ocrJob, {},
+-    (pct) => {
+-      const p = Math.max(0, Math.min(99, Math.round(pct)))
+-      updateById('generation_jobs', ocrJob.id, { progress: p }).catch(() => {})
+-      eventBus.publish(projectId, { stage: 'dub.ocr', status: 'running', percent: p })
+-    },
+-    results,
+-    false,
+-    signal
+-  )
+-
+-  const [sttOk, ocrOk] = await Promise.all([sttPromise, ocrPromise])
+-
+-  // Chß║íy dub.merge kiß╗âm tra DB (chß╗ë khi cß║ú 2 job con th├ánh c├┤ng)
+-  if (sttOk && ocrOk) {
++  if (sttOk) {
+     const mergeJob = await loadJob(projectId, 'dub.merge')
+     const mergeOk = await executeStage(
+       project, mergeJob, {},
+@@ -112,7 +92,7 @@ async function startDubParallel(project, setProgress, results, signal) {
+ 
+ // Stage lists mirror docs/01 ┬º3 + docs/05 ┬ºB.
+ // A nested array marks a PARALLEL GROUP: members run concurrently via Promise.all
+-// (docs/05 ┬ºB.0 ΓÇö dub.stt ΓÇû dub.ocr ─æß╗Öc lß║¡p dß╗» liß╗çu).
++// (docs/05 ┬ºB.0 ΓÇö dub.stt chß║íy tr╞░ß╗¢c, dub.merge kiß╗âm tra barrier).
+ export const STAGES = {
+   SUMMARY: [
+     'summary.transcribe',
+@@ -126,7 +106,7 @@ export const STAGES = {
+   ],
+   TRANSLATE_DUB: [
+     'dub.ingest',
+-    ['dub.stt', 'dub.ocr', 'dub.merge'],
++    ['dub.stt', 'dub.merge'],
+     'dub.translate',
+     'dub.ttsAlign',
+     'dub.render',
+@@ -149,7 +129,7 @@ const STAGE_IMPL = {
+   'summary.render': summaryRender,
+   'dub.ingest': dubIngest,
+   'dub.stt': dubStt,
+-  'dub.ocr': dubOcr,
++
+   'dub.merge': dubMerge,
+   'dub.translate': dubTranslate,
+   'dub.ttsAlign': dubTtsAlign,
+@@ -167,7 +147,7 @@ const STAGE_PROVIDER = {
+   'summary.render': 'ffmpeg',
+   'dub.ingest': 'ffmpeg',
+   'dub.stt': 'asr',
+-  'dub.ocr': 'ocr',
++
+   'dub.merge': 'core',
+   'dub.translate': 'llm',
+   'dub.ttsAlign': 'tts',
+@@ -186,7 +166,7 @@ const RESETS = {
+   // TRANSLATE_DUB (docs/02: TranscriptSegment / OcrRegion ri├¬ng cho tß╗½ng mode)
+   'dub.ingest': ['transcriptSegments', 'ocrRegions', 'audios', 'subtitles', 'outputs'],
+   'dub.stt': ['transcriptSegments', 'audios', 'subtitles', 'outputs'],
+-  'dub.ocr': ['ocrRegions', 'outputs'],
++
+   'dub.merge': [], // dub.merge chß╗ë kiß╗âm tra DB, kh├┤ng tß║ío artifacts
+   'dub.translate': ['audios', 'subtitles', 'outputs'],
+   'dub.ttsAlign': ['audios', 'outputs'],
+@@ -477,8 +457,7 @@ export async function runPipeline(projectId, fromStage = null) {
+         isFirstExecutedStage = false
+         if (!ok) groupFailed = true
+       } else {
+-        // Nh├│m song song (docs/05 ┬ºB.0): dub.stt ΓÇû dub.ocr chß║íy Promise.all
+-        // dub.merge kiß╗âm tra barrier tr╞░ß╗¢c khi tiß║┐p tß╗Ñc
++        // Nh├│m song song (docs/05 ┬ºB.0): dub.stt chß║íy tr╞░ß╗¢c, dub.merge kiß╗âm tra barrier
+         const ok = await startDubParallel(
+           currentProject,
+           (pct) => {
+diff --git a/backend/src/pipeline/stages/dubMerge.js b/backend/src/pipeline/stages/dubMerge.js
+index af8b455..b25dfed 100644
+--- a/backend/src/pipeline/stages/dubMerge.js
++++ b/backend/src/pipeline/stages/dubMerge.js
+@@ -1,17 +1,15 @@
+-import { query, queryOne } from '../../db/query.js'
++import { query } from '../../db/query.js'
+ import { logProviderCall } from '../../providers/tracked.js'
+ 
+ /**
+- * dub.merge ΓÇö Stage kiß╗âm tra barrier (docs/01 ┬º5.1)
+- * Chß╗ë chß║íy khi cß║ú dub.stt v├á dub.ocr ─æ├ú SUCCESS
+- * Kiß╗âm tra TranscriptSegment v├á OcrRegion c├│ trong DB ch╞░a
+- * Nß║┐u cß║ú 2 c├│ data ΓåÆ SUCCESS
+- * Nß║┐u thiß║┐u 1 trong 2 ΓåÆ FAILED
++ * dub.merge ΓÇö Stage kiß╗âm tra barrier
++ * Chß╗ë chß║íy khi dub.stt ─æ├ú SUCCESS
++ * Kiß╗âm tra TranscriptSegment c├│ trong DB ch╞░a
+  */
+ export default async function dubMerge({ project, job, setProgress }) {
+   const projectId = project.id
+ 
+-  setProgress(10)
++  setProgress(20)
+ 
+   // Kiß╗âm tra TranscriptSegment (tß╗½ dub.stt)
+   const transcriptSegments = await query(
+@@ -19,46 +17,14 @@ export default async function dubMerge({ project, job, setProgress }) {
+     [projectId]
+   )
+ 
+-  setProgress(30)
++  setProgress(60)
+ 
+-  // Kiß╗âm tra OcrRegion (tß╗½ dub.ocr)
+-  const ocrRegions = await query(
+-    'SELECT id FROM ocr_regions WHERE project_id = ? LIMIT 1',
+-    [projectId]
+-  )
+-
+-  setProgress(50)
+-
+-  // Nß║┐u thiß║┐u 1 trong 2 ΓåÆ FAILED
+   if (transcriptSegments.length === 0) {
+     throw new Error('Thiß║┐u TranscriptSegment tß╗½ dub.stt')
+   }
+-  if (ocrRegions.length === 0) {
+-    throw new Error('Thiß║┐u OcrRegion tß╗½ dub.ocr')
+-  }
+-
+-  // Kiß╗âm tra status cß╗ºa dub.stt v├á dub.ocr
+-  const sttJob = await queryOne(
+-    'SELECT status FROM generation_jobs WHERE project_id = ? AND type = ?',
+-    [projectId, 'dub.stt']
+-  )
+-  const ocrJob = await queryOne(
+-    'SELECT status FROM generation_jobs WHERE project_id = ? AND type = ?',
+-    [projectId, 'dub.ocr']
+-  )
+-
+-  setProgress(70)
+-
+-  if (sttJob.status !== 'success') {
+-    throw new Error(`dub.stt kh├┤ng th├ánh c├┤ng (status: ${sttJob.status})`)
+-  }
+-  if (ocrJob.status !== 'success') {
+-    throw new Error(`dub.ocr kh├┤ng th├ánh c├┤ng (status: ${ocrJob.status})`)
+-  }
+ 
+   setProgress(90)
+ 
+-  // Log provider call
+   await logProviderCall({
+     projectId,
+     jobId: job.id,
+@@ -72,6 +38,5 @@ export default async function dubMerge({ project, job, setProgress }) {
+ 
+   return {
+     transcriptSegments: transcriptSegments.length,
+-    ocrRegions: ocrRegions.length,
+   }
+ }
+diff --git a/backend/src/routes/v1/projects.js b/backend/src/routes/v1/projects.js
+index d8c9dd5..03facdc 100644
+--- a/backend/src/routes/v1/projects.js
++++ b/backend/src/routes/v1/projects.js
+@@ -9,12 +9,13 @@ import { cancelProjectUseCase } from '../../usecases/cancelProjectUseCase.js'
+ import { sendError, ERR } from '../../lib/httpError.js'
+ import { normalizeRegion } from '../../media/mediaService.js'
+ import { config } from '../../config.js'
++import { projectDir } from '../../pipeline/context.js'
+ 
+ const router = Router()
+ router.use(authMiddleware)
+ 
+ const MODES = ['SUMMARY', 'TRANSLATE_DUB']
+-const MASK_METHODS = ['blur', 'fill', 'inpaint']
++
+ 
+ const isDubMode = (mode) => {
+   const m = String(mode || '').toUpperCase().replace('-', '_')
+@@ -59,10 +60,7 @@ router.post('/', async (req, res) => {
+     // Merge params phß║│ng cß╗ºa TRANSLATE_DUB v├áo params JSON (docs/02 Project.params)
+     let params = b.params && typeof b.params === 'object' ? { ...b.params } : {}
+     if (mode === 'TRANSLATE_DUB') {
+-      const maskMethod = b.maskMethod || params.maskMethod || 'fill'
+-      if (!MASK_METHODS.includes(maskMethod)) {
+-        return sendError(res, 400, ERR.VALIDATION, `maskMethod must be one of ${MASK_METHODS.join(', ')}`, { field: 'maskMethod' })
+-      }
++
+       const presetSlug = b.stylePreset || params.stylePreset
+       if (!presetSlug) {
+         return sendError(res, 400, ERR.VALIDATION, 'stylePreset is required for TRANSLATE_DUB projects', { field: 'stylePreset' })
+@@ -80,7 +78,7 @@ router.post('/', async (req, res) => {
+         console.warn('[Projects] TRANSLATE_DUB enableDubbing=true nh╞░ng ch╞░a chß╗ìn voice; d├╣ng voice mß║╖c ─æß╗ïnh cß╗ºa provider')
+       }
+       params.voiceId = b.voiceId || params.voiceId || null
+-      params.maskMethod = maskMethod
++
+       params.outputFormat = ['mp4', 'mkv'].includes(b.outputFormat) ? b.outputFormat : 'mp4'
+     }
+ 
+@@ -105,6 +103,7 @@ router.post('/', async (req, res) => {
+       copyright_acknowledged: 1,
+       copyright_ack_at: now,
+       expires_at: expiresAt.toISOString(),
++      video_hash: b.videoHash || null,
+     })
+ 
+     // Kick off the real pipeline asynchronously (only if not queued)
+@@ -112,7 +111,60 @@ router.post('/', async (req, res) => {
+       runPipeline(project.id).catch((e) => console.error('[Pipeline] start failed', e))
+     }
+ 
+-    res.status(202).json({ ...project, params })
++    // Duplicate detection: check for existing project with same video hash + same target language
++    let cachedProjectId = null
++    if (b.videoHash && mode === 'TRANSLATE_DUB') {
++      const targetLang = params.targetLanguage || 'vi'
++      const cached = await queryOne(
++        `SELECT id FROM projects
++         WHERE user_id = ? AND video_hash = ? AND mode = 'TRANSLATE_DUB'
++         AND status = 'completed' AND id != ?
++         AND JSON_EXTRACT(params, '$.targetLanguage') = ?
++         ORDER BY created_date DESC LIMIT 1`,
++        [req.user.id, b.videoHash, project.id, targetLang]
++      )
++      if (cached) cachedProjectId = cached.id
++    }
++
++    // Copy OCR regions and transcript segments from cached project
++    if (cachedProjectId) {
++      // Copy OCR regions
++      const ocrRegions = await query('SELECT * FROM ocr_regions WHERE project_id = ?', [cachedProjectId])
++      for (const r of ocrRegions) {
++        await insert('ocr_regions', {
++          id: uuidv4(),
++          project_id: project.id,
++          start_sec: r.start_sec,
++          end_sec: r.end_sec,
++          ratio_x: r.ratio_x,
++          ratio_y: r.ratio_y,
++          ratio_w: r.ratio_w,
++          ratio_h: r.ratio_h,
++          mask_strength: r.mask_strength,
++          is_static: r.is_static,
++          text: r.text,
++          confidence: r.confidence,
++          source: r.source,
++        })
++      }
++      // Copy transcript segments (including translations)
++      const transcriptSegments = await query('SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC', [cachedProjectId])
++      for (const s of transcriptSegments) {
++        await insert('transcript_segments', {
++          id: uuidv4(),
++          project_id: project.id,
++          index_num: s.index_num,
++          start_sec: s.start_sec,
++          end_sec: s.end_sec,
++          text: s.text,
++          speaker: s.speaker,
++          language: s.language,
++          translation: s.translation,
++        })
++      }
++    }
++
++    res.status(202).json({ ...project, params, cachedProjectId })
+   } catch (err) {
+     console.error('Create project error:', err)
+     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')

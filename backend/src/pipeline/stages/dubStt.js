@@ -1,7 +1,7 @@
 import path from 'path'
 import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
-import { insert, updateById } from '../../db/query.js'
+import { insert, updateById, query } from '../../db/query.js'
 import { extractAudio, sliceAudio, probe, compressAudioForUpload } from '../../media/mediaService.js'
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
@@ -20,6 +20,15 @@ export async function dubStt(ctx) {
 
   // Check abort signal
   if (signal?.aborted) throw new Error('Cancelled')
+
+  // Skip STT if segments already exist (video hash cache — copied from duplicate project)
+  const existing = await query(
+    'SELECT COUNT(*) as cnt FROM transcript_segments WHERE project_id = ?',
+    [project.id]
+  )
+  if (existing[0]?.cnt > 0) {
+    return { segmentCount: existing[0].cnt, skipped: true, reason: 'cached' }
+  }
 
   // Ưu tiên audio đã chuẩn hoá ở stage ingest; thiếu → tách lại từ nguồn
   let fullWav

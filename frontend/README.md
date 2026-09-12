@@ -69,7 +69,7 @@ Trang tạo dự án (`/projects/new`) là wizard 2 mode:
 - **TRANSLATE_DUB** — Dịch thuật & Lồng tiếng: upload video resumable (≤2GB) → ngôn ngữ nguồn/đích → chọn 1 trong 13 phong cách dịch → bật/tắt lồng tiếng AI + chọn giọng → chỉnh vùng che hardsub trên Canvas (tuỳ chọn) → Generate, theo dõi tiến trình realtime bằng SSE.
 
 > ⚠️ Code hiện tại vẫn đang triển khai mode cũ `STYLE_EDIT` (edit theo mẫu) — cần migrate sang
-> `TRANSLATE_DUB` theo đặc tả mới tại `../AI-Shorts-Factory-Documentation-Starter/docs/04_THIET_KE_FRONTEND.md`.
+> `TRANSLATE_DUB` theo đặc tả mới tại `../Video_AI_docs/docs/04_THIET_KE_FRONTEND.md`.
 
 ## Scripts
 
@@ -83,4 +83,4 @@ Trang tạo dự án (`/projects/new`) là wizard 2 mode:
 
 ## Tài liệu thiết kế
 
-Toàn bộ đặc tả nằm ở thư mục `../AI-Shorts-Factory-Documentation-Starter/docs/` (kiến trúc, database, pipeline, frontend, API).
+Toàn bộ đặc tả nằm ở thư mục `../Video_AI_docs/docs/` (kiến trúc, database, pipeline, frontend, API).

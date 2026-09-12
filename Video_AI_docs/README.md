@@ -41,8 +41,8 @@ Cả hai hướng đều tuân thủ nguyên tắc: **user cấu hình → AI ch
 ## 3. Công nghệ mục tiêu (Target Stack)
 
 - **Monorepo:** pnpm workspaces.
-- **Backend:** Node.js 22+, TypeScript (strict), Express, Prisma (SQLite MVP → PostgreSQL), BullMQ + Redis, Zod, JWT, Swagger/OpenAPI, Pino.
-- **Frontend:** React 19, Vite, TypeScript, TailwindCSS, shadcn/ui, TanStack Query, React Router, React Hook Form, Framer Motion.
+- **Backend:** Node.js 18+, JavaScript (ES modules), Express, sql.js (SQLite MVP → PostgreSQL), BullMQ + Redis, Zod, JWT, Swagger/OpenAPI, Pino.
+- **Frontend:** React 18, Vite, JavaScript (JSX), TailwindCSS, shadcn/ui, TanStack Query, React Router, React Hook Form, Framer Motion.
 - **Media:** FFmpeg (gói `packages/media` đóng gói mọi thao tác).
 - **AI/Provider:** Provider Pattern cho ASR (+ diarization), TTS, OCR (hardsub), Vision/LLM,
   Video-gen (có thể mở rộng).
