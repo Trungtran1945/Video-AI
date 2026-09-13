@@ -3,8 +3,6 @@ import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
 import { query, insert } from '../../db/query.js'
 import {
-  maskRegions,
-  normalizeRegion,
   burnSubtitlesStyled,
   buildDubTrack,
   muxStream,
@@ -16,8 +14,7 @@ import {
   projectDir, ensureDir, requireSourceFile, toStorageKey, round3,
 } from '../context.js'
 
-// dub.render (docs/05 §B.6–B.7): mask hardsub → burn-in ASS → audio mix → mux NVENC.
-const MASK_TIMEOUT = 20 * 60 * 1000
+// dub.render (docs/05 §B.7): burn-in ASS → audio mix → mux NVENC.
 const BURN_TIMEOUT = 20 * 60 * 1000
 const DUB_TRACK_TIMEOUT = 15 * 60 * 1000
 
@@ -33,42 +30,7 @@ export async function dubRender(ctx) {
   const info = await probe(src)
   const totalSec = round3(info.durationSec || project.target_duration_sec || 0)
 
-  // ── 1. Mask hardsub theo OcrRegion (docs/05 §B.6) ─────────────────────
-  let regions = (await query(
-    'SELECT * FROM ocr_regions WHERE project_id = ? ORDER BY start_sec ASC',
-    [project.id]
-  )).map(normalizeRegion)
-  // Mạng lưới an toàn: nếu người dùng yêu cầu che phụ đề (maskMethod) mà không có
-  // vùng OCR nào (OCR bỏ sót hoặc stage chưa chạy), sinh vùng mặc định đáy khung
-  // hình (lưu TỶ LỆ, scale-invariant) để vừa làm mờ chữ gốc, vừa định vị phụ đề
-  // dịch thay thế. Áp dụng cả với các project đã completed trước khi dubOcr được sửa.
-  const wantMask = params.maskMethod && params.maskMethod !== 'none'
-  if (wantMask && !regions.length) {
-    regions = [{
-      startSec: 0,
-      endSec: round3(totalSec),
-      ratioX: 0.05,
-      ratioY: 0.80,
-      ratioW: 0.90,
-      ratioH: 0.15,
-      maskStrength: 0.6,
-      isStatic: false,
-      source: 'AUTO_DEFAULT',
-    }]
-  }
   let workingFile = src
-  if (regions.length) {
-    const maskedFile = path.join(dir, 'masked.mp4')
-    // 'inpaint' chưa có model AI offline → xấp xỉ bằng delogo (docs/07 §2.13);
-    // 'fill' giữ nguyên hành vi lấp màu nền sample.
-    const maskMethodMap = { blur: 'blur', delogo: 'delogo', inpaint: 'delogo' }
-    await maskRegions(src, regions, maskedFile, {
-      method: maskMethodMap[params.maskMethod] || 'fill',
-      videoDims: { width: info.width, height: info.height },
-      timeout: MASK_TIMEOUT,
-    })
-    workingFile = maskedFile
-  }
   setProgress(30)
 
   // ── 2. Burn-in phụ đề dịch dạng ASS \pos theo bbox cũ (docs/05 §B.7) ──
@@ -78,7 +40,7 @@ export async function dubRender(ctx) {
     [project.id]
   )
   if (segments.length) {
-    const assPath = buildAss(dir, segments, regions, {
+    const assPath = buildAss(dir, segments, [], {
       width: info.width || 1280,
       height: info.height || 720,
       title: project.title,
@@ -172,7 +134,6 @@ export async function dubRender(ctx) {
     outputKey,
     thumbnailKey: thumbKey,
     durationSec: round3(finalInfo.durationSec),
-    regionCount: regions.length,
     burnedCues: segments.length,
     dubbedAudio: enableDubbing,
   }
