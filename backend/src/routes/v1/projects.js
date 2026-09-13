@@ -7,7 +7,6 @@ import { runPipeline, isPipelineRunning } from '../../pipeline/runner.js'
 import { deleteProjectFiles, collectProjectKeys } from '../../services/projectCleanup.js'
 import { cancelProjectUseCase } from '../../usecases/cancelProjectUseCase.js'
 import { sendError, ERR } from '../../lib/httpError.js'
-import { normalizeRegion } from '../../media/mediaService.js'
 import { config } from '../../config.js'
 import { projectDir } from '../../pipeline/context.js'
 
@@ -126,27 +125,8 @@ router.post('/', async (req, res) => {
       if (cached) cachedProjectId = cached.id
     }
 
-    // Copy OCR regions and transcript segments from cached project
+    // Copy transcript segments from cached project
     if (cachedProjectId) {
-      // Copy OCR regions
-      const ocrRegions = await query('SELECT * FROM ocr_regions WHERE project_id = ?', [cachedProjectId])
-      for (const r of ocrRegions) {
-        await insert('ocr_regions', {
-          id: uuidv4(),
-          project_id: project.id,
-          start_sec: r.start_sec,
-          end_sec: r.end_sec,
-          ratio_x: r.ratio_x,
-          ratio_y: r.ratio_y,
-          ratio_w: r.ratio_w,
-          ratio_h: r.ratio_h,
-          mask_strength: r.mask_strength,
-          is_static: r.is_static,
-          text: r.text,
-          confidence: r.confidence,
-          source: r.source,
-        })
-      }
       // Copy transcript segments (including translations)
       const transcriptSegments = await query('SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC', [cachedProjectId])
       for (const s of transcriptSegments) {
@@ -218,8 +198,7 @@ router.get('/:id', async (req, res) => {
       extras.scenes = await query('SELECT * FROM scenes WHERE project_id = ? ORDER BY start_sec ASC', [project.id])
       extras.scriptSegments = await query('SELECT * FROM script_segments WHERE project_id = ? ORDER BY index_num ASC', [project.id])
     } else if (isDubMode(project.mode)) {
-      // docs/06 §7: TRANSLATE_DUB trả thêm ocrRegions (transcript qua endpoint riêng)
-      extras.ocrRegions = (await query('SELECT * FROM ocr_regions WHERE project_id = ? ORDER BY start_sec ASC', [project.id])).map(normalizeRegion)
+      // TRANSLATE_DUB mode - no extra data needed
     }
     res.json({ ...project, params: project.params ? JSON.parse(project.params) : null, jobs, timeline, output, ...extras })
   } catch (err) {
