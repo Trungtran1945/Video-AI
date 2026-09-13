@@ -47,11 +47,7 @@ export const STATUS_LABELS = {
 
   export const DUB_STAGES = ['dub.ingest', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
 
-  export const MASK_METHODS = {
-    blur: { label: 'Làm mờ', desc: 'Nhanh, rẻ — có thể còn vệt chữ lem' },
-    fill: { label: 'Lấp màu nền', desc: 'Lấy màu nền quanh chữ lấp phẳng — mặc định' },
-    inpaint: { label: 'AI Inpainting', desc: 'Tái tạo nền đẹp nhất — tốn tài nguyên nhất' },
-  };
+
 
   export const SOURCE_LANGUAGES = {
     auto: 'Tự động nhận diện',
