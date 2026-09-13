@@ -66,9 +66,6 @@ export default async function dubMerge({ project, job, setProgress }) {
 
   return {
     transcriptSegments: transcriptSegments.length,
-    translatedSegments: segmentsWithoutTranslation.length === 0 ? transcriptSegments.length : 0,
-    allDurationsValid: invalidDurationSegments.length === 0,
-    languagesConfigured: true,
   }
 }
 
