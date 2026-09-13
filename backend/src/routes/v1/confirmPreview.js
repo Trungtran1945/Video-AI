@@ -8,7 +8,7 @@ const router = Router()
 // POST /api/v1/projects/:id/translate-dub/confirm-preview — FR-J2
 router.post('/:id/translate-dub/confirm-preview', requireProjectOwner, async (req, res) => {
   try {
-    const result = await confirmPreviewUseCase(req.params.id, req.body.regions)
+    const result = await confirmPreviewUseCase(req.params.id)
     res.status(202).json(result)
   } catch (err) {
     console.error('Confirm preview error:', err)
