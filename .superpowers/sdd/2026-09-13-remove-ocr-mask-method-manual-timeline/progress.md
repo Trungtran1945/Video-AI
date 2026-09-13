@@ -16,14 +16,14 @@
 - Task 1: complete (commits 0a09b3a..a826ca9, review clean)
 - Task 2: complete (commits a826ca9..5224ebe, fix round 1/5, review clean)
 - Task 3: complete (commits 5224ebe..e6e4ec1, review clean)
-- Task 4: complete (commit 6f604e5, review clean)
-- Task 5: pending
-- Task 6: pending
-- Task 7: pending
-- Task 8: pending
-- Task 9: pending
-- Task 10: pending
-- Task 11: pending
-- Task 12: pending
-- Task 13: pending
-- Task 14: pending
+- Task 4: complete (commits e6e4ec1..5c6c4ed, fix round 1/5, review clean)
+- Task 5: complete (commits 5c6c4ed..567fdb3, review clean)
+- Task 6: complete (commits 567fdb3..a058460, review clean)
+- Task 7: complete (commits a058460..d0658b1, review clean)
+- Task 8: complete (no changes needed — file already clean, lint passes)
+- Task 9: complete (commits d0658b1..ee6451c, review clean)
+- Task 10: complete (commit bf69918, lint clean)
+- Task 11: complete (commits bf69918..c17d593, review clean)
+- Task 12: complete (commits c17d593..d028007, fix round 1/5, review clean)
+- Task 13: complete (commit 4bdc4f1, review clean)
+- Task 14: complete (commit 5d1c626, fix missed OCR references, lint clean, build pass)
