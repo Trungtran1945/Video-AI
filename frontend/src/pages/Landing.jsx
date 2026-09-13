@@ -5,7 +5,7 @@ import { useAuth } from '@/lib/AuthContext';
 
 const features = [
   { icon: Clapperboard, title: 'Review Phim Tự Động', desc: 'Tải phim 2–3 tiếng, AI cắt cảnh và viết lời review thành video 20–30 phút.' },
-  { icon: Languages, title: 'Dịch Thuật & Lồng Tiếng', desc: 'Tải video nước ngoài có phụ đề cứng, AI dịch tiếng Việt theo 12 phong cách và lồng giọng AI ép khớp thời gian.' },
+  { icon: Languages, title: 'Dịch Thuật & Lồng Tiếng', desc: 'Tải video nước ngoài, AI dịch tiếng Việt theo 13 phong cách và lồng giọng AI ép khớp thời gian.' },
   { icon: Zap, title: 'Pipeline Nền', desc: 'Hàng đợi thông minh, tự động thử lại, tiến trình real-time qua SSE.' },
   { icon: Globe, title: 'Đa Ngôn Ngữ', desc: 'Hỗ trợ 8+ ngôn ngữ với giọng nói tự nhiên.' },
 ];
