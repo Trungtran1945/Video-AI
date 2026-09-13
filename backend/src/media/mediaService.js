@@ -362,43 +362,6 @@ export async function normalizeLoudness(inFile, out, targetLufs = -16) {
   return out
 }
 
-// Sample màu nền quanh bbox (docs/05 §B.6) — đọc pixel thô rgb24 1×1.
-async function samplePointColor(src, atSec, x, y, w, h) {
-  const raw = path.join(path.dirname(src), `_color_${uuidv4()}.raw`)
-  try {
-    await ffmpeg([
-      '-y', '-ss', String(Math.max(0, atSec)), '-i', src,
-      '-vf', `crop=${Math.max(2, w)}:${Math.max(2, h)}:${Math.max(0, x)}:${Math.max(0, y)},scale=1:1`,
-      '-frames:v', '1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', raw,
-    ])
-    const buf = fs.readFileSync(raw)
-    if (buf.length >= 3) return { r: buf[0], g: buf[1], b: buf[2] }
-    return null
-  } catch (_) {
-    return null
-  } finally {
-    try { fs.unlinkSync(raw) } catch (_) {}
-  }
-}
-
-// Lấy màu nền đại diện quanh vùng chữ (trên/dưới/trái/phải bbox).
-export async function sampleBackgroundColor(src, atSec, region, videoDims) {
-  const vw = videoDims?.width || 1280
-  const vh = videoDims?.height || 720
-  const pad = 8
-  const candidates = [
-    await samplePointColor(src, atSec, region.x, Math.max(0, region.y - pad), region.width, 2),
-    await samplePointColor(src, atSec, region.x, Math.min(vh - 2, region.y + region.height + pad - 2), region.width, 2),
-    await samplePointColor(src, atSec, Math.max(0, region.x - pad), region.y, 2, region.height),
-    await samplePointColor(src, atSec, Math.min(vw - 2, region.x + region.width + pad - 2), region.y, 2, region.height),
-  ].filter(Boolean)
-  if (!candidates.length) return '0x202020'
-  const avg = candidates.reduce((acc, c) => ({ r: acc.r + c.r, g: acc.g + c.g, b: acc.b + c.b }), { r: 0, g: 0, b: 0 })
-  const n = candidates.length
-  const hex = (v) => Math.round(v / n).toString(16).padStart(2, '0')
-  return `0x${hex(avg.r)}${hex(avg.g)}${hex(avg.b)}`
-}
-
 // Chuẩn hoá 1 row ocr_regions (DB cũ pixel hoặc mới ratio) → model ratio camelCase
 // dùng chung cho API (dubData) và render (dubRender). Xem docs/02 §2, docs/07 §2.13.
 export function normalizeRegion(row) {
@@ -422,80 +385,6 @@ export function normalizeRegion(row) {
     text: row.text ?? null,
     confidence: num(row.confidence ?? null),
   }
-}
-
-// Tính rect pixel (scale-invariant) từ ratio × videoDims.
-function regionRect(r, videoDims) {
-  const vw = videoDims?.width || 1280
-  const vh = videoDims?.height || 720
-  const x = Math.max(0, Math.round((Number(r.ratioX) || 0) * vw))
-  const y = Math.max(0, Math.round((Number(r.ratioY) || 0) * vh))
-  const w = Math.max(2, Math.round((Number(r.ratioW) || 0) * vw))
-  const h = Math.max(2, Math.round((Number(r.ratioH) || 0) * vh))
-  // Trả cả w/h và width/height (sampleBackgroundColor dùng width/height).
-  return { x, y, w, h, width: w, height: h }
-}
-
-function strengthOf(r) {
-  return clampNum(Number(r.maskStrength ?? 0.6), 0, 1)
-}
-
-// enable theo thời gian: isStatic → luôn bật ('1'); ngược lại between(t,start,end).
-function enableExpr(r) {
-  if (r.isStatic) return '1'
-  const s = round2(Number(r.startSec) || 0)
-  const e = round2(Number(r.endSec) || 0)
-  return `between(t,${s},${e})`
-}
-
-// Che vùng hardsub theo từng OcrRegion, chỉ bật trong khoảng thời gian của nó
-// (docs/07 §2.13). method: 'blur' | 'fill' | 'delogo'.
-export async function maskRegions(src, regions, out, { method = 'fill', videoDims, timeout = 0 } = {}) {
-  ensureDir(out)
-  const norms = (regions || []).map(normalizeRegion)
-  if (!norms.length) {
-    await ffmpeg(['-y', '-i', src, '-an', '-c', 'copy', '-movflags', '+faststart', out], { timeout })
-    return out
-  }
-
-  if (method === 'blur') {
-    // Crop từng bbox → boxblur mạnh → overlay trả về đúng vị trí, enable theo thời gian
-    const inputs = ['-i', src]
-    const filters = []
-    let prevLabel = '0:v'
-    norms.forEach((r, i) => {
-      const { x, y, w, h } = regionRect(r, videoDims)
-      // Bán kính tỷ lệ với maskStrength; tính bằng JS tránh biểu thức trong filtergraph.
-      const radius = Math.max(1, Math.round(strengthOf(r) * Math.min(w, h) / 4))
-      filters.push(`[${prevLabel}]crop=${w}:${h}:${x}:${y},boxblur=luma_radius=${radius}:luma_power=2[b${i}]`)
-      prevLabel = `ov${i}`
-      filters.push(`[${i === 0 ? '0:v' : `ov${i - 1}`}][b${i}]overlay=${x}:${y}:enable='${enableExpr(r)}'[${prevLabel}]`)
-    })
-    filters.push(`[${prevLabel}]setsar=1[vout]`)
-    await ffmpeg([...inputs, '-filter_complex', filters.join(';'), '-map', '[vout]', '-an', ...(await encodeArgs()), '-movflags', '+faststart', out], { timeout })
-    return out
-  }
-
-  if (method === 'delogo') {
-    const chain = norms
-      .map((r) => { const { x, y, w, h } = regionRect(r, videoDims); return `delogo=x=${x}:y=${y}:w=${w}:h=${h}:enable='${enableExpr(r)}'` })
-      .concat('setsar=1')
-      .join(',')
-    await ffmpeg(['-y', '-i', src, '-vf', chain, '-an', ...(await encodeArgs()), '-movflags', '+faststart', out], { timeout })
-    return out
-  }
-
-  // 'fill' — lấp màu nền sampling quanh bbox (mặc định, docs/05 §D). Độ đục theo maskStrength.
-  const colors = []
-  for (const r of norms) {
-    colors.push(await sampleBackgroundColor(src, (Number(r.startSec) + Number(r.endSec)) / 2, regionRect(r, videoDims), videoDims))
-  }
-  const chain = norms
-    .map((r, i) => { const { x, y, w, h } = regionRect(r, videoDims); const op = (0.4 + strengthOf(r) * 0.6).toFixed(2); return `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=${colors[i]}@${op}:t=fill:enable='${enableExpr(r)}'` })
-    .concat('setsar=1')
-    .join(',')
-  await ffmpeg(['-y', '-i', src, '-vf', chain, '-an', ...(await encodeArgs()), '-movflags', '+faststart', out], { timeout })
-  return out
 }
 
 // Burn-in phụ đề ASS có \pos định vị theo bbox cũ (docs/07 §2.14).
@@ -641,8 +530,6 @@ export default {
   probe,
   sampleFrames,
   normalizeLoudness,
-  sampleBackgroundColor,
-  maskRegions,
   burnSubtitlesStyled,
   applyTempoAudio,
   buildDubTrack,
