@@ -14,7 +14,7 @@ const modes = [
   { num: '01', label: 'Chọn chế độ: Review phim / Dịch & Lồng tiếng' },
   { num: '02', label: 'Upload phim hoặc video nước ngoài (resumable ≤2GB)' },
   { num: '03', label: 'Chọn ngôn ngữ, phong cách dịch, bật/tắt lồng tiếng' },
-  { num: '04', label: 'AI chạy pipeline tự động (STT + OCR song song)' },
+  { num: '04', label: 'AI chạy pipeline tự động (STT → Translate → TTS)' },
   { num: '05', label: 'Xem tiến trình realtime & video đầu ra' },
 ];
 
@@ -76,7 +76,7 @@ export default function Landing() {
              initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
              className="text-lg text-slate-400 mt-6 max-w-2xl mx-auto leading-relaxed"
            >
-             Hai chế độ: <span className="text-slate-200">Review phim</span> (phim 2–3 tiếng → video review 20–30 phút) và <span className="text-slate-200">Dịch &amp; Lồng tiếng</span> (video nước ngoài có hardsub → phụ đề tiếng Việt theo 12 phong cách + giọng lồng AI). AI tự động tạo đầu ra — không cần tự edit.
+             Hai chế độ: <span className="text-slate-200">Review phim</span> (phim 2–3 tiếng → video review 20–30 phút) và <span className="text-slate-200">Dịch &amp; Lồng tiếng</span> (video nước ngoài → phụ đề tiếng Việt theo 13 phong cách + giọng lồng AI). AI tự động tạo đầu ra — không cần tự edit.
            </motion.p>
           <motion.div
             initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}
