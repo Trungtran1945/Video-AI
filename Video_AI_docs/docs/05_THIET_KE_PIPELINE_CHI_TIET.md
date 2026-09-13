@@ -134,7 +134,7 @@ Xem chi tiết `07_MODULE_FFMPEG.md`. Tóm tắt:
 
 # B. MODE TRANSLATE_DUB — Dịch thuật & Lồng tiếng
 
-Biến một video nước ngoài (có phụ đề cứng/hardsub) thành bản tiếng Việt: dịch phụ đề theo phong cách
+Biến một video nước ngoài thành bản tiếng Việt: dịch phụ đề theo phong cách
 tuỳ chọn (13 StylePreset) và **(tuỳ chọn)** lồng tiếng AI, giữ nguyên hình ảnh gốc.
 
 ## B.0. Tổng quan stage
@@ -142,42 +142,52 @@ tuỳ chọn (13 StylePreset) và **(tuỳ chọn)** lồng tiếng AI, giữ ng
 | Stage | Thực thi bởi | Đầu ra chính |
 | --- | --- | --- |
 | ingest | media | demux audio/video, chuẩn hoá LUFS, metadata |
-| stt ‖ ocr ★ | AsrProvider ‖ OcrProvider (**chạy SONG SONG**) | `TranscriptSegment[]` / `OcrRegion[]` |
+| stt | AsrProvider | `TranscriptSegment[]` |
+| merge | core | Kiểm tra barrier: transcript + translation + duration + language |
 | translate | AIProvider(LLM) | bản dịch theo StylePreset, gắn vào transcript |
 | ttsAlign ★ | TtsProvider + ForcedAlignService (core) | audio dub khớp slot thời gian (tuỳ chọn) |
-| composite | media (+ VisionProvider nếu inpaint) | mask hardsub → burn-in sub mới → mix → mux |
+| render | media | burn-in sub mới → mix → mux |
 
-Nhánh `stt` và `ocr` **độc lập dữ liệu** nên được enqueue song song để tối ưu latency.
-Stage `translate` chỉ chạy khi cả hai xong: dịch dựa trên transcript, còn mask dựa trên OCR regions.
+Stage `translate` chỉ chạy khi `merge` hoàn thành: kiểm tra transcript, translation, duration và language config.
 
 ## B.1. Stage: ingest & tiền xử lý
 
 - **Upload resumable**: client chia file (≤ 2GB) thành chunk 5–10MB upload song song (giao thức
   kiểu TUS). Mất mạng ở 99% → resume từ offset đã nhận, không tải lại từ đầu (xem `06_API.md`).
+- **Hạn chế URL**:
+  - **Chỉ chấp nhận `minio://` (nội bộ)** — KHÔNG chấp nhận HTTP/HTTPS URL từ internet vì:
+    • Hầu hết video platform (YouTube, Bilibili...) chặn direct link → download timeout/fail
+    • Không có fallback mechanism → phải upload file vật lý
+    • User đọc docs sẽ thất vọng khi link không hoạt động
+  - **Hạn chế dung lượng file upload**: Tối đa **500MB** (configurable qua `MEDIA_MAX_UPLOAD_SIZE_MB`).
+    File vượt quá sẽ bị reject ngay từ API, KHÔNG enqueue vào queue để tránh lãng phí tài nguyên worker.
 - **Demux FFmpeg**: tách audio stream (WAV/FLAC 16kHz mono cho ASR) và video stream.
-- **Audio normalization LUFS** (`loudnorm`, mục tiêu −16): âm lượng đều → STT chính xác hơn.
+- **Audio normalization LUFS** (`loudnorm`, mục tiêu −16 LUFS):
+  - Chạy 2-pass: Pass 1 phân tích, Pass 2 áp dụng normalization → âm lượng đều, STT chính xác hơn.
+  - Nếu audio đã normalize trước đó (double normalization) → bỏ qua, giữ nguyên.
+  - Nếu audio quá ồn (SNR < threshold) → cảnh báo nhưng không block pipeline.
 - Probe metadata (duration, resolution, fps) phục vụ frame sampling & toạ độ bounding box.
 
 ## B.2. Stage: stt (ASR)
 
 - Gọi `AsrProvider.transcribe(audio)` trên audio đã normalize → segments `{start, end, text}`
   kèm **word-level timestamps**.
+- **Auto-detect ngôn ngữ nguồn**: mặc định hệ thống tự phát hiện ngôn ngữ từ audio (không yêu cầu
+  `sourceLanguage` bắt buộc khi tạo project). Kết quả detect hiển thị cho user ở màn preview.
+- **Override thủ công**: user có thể override ngôn ngữ nguồn nếu detect sai (vd audio có nhiều ngôn ngữ
+  trộn, hoặc detect nhầm phương ngữ). Nếu user override → **chỉ chạy lại Stage STT** với `sourceLanguage`
+  chỉ định (không detect lại), không ảnh hưởng các Stage khác đã hoàn tất trước đó — các Stage phía sau
+  (`TRANSLATE`/`TTS`) sẽ bị đánh dấu `STALE` nếu đã chạy.
 - **Speaker diarization**: gán nhãn người nói (`SPK_1`, `SPK_2`...) khi video có nhiều nhân vật →
   lưu vào `TranscriptSegment.speaker`.
-- Phát hiện ngôn ngữ nguồn tự động (hoặc theo `params.sourceLanguage`).
+- **Audio câm/không có giọng nói**: trả transcript rỗng, Stage STT vẫn `COMPLETED` (không phải lỗi),
+  nhưng cảnh báo ở UI "Không phát hiện lời thoại".
+- **Audio quá dài**: có thể cần chia nhỏ theo chunk trước khi gửi provider (nhiều provider giới hạn
+  độ dài file); xử lý chunk + ghép lại timestamp là trách nhiệm của AsrProvider.
+- **Nhiều giọng nói chồng lấn (overlapping speech)**: MVP không tách speaker diarization đầy đủ,
+  transcript chỉ lấy giọng nói chính; ghi nhận là giới hạn đã biết, không phải lỗi.
 
-## B.3. Stage: ocr (phát hiện hardsub)
-
-- **Frame sampling**: trích 1–2 khung hình/giây (`media.sampleFrames`) — đủ dày để bắt text,
-  đủ thưa để tiết kiệm GPU.
-- `OcrProvider.detect(frame)` → bounding box `{x, y, width, height, text, confidence}`.
-- **Merge boxes liên tiếp**: box cùng vị trí (IoU > 0.7) qua các frame liền kề được gộp thành
-  `OcrBox { x, y, width, height, text, confidence }` (format thô từ OCR provider, chưa phải model OcrRegion đã lưu DB — sau đó `toRatio()` chuyển sang `ratioX/ratioY/ratioW/ratioH` trước khi insert).
-- Lọc nhiễu: bỏ region hiện < 0.5s hoặc confidence thấp; vùng dưới 1/3 khung hình được ưu tiên
-  (vị trí phụ đề phổ biến).
-- User có thể chỉnh/tạo thêm region trên Canvas (`source='MANUAL'`) trước render.
-
-## B.4. Stage: translate (LLM + 13 StylePreset)
+## B.3. Stage: translate (LLM + 13 StylePreset)
 
 - **Context window**: gom nhóm TranscriptSegment (~10 câu / ~30 giây) gửi LLM một lần để bản dịch
   mạch lạc, không mất ngữ cảnh giữa chừng; giữ glossary tên riêng nhất quán toàn video.
@@ -204,28 +214,64 @@ Stage `translate` chỉ chạy khi cả hai xong: dịch dựa trên transcript,
   ≈ bản gốc (±20%) để không vỡ forced alignment ở stage sau.
 - Ghi `ProviderLog` (provider, model, tokens, cost) như mọi cuộc gọi AI khác.
 
-## B.5. ★ Stage: ttsAlign (TTS + Forced Alignment) — KHÓ NHẤT
+## B.4. ★ Stage: ttsAlign (TTS + Forced Alignment) — KHÓ NHẤT
 
 Chỉ chạy khi `params.enableDubbing = true`. Mục tiêu: giọng dub nằm trọn trong slot
 `[startSec, endSec]` của câu gốc — không hình đi trước tiếng, không tiếng chồng sang câu sau.
 
-### Thuật toán
+### Yêu cầu bắt buộc
+
+1. **TTS chỉ được phép khi có TTS voice đã cấu hình**: Kiểm tra `(workspace.tts_provider_id IS NOT NULL OR workspace.tts_cloud_provider IS NOT NULL)` TRƯỚC khi bắt đầu Stage. Nếu chưa cấu hình → chuyển MediaJob sang `FAILED` với thông báo lỗi rõ ràng, không chạy lang thang.
+2. **Forbidden providers**: Không được phép sử dụng các provider đã bị cấm trong hệ thống.
+3. **Mapping Model → Provider**: Yêu cầu TTS MUST map sang provider đã cấu hình (theo bảng trong `03_THIET_KE_BACKEND.md`).
+4. **Fallback về Piper local**: Khi tất cả cloud provider đều bị cấm hoặc lỗi → fallback về Piper local (`SYSTEM_TTS`).
+5. **`tts_audio_ref` là Source of Truth**: Luôn sử dụng `tts_audio_ref` để xác định audio đã dub (KHÔNG dùng `dub_track_asset_id`). Nếu cả hai tồn tại → onError hiển thị: "Hệ thống cần refresh/re-process để đồng bộ dữ liệu. Vui lòng chọn 'Rerun dubbing'."
+
+### Thuật toán chi tiết
 
 ```
 cho mỗi TranscriptSegment seg (đã có translation):
   1. audio = TtsProvider.synthesize(seg.translation, targetLanguage, voiceId)
      D_tts  = audio.durationSec          // thời lượng đọc thực tế
      D_slot = seg.endSec - seg.startSec  // slot của câu gốc
-  2. if D_slot*0.92 <= D_tts <= D_slot*1.08:
-        đặt tại startSec, giữ nguyên            // trong dung sai ±8%
-  3. elif D_tts > D_slot*1.08:                  // đọc dài hơn slot
-        a. tempo = clamp(D_tts/D_slot, 1.0, 1.15) → atempo tăng tốc nhẹ
-        b. vẫn thừa? → yêu cầu LLM rút gọn bản dịch (pass 2: "rút còn X%") rồi TTS lại
-        c. vẫn trượt? → overlap tối đa 0.3s vào khoảng lặng kế tiếp
-  4. elif D_tts < D_slot*0.92:                  // ngắn hơn slot
-        chèn silence padding (30% đầu / 70% cuối) hoặc atempo chậm nhẹ (không dưới 0.9)
-  5. ghi startAtSec thực tế + audioId vào TranscriptSegment.ttsAudioId
+
+  2. Xử lý lệch timing:
+
+     ┌─ TRƯỜNG HỢP 1: Khớp (±20%) ─────────────────────────────────────────┐
+     │   Condition: D_slot*0.80 <= D_tts <= D_slot*1.20                      │
+     │   Action: Đặt tại startSec, giữ nguyên duration thực tế              │
+     │   Music alignment: Không thay đổi                                     │
+     └───────────────────────────────────────────────────────────────────────┘
+
+     ┌─ TRƯỜNG HỢP 2: Dài hơn slot (>20%) ──────────────────────────────────┐
+     │   Condition: D_tts > D_slot * 1.20                                    │
+     │   Severity: BLOCKING                                                  │
+     │   Action: Stage TTS → FAILED                                           │
+     │   User notification: "Dịch quá dài so với slot. Cần rút gọn {X}%."   │
+     │   Music alignment: Ngăn render tránh video/audio lệch                  │
+     └───────────────────────────────────────────────────────────────────────┘
+
+     ┌─ TRƯỜNG HỢP 3: Ngắn hơn slot (>20%) ─────────────────────────────────┐
+     │   Condition: D_tts < D_slot * 0.80                                    │
+     │   Severity: NON_BLOCKING                                              │
+     │   Action: Chèn silence padding (30% đầu / 70% cuối)                   │
+     │   Music alignment: Giữ nguyên, pad không lệch                          │
+     │   Note: <5% câu thường lệch >20%, render vẫn tiếp tục                 │
+     └───────────────────────────────────────────────────────────────────────┘
+
+     ┌─ TRƯỜNG HỢP 4: Lệch nhỏ (5-20%) ────────────────────────────────────┐
+     │   Condition: D_tts lệch 5-20% so với D_slot                           │
+     │   Severity: NON_BLOCKING                                              │
+     │   Action: Nhẹ → time-stretch tối đa ±20% (atempo 0.8–1.2)            │
+     │            Vẫn lệch → overlap tối đa 0.3s vào khoảng lặng kế tiếp    │
+     │   Music alignment: Time-stretch nudges music theo DUB_TTS_DURATION     │
+     └───────────────────────────────────────────────────────────────────────┘
 ```
+
+### Partial success handling (TTS)
+
+- **MVP**: Nếu bất kỳ segment nào bị lỗi TTS (provider timeout, voice không tồn tại, v.v.), **toàn bộ MediaJob → `FAILED`** và yêu cầu user chỉnh lại voice hoặc rerun. Chưa có partial TTS audio trong DB.
+- **Tương lai**: Cho phép lưu `translation_segments.tts_audio_ref` cho các segment thành công, và ghi nhận segment lỗi để rerun đúng đoạn đó; MediaJob giữ `PROCESSING` (không `FAILED` toàn bộ), hiển thị progress "27/30 segment đã dub thành công, 3 segment lỗi — [Xem chi tiết]".
 
 ### Đảm bảo khớp (Invariant)
 
@@ -233,26 +279,32 @@ cho mỗi TranscriptSegment seg (đã có translation):
 - `atempo` bị chặn trong [0.9–1.15] để giọng không méo; ưu tiên **rút gọn câu thay vì hớt tốc độ**.
 - Word-level khớp (karaoke-style) dùng tham khảo **Dynamic Time Warping (DTW)** khi cần.
 
-## B.6. Stage: composite — mask hardsub
+## B.5. Stage: render — Burn-in sub mới
 
-Áp dụng theo từng `OcrRegion` (chỉ trong `[startSec, endSec]`, không đè toàn bộ video),
-method theo `params.maskMethod`:
-
-| Method | Cơ chế | Ưu/nhược |
-| --- | --- | --- |
-| `blur` | Gaussian/box blur vùng bbox | nhanh, rẻ — nhưng chữ lem vẫn lộ vệt |
-| `fill` | sample màu nền quanh bbox → lấp phẳng (`drawbox`) | xử lý lem/nhòe tốt hơn blur |
-| `inpaint` | AI inpainting tái tạo nền (VisionProvider), ffmpeg chỉ composite | đẹp nhất, tốn GPU nhất |
-
-## B.7. Stage: composite — burn-in, mix, mux
-
-- **Burn-in phụ đề mới**: file ASS có `\pos` khớp bbox cũ (hoặc vị trí user chọn) →
+- **Burn-in phụ đề mới**: file ASS có vị trí mặc định đáy khung hình →
   `media.burnSubtitlesStyled`.
-- **Audio mixing**:
-  - Dubbing bật: thay voice gốc bằng dub track; giữ background (nhạc/tiếng động môi trường) nếu
-    hệ thống tách stem được; ducking −12dB; `loudnorm` lần cuối.
-  - Dubbing tắt: giữ nguyên audio gốc, chỉ thay phụ đề.
+- **Audio mixing** (xem `07_MODULE_FFMPEG.md` chi tiết):
+  - **Dubbing bật**: thay voice gốc bằng dub track.
+    - **Timing lệch lớn (>20%)**: MediaJob → `FAILED`, thông báo user cần rerun.
+    - **Timing lệch nhỏ (5-20%)**: time-stretch audio dub ±20% cho khớp slot (atempo 0.8–1.2).
+    - **Timing khớp (±20%)**: giữ nguyên audio dub thực tế.
+    - Giữ background (nhạc/tiếng động môi trường) nếu hệ thống tách stem được; ducking −12dB;
+      `loudnorm` lần cuối.
+    - **Lưu ý quan trọng**: `tts_audio_ref` là source of truth cho audio đã dub, KHÔNG dùng
+      `dub_track_asset_id` (deprecated).
+  - **Dubbing tắt**: giữ nguyên audio gốc, chỉ thay phụ đề.
 - **Muxing**: đóng gói video + audio mới thành MP4/MKV, ưu tiên tăng tốc phần cứng NVENC.
+- **Render validation**:
+  - Kiểm tra output không bị corrupt (FFmpeg probe).
+  - Kiểm tra duration output ±2s so với duration gốc.
+  - Nếu render fail → retry 1 lần (FFmpeg có thể do transient), sau đó `FAILED`.
+- **Subtitle presentation options** (user chọn trước render):
+  - `target_font`: Font-family từ danh sách có sẵn (Arial, Noto Sans CJK, v.v.).
+  - `target_font_size`: Font size (16–48px), mặc định 22px.
+  - `target_opacity`: Đopacity (0.5–1.0), mặc định 1.0.
+  - `target_color`: Font color hex (mặc định `#FFFFFF`).
+  - `subtitle_position`: Vị trí phụ đề (`TOP`, `MIDDLE`, `BOTTOM`), mặc định `BOTTOM`.
+  - `hard_sub_enabled`: Boolean — burn subtitle vào video (mặc định `true` cho TRANSLATE_ONLY).
 
 ---
 
@@ -261,11 +313,11 @@ method theo `params.maskMethod`:
 | Tiêu chí | SUMMARY | TRANSLATE_DUB |
 | --- | --- | --- |
 | Nguồn | 1 phim (cắt cảnh dựng review) | 1 video nước ngoài (giữ nguyên hình ảnh gốc) |
-| Nhánh AI | ASR + Vision + LLM viết kịch bản | ASR ‖ OCR song song + LLM dịch |
+| Nhánh AI | ASR + Vision + LLM viết kịch bản | ASR + LLM dịch |
 | Đồng bộ | Align giọng ↔ cảnh (pack scene theo D) | Forced align dub ↔ slot timestamp gốc |
 | Văn phong | tone tự do từ user | 1 trong 13 StylePreset cố định |
-| Che/b đè chữ | Không | Mask hardsub (blur/fill/inpaint) + burn-in sub mới |
-| TimelineClip | Có (ghép cảnh) | Không (render theo cue + OcrRegion) |
+| Che/b đè chữ | Không | Burn-in sub mới |
+| TimelineClip | Có (ghép cảnh) | Không (render theo cue) |
 | Độ dài đầu ra | 20–30 phút | Bằng đúng duration video gốc |
 
 ---
@@ -276,9 +328,76 @@ method theo `params.maskMethod`:
 | --- | --- |
 | TTS nằm trong align (SUMMARY) | lấy `duration` làm chuẩn đồng bộ |
 | Scene được trim/speed thay vì ghép thừa | giữ giọng tự nhiên, không vỡ nhịp |
-| STT & OCR chạy 2 job song song | độc lập dữ liệu → giảm latency tổng |
-| OCR merge box theo IoU theo thời gian | bbox từng frame nhiễu; region timeline ổn định cho mask & burn-in |
+| Burn-in sub mới thay vì mask hardsub | Đơn giản hóa pipeline, giảm thời gian render, không cần OCR |
 | Bản dịch gom theo context window | dịch trọn mạch câu, tránh lệch ngữ cảnh giữa các segment |
 | TTS + forced align tách khỏi translate | retry TTS không phải dịch lại; invariant đo được (< 5%) |
 | Rút gọn câu trước khi tăng tốc quá mức | atempo giới hạn [0.9–1.15], giọng dub tự nhiên |
-| `fill` màu nền là mặc định thay `blur` | blur để lại vệt chữ lem; inpaint đẹp nhưng đắt GPU |
+
+---
+
+# E. Retry Policy & Stage State Machine
+
+## E.1. Stage State Machine (Áp dụng cho cả hai mode)
+
+Mỗi Stage trong MediaJob đi qua các trạng thái:
+
+```
+PENDING → PROCESSING → COMPLETED
+                 ↓
+               FAILED (→ retry nếu còn lượt)
+                 ↓
+               STALE (khi dependency upstream thay đổi)
+```
+
+| Trạng thái | Ý nghĩa |
+| --- | --- |
+| `PENDING` | Chưa bắt đầu, chờ dependency hoặc queue |
+| `PROCESSING` | Đang chạy (provider call, FFmpeg, v.v.) |
+| `COMPLETED` | Thành công, output đã lưu DB |
+| `FAILED` | Lỗi — có thể retry nếu chưa vượt max retry |
+| `STALE` | Đã completed nhưng dependency upstream thay đổi → cần rerun |
+| `SKIPPED` | Bỏ qua (vd: user tắt dubbing → Stage TTS được skip) |
+
+**Quy tắc STALE**: Khi user thay đổi `sourceLanguage` sau khi STT đã COMPLETED → Stage STT được rerun;
+các Stage `TRANSLATE`/`TTS` (nếu đã COMPLETED trước đó) → chuyển `STALE`, yêu cầu rerun.
+
+## E.2. Retry Policy
+
+| Stage Group | Max Retry | Delay | Retryable Errors |
+| --- | --- | --- | --- |
+| `EXTRACT_AUDIO` | 3 | 5s, 15s, 30s | Timeout, 5xx, network error |
+| `STT` | 3 | 10s, 30s, 60s | Timeout, 429 (rate limit), 5xx |
+| `TRANSLATE` | 3 | 5s, 15s, 30s | Timeout, 429, 5xx, invalid JSON |
+| `SUMMARIZE` | 3 | 5s, 15s, 30s | Timeout, 429, 5xx, business rule violation |
+| `TTS` | 3 | 10s, 30s, 60s | Timeout, voice not found, 5xx |
+| `RENDER` | 2 | 30s, 120s | FFmpeg crash, disk full, timeout |
+
+**Non-retryable errors** (FAILED ngay, không retry):
+- `PROVIDER_AUTH_FAILED`: API key sai/hết hạn → user cần cập nhật key
+- `PROVIDER_QUOTA_EXCEEDED`: Hết quota provider → user cần upgrade plan
+- `INPUT_INVALID`: File video corrupt, codec không hỗ trợ
+- `BUSINESS_RULE_VIOLATION`: Dịch quá dài/ngắn so với slot (không phải lỗi provider)
+
+**Exponential backoff**: Delay tăng theo `baseDelay * 2^attempt`, max `baseDelay * 8`.
+
+## E.3. Idempotent Callback
+
+- Worker gửi callback về backend PHẢI chứa `(jobId, stage, status, outputRef)` + timestamp.
+- Backend kiểm tra: nếu `(jobId, stage)` đã ở trạng thái `COMPLETED` với `outputRef` trùng khớp →
+  ACK lại ngay, không xử lý lại (idempotent).
+- Nếu `outputRef` khác → coi như rerun mới, xử lý bình thường.
+
+## E.4. Cancellation (Graceful)
+
+- User gửi `CANCEL_REQUESTED` → MediaJob chuyển `CANCEL_REQUESTED`.
+- Nếu Stage hiện tại đang `PROCESSING` → đợi provider hoàn tất (hoặc timeout 60s) rồi chuyển `CANCELLED`.
+- Nếu Stage `PENDING` → chuyển `CANCELLED` ngay lập tức.
+- **Không thể cancel Stage đang FFmpeg render** (đã beyond MVP; tương lai: FFmpeg process group + SIGTERM).
+
+## E.5. Partial Success (Summary Pipeline)
+
+- **Stage SUMMARY (Summarize)** có thể sinh 3 proposal, mỗi proposal có số lượng beat khác nhau.
+- Nếu proposal A có 5 beat, proposal B có 8 beat, proposal C có 3 beat → tất cả đều được hiển thị
+  cho user chọn, bất kể số lượng (không có partial failure trong SUMMARY stage).
+- **Stage TTS (ở SUMMARY mode)**: Nếu một số segment TTS thành công, một số lỗi →
+  MediaJob `FAILED` toàn bộ (MVP). Tương lai: partial TTS audio + error reporting.

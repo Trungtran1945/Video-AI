@@ -84,25 +84,22 @@ Phim (2–3h)
 ### 3.2. Mode `TRANSLATE_DUB` (Dịch thuật & Lồng tiếng)
 
 ```
-Video nước ngoài (hardsub, ≤ 2GB)
+Video nước ngoài
    │
    ▼  [ingest]        resumable upload → demux (audio/video) → normalize LUFS
-   ├──▶ [stt]         ASR → transcript(timestamp, speaker)      ┐ SONG SONG
-   └──▶ [ocr]         frame sampling 1–2fps → OCR → OcrRegion[] ┘ (hardsub bbox)
+   ▼  [stt]           ASR → transcript(timestamp, speaker)
+   ▼  [merge]         Kiểm tra barrier: transcript + translation + duration + language
    ▼  [translate]     LLM + StylePreset(13 phong cách) → bản dịch khớp context window
    ▼  [ttsAlign?]     TTS + Forced Alignment khớp slot gốc (tuỳ chọn enableDubbing)
-    ▼  [composite]     Xác định vị trí phụ đề mới (ưu tiên trùng khớp hoặc nằm ngay TRÊN
-                       vùng đã mask — safe zone; user chọn "Giữ nguyên" / "Top" / "Bottom" / "Custom")
-                       → mask hardsub (blur/fill/inpaint, dùng maskStrength) → burn-in sub mới
-                       → audio mix (dub voice + nền) → mux MP4/MKV (NVENC)
-    ▼  [upload?]       YouTube
+   ▼  [render]        Burn-in sub mới → audio mix (dub voice + nền) → mux MP4/MKV (NVENC)
+   ▼  [upload?]       YouTube
 ```
 
 **Khác biệt cốt lõi:**
 - `SUMMARY` cắt từ **1 video nguồn duy nhất** (phim) và phải đồng bộ giọng ↔ cảnh (stage `align`);
   đầu ra là **video mới dựng** từ các cảnh trích.
-- `TRANSLATE_DUB` **giữ nguyên hình ảnh gốc**, chỉ thay lớp ngôn ngữ: phụ đề dịch đè lên vùng hardsub
-  đã che và (tuỳ chọn) giọng lồng AI ép khớp timestamp; STT & OCR chạy song song để tối ưu latency.
+- `TRANSLATE_DUB` **giữ nguyên hình ảnh gốc**, chỉ thay lớp ngôn ngữ: phụ đề dịch mới được burn-in
+  và (tuỳ chọn) giọng lồng AI ép khớp timestamp.
 
 ---
 
@@ -134,13 +131,13 @@ export interface TtsResult {
 ```
 
 Tương tự: `AIProvider` (LLM), `AsrProvider` (transcribe + word timestamps + diarization),
-`OcrProvider` (phát hiện hardsub → bounding box), `VisionProvider` (mô tả cảnh / AI inpainting).
+`VisionProvider` (mô tả cảnh / AI inpainting).
 
 **Registry + Strategy:** dùng DI container ánh xạ `providerId → implementation`. Use-case chỉ gọi
 `container.resolve('tts', settings.voiceProvider)`. Thêm provider = thêm 1 file implement + đăng ký,
 **không sửa** business logic.
 
-> ⚠️ Mọi cuộc gọi qua provider thật (LLM/ASR/TTS/OCR/Vision) đều đi qua lớp `RateLimiter` +
+> ⚠️ Mọi cuộc gọi qua provider thật (LLM/ASR/TTS/Vision) đều đi qua lớp `RateLimiter` +
 > `ProviderCache` trước khi chạm mạng, đặc biệt quan trọng khi user dùng **API key miễn phí**
 > (RPM/RPD thấp). Xem chi tiết cơ chế throttle, cache, đa key round-robin và provider `mock` cho
 > dev/CI tại `11_RATE_LIMIT_VA_FREE_TIER.md`.
@@ -169,22 +166,21 @@ API ──enqueue──▶ Redis/BullMQ ──▶ Worker (per stage)
 | `summary.render` | media | 2 |
 | `dub.ingest` | media (demux + LUFS) | 2 |
 | `dub.stt` | asr (+ diarization) | 3 |
-| `dub.ocr` | ocr (frame sampling) | 3 |
 | `dub.merge` | api (barrier, không gọi provider) | 1 |
 | `dub.translate` | llm + StylePreset | 3 |
 | `dub.ttsAlign` | tts + ForcedAlignService | 3 |
-| `dub.render` | media (mask/burn-in/mix/mux) | 2 |
+| `dub.render` | media (burn-in/mix/mux) | 2 |
 | `output.uploadYoutube` | api | 2 |
 
 > Riêng các job gọi provider bên ngoài (`summary.analyze`, `summary.script`, `summary.tts`,
-> `dub.stt`, `dub.ocr`, `dub.translate`, `dub.ttsAlign`), khi provider trả `429`/hết quota, job
+> `dub.stt`, `dub.translate`, `dub.ttsAlign`), khi provider trả `429`/hết quota, job
 > chuyển `RETRY` với `nextRetryAt` theo lịch reset của provider (không phải backoff cố định như
 > bảng trên) — xem `11_RATE_LIMIT_VA_FREE_TIER.md` §4.2.
 
 Mỗi job **idempotent**: key theo `(projectId, stage)`. Thất bại → tự động retry; hết retry → đánh dấu
 `GenerationJob.status = FAILED` và thông báo user.
 
-### 5.1. Cơ chế barrier `dub.stt` ‖ `dub.ocr` → `dub.translate`
+### 5.1. Cơ chế barrier `dub.stt` → `dub.merge` → `dub.translate`
 
 BullMQ không có "chờ 2 job cha" built-in một cách an toàn nếu chỉ dùng `Promise.all` phía API (rủi ro
 mất trạng thái nếu API restart giữa chừng). Thiết kế dùng **BullMQ Flow Producer**:
@@ -195,16 +191,15 @@ FlowProducer.add({
   queue: 'dub',
   children: [
     { name: 'dub.stt', queue: 'dub', data: { projectId } },
-    { name: 'dub.ocr', queue: 'dub', data: { projectId } },
   ],
 });
 ```
 
-- `dub.merge` là job cha, chỉ chạy khi **cả hai** job con `dub.stt` và `dub.ocr` hoàn tất thành công
+- `dub.merge` là job cha, chỉ chạy khi job con `dub.stt` hoàn tất thành công
   (BullMQ tự động chờ, lưu trạng thái trong Redis — sống sót qua restart API).
-- `dub.merge` không gọi provider, chỉ kiểm tra `TranscriptSegment[]` và `OcrRegion[]` đã có trong DB
+- `dub.merge` không gọi provider, chỉ kiểm tra `TranscriptSegment[]` đã có trong DB
   rồi enqueue tiếp `dub.translate`.
-- Nếu 1 trong 2 job con `FAILED` sau hết retry, `dub.merge` không chạy → `Project.status = FAILED`,
+- Nếu job con `FAILED` sau hết retry, `dub.merge` không chạy → `Project.status = FAILED`,
   hiển thị đúng job nào lỗi để user retry thủ công (`POST /projects/:id/jobs/:type/retry`).
 
 ### 5.2. Huỷ (Cancel) và thông báo hoàn thành
@@ -260,7 +255,7 @@ sequenceDiagram
   participant W as Web
   participant A as API
   participant Q as Queue
-  participant P as Providers (ASR/OCR/LLM/TTS)
+  participant P as Providers (ASR/LLM/TTS)
   participant C as Core(ForcedAlign)
   participant M as Media(ffmpeg)
   participant D as DB
@@ -268,10 +263,10 @@ sequenceDiagram
   U->>W: Upload video resumable + chọn preset/dubbing
   W->>A: POST /projects + start TRANSLATE_DUB
   A->>D: Tạo Project(mode=TRANSLATE_DUB)
-  A->>Q: FlowProducer: dub.merge cha ← [dub.stt, dub.ocr] con (song song)
-  Q->>P: ASR(audio LUFS) ; OCR(frames 1–2fps)
-  P-->>D: TranscriptSegment[] ; OcrRegion[]
-  Q->>Q: dub.merge chạy khi cả 2 con SUCCESS
+  A->>Q: FlowProducer: dub.merge cha ← [dub.stt] con
+  Q->>P: ASR(audio LUFS)
+  P-->>D: TranscriptSegment[]
+  Q->>Q: dub.merge chạy khi con SUCCESS
   A->>Q: enqueue dub.translate
   Q->>P: LLM dịch theo StylePreset (context window)
   P-->>D: translation gắn vào transcript
@@ -281,7 +276,7 @@ sequenceDiagram
     C-->>D: Audio dub + startAtSec
   end
   A->>Q: enqueue dub.render
-  Q->>M: mask OcrRegion → burn-in sub → mix → mux (NVENC)
+  Q->>M: burn-in sub → mix → mux (NVENC)
   M-->>D: Output(video đã Việt hoá)
   A--)W: SSE progress realtime từng stage
 ```
@@ -296,16 +291,81 @@ Mọi asset (phim nguồn, scene, audio, video, subtitle, output) lưu qua abstr
 
 ---
 
+## 8. Error Handling Pattern (Bổ sung)
+
+### 8.1. Retry Policy per Stage Group
+
+| Stage Group | Max Retry | Delay | Retryable Errors |
+| --- | --- | --- | --- |
+| `EXTRACT_AUDIO` | 3 | 5s, 15s, 30s | Timeout, 5xx, network error |
+| `STT` | 3 | 10s, 30s, 60s | Timeout, 429 (rate limit), 5xx |
+| `TRANSLATE` | 3 | 5s, 15s, 30s | Timeout, 429, 5xx, invalid JSON |
+| `SUMMARIZE` | 3 | 5s, 15s, 30s | Timeout, 429, 5xx, business rule violation |
+| `TTS` | 3 | 10s, 30s, 60s | Timeout, voice not found, 5xx |
+| `RENDER` | 2 | 30s, 120s | FFmpeg crash, disk full, timeout |
+
+**Non-retryable errors** (FAILED ngay, không retry):
+- `PROVIDER_AUTH_FAILED`: API key sai/hết hạn → user cần cập nhật key
+- `PROVIDER_QUOTA_EXCEEDED`: Hết quota provider → user cần upgrade plan
+- `INPUT_INVALID`: File video corrupt, codec không hỗ trợ
+- `BUSINESS_RULE_VIOLATION`: Dịch quá dài/ngắn so với slot (không phải lỗi provider)
+
+**Exponential backoff**: Delay tăng theo `baseDelay * 2^attempt`, max `baseDelay * 8`.
+
+### 8.2. Idempotent Callback
+
+- Worker gửi callback về backend PHẢI chứa `(jobId, stage, status, outputRef)` + timestamp.
+- Backend kiểm tra: nếu `(jobId, stage)` đã ở trạng thái `COMPLETED` với `outputRef` trùng khớp →
+  ACK lại ngay, không xử lý lại (idempotent).
+- Nếu `outputRef` khác → coi như rerun mới, xử lý bình thường.
+
+### 8.3. SSE vs Polling Choice
+
+| Phương án | Ưu điểm | Nhược điểm | Khi nào dùng |
+| --- | --- | --- | --- |
+| **SSE (Server-Sent Events)** | Real-time, server push, đơn giản | Kết nối 1 chiều, không retry tự động | UI dashboard hiển thị progress pipeline |
+| **Polling** | Đơn giản, fault-tolerant | Delay, lãng phí bandwidth | Fallback khi SSE không khả dụng |
+| **WebSocket** | Full-duplex, bidirectional | Phức tạp hơn, cần quản lý connection | Chat, collaborative editing (tương lai) |
+
+**Quyết định**: Dùng **SSE** cho progress pipeline (vì chỉ cần server push 1 chiều).
+Khi SSE mất kết nối → frontend tự poll lại `/projects/:id/status` sau 5s.
+
+### 8.4. Stage State Machine
+
+Mỗi Stage trong MediaJob đi qua các trạng thái:
+
+```
+PENDING → PROCESSING → COMPLETED
+                 ↓
+               FAILED (→ retry nếu còn lượt)
+                 ↓
+               STALE (khi dependency upstream thay đổi)
+```
+
+| Trạng thái | Ý nghĩa |
+| --- | --- |
+| `PENDING` | Chưa bắt đầu, chờ dependency hoặc queue |
+| `PROCESSING` | Đang chạy (provider call, FFmpeg, v.v.) |
+| `COMPLETED` | Thành công, output đã lưu DB |
+| `FAILED` | Lỗi — có thể retry nếu chưa vượt max retry |
+| `STALE` | Đã completed nhưng dependency upstream thay đổi → cần rerun |
+| `SKIPPED` | Bỏ qua (vd: user tắt dubbing → Stage TTS được skip) |
+| `CANCEL_REQUESTED` | User yêu cầu huỷ — đang chờ graceful shutdown |
+| `CANCELLED` | Đã huỷ hoàn toàn |
+
+**Quy tắc STALE**: Khi user thay đổi `sourceLanguage` sau khi STT đã COMPLETED → Stage STT được rerun;
+các Stage `TRANSLATE`/`TTS` (nếu đã COMPLETED trước đó) → chuyển `STALE`, yêu cầu rerun. |
+
+
+---
+
 ## 8. Quyết định thiết kế (Design Decisions)
 
 | Quyết định | Lý do |
 | --- | --- |
 | Tách `script` và `scene selection` nhưng gộp ở `align` | Đảm bảo giọng ↔ cảnh đồng bộ từ **cùng một biên thời gian** |
 | TTS trả `durationSec` chính xác | Làm Input cho `align`, tránh đoán thời lượng |
-| STT & OCR tách 2 job chạy song song | Độc lập dữ liệu → giảm latency tổng của TRANSLATE_DUB |
-| OCR trả region timeline (không phải bbox rời) | Mask & burn-in cần vùng ổn định theo `[startSec, endSec]` |
-| OcrRegion lưu `ratioX/Y/W/H` (0–1) + `maskStrength` + `isStatic` | Scale-invariant (không lệch giữa nguồn 4K và xuất 1080p); `maskStrength` 1 tham số cho thanh kéo "độ mờ"; `isStatic` gộp hardsub tĩnh thành 1 record |
-| Vị trí sub mới ưu tiên trùng/nằm trên vùng mask | Phụ đề dịch đè đúng chỗ hardsub gốc, thẩm mỹ & dễ đọc |
+| Burn-in sub mới thay vì mask hardsub | Đơn giản hóa pipeline, giảm thời gian render, không cần OCR |
 | StylePreset lưu DB (không hardcode) | Thêm/sửa phong cách dịch không phải deploy lại code |
 | Job idempotent + DB mirror | Quan sát & tiếp tục từ stage lỗi |
 | Monorepo pnpm | Chia sẻ type/Zod giữa web & api, build nhất quán |
@@ -313,3 +373,7 @@ Mọi asset (phim nguồn, scene, audio, video, subtitle, output) lưu qua abstr
 | Job huỷ được (cancel) | Tránh lãng phí tài nguyên GPU/CPU khi user đổi ý giữa pipeline dài |
 | Thông báo qua email/push, không chỉ SSE | Pipeline SUMMARY có thể chạy 20–30 phút, user không nhất thiết giữ tab mở |
 | Rate Limiter + Cache bọc mọi provider thật | Free-tier API key (Gemini/OpenAI/ElevenLabs...) có RPM/RPD rất thấp; không throttle chủ động sẽ vỡ pipeline liên tục khi test nhiều lần (`11`) |
+| SSE thay vì WebSocket cho progress | Pipeline chỉ cần server push 1 chiều; SSE đơn giản hơn, không cần quản lý connection state |
+| Idempotent callback từ Worker | Tránh xử lý lại khi worker gửi duplicate callback (do network timeout) |
+| Graceful cancellation | Stage `PENDING` → `CANCELLED` ngay; Stage `PROCESSING` → đợi provider hoặc timeout 60s |
+| Media Consent versioned | Khi Terms version thay đổi → cần re-consent; asset cũ vẫn dùng được cho Jobs đang chạy |
