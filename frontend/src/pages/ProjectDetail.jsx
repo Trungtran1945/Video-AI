@@ -3,11 +3,10 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { projectsApi } from '@/api/projects';
 import Layout from '@/components/Layout';
 import Loading from '@/components/Loading';
-import SubRegionEditor from '@/components/SubRegionEditor';
 import { VideoTimeline } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, ScanText, Languages, AudioLines, XCircle, Clock } from 'lucide-react';
-import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, MASK_METHODS, SOURCE_LANGUAGES, TARGET_LANGUAGES } from '@/lib/constants';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock } from 'lucide-react';
+import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES } from '@/lib/constants';
 import { useJobEvents } from '@/hooks/useJobEvents';
 import {
   AlertDialog,
@@ -39,18 +38,6 @@ const stageIcons = {
 
 const SUMMARY_STAGES = ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'];
 
-// Helpers cho tọa độ tỷ lệ (ratio) của vùng che (docs/02 §2, docs/04 §4.1).
-function round1(v) {
-  return Math.round(Number(v) * 10) / 10
-}
-function round3(v) {
-  return Math.round(Number(v) * 1000) / 1000
-}
-function clamp01(v) {
-  const n = Number(v)
-  if (!Number.isFinite(n)) return 0
-  return Math.min(1, Math.max(0, n))
-}
 const DUB_STAGES_ALL = ['dub.ingest', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
 
 const ACTIVE_STATUSES = ['pending', 'queued', 'generating', 'running'];
@@ -80,9 +67,6 @@ export default function ProjectDetail() {
   const [jobs, setJobs] = useState([]);
   const [scenes, setScenes] = useState([]);
   const [transcript, setTranscript] = useState([]);
-  const [regions, setRegions] = useState([]);
-  const [savingRegions, setSavingRegions] = useState(false);
-  const [regionError, setRegionError] = useState('');
   const [savingTranscript, setSavingTranscript] = useState(false);
   const [transcriptError, setTranscriptError] = useState('');
   const [redubbing, setRedubbing] = useState(false);
@@ -97,7 +81,6 @@ export default function ProjectDetail() {
   const [muted, setMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [globalMaskOpacity, setGlobalMaskOpacity] = useState(70);
   const [targetLanguage, setTargetLanguage] = useState('vi');
   const videoRef = useRef(null);
   const navigate = useNavigate();
@@ -219,27 +202,6 @@ export default function ProjectDetail() {
     } catch {
       /* endpoint chưa có — để trống */
     }
-    try {
-      const regs = await projectsApi.getMaskRegions(id);
-      const list = Array.isArray(regs) ? regs : regs?.regions || [];
-      setRegions(
-        list.map((r) => ({
-          id: r.id,
-          startSec: Number(r.startSec ?? r.start_sec) || 0,
-          endSec: Number(r.endSec ?? r.end_sec) || 0,
-          ratioX: Number(r.ratioX ?? r.ratio_x) || 0,
-          ratioY: Number(r.ratioY ?? r.ratio_y) || 0,
-          ratioW: Number(r.ratioW ?? r.ratio_w) || 0,
-          ratioH: Number(r.ratioH ?? r.ratio_h) || 0,
-          maskStrength: Number(r.maskStrength ?? r.mask_strength ?? 0.6),
-          isStatic: !!(r.isStatic ?? r.is_static),
-          text: r.text || '',
-          source: r.source || 'AUTO',
-        }))
-      );
-    } catch {
-      /* endpoint chưa có */
-    }
   }, [id]);
 
   // Initial load
@@ -322,41 +284,6 @@ export default function ProjectDetail() {
       setDeleting(false);
       setConfirmDelete(false);
     }
-  };
-
-  const handleSaveRegions = async () => {
-    setSavingRegions(true);
-    setRegionError('');
-    try {
-      await projectsApi.putMaskRegions(
-        id,
-        regions.map((r) => ({
-          id: String(r.id).startsWith('tmp_') ? undefined : r.id,
-          startSec: round1(r.startSec),
-          endSec: round1(r.endSec),
-          ratioX: round3(clamp01(r.ratioX)),
-          ratioY: round3(clamp01(r.ratioY)),
-          ratioW: round3(clamp01(r.ratioW)),
-          ratioH: round3(clamp01(r.ratioH)),
-          maskStrength: Math.min(1, Math.max(0, Number(r.maskStrength ?? 0.6))),
-          isStatic: !!r.isStatic,
-          source: r.source,
-        }))
-      );
-      toast({ title: 'Đã lưu vùng che chữ', description: `${regions.length} vùng sẽ được áp dụng khi render.` });
-      await loadDubData();
-    } catch (e) {
-      setRegionError('Chưa lưu được: backend chưa hỗ trợ endpoint mask-regions hoặc có lỗi — ' + (e?.response?.data?.message || e.message));
-    } finally {
-      setSavingRegions(false);
-    }
-  };
-
-  // Apply global mask opacity to all regions
-  const handleGlobalMaskOpacityChange = (value) => {
-    setGlobalMaskOpacity(value);
-    const opacity = value / 100;
-    setRegions((prev) => prev.map((r) => ({ ...r, maskStrength: opacity })));
   };
 
   const handleSaveTranscript = async (edits) => {
@@ -493,31 +420,13 @@ export default function ProjectDetail() {
             <span className="text-slate-400">{params.stylePreset ?? params.style_preset ?? '—'}</span>
             <span className="text-slate-600">|</span>
             <span className="text-slate-400">{(params.enableDubbing ?? params.enable_dubbing) ? 'Lồng tiếng' : 'Chỉ phụ đề'}</span>
-            <span className="text-slate-600">|</span>
-            <span className="text-slate-400">{MASK_METHODS[params.maskMethod ?? params.mask_method]?.label || params.maskMethod || '—'}</span>
           </div>
 
           <div className="flex-1 flex min-h-0">
-            {/* Left Panel: Video + SubRegionEditor */}
+            {/* Left Panel: Video */}
             <div className="w-[65%] flex flex-col min-h-0 border-r border-white/5">
               {outputUrl ? (
                 <div className="flex-1 flex flex-col min-h-0 p-3 gap-2">
-                  {/* Global Mask Opacity Control - above video, not overlapping */}
-                  <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 bg-[#161922] rounded-lg border border-white/5">
-                    <ScanText className="w-3.5 h-3.5 text-blue-400 shrink-0" />
-                    <span className="text-[10px] text-slate-400 shrink-0">Độ mờ vùng che:</span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={globalMaskOpacity}
-                      onChange={(e) => handleGlobalMaskOpacityChange(Number(e.target.value))}
-                      className="flex-1 h-1 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                      title={`Độ mờ vùng che: ${globalMaskOpacity}%`}
-                    />
-                    <span className="text-[10px] font-mono text-zinc-400 w-8 text-right">{globalMaskOpacity}%</span>
-                  </div>
-
                   {/* Video Container */}
                   <div className="relative flex-1 min-h-0 bg-black rounded-xl overflow-hidden group">
                     <video
@@ -561,20 +470,6 @@ export default function ProjectDetail() {
                         </motion.button>
                       )}
                     </AnimatePresence>
-                    {/* SubRegionEditor overlay */}
-                    <div className="absolute inset-0 pointer-events-none">
-                      <div className="pointer-events-auto h-full">
-                        <SubRegionEditor
-                          videoUrl={outputUrl}
-                          regions={regions}
-                          onChange={setRegions}
-                          onSave={handleSaveRegions}
-                          saving={savingRegions}
-                          saveError={regionError}
-                          compact
-                        />
-                      </div>
-                    </div>
                   </div>
                 </div>
               ) : (
@@ -868,28 +763,6 @@ export default function ProjectDetail() {
           />
         )}
 
-        {/* TRANSLATE_DUB: editor vùng che hardsub (luôn hiển thị, có hướng dẫn khi rỗng) */}
-        {isDub && (
-          <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
-            <h3 className="text-base font-semibold text-white">Vùng che phụ đề gốc (hardsub)</h3>
-            <p className="text-xs text-slate-500 mt-1 mb-4">
-              {regions.length
-                ? 'AI tự phát hiện từ OCR — bạn chỉnh tay trước khi render để che đúng chỗ.'
-                : 'Chưa có vùng chữ nào được phát hiện. Bạn có thể khoanh thủ công vùng phụ đề gốc trên video, hoặc bỏ qua nếu video không có hardsub.'}
-            </p>
-            {outputUrl && (
-              <SubRegionEditor
-                videoUrl={outputUrl}
-                regions={regions}
-                onChange={setRegions}
-                onSave={handleSaveRegions}
-                saving={savingRegions}
-                saveError={regionError}
-              />
-            )}
-          </div>
-        )}
-
         {/* Timeline preview (SUMMARY) */}
         {timeline.length > 0 && (
           <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
@@ -975,7 +848,6 @@ function InfoGrid({ project, isDub, params }) {
         ['Ngôn ngữ', `${SOURCE_LANGUAGES[params.sourceLanguage ?? params.source_language] || params.sourceLanguage || 'Tự động'} → ${TARGET_LANGUAGES[params.targetLanguage ?? params.target_language] || project.language || 'vi'}`],
         ['Phong cách dịch', params.stylePreset ?? params.style_preset ?? '—'],
         ['Lồng tiếng AI', (params.enableDubbing ?? params.enable_dubbing) ? `Bật (${VOICE_PROVIDER_LABELS[params.voiceProvider] || params.voiceProvider || 'mặc định'})` : 'Tắt'],
-        ['Che chữ gốc', MASK_METHODS[params.maskMethod ?? params.mask_method]?.label || params.maskMethod || '—'],
       ]
     : [
         ['Chế độ', MODE_LABELS[project.mode] || project.mode],
