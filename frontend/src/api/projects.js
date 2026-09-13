@@ -18,9 +18,7 @@ export const projectsApi = {
   updateTranscript: (id, segments) => api.put(`/projects/${id}/transcript`, { segments }).then((r) => r.data),
   redub: (id) => api.post(`/projects/${id}/translate-dub/redub`).then((r) => r.data),
   // Group 1: Confirm preview (FR-J2)
-  confirmPreview: (id, regions) => api.post(`/projects/${id}/translate-dub/confirm-preview`, { regions }).then((r) => r.data),
-  getMaskRegions: (id) => api.get(`/projects/${id}/mask-regions`).then((r) => r.data),
-  putMaskRegions: (id, regions) => api.put(`/projects/${id}/mask-regions`, { regions }).then((r) => r.data),
+  confirmPreview: (id) => api.post(`/projects/${id}/translate-dub/confirm-preview`).then((r) => r.data),
   stylePresets: () =>
     api
       .get('/style-presets')
