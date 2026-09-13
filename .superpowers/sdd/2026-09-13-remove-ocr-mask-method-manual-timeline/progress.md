@@ -13,10 +13,10 @@
 
 ## Task Status
 
-- Task 1: done
-- Task 2: pending
-- Task 3: pending
-- Task 4: pending
+- Task 1: complete (commits 0a09b3a..a826ca9, review clean)
+- Task 2: complete (commits a826ca9..5224ebe, fix round 1/5, review clean)
+- Task 3: complete (commits 5224ebe..e6e4ec1, review clean)
+- Task 4: complete (commit 6f604e5, review clean)
 - Task 5: pending
 - Task 6: pending
 - Task 7: pending
