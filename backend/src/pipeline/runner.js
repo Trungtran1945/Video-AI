@@ -52,13 +52,12 @@ import dubTranslate from './stages/dubTranslate.js'
 import dubTtsAlign from './stages/dubTtsAlign.js'
 import dubRender from './stages/dubRender.js'
 
-async function startDubParallel(project, setProgress, results, signal) {
+async function startDubSequential(project, setProgress, results, signal) {
   const projectId = project.id
   await ensureStageJob(projectId, 'dub.stt')
   await ensureStageJob(projectId, 'dub.merge')
 
   const sttJob = await loadJob(projectId, 'dub.stt')
-
   const sttOk = await executeStage(
     project, sttJob, {},
     (pct) => {
@@ -71,28 +70,24 @@ async function startDubParallel(project, setProgress, results, signal) {
     signal
   )
 
-  if (sttOk) {
-    const mergeJob = await loadJob(projectId, 'dub.merge')
-    const mergeOk = await executeStage(
-      project, mergeJob, {},
-      (pct) => {
-        const p = Math.max(0, Math.min(99, Math.round(pct)))
-        updateById('generation_jobs', mergeJob.id, { progress: p }).catch(() => {})
-        eventBus.publish(projectId, { stage: 'dub.merge', status: 'running', percent: p })
-      },
-      results,
-      false,
-      signal
-    )
-    return mergeOk
-  }
+  if (!sttOk) return false
 
-  return false
+  const mergeJob = await loadJob(projectId, 'dub.merge')
+  const mergeOk = await executeStage(
+    project, mergeJob, {},
+    (pct) => {
+      const p = Math.max(0, Math.min(99, Math.round(pct)))
+      updateById('generation_jobs', mergeJob.id, { progress: p }).catch(() => {})
+      eventBus.publish(projectId, { stage: 'dub.merge', status: 'running', percent: p })
+    },
+    results,
+    false,
+    signal
+  )
+  return mergeOk
 }
 
 // Stage lists mirror docs/01 §3 + docs/05 §B.
-// A nested array marks a PARALLEL GROUP: members run concurrently via Promise.all
-// (docs/05 §B.0 — dub.stt chạy trước, dub.merge kiểm tra barrier).
 export const STAGES = {
   SUMMARY: [
     'summary.transcribe',
@@ -106,7 +101,8 @@ export const STAGES = {
   ],
   TRANSLATE_DUB: [
     'dub.ingest',
-    ['dub.stt', 'dub.merge'],
+    'dub.stt',
+    'dub.merge',
     'dub.translate',
     'dub.ttsAlign',
     'dub.render',
@@ -163,8 +159,8 @@ const RESETS = {
   'summary.tts': ['subtitles', 'outputs'],
   'summary.subtitle': ['outputs'],
   'summary.render': ['outputs'],
-  // TRANSLATE_DUB (docs/02: TranscriptSegment / OcrRegion riêng cho từng mode)
-  'dub.ingest': ['transcriptSegments', 'ocrRegions', 'audios', 'subtitles', 'outputs'],
+  // TRANSLATE_DUB (docs/02: TranscriptSegment riêng cho từng mode)
+  'dub.ingest': ['transcriptSegments', 'audios', 'subtitles', 'outputs'],
   'dub.stt': ['transcriptSegments', 'audios', 'subtitles', 'outputs'],
 
   'dub.merge': [], // dub.merge chỉ kiểm tra DB, không tạo artifacts
@@ -180,9 +176,6 @@ async function clearArtifacts(projectId, kinds) {
       try { fs.unlinkSync(path.join(dir, 'transcript.json')) } catch (_) {}
     } else if (kind === 'transcriptSegments') {
       await run(`DELETE FROM transcript_segments WHERE project_id = ?`, [projectId])
-    } else if (kind === 'ocrRegions') {
-      await run(`DELETE FROM ocr_regions WHERE project_id = ? AND source != 'MANUAL'`, [projectId])
-      fs.rmSync(path.join(dir, 'frames'), { recursive: true, force: true })
     } else if (kind === 'scenes') {
       await run(`DELETE FROM scenes WHERE project_id = ?`, [projectId])
       fs.rmSync(path.join(dir, 'thumbs'), { recursive: true, force: true })
@@ -457,13 +450,12 @@ export async function runPipeline(projectId, fromStage = null) {
         isFirstExecutedStage = false
         if (!ok) groupFailed = true
       } else {
-        // Nhóm song song (docs/05 §B.0): dub.stt chạy trước, dub.merge kiểm tra barrier
-        const ok = await startDubParallel(
+        // dub.stt followed by dub.merge sequentially
+        const ok = await startDubSequential(
           currentProject,
           (pct) => {
-            // Progress chung cho nhóm
             const p = Math.max(0, Math.min(99, Math.round(pct)))
-            eventBus.publish(projectId, { stage: '__parallel__', status: 'running', percent: p })
+            eventBus.publish(projectId, { stage: '__sequential__', status: 'running', percent: p })
           },
           results,
           signal
