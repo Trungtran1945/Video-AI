@@ -111,11 +111,40 @@ user chọn (xem `01` §3.2) + font/outline:
 `-vf "ass=subs.ass"` — giữ nguyên timing `[startSec, endSec]` của TranscriptSegment.
 
 ### 2.15. mixDubAudio & muxStream (TRANSLATE_DUB)
+
+- **Audio dub timing handling** (xem `05_THIET_KE_PIPELINE_CHI_TIET.md` §B.5 chi tiết):
+  - **Timing lệch lớn (>20%)**: MediaJob → `FAILED`, thông báo user cần rerun.
+  - **Timing lệch nhỏ (5-20%)**: time-stretch audio dub ±20% cho khớp slot (atempo 0.8–1.2).
+  - **Timing khớp (±20%)**: giữ nguyên audio dub thực tế.
+  - `tts_audio_ref` là source of truth cho audio đã dub (KHÔNG dùng `dub_track_asset_id`).
 - Dubbing bật: thay voice gốc bằng dub track; nếu có background stem (nhạc/tiếng động môi trường)
   thì `amix` với ducking −12dB, kết thúc bằng `loudnorm`.
 - Dubbing tắt: copy audio gốc (`-c:a copy`).
 - Mux cuối: `-c:v h264_nvenc -preset p4` nếu có GPU NVIDIA (tăng tốc phần cứng), fallback
   `libx264 -preset medium`; container MP4 hoặc MKV theo tuỳ chọn.
+
+### 2.16. Subtitle presentation options (TRANSLATE_DUB)
+
+User chọn trước render, lưu trong `Project.params`:
+
+| Option | Giá trị mặc định | Mô tả |
+| --- | --- | --- |
+| `target_font` | `Arial` | Font-family từ danh sách có sẵn |
+| `target_font_size` | `22` | Font size (16–48px) |
+| `target_opacity` | `1.0` | Đopacity (0.5–1.0) |
+| `target_color` | `#FFFFFF` | Font color hex |
+| `subtitle_position` | `BOTTOM` | Vị trí phụ đề (`TOP`/`MIDDLE`/`BOTTOM`/`CUSTOM`) |
+| `hard_sub_enabled` | `true` | Burn subtitle vào video (mặc định cho TRANSLATE_ONLY) |
+
+### 2.17. Render validation
+
+Sau khi render xong, kiểm tra output:
+
+1. **FFmpeg probe**: Kiểm tra file không bị corrupt (có video/audio stream đầy đủ).
+2. **Duration check**: Output duration ±2s so với duration gốc.
+3. **Resolution check**: Output resolution khớp config (1080p mặc định).
+4. **Audio check**: Audio stream tồn tại, sample rate ≥ 44100Hz.
+5. Nếu render fail → retry 1 lần (FFmpeg có thể do transient), sau đó `FAILED`.
 
 ---
 

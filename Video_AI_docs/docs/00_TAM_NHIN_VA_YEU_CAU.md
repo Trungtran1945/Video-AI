@@ -29,13 +29,18 @@ Hệ thống phục vụ hai nhóm use-case:
 ### 2.1. Trong phạm vi
 
 - Hai mode: `SUMMARY` (review phim) và `TRANSLATE_DUB` (dịch thuật & lồng tiếng).
-- Upload phim (SUMMARY) / video cần Việt hoá ≤ 2GB (TRANSLATE_DUB) qua dashboard,
-  dùng **resumable upload** (chunk 5–10MB, kiểu TUS) chống rớt mạng.
+- Upload phim (SUMMARY) / video cần Việt hoá ≤ 500MB (TRANSLATE_DUB) qua dashboard,
+  dùng **resumable upload** (chunk 5–10MB, kiểu TUS) chống rớt mạng. **Hạn chế dung lượng**:
+  file vượt quá 500MB bị reject ngay từ API, không enqueue vào queue để tránh lãng phí tài nguyên worker.
+- **Media Consent versioned**: User phải consent Terms mới nhất TRƯỚC khi tạo MediaJob.
+  Nếu Terms version thay đổi → cần re-consent. Asset cũ đã consent vẫn dùng được cho Jobs đang chạy.
 - Pipeline AI tự động: SUMMARY — transcribe, scene-detect, script review, align, TTS, subtitle,
   render; TRANSLATE_DUB — STT & OCR hardsub **song song**, dịch LLM theo 13 phong cách,
   TTS + forced alignment (tuỳ chọn), masking/inpainting, burn-in, audio mix, mux.
 - Dashboard theo dõi tiến trình **real-time qua SSE**, xem kết quả, quản lý provider/API key.
 - Trình chỉnh vùng che chữ (khoanh vùng hardsub) trực tiếp trên trình duyệt (Canvas API).
+- **QA model 3 chiều** cho subtitle quality: Severity (BLOCKING/NON_BLOCKING) +
+  Blocking Actions (BLOCK_RENDER/BLOCK_EXPORT/BLOCK_TM_WRITEBACK) + Override Policy.
 - Xuất video và (tuỳ chọn) đẩy YouTube.
 
 ### 2.2. Ngoài phạm vi (MVP)
@@ -100,10 +105,11 @@ Hệ thống phục vụ hai nhóm use-case:
 
 | Mã | Chức năng |
 | --- | --- |
-| FR-J1 | User có thể **huỷ (cancel)** một project đang chạy pipeline ở bất kỳ stage nào; job đang xử lý bị dừng an toàn, tài nguyên tạm được dọn |
+| FR-J1 | User có thể **huỷ (cancel)** một project đang chạy pipeline ở bất kỳ stage nào; job đang xử lý được dừng an toàn với **graceful cancellation**: Stage `PENDING` → chuyển `CANCELLED` ngay; Stage `PROCESSING` → đợi provider hoàn tất hoặc timeout 60s rồi chuyển `CANCELLED`. Stage đang FFmpeg render chưa hỗ trợ cancel (tương lai: FFmpeg process group + SIGTERM). |
 | FR-J2 | User có thể **xem trước (preview)** kết quả trung gian trước khi render cuối: script/scene (SUMMARY), transcript đã dịch + mask preview (TRANSLATE_DUB) — tránh lãng phí thời gian render nếu sai từ đầu |
 | FR-J3 | Hệ thống gửi **thông báo hoàn thành/thất bại** qua email hoặc push khi pipeline dài (>10 phút) kết thúc, không bắt buộc user phải giữ tab mở |
 | FR-J4 | Hệ thống tự động **dọn dẹp file trung gian** (audio tách, frame OCR, mezzanine) sau khi project hoàn thành hoặc quá hạn lưu trữ (retention policy, mặc định 30 ngày cho file nguồn) |
+| FR-J5 | **Partial success handling (TTS)**: MVP — nếu bất kỳ segment nào bị lỗi TTS, toàn bộ MediaJob → `FAILED` và yêu cầu user chỉnh lại voice hoặc rerun. Tương lai: cho phép lưu audio cho các segment thành công, ghi nhận segment lỗi để rerun đúng đoạn; MediaJob giữ `PROCESSING` (không `FAILED` toàn bộ). |
 
 ---
 

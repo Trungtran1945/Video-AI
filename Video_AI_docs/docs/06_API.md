@@ -115,6 +115,22 @@ Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 | GET | `/style-presets` | danh mục 13 phong cách dịch (slug, name, description) |
 | GET | `/projects/:id/jobs` | trạng thái từng stage (`GenerationJob`) |
 | POST | `/projects/:id/jobs/:type/retry` | retry thủ công 1 stage |
+| GET | `/projects/:id/media-stages` | trạng thái từng stage của MediaJob (`MediaJobStage[]`) |
+| POST | `/projects/:id/media-stages/:stage/retry` | retry thủ công 1 stage cụ thể |
+
+---
+
+## 3.1. Media Consent (TRANSLATE_DUB)
+
+| Method | Path | Mô tả |
+| --- | --- | --- |
+| GET | `/projects/:id/media-consent` | kiểm tra consent status (đã consent chưa? Terms version?) |
+| POST | `/projects/:id/media-consent` | `{ termsVersion }` → consent Terms mới nhất; nếu Terms version thay đổi → cần re-consent trước khi tạo MediaJob |
+
+**Quy tắc**:
+- User PHẢI consent Terms mới nhất TRƯỚC khi tạo MediaJob.
+- Nếu Terms version thay đổi → asset cũ đã consent vẫn dùng được cho Jobs đang chạy.
+- `termsVersion` lấy từ hệ thống (admin config), không phải user tự nhập.
 
 ---
 
@@ -202,6 +218,12 @@ Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 | `LIMIT_001` | user đã đạt giới hạn số project chạy đồng thời (`MAX_CONCURRENT_PROJECTS_PER_USER`); project được tạo với status `QUEUED` |
 | `COPYRIGHT_001` | thiếu xác nhận `copyrightAcknowledged` khi tạo project |
 | `PROV_002` | tất cả API key của provider đã cạn quota (429/quota-exceeded); job chuyển `RETRY` với lịch chờ, xem `11` §4.2 |
+| `MEDIA_001` | file upload vượt quá dung lượng cho phép (500MB mặc định) |
+| `MEDIA_002` | chưa consent Terms mới nhất trước khi tạo MediaJob |
+| `MEDIA_003` | MediaJob stage thất bại (xem `error` trong `MediaJobStage`) |
+| `MEDIA_004` | TTS voice chưa cấu hình khi enableDubbing = true |
+| `MEDIA_005` | Dịch quá dài/short so với slot (>20% lệch) — BUSINESS_RULE_VIOLATION |
+| `MEDIA_006` | Audio dub source of truth không đồng bộ (`tts_audio_ref` vs `dub_track_asset_id`) — cần refresh/re-process |
 
 ---
 

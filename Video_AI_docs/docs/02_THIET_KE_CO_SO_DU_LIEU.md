@@ -13,16 +13,19 @@ Hệ thống dùng **Prisma ORM**. MVP: **SQLite**; production: **PostgreSQL** (
 
 ```
 User 1──* Project 1──* Asset
-                  │
-                  ├──* GenerationJob
-                  ├──* Scene             (SUMMARY)
-                  ├──* ScriptSegment     (SUMMARY)
-                  ├──* TimelineClip      (SUMMARY)
-                  ├──* TranscriptSegment (TRANSLATE_DUB)
-                  ├──* OcrRegion         (TRANSLATE_DUB)
-                  ├──* Audio
-                  ├──* Subtitle
-                  └──* Output 1──* YouTubeUpload
+                   │
+                   ├──* GenerationJob
+                   ├──* MediaConsent        (versioned, theo Terms)
+                   ├──* MediaJob
+                   │     └──* MediaJobStage (tracking từng stage)
+                   ├──* Scene             (SUMMARY)
+                   ├──* ScriptSegment     (SUMMARY)
+                   ├──* TimelineClip      (SUMMARY)
+                   ├──* TranscriptSegment (TRANSLATE_DUB)
+                   ├──* OcrRegion         (TRANSLATE_DUB)
+                   ├──* Audio
+                   ├──* Subtitle
+                   └──* Output 1──* YouTubeUpload
 
 User 1──* ApiKey
 User 1──1 Settings
@@ -219,9 +222,12 @@ model TranscriptSegment {  // TRANSLATE_DUB: 1 câu/đoạn thoại do STT nhậ
   language    String?  // ngôn ngữ nguồn (auto-detect)
   translation String?  // bản dịch đích (stage translate điền)
   ttsAudioId  String?  // audio dub đã ép khớp slot (nếu enableDubbing)
+  ttsAudioRef String?  // SOURCE OF TRUTH cho audio đã dub (ưu tiên hơn ttsAudioId)
   subtitleId  String?
   isTimeManuallyAdjusted Boolean @default(false) // Đánh dấu nếu user tự sửa start/end
   wpmWarning       Boolean @default(false)       // Cảnh báo tốc độ đọc quá nhanh
+  startMs     Int?     // milliseconds — dùng cho forced alignment chi tiết
+  endMs       Int?     // milliseconds
   project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }
 
@@ -313,6 +319,54 @@ model ProviderLog {      // quan sát mọi cuộc gọi AI
   project    Project? @relation(fields: [projectId], references: [id])
   job        GenerationJob? @relation(fields: [jobId], references: [id])
 }
+
+// ========== MEDIA PIPELINE ENTITIES ==========
+
+model MediaConsent {
+  id           String   @id @default(uuid())
+  projectId    String
+  userId       String
+  termsVersion String   // version của Terms of Service tại thời điểm consent
+  consentedAt  DateTime @default(now())
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+}
+
+model MediaJob {
+  id               String    @id @default(uuid())
+  projectId        String
+  sourceLanguage   String?   // ngôn ngữ nguồn (auto-detect hoặc user override)
+  targetLanguage   String    @default("vi")
+  stylePresetSlug  String    @default("bat-trend")
+  enableDubbing    Boolean   @default(false)
+  voiceId          String?   // voice ID cho TTS (nếu enableDubbing)
+  maskMethod       String    @default("fill")  // 'blur' | 'fill' | 'inpaint'
+  status           JobStatus @default(PENDING)
+  progress         Float     @default(0)  // 0.0–1.0
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  stages           MediaJobStage[]
+}
+
+model MediaJobStage {
+  id           String    @id @default(uuid())
+  mediaJobId   String
+  stage        String    // 'EXTRACT_AUDIO' | 'STT' | 'OCR' | 'TRANSLATE' | 'TTS' | 'RENDER'
+  status       String    @default("PENDING") // 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'STALE' | 'SKIPPED'
+  progress     Float     @default(0)
+  error        String?
+  outputRef    String?   // reference đến output của stage (storage key, JSON, v.v.)
+  attempts     Int       @default(0)
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  mediaJob     MediaJob  @relation(fields: [mediaJobId], references: [id], onDelete: Cascade)
+
+  @@unique([mediaJobId, stage])
+}
 ```
 
 ---
@@ -365,6 +419,11 @@ pnpm --filter @asf/database prisma db seed   # user admin mặc định, setting
 | `ProviderRateLimit` bảng riêng, không hardcode | RPM/RPD của free tier hay thay đổi theo nhà cung cấp; admin/user override được mà không deploy lại (`11` §2.1) |
 | `ProviderCache` theo `inputHash` | Test lặp lại pipeline nhiều lần (nhu cầu thực tế khi dùng free key) không tốn quota cho nội dung đã xử lý (`11` §3.2) |
 | `ProviderLog.status='rate_limited'` | Tách bạch "hết quota tạm thời" khỏi "lỗi hệ thống" trong Analytics/Admin |
+| `MediaConsent` versioned theo Terms | Khi Terms version thay đổi → cần re-consent; asset cũ vẫn dùng được cho Jobs đang chạy |
+| `MediaJob` + `MediaJobStage` tách riêng | MediaJob chứa config (language, voice, style), MediaJobStage chứa progress từng stage — tách bách để rerun stage độc lập |
+| `MediaJobStage.status` hỗ trợ `STALE` | Khi dependency upstream thay đổi → stage cần rerun, không phải FAILED |
+| `TranscriptSegment.ttsAudioRef` ưu tiên hơn `ttsAudioId` | Source of truth cho audio đã dub — `ttsAudioId` deprecated để tránh confusion |
+| `TranscriptSegment.startMs/endMs` bổ sung | Millisecond precision cho forced alignment,避免浮点数精度问题 |
 
 ---
 
