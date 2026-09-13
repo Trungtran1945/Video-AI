@@ -362,31 +362,6 @@ export async function normalizeLoudness(inFile, out, targetLufs = -16) {
   return out
 }
 
-// Chuẩn hoá 1 row ocr_regions (DB cũ pixel hoặc mới ratio) → model ratio camelCase
-// dùng chung cho API (dubData) và render (dubRender). Xem docs/02 §2, docs/07 §2.13.
-export function normalizeRegion(row) {
-  const num = (v, fb = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fb }
-  const rx = num(row.ratio_x ?? row.ratioX)
-  const ry = num(row.ratio_y ?? row.ratioY)
-  const rw = num(row.ratio_w ?? row.ratioW)
-  const rh = num(row.ratio_h ?? row.ratioH)
-  return {
-    ...row,
-    id: row.id,
-    startSec: num(row.start_sec ?? row.startSec),
-    endSec: num(row.end_sec ?? row.endSec),
-    ratioX: rx,
-    ratioY: ry,
-    ratioW: rw,
-    ratioH: rh,
-    maskStrength: num(row.mask_strength ?? row.maskStrength ?? 0.6),
-    isStatic: !!(row.is_static ?? row.isStatic),
-    source: row.source || 'AUTO',
-    text: row.text ?? null,
-    confidence: num(row.confidence ?? null),
-  }
-}
-
 // Burn-in phụ đề ASS có \pos định vị theo bbox cũ (docs/07 §2.14).
 export async function burnSubtitlesStyled(inFile, assPath, out, { timeout = 0 } = {}) {
   ensureDir(out)
