@@ -5,4 +5,4 @@ export { default as TrackSidebar } from './TrackSidebar';
 export { default as TimelineClip } from './TimelineClip';
 export { default as Playhead } from './Playhead';
 export { default as FloatingToolbar } from './FloatingToolbar';
-export * from './timelineUtils';
+export { formatTimeCode, formatRulerTime, getMagneticSnap, getHandleSnap } from './timelineUtils';

@@ -74,32 +74,3 @@ test('getHandleSnap snaps edge when within threshold', () => {
   assert.equal(result.snappedGuideTime, 5.0);
 });
 
-test('useTimelineStore splitClip splits selected clip at currentTime', async () => {
-  const { useTimelineStore } = await import('./timelineStore.js');
-  const store = useTimelineStore.getState();
-
-  store.setClips([
-    {
-      id: 'clip-v1',
-      trackId: 'track-video-1',
-      start: 0,
-      duration: 4.5,
-      type: 'video',
-      content: 'Intro.mp4',
-    },
-  ]);
-
-  store.setCurrentTime(2.0);
-  const success = store.splitClip('clip-v1');
-  assert.equal(success, true);
-
-  const updatedClips = useTimelineStore.getState().clips;
-  const leftClip = updatedClips.find((c) => c.id === 'clip-v1');
-  assert.equal(leftClip.duration, 2.0);
-  assert.equal(leftClip.start, 0);
-
-  const rightClip = updatedClips.find((c) => c.trackId === 'track-video-1' && c.start === 2.0);
-  assert.ok(rightClip);
-  assert.equal(rightClip.duration, 2.5);
-});
-

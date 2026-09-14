@@ -358,12 +358,12 @@ export default function ProjectDetail() {
   // Find active segment for timeline
   const activeSegmentId = transcript.find(s => currentTime >= s.startSec && currentTime < s.endSec)?.id || null;
 
-  // TRANSLATE_DUB: Two-panel layout
+  // TRANSLATE_DUB: Subtitle sync editor layout
   if (isDub) {
     return (
       <Layout>
         <div className="h-screen flex flex-col bg-[#0F1117]">
-          {/* Header */}
+          {/* 1. Header */}
           <div className="shrink-0 px-4 py-3 border-b border-white/5 bg-[#0B0E14]">
             <Link to="/projects" className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-white mb-2 transition">
               <ArrowLeft className="w-3 h-3" /> Quay lại dự án
@@ -378,7 +378,7 @@ export default function ProjectDetail() {
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs font-medium transition">
                   <Trash2 className="w-3.5 h-3.5" /> Xoá
                 </button>
-                {canCancel && ( // Group 1: Cancel button
+                {canCancel && (
                   <button onClick={handleCancel}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-orange-500/30 text-orange-400 hover:bg-orange-500/10 text-xs font-medium transition">
                     <XCircle className="w-3.5 h-3.5" /> Huỷ
@@ -409,22 +409,83 @@ export default function ProjectDetail() {
             )}
           </div>
 
-          {/* Compact InfoBar */}
-          <div className="shrink-0 flex items-center gap-3 px-4 py-2 bg-[#161922] border-b border-white/5 text-xs">
-            <span className="text-slate-500">{MODE_LABELS[project.mode] || project.mode}</span>
-            <span className="text-slate-600">|</span>
-            <span className="text-slate-400">
-              {SOURCE_LANGUAGES[params.sourceLanguage ?? params.source_language] || params.sourceLanguage || 'Auto'} → {TARGET_LANGUAGES[params.targetLanguage ?? params.target_language] || project.language || 'vi'}
-            </span>
-            <span className="text-slate-600">|</span>
-            <span className="text-slate-400">{params.stylePreset ?? params.style_preset ?? '—'}</span>
-            <span className="text-slate-600">|</span>
-            <span className="text-slate-400">{(params.enableDubbing ?? params.enable_dubbing) ? 'Lồng tiếng' : 'Chỉ phụ đề'}</span>
+          {/* 2. Pipeline Progress - Full width near top */}
+          <div className="shrink-0 px-4 py-2 bg-[#161922] border-b border-white/5">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-[10px] font-semibold text-white">Pipeline</span>
+                {isActive && (
+                  <span className="inline-flex items-center gap-1 text-[10px] text-blue-400">
+                    <Loader2 className="w-2.5 h-2.5 animate-spin" /> {sseAvailable ? 'SSE' : 'Polling'}
+                  </span>
+                )}
+              </div>
+              {typeof project.progress === 'number' && (
+                <div className="flex-1 max-w-xs">
+                  <div className="h-1 rounded-full bg-white/5 overflow-hidden">
+                    <motion.div
+                      className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${Math.min(100, Math.max(0, project.progress))}%` }}
+                      transition={{ duration: 0.4 }}
+                    />
+                  </div>
+                </div>
+              )}
+              <div className="flex-1 flex flex-wrap gap-1">
+                {stages.map((stageKey) => {
+                  const stage = STAGE_LABELS[stageKey];
+                  const Icon = stageIcons[stageKey] || Circle;
+                  const job = jobByStage[stageKey];
+                  const isCurrent = job?.status === 'running';
+                  const isDone = job?.status === 'success';
+                  const isError = ['failed', 'error', 'timeout'].includes(job?.status);
+                  const isRetry = job?.status === 'retry';
+                  return (
+                    <div
+                      key={stageKey}
+                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] ${
+                        isCurrent ? 'bg-blue-500/10 text-blue-400' :
+                        isDone ? 'bg-emerald-500/10 text-emerald-400' :
+                        isError ? 'bg-red-500/10 text-red-400' :
+                        isRetry ? 'bg-amber-500/10 text-amber-400' :
+                        'bg-white/5 text-slate-500'
+                      }`}
+                    >
+                      {isDone ? <CheckCircle className="w-2 h-2" /> :
+                       isError ? <AlertCircle className="w-2 h-2" /> :
+                       isRetry ? <Clock className="w-2 h-2" /> :
+                       isCurrent ? <Loader2 className="w-2 h-2 animate-spin" /> :
+                       <Icon className="w-2 h-2" />}
+                      <span className="truncate max-w-[60px]">{stage?.label || stageKey.split('.').pop()}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
+          {/* 3. Main Workspace: Transcript + Video */}
           <div className="flex-1 flex min-h-0">
-            {/* Left Panel: Video */}
-            <div className="w-[65%] flex flex-col min-h-0 border-r border-white/5">
+            {/* Left Panel: Transcript Editor (dominant) */}
+            <div className="w-[58%] flex flex-col min-h-0 border-r border-white/5">
+              <TranscriptEditor
+                transcript={transcript}
+                onSeek={handleSeek}
+                hasVideo={!!outputUrl}
+                onSave={handleSaveTranscript}
+                onRedub={handleRedub}
+                saving={savingTranscript}
+                redubbing={redubbing}
+                disabled={isActive}
+                error={transcriptError}
+                targetLanguage={targetLanguage}
+                onLanguageChange={setTargetLanguage}
+              />
+            </div>
+
+            {/* Right Panel: Video Preview */}
+            <div className="w-[42%] flex flex-col min-h-0 bg-[#161922]">
               {outputUrl ? (
                 <div className="flex-1 flex flex-col min-h-0 p-3 gap-2">
                   {/* Video Container */}
@@ -447,8 +508,8 @@ export default function ProjectDetail() {
                           onClick={handlePlayPause}
                           className="absolute inset-0 flex items-center justify-center z-10"
                         >
-                          <div className="w-16 h-16 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/10 hover:bg-white/30 transition-colors">
-                            <Play className="w-7 h-7 text-white fill-white ml-1" />
+                          <div className="w-14 h-14 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/10 hover:bg-white/30 transition-colors">
+                            <Play className="w-6 h-6 text-white fill-white ml-1" />
                           </div>
                         </motion.button>
                       )}
@@ -464,12 +525,17 @@ export default function ProjectDetail() {
                           onClick={handlePlayPause}
                           className="absolute inset-0 flex items-center justify-center z-10"
                         >
-                          <div className="w-16 h-16 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center border border-white/10">
-                            <Pause className="w-7 h-7 text-white" />
+                          <div className="w-14 h-14 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center border border-white/10">
+                            <Pause className="w-6 h-6 text-white" />
                           </div>
                         </motion.button>
                       )}
                     </AnimatePresence>
+                  </div>
+                  {/* Video Info Bar */}
+                  <div className="shrink-0 flex items-center justify-between text-[10px] text-slate-500 px-1">
+                    <span>{fmtSec(currentTime)} / {fmtSec(duration)}</span>
+                    <span>{MODE_LABELS[project.mode] || project.mode}</span>
                   </div>
                 </div>
               ) : (
@@ -478,85 +544,9 @@ export default function ProjectDetail() {
                 </div>
               )}
             </div>
-
-            {/* Right Panel: Pipeline + Transcript */}
-            <div className="w-[35%] flex flex-col min-h-0 bg-[#161922]">
-              {/* Pipeline Progress Compact */}
-              <div className="p-3 border-b border-white/5">
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-xs font-semibold text-white">Pipeline</h3>
-                  {isActive && (
-                    <span className="inline-flex items-center gap-1 text-[10px] text-blue-400">
-                      <Loader2 className="w-2.5 h-2.5 animate-spin" /> {sseAvailable ? 'SSE' : 'Polling'}
-                    </span>
-                  )}
-                </div>
-                {typeof project.progress === 'number' && (
-                  <div className="mb-2">
-                    <div className="h-1 rounded-full bg-white/5 overflow-hidden">
-                      <motion.div
-                        className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500"
-                        initial={{ width: 0 }}
-                        animate={{ width: `${Math.min(100, Math.max(0, project.progress))}%` }}
-                        transition={{ duration: 0.4 }}
-                      />
-                    </div>
-                    <div className="text-[10px] text-slate-500 mt-0.5 text-right">{project.progress}%</div>
-                  </div>
-                )}
-                <div className="flex flex-wrap gap-1">
-                  {stages.map((stageKey) => {
-                    const stage = STAGE_LABELS[stageKey];
-                    const Icon = stageIcons[stageKey] || Circle;
-                    const job = jobByStage[stageKey];
-                    const isCurrent = job?.status === 'running';
-                    const isDone = job?.status === 'success';
-                    const isError = ['failed', 'error', 'timeout'].includes(job?.status);
-                    const isRetry = job?.status === 'retry';
-                    return (
-                      <div
-                        key={stageKey}
-                        className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] ${
-                          isCurrent ? 'bg-blue-500/10 text-blue-400' :
-                          isDone ? 'bg-emerald-500/10 text-emerald-400' :
-                          isError ? 'bg-red-500/10 text-red-400' :
-                          isRetry ? 'bg-amber-500/10 text-amber-400' :
-                          'bg-white/5 text-slate-500'
-                        }`}
-                      >
-                        {isDone ? <CheckCircle className="w-2.5 h-2.5" /> :
-                         isError ? <AlertCircle className="w-2.5 h-2.5" /> :
-                         isRetry ? <Clock className="w-2.5 h-2.5" /> :
-                         isCurrent ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> :
-                         <Icon className="w-2.5 h-2.5" />}
-                        <span className="truncate max-w-[80px]">{stage?.label || stageKey.split('.').pop()}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Transcript Editor */}
-              <div className="flex-1 min-h-0 overflow-hidden">
-                <TranscriptEditor
-                  transcript={transcript}
-                  onSeek={handleSeek}
-                  hasVideo={!!outputUrl}
-                  onSave={handleSaveTranscript}
-                  onRedub={handleRedub}
-                  saving={savingTranscript}
-                  redubbing={redubbing}
-                  disabled={isActive}
-                  error={transcriptError}
-                  compact
-                  targetLanguage={targetLanguage}
-                  onLanguageChange={setTargetLanguage}
-                />
-              </div>
-            </div>
           </div>
 
-          {/* Video Editing Timeline */}
+          {/* 4. Simplified Timeline */}
           <div className="shrink-0">
             <VideoTimeline
               currentTime={currentTime}
@@ -1008,7 +998,7 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
   }
 
   return (
-    <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
+    <div className="h-full flex flex-col rounded-2xl bg-[#161922] border border-white/5 p-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <div>
           <h3 className="text-base font-semibold text-white">Lời thoại song ngữ (chỉnh sửa được)</h3>
@@ -1052,7 +1042,7 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
         </div>
       )}
 
-      <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1">
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
         {transcript.map((seg, i) => {
           const isDirty = edits[seg.id] !== undefined && edits[seg.id] !== seg.translation;
           return (
