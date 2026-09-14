@@ -191,6 +191,23 @@ export function placeSegments(segments) {
 }
 
 /**
+ * Deterministic no-overlap check on physical placement.
+ * Rejects any startAtSec < prevEndAtSec - 0.05 (tiny documented tolerance only).
+ */
+export function validateNoOverlap(timeline, toleranceSec = 0.05) {
+  const errors = []
+  const sorted = [...(timeline || [])].sort((a, b) => (a.startAtSec || 0) - (b.startAtSec || 0))
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1], cur = sorted[i]
+    if ((cur.startAtSec || 0) < (prev.endAtSec || 0) - toleranceSec - 1e-6) {
+      errors.push(`overlap: ${cur.segmentId || i} starts at ${cur.startAtSec}s before prev ends at ${prev.endAtSec}s`)
+    }
+    if ((cur.endAtSec || 0) < (cur.startAtSec || 0)) errors.push(`invalid: end<start for ${cur.segmentId || i}`)
+  }
+  return { ok: errors.length === 0, errors }
+}
+
+/**
  * Invariant check (docs/05): tổng lệch biên mỗi segment < 5% slot và
  * không có cặp nào chồng nhau quá MAX_OVERLAP.
  */
@@ -297,6 +314,7 @@ export default {
   fitSegment,
   sequenceSegments,
   placeSegments,
+  validateNoOverlap,
   validateAlignment,
   validateTimingAlignment,
   calculateRenderOffset,

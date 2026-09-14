@@ -1,5 +1,10 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { query } from '../../db/query.js'
 import { logProviderCall } from '../../providers/tracked.js'
+import { validateTranslation } from './dubTranslate.js'
+import { validateNoOverlap } from '../forcedAlignService.js'
+import { projectDir } from '../context.js'
 
 function parseParams(raw) {
   try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
@@ -48,25 +53,90 @@ export async function validateForRender(projectId) {
     })
   }
 
-  // Kiểm tra 4: Nếu enableDubbing, kiểm tra TTS audio
+  // Kiểm tra 4: timing hợp lệ + thứ tự + không overlap + không dup text
+  const sorted = [...segments].sort((a, b) => (Number(a.start_sec) || 0) - (Number(b.start_sec) || 0))
+  const badTiming = sorted.filter(s => !(Number(s.end_sec) > Number(s.start_sec)) || Number(s.start_sec) < 0)
+  if (badTiming.length > 0) {
+    errors.push({ code: 'INVALID_TIMING', message: `${badTiming.length} segment timing invalid (0<=start<end)`, segmentIds: badTiming.map(s => s.id) })
+  }
+  for (let i = 1; i < sorted.length; i++) {
+    if (Number(sorted[i].start_sec) < Number(sorted[i - 1].end_sec) - 0.05) {
+      errors.push({ code: 'OVERLAP', message: `segment ${sorted[i].id} overlap segment trước`, segmentIds: [sorted[i - 1].id, sorted[i].id] })
+      break
+    }
+  }
+  const dupText = sorted.filter((s, i) => i > 0 && String(s.text || '').trim() && String(s.text || '').trim() === String(sorted[i - 1].text || '').trim() && Math.abs(Number(s.start_sec) - Number(sorted[i - 1].end_sec)) < 1.0)
+  if (dupText.length > 0) {
+    errors.push({ code: 'DUPLICATE_SUBTITLE', message: `${dupText.length} subtitle trùng lặp liên tiếp`, segmentIds: dupText.map(s => s.id) })
+  }
+
+  // Kiểm tra 5: semantic translation gate (non-empty đã check ở #2)
   const project = await query(
     'SELECT params FROM projects WHERE id = ?',
     [projectId]
   ).then(rows => rows[0])
+  const params = parseParams(project?.params)
+  const targetLanguage = params.targetLanguage || 'vi'
+  const semanticBad = segments.filter(s => s.translation && s.translation.trim() && !validateTranslation(s.text, s.translation, targetLanguage).ok)
+  if (semanticBad.length > 0) {
+    errors.push({ code: 'SEMANTIC_MISMATCH', message: `${semanticBad.length} bản dịch fail semantic gate (số/phủ định/thực thể/ngôn ngữ)`, segmentIds: semanticBad.map(s => s.id) })
+  }
 
+  // Kiểm tra 6: Nếu enableDubbing, kiểm tra TTS audio 1:1 + file + duration + mapping
   if (project) {
-    const params = parseParams(project.params)
     if (params.enableDubbing) {
-      const noTtsAudio = segments.filter(s =>
-        s.translation && s.translation.trim() && (!s.tts_audio_id)
-      )
+      const required = segments.filter(s => s.translation && s.translation.trim())
+      const noTtsAudio = required.filter(s => !s.tts_audio_id)
       if (noTtsAudio.length > 0) {
         errors.push({
           code: 'MISSING_TTS_AUDIO',
-          message: `${noTtsAudio.length} segment chưa có TTS audio (cần chạy dub.ttsAlign)`,
+          message: `${noTtsAudio.length} segment chưa có TTS audio (cần chạy dub.ttsAlign) — BLOCK, không fallback giọng gốc`,
           segmentIds: noTtsAudio.map(s => s.id),
         })
       }
+      const seen = new Map()
+      const dupAudio = []
+      for (const s of required) {
+        if (!s.tts_audio_id) continue
+        if (seen.has(s.tts_audio_id)) dupAudio.push(s.id)
+        else seen.set(s.tts_audio_id, s.id)
+      }
+      if (dupAudio.length > 0) {
+        errors.push({ code: 'DUPLICATE_AUDIO', message: `${dupAudio.length} segment dùng chung audio (mapping 1:1 vi phạm)`, segmentIds: dupAudio })
+      }
+      // File + duration tương thích slot (best-effort, không crash khi thiếu ffprobe)
+      try {
+        const audios = await query('SELECT id, duration_sec FROM audios WHERE project_id = ?', [projectId])
+        const byId = new Map(audios.map((a) => [String(a.id), a]))
+        const badFiles = []
+        for (const s of required) {
+          if (!s.tts_audio_id) continue
+          const a = byId.get(String(s.tts_audio_id))
+          const slot = Number(s.end_sec) - Number(s.start_sec)
+          if (!a || !(Number(a.duration_sec) > 0)) { badFiles.push(s.id); continue }
+          if (Number(a.duration_sec) > slot + 0.5) { badFiles.push(s.id); continue }
+        }
+        if (badFiles.length > 0) {
+          errors.push({ code: 'INVALID_TTS_DURATION', message: `${badFiles.length} audio duration không tương thích slot`, segmentIds: badFiles })
+        }
+        // Physical file presence for ID-named wavs (warn-level → block only when dir exists but file missing)
+        const segDir = path.join(projectDir(projectId), 'audio_segments')
+        if (fs.existsSync(segDir)) {
+          const files = new Set(fs.readdirSync(segDir))
+          const missingFiles = required.filter((s) => {
+            if (!s.tts_audio_id) return false
+            const key = String(s.id).replace(/[^A-Za-z0-9_-]/g, '_')
+            return ![...files].some((f) => f.startsWith('seg_fit_') && f.endsWith('.wav') && f.includes(key))
+          })
+          if (missingFiles.length > 0) {
+            errors.push({ code: 'MISSING_TTS_FILE', message: `${missingFiles.length} segment thiếu file wav riêng`, segmentIds: missingFiles.map(s => s.id) })
+          }
+        }
+      } catch (_) {}
+      // Timeline placement không overlap (dựa trên transcript timing)
+      const tl = required.map((s) => ({ segmentId: s.id, startAtSec: Number(s.start_sec), endAtSec: Number(s.end_sec) }))
+      const nov = validateNoOverlap(tl)
+      if (!nov.ok) errors.push({ code: 'TIMELINE_OVERLAP', message: nov.errors.join('; ') })
     }
   }
 

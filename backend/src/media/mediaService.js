@@ -387,9 +387,26 @@ export async function applyTempoAudio(inFile, out, { tempo = 1, padBeforeSec = 0
 }
 
 // Ghép các segment dub theo offset + trộn với audio gốc làm nền (ducking −12dB ≈ ×0.25).
-// originalMedia: file video/audio nguồn để lấy background; entries: [{file, offsetSec}].
+// entries: [{file, offsetSec, segmentId?, startAtSec?, endAtSec?}] — timeline xác định, không overlap.
 export async function buildDubTrack({ originalMedia, entries = [], totalSec, out, backgroundVolume = 0.25, timeout = 0 } = {}) {
   ensureDir(out)
+  // Deterministic scheduler guard: physical voice timeline must not overlap.
+  const sorted = [...entries].sort((a, b) => (a.offsetSec || 0) - (b.offsetSec || 0))
+  let prevEnd = -Infinity
+  for (const e of sorted) {
+    if (!e?.file || !fs.existsSync(e.file)) throw new Error(`BLOCK_RENDER: missing voice file for segment ${e?.segmentId || '?'} (${e?.file || 'null'})`)
+    const start = Number(e.offsetSec) || 0
+    if (start < prevEnd - 0.05) {
+      throw new Error(`BLOCK_RENDER: overlapping voice segments (segment ${e?.segmentId || '?'} starts at ${start}s before prev ends at ${prevEnd}s) — regenerate/shorten instead of mixing`)
+    }
+    const dur = await durationOf(e.file)
+    if (!(dur > 0)) throw new Error(`BLOCK_RENDER: empty voice file for segment ${e?.segmentId || '?'}`)
+    const slot = e.endAtSec != null && e.startAtSec != null ? Number(e.endAtSec) - Number(e.startAtSec) : null
+    if (slot != null && dur > slot + 0.15) {
+      throw new Error(`BLOCK_RENDER: physical audio (${dur.toFixed(2)}s) exceeds slot (${slot.toFixed(2)}s) for segment ${e?.segmentId || '?'}`)
+    }
+    prevEnd = Math.max(prevEnd, start + dur)
+  }
   const info = await probe(originalMedia)
   const inputs = ['-i', originalMedia] // [0] background gốc
   const filters = []

@@ -63,9 +63,7 @@ export async function dubRender(ctx) {
   let fallbackToOriginal = 0
 
   if (enableDubbing) {
-    // Segment audio đã được tạo & căn offset ở dub.ttsAlign (audio_segments/*.wav
-    // đặt tên seg_fit_XXXXX.wav đúng thứ tự start_sec tăng dần).
-    // Partial success: chỉ lấy segment có tts_audio_id, segment thiếu sẽ dùng giọng gốc.
+    // Explicit segmentId → audioId → file mapping (NEVER array index).
     const rows = await query(
       `SELECT ts.id, ts.start_sec, ts.end_sec, a.id AS audio_id FROM transcript_segments ts
        LEFT JOIN audios a ON a.id = ts.tts_audio_id
@@ -75,40 +73,62 @@ export async function dubRender(ctx) {
     )
     const aligns = parseAlignments(ctx.results?.['dub.ttsAlign'])
     const segDir = path.join(dir, 'audio_segments')
-    const files = fs.existsSync(segDir)
-      ? fs.readdirSync(segDir).filter((f) => f.startsWith('seg_fit_') && f.endsWith('.wav')).sort()
-      : []
-
-    // Phân loại: segment có TTS audio và segment dùng giọng gốc
-    const entriesWithTts = []
-    const segmentsNeedingOriginal = []
-
-    rows.forEach((row, i) => {
-      if (row.audio_id) {
-        // Segment có TTS audio → tìm file tương ứng
-        const file = files[i] ? path.join(segDir, files[i]) : null
-        if (file && fs.existsSync(file)) {
-          const align = aligns.find((a) => String(a.audioId) === String(row.audio_id))
-          entriesWithTts.push({
-            file,
-            offsetSec: align ? align.startAtSec : Number(row.start_sec),
-            segmentId: row.id,
-          })
-        } else {
-          // File không tìm thấy → fallback giọng gốc
-          segmentsNeedingOriginal.push(row)
-        }
-      } else {
-        // Segment không có TTS audio → dùng giọng gốc
-        segmentsNeedingOriginal.push(row)
+    const filesById = new Map()
+    if (fs.existsSync(segDir)) {
+      for (const f of fs.readdirSync(segDir).filter((x) => x.startsWith('seg_fit_') && x.endsWith('.wav'))) {
+        filesById.set(path.join(segDir, f), path.join(segDir, f))
       }
-    })
-
-    // Log partial success info
-    if (segmentsNeedingOriginal.length > 0) {
-      console.warn(`[dubRender] ${segmentsNeedingOriginal.length}/${rows.length} segment dùng giọng gốc (thiếu TTS audio)`)
     }
-    fallbackToOriginal = segmentsNeedingOriginal.length
+    // Map audioId/segmentId → physical file by scanning for seg_fit_<segmentId> in filename
+    const scanForSegment = (segmentId) => {
+      const key = String(segmentId || '').replace(/[^A-Za-z0-9_-]/g, '_')
+      if (!fs.existsSync(segDir)) return null
+      const hit = fs.readdirSync(segDir).find((f) => f.startsWith('seg_fit_') && f.endsWith('.wav') && f.includes(key))
+      return hit ? path.join(segDir, hit) : null
+    }
+    const byAudioOrSegment = new Map()
+    for (const [p] of filesById) {
+      // index by full path; resolver below matches via scanForSegment + explicit map
+      void p
+    }
+    // Build explicit lookup the resolver understands: audioId→file and segmentId→file
+    const lookup = new Map()
+    for (const a of aligns) {
+      const f = scanForSegment(a.segmentId)
+      if (f) {
+        if (a.audioId) lookup.set(String(a.audioId), f)
+        lookup.set(`seg:${String(a.segmentId)}`, f)
+      }
+    }
+    // Fallback: any seg_fit file containing the segment key (covers retries)
+    for (const row of rows) {
+      if (!lookup.has(`seg:${String(row.id)}`)) {
+        const f = scanForSegment(row.id)
+        if (f) lookup.set(`seg:${String(row.id)}`, f)
+      }
+    }
+
+    const resolved = resolveAudioEntries(rows, aligns, lookup)
+    const missing = rows.filter((r) => !resolved.get(String(r.id)))
+    if (missing.length > 0) {
+      throw new Error(`BLOCK_RENDER: MISSING_TTS_AUDIO — ${missing.length} segment thiếu TTS audio/file riêng (ids: ${missing.map((m) => m.id).join(',')}). Không dùng giọng gốc thay thế, không mượn file segment khác.`)
+    }
+    const entriesWithTts = [...resolved.values()].map((e) => ({
+      file: e.file,
+      offsetSec: e.offsetSec,
+      segmentId: e.segmentId,
+      startAtSec: e.startAtSec,
+      endAtSec: e.endAtSec,
+    }))
+    // Deterministic order + overlap guard before mix (no silent forward-shift)
+    entriesWithTts.sort((a, b) => a.offsetSec - b.offsetSec)
+    for (let i = 1; i < entriesWithTts.length; i++) {
+      if (entriesWithTts[i].offsetSec < entriesWithTts[i - 1].endAtSec - 0.05) {
+        throw new Error(`BLOCK_RENDER: OVERLAP — segment ${entriesWithTts[i].segmentId} starts at ${entriesWithTts[i].offsetSec}s before prev ends at ${entriesWithTts[i - 1].endAtSec}s`)
+      }
+    }
+    void byAudioOrSegment
+    fallbackToOriginal = 0
 
     const dubTrackWav = path.join(dir, 'dub_track.wav')
     await buildDubTrack({
@@ -258,6 +278,60 @@ function parseAlignments(result) {
   if (!result) return []
   if (Array.isArray(result.alignments)) return result.alignments
   return []
+}
+
+/**
+ * Explicit segmentId → audio file resolver. NEVER index-based.
+ * rows: [{id, start_sec, end_sec, audio_id}], aligns: [{segmentId, audioId, startAtSec, endAtSec}],
+ * filesById: Map(audioId→file) and/or Map('seg:<segmentId>'→file) and/or Map(file→file) / plain path values.
+ * Returns Map(segmentId→{file, offsetSec, segmentId, audioId, startAtSec, endAtSec}).
+ * Missing audio → no entry (caller BLOCK_RENDERs). Never borrows another segment's file.
+ */
+export function resolveAudioEntries(rows, aligns, filesById) {
+  const out = new Map()
+  const byAudio = new Map()
+  const bySeg = new Map()
+  if (filesById instanceof Map) {
+    for (const [k, v] of filesById) {
+      if (typeof k === 'string' && k.startsWith('seg:')) bySeg.set(k.slice(4), v)
+      else if (typeof v === 'string' && v) {
+        byAudio.set(String(k), v)
+        // Also allow direct segmentId→file entries
+        bySeg.set(String(k), v)
+      }
+    }
+  }
+  const alignBySeg = new Map((aligns || []).map((a) => [String(a.segmentId), a]))
+  // Track used files to enforce 1:1 (no duplicate audio across segments)
+  const used = new Set()
+  for (const row of rows || []) {
+    const sid = String(row.id)
+    if (!row.audio_id) continue
+    const align = alignBySeg.get(sid)
+    if (align && align.audioId && String(align.audioId) !== String(row.audio_id)) continue
+    let file = byAudio.get(String(row.audio_id)) || bySeg.get(sid) || bySeg.get(String(row.audio_id)) || null
+    // Direct path value support: filesById may be Map(audioId→path)
+    if (!file && filesById instanceof Map) {
+      for (const [, v] of filesById) {
+        if (typeof v === 'string' && v.endsWith('.wav') && v.includes(String(sid).replace(/[^A-Za-z0-9_-]/g, '_'))) { file = v; break }
+      }
+    }
+    if (!file) continue
+    if (used.has(file)) continue // duplicate assignment blocked
+    try {
+      if (!fs.existsSync(file)) continue
+    } catch (_) { continue }
+    used.add(file)
+    out.set(sid, {
+      file,
+      offsetSec: align ? Number(align.startAtSec) : Number(row.start_sec),
+      segmentId: sid,
+      audioId: String(row.audio_id),
+      startAtSec: align ? Number(align.startAtSec) : Number(row.start_sec),
+      endAtSec: align ? Number(align.endAtSec) : Number(row.end_sec),
+    })
+  }
+  return out
 }
 
 export default dubRender

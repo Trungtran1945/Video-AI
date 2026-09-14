@@ -97,6 +97,26 @@ async function preprocessImage(imagePath) {
   }
 }
 
+export function filterSubtitleBoxes(boxes, { width = 1280, height = 720 } = {}) {
+  const h = Number(height) || 720
+  const minConf = Number(process.env.OCR_MIN_BOX_CONF || 0.35)
+  const minH = h * Number(process.env.OCR_MIN_HEIGHT_RATIO || 0.012)
+  const bottomTop = h * (1 - Number(process.env.OCR_BOTTOM_RATIO || 0.6))
+  return (boxes || []).filter((b) => {
+    const text = String(b?.text || '').trim()
+    if (text.length < 2) return false
+    if ((Number(b.confidence) || 0) < minConf) return false
+    if ((Number(b.height) || 0) < minH) return false
+    // Subtitle-position consistency: keep bottom band only (reject logo/watermark/top scene text)
+    const y = Number(b.y) || 0
+    if (y < bottomTop) return false
+    // Reject mostly-symbol noise
+    const letters = text.replace(/[^A-Za-zÀ-ỹ一-鿿぀-ヿ가-힯]/g, '')
+    if (letters.length < 2) return false
+    return true
+  })
+}
+
 export class TesseractOcr {
   constructor() {
     this.id = 'tesseract'
@@ -169,7 +189,7 @@ export class TesseractOcr {
         }
       }
 
-      return { boxes, model: this.model, usage: null }
+      return { boxes: filterSubtitleBoxes(boxes, { width: w, height: h }), model: this.model, usage: null }
     } finally {
       if (croppedPath !== imagePath) {
         fs.promises.unlink(croppedPath).catch(() => {})

@@ -6,6 +6,24 @@ import {
   applyTempoAudio,
   probe,
 } from '../../media/mediaService.js'
+import { ffmpeg } from '../../media/ffmpeg.js'
+
+export function sanitizeSegmentId(id) {
+  return String(id || '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || 'seg'
+}
+
+export function buildAudioFileMap(fitted) {
+  const m = new Map()
+  for (const f of fitted || []) {
+    if (f?.segmentId && f?.file) m.set(String(f.segmentId), f.file)
+  }
+  return m
+}
+
+async function trimWavToDur(inPath, outPath, maxDurSec) {
+  await ffmpeg(['-y', '-i', inPath, '-t', String(Math.max(0.1, maxDurSec)), '-ac', '2', '-ar', '48000', outPath])
+  return outPath
+}
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
 import {
@@ -62,8 +80,9 @@ export async function dubTtsAlign(ctx) {
     try {
       // Sinh audio + căn chỉnh cho 1 bản dịch. Nếu provider hỗ trợ tốc độ native,
       // synthesize lại đúng tốc độ (speed = tempo cần thiết) thay vì dùng atempo.
+      const segKey = sanitizeSegmentId(seg.id)
       const makeAudio = async (text) => {
-        let audio = await synth(tts, text, path.join(segDir, `seg_${String(i).padStart(5, '0')}.mp3`), job, project.id, 1, project.user_id)
+        let audio = await synth(tts, text, path.join(segDir, `seg_${segKey}.mp3`), job, project.id, 1, project.user_id)
         let fit = fitSegment(audio.durationSec, slotDur)
         if (supportsNativeSpeed && fit.tempo !== 1) {
           const speed = clamp(fit.tempo, SPEED_MIN, SPEED_MAX)
@@ -87,20 +106,30 @@ export async function dubTtsAlign(ctx) {
 
       // Áp tempo + padding → file wav chuẩn 48k stereo đặt đúng offset
       // (với provider native speed, tempo thường = 1 nên không bị méo giọng).
-      const finalPath = path.join(segDir, `seg_fit_${String(i).padStart(5, '0')}.wav`)
+      const finalPath = path.join(segDir, `seg_fit_${segKey}.wav`)
       await applyTempoAudio(audio.audioPath, finalPath, {
         tempo: fit.tempo,
         padBeforeSec: fit.padBeforeSec,
         padAfterSec: fit.padAfterSec,
       })
       try { fs.unlinkSync(audio.audioPath) } catch (_) {}
-      const finalDur = (await probe(finalPath)).durationSec || fit.effectiveDurSec
+      let finalDur = (await probe(finalPath)).durationSec || fit.effectiveDurSec
+      // Physical consistency: audio thật không được dài hơn slot + dung sai nhỏ
+      const maxAllowed = slotDur + 0.08
+      if (finalDur > maxAllowed) {
+        const trimmed = path.join(segDir, `seg_fit_${segKey}_trim.wav`)
+        await trimWavToDur(finalPath, trimmed, slotDur)
+        try { fs.unlinkSync(finalPath) } catch (_) {}
+        try { fs.renameSync(trimmed, finalPath) } catch (_) {}
+        finalDur = (await probe(finalPath)).durationSec || slotDur
+      }
+      if (finalDur <= 0) throw new Error(`audio rỗng sau fit (segment ${seg.index_num})`)
 
       fitted.push({
         segmentId: seg.id,
         indexNum: seg.index_num,
         file: finalPath,
-        effectiveDurSec: round3(Math.min(finalDur, slotDur * 1.08 + 0.01)),
+        effectiveDurSec: round3(Math.min(finalDur, maxAllowed)),
         action: fit.action,
         tempo: fit.tempo,
       })

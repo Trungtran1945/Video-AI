@@ -116,26 +116,44 @@ export async function dubTranslate(ctx) {
 
       for (const seg of group) {
         const restyledText = restyledGroup.get(seg.index_num)
-        if (restyledText) {
+        const gtText = gtResults.get(seg.index_num)
+        if (restyledText && validateTranslation(seg.text, restyledText, targetLanguage).ok) {
           await updateById('transcript_segments', seg.id, { translation: restyledText })
           translations.set(seg.id, restyledText)
           restyled++
+        } else if (gtText && validateTranslation(seg.text, gtText, targetLanguage).ok) {
+          // Restyle làm sai nghĩa → fallback bản GT đúng nghĩa (style sau nghĩa)
+          await updateById('transcript_segments', seg.id, { translation: gtText })
+          translations.set(seg.id, gtText)
+          restyled++
+        } else {
+          console.warn(`[dubTranslate] Block segment #${seg.index_num}: restyle+GT đều fail gate`)
         }
       }
       setProgress(45 + Math.round(((g + 1) / groups.length) * 45))
     }
     if (!restyled) throw new Error('LLM không trả về bản dịch restyle hợp lệ nào')
   } else {
-    // Không có style preset HOẶC không có LLM → dùng Google Translate trực tiếp
+    // Không có style preset HOẶC không có LLM → dùng Google Translate trực tiếp (có gate ngữ nghĩa)
     if (hasStyle && !llm) {
       console.warn('[dubTranslate] Có style preset nhưng thiếu LLM provider — dùng Google Translate trực tiếp')
     }
-    for (const seg of segments) {
-      const gtText = gtResults.get(seg.index_num)
-      if (gtText) {
-        await updateById('transcript_segments', seg.id, { translation: gtText })
-        translations.set(seg.id, gtText)
+    const repairLlm = llm || await getProvider(project.user_id, 'llm').catch(() => null)
+    for (let si = 0; si < segments.length; si++) {
+      const seg = segments[si]
+      let gtText = gtResults.get(seg.index_num)
+      if (!gtText) continue
+      if (!validateTranslation(seg.text, gtText, targetLanguage).ok) {
+        const fixed = repairLlm ? await repairTranslationWithLlm(repairLlm, {
+          source: seg.text, badTranslation: gtText,
+          prev: segments[si - 1]?.text || '', next: segments[si + 1]?.text || '',
+          targetLanguage, system,
+        }, { job, projectId: project.id, userId: project.user_id }) : null
+        if (fixed) gtText = fixed
+        else { console.warn(`[dubTranslate] Block segment #${seg.index_num}: semantic gate failed`); continue }
       }
+      await updateById('transcript_segments', seg.id, { translation: gtText })
+      translations.set(seg.id, gtText)
     }
     setProgress(90)
   }
@@ -161,13 +179,13 @@ export async function dubTranslate(ctx) {
 // KHÔNG dịch lại — giữ nguyên nghĩa, chỉ thay văn phong.
 async function restyleGroup(llm, system, groupTranslations, preset, job, projectId, userId) {
   const input = groupTranslations
-    .map((t) => `${t.index}|${t.translation}`)
+    .map((t) => `${t.index}|src:${t.original || ''}|tgt:${t.translation}`)
     .join('\n')
 
   const prompt =
     `Viết lại các câu lồng tiếng dưới đây theo phong cách: ${preset.name}.\n` +
-    `Bản dịch gốc đã ĐÚNG NGHĨA — KHÔNG được thay đổi ý, chỉ thay đổi văn phong.\n` +
-    `Mỗi dòng có định dạng "index|bản dịch". Giữ nguyên index, CHỈ viết lại phần bản dịch.\n\n` +
+    `Bản dịch gốc đã ĐÚNG NGHĨA — KHÔNG được thay đổi ý, chỉ thay đổi văn phong. Giữ tên riêng, con số, phủ định, nghi vấn.\n` +
+    `Mỗi dòng có định dạng "index|src:nguồn|tgt:bản dịch". Giữ nguyên index, CHỈ viết lại phần bản dịch (sau "tgt:").\n\n` +
     `${input}\n\n` +
     `Trả về DUY NHẤT JSON: {"segments":[{"index":int,"translation":string}]}`
 
@@ -299,6 +317,77 @@ export async function translateGroup(llm, system, prompt, job, projectId, opts =
     attempt++
   }
   return collected
+}
+
+const NEG_EN = ['not', 'no', 'never', "n't", 'without', 'none']
+const NEG_VI = ['không', 'chưa', 'chẳng', 'đừng', 'không hề', 'chưa từng']
+
+function extractNumbers(s) {
+  return (String(s || '').match(/-?\d+(?:[.,]\d+)?/g) || []).map((n) => n.replace(',', '.'))
+}
+
+function extractEntities(s) {
+  return (String(s || '').match(/\b[A-ZÀ-Ỹ][a-zà-ỹ]+(?:\s+[A-ZÀ-Ỹ][a-zà-ỹ]+)*/g) || []).map((x) => x.toLowerCase())
+}
+
+function hasNegation(s, lang) {
+  const t = ` ${String(s || '').toLowerCase()} `
+  const lex = lang === 'vi' ? NEG_VI : NEG_EN
+  return lex.some((w) => t.includes(w === "n't" ? w : ` ${w} `) || (w === "n't" && t.includes(w)))
+}
+
+function looksVietnamese(s) {
+  return /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(String(s || ''))
+}
+
+export function validateTranslation(src, tgt, targetLang = 'vi') {
+  const errors = []
+  const s = String(src || '').trim(), t = String(tgt || '').trim()
+  if (!s) errors.push('empty source')
+  if (!t) errors.push('empty translation')
+  if (errors.length) return { ok: false, errors }
+  if (s.toLowerCase() === t.toLowerCase()) errors.push('untranslated copy')
+  const sn = extractNumbers(s), tn = extractNumbers(t)
+  if (sn.length !== tn.length || sn.some((n, i) => n !== tn[i])) errors.push(`number mismatch (${sn.join(',')}→${tn.join(',')})`)
+  const sQ = /\?\s*$/.test(s), tQ = /[?\？]\s*$/.test(t)
+  if (sQ !== tQ) errors.push('question intent changed')
+  if (hasNegation(s, 'en') !== hasNegation(t, 'vi') && /[a-z]/i.test(s)) {
+    // Only enforce when source is English-like; avoids false positives on other langs
+    errors.push('negation changed')
+  }
+  const se = extractEntities(s)
+  if (se.length) {
+    const tl = t.toLowerCase()
+    const kept = se.filter((e) => e.length > 2 && tl.includes(e.split(' ')[0]))
+    if (kept.length / se.length < 0.5) errors.push('entity changed')
+  }
+  if (targetLang === 'vi' && /^[A-Za-z0-9\s.,!?'"()-]+$/.test(t) && !looksVietnamese(t) && t.length > 12) {
+    errors.push('wrong target language')
+  }
+  const ratio = t.length / Math.max(1, s.length)
+  if (ratio < 0.3 || ratio > 3) errors.push('length implausible (hallucination?)')
+  return { ok: errors.length === 0, errors }
+}
+
+export async function repairTranslationWithLlm(llm, { source, badTranslation, prev, next, targetLanguage, system }, { job, projectId, userId }) {
+  const prompt =
+    `Dịch lại câu sau sang ${languageName(targetLanguage)}, GIỮ ĐÚNG nghĩa, tên riêng, con số, phủ định, nghi vấn. Không bịa thêm.\n` +
+    (prev ? `Câu trước: "${prev}"\n` : '') +
+    `Câu cần dịch: "${source}"\n` +
+    (next ? `Câu sau: "${next}"\n` : '') +
+    (badTranslation ? `Bản dịch sai cần sửa: "${badTranslation}"\n` : '') +
+    `Chỉ trả về bản dịch, không giải thích.`
+  try {
+    const res = await callProvider({
+      provider: llm.id, type: 'llm', model: llm.provider.model || llm.id,
+      input: { system: system || 'translate', prompt, temperature: 0.2, maxOutputTokens: 300 },
+      fn: () => llm.provider.complete({ system: system || 'translate', prompt, temperature: 0.2, maxOutputTokens: 300 }),
+      userId, apiKeyId: llm.apiKeyId, projectId, jobId: job?.id,
+    })
+    const out = String(res?.text || '').replace(/^["'\s]+|["'\s]+$/g, '').trim()
+    if (out && validateTranslation(source, out, targetLanguage).ok) return out
+  } catch (_) {}
+  return null
 }
 
 function buildSystemPrompt(preset, targetLanguage) {
