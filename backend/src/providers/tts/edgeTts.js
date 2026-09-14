@@ -15,6 +15,8 @@ const SEC_MS_GEC_VERSION = `1-${CHROMIUM_FULL_VERSION}`
 const OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3'
 const REQUEST_TIMEOUT_MS = 30000
 
+import GoogleTts from './googleTts.js'
+
 export class EdgeTts {
   constructor(_apiKey) {
     this.id = 'edge_tts'
@@ -24,16 +26,27 @@ export class EdgeTts {
   }
 
   async synthesize({ text, outPath, speed = 1 }) {
-    const buffer = await synthesizeBuffer(text, this.voice, speed)
-    fs.mkdirSync(path.dirname(outPath), { recursive: true })
-    fs.writeFileSync(outPath, buffer)
-    const durationSec = (await probe(outPath)).durationSec
-    return {
-      audioPath: outPath,
-      durationSec,
-      provider: this.id,
-      model: this.voice,
-      usage: { durationSec, chars: text.length },
+    try {
+      const buffer = await synthesizeBuffer(text, this.voice, speed)
+      fs.mkdirSync(path.dirname(outPath), { recursive: true })
+      fs.writeFileSync(outPath, buffer)
+      const durationSec = (await probe(outPath)).durationSec
+      return {
+        audioPath: outPath,
+        durationSec,
+        provider: this.id,
+        model: this.voice,
+        usage: { durationSec, chars: text.length },
+      }
+    } catch (err) {
+      console.warn(`[EdgeTts] Edge TTS gặp lỗi (${err.message}), tự động chuyển sang Google TTS fallback`)
+      const gtts = new GoogleTts()
+      return gtts.synthesize({
+        text,
+        outPath,
+        speed,
+        lang: this.voice.startsWith('vi') ? 'vi' : 'en',
+      })
     }
   }
 }

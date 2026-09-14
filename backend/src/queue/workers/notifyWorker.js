@@ -59,6 +59,10 @@ const worker = new Worker('notifications', async (job) => {
   concurrency: 2,
 })
 
+worker.on('error', (err) => {
+  console.error('[Notify] Worker error:', err.message)
+})
+
 worker.on('failed', (job, err) => {
   console.error('[Notify] Job failed:', err.message)
 })

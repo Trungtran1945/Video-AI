@@ -27,7 +27,7 @@ function assert(cond, msg) {
 
 const projectId = 'proj-merge-test'
 
-async function setup({ withTranscript = false, translation = 'hello', startSec = 0, endSec = 1, params = '{}' } = {}) {
+async function setup({ withTranscript = false, text = 'hello', translation = null, startSec = 0, endSec = 1, params = '{}' } = {}) {
   await insert('projects', {
     id: projectId,
     user_id: 'user-1',
@@ -40,7 +40,7 @@ async function setup({ withTranscript = false, translation = 'hello', startSec =
   await insert('generation_jobs', { id: uuidv4(), project_id: projectId, type: 'dub.merge', status: 'pending' })
   if (withTranscript) {
     await insert('transcript_segments', {
-      id: uuidv4(), project_id: projectId, index_num: 0, start_sec: startSec, end_sec: endSec, text: 'hello', translation,
+      id: uuidv4(), project_id: projectId, index_num: 0, start_sec: startSec, end_sec: endSec, text, translation,
     })
   }
   const mergeJob = await queryOne('SELECT * FROM generation_jobs WHERE project_id = ? AND type = ?', [projectId, 'dub.merge'])
@@ -56,9 +56,9 @@ async function cleanup() {
 
 const defaultParams = JSON.stringify({ sourceLanguage: 'en', targetLanguage: 'vi' })
 
-// Test 1: happy path — segments with translation, valid duration, language config → success
+// Test 1: happy path — segments with STT text, valid duration, language config → success
 await cleanup()
-const job1 = await setup({ withTranscript: true, translation: 'xin chào', params: defaultParams })
+const job1 = await setup({ withTranscript: true, text: 'hello world', params: defaultParams })
 const ctx1 = { project: { id: projectId, params: defaultParams }, job: job1, setProgress: () => {} }
 let result1
 try {
@@ -79,15 +79,15 @@ try {
   assert(/Thiếu TranscriptSegment/.test(e.message), `dub.merge throw đúng khi thiếu transcript: ${e.message}`)
 }
 
-// Test 3: segment without translation → throw
+// Test 3: all segments have empty text from STT → throw
 await cleanup()
-const job3 = await setup({ withTranscript: true, translation: '', params: defaultParams })
+const job3 = await setup({ withTranscript: true, text: '', params: defaultParams })
 const ctx3 = { project: { id: projectId, params: defaultParams }, job: job3, setProgress: () => {} }
 try {
   await dubMerge(ctx3)
-  assert(false, 'dub.merge phải throw khi segment chưa có bản dịch')
+  assert(false, 'dub.merge phải throw khi tất cả segment đều trống text')
 } catch (e) {
-  assert(/chưa có bản dịch/.test(e.message), `dub.merge throw đúng khi thiếu translation: ${e.message}`)
+  assert(/đều trống/.test(e.message), `dub.merge throw đúng khi text rỗng: ${e.message}`)
 }
 
 // Test 4: invalid duration (<=0) → throw

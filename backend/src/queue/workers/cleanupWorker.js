@@ -97,6 +97,10 @@ const worker = new Worker('cleanup', async (job) => {
   limiter: { max: 1, duration: 300000 }, // Max 1 job per 5 minutes
 })
 
+worker.on('error', (err) => {
+  console.error('[Cleanup] Worker error:', err.message)
+})
+
 worker.on('failed', (job, err) => {
   console.error('[Cleanup] Job failed:', err.message)
 })

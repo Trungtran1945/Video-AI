@@ -2,17 +2,21 @@ import { query } from '../../db/query.js'
 import { logProviderCall } from '../../providers/tracked.js'
 
 /**
- * dub.merge — Stage kiểm tra barrier
- * Kiểm tra TranscriptSegment + Translation + Duration + Language config
+ * dub.merge — Post-STT barrier stage
+ * Validates that dub.stt produced valid transcript segments and that
+ * language config is present before proceeding to dub.translate.
+ *
+ * NOTE: This stage runs BEFORE dub.translate, so translations do NOT
+ * exist yet. Only check STT output + language config + duration validity.
  */
 export default async function dubMerge({ project, job, setProgress }) {
   const projectId = project.id
 
   setProgress(10)
 
-  // Check 1: Transcript segments exist
+  // Check 1: Transcript segments exist (produced by dub.stt)
   const transcriptSegments = await query(
-    'SELECT id, translation, start_sec, end_sec FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC',
+    'SELECT id, start_sec, end_sec, text FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC',
     [projectId]
   )
 
@@ -22,15 +26,15 @@ export default async function dubMerge({ project, job, setProgress }) {
     throw new Error('Thiếu TranscriptSegment từ dub.stt')
   }
 
-  // Check 2: All segments have translation
-  const segmentsWithoutTranslation = transcriptSegments.filter(
-    s => !s.translation || s.translation.trim() === ''
+  // Check 2: All segments have text content from STT
+  const emptyTextSegments = transcriptSegments.filter(
+    s => !s.text || s.text.trim() === ''
   )
 
   setProgress(50)
 
-  if (segmentsWithoutTranslation.length > 0) {
-    throw new Error(`${segmentsWithoutTranslation.length} segment chưa có bản dịch. Vui lòng dịch tất cả segment trước khi render.`)
+  if (emptyTextSegments.length === transcriptSegments.length) {
+    throw new Error('Tất cả segment từ dub.stt đều trống — không có nội dung để dịch')
   }
 
   // Check 3: Duration validation (>0 and reasonable)
@@ -66,6 +70,9 @@ export default async function dubMerge({ project, job, setProgress }) {
 
   return {
     transcriptSegments: transcriptSegments.length,
+    emptyTextSegments: emptyTextSegments.length,
+    sourceLanguage: params.sourceLanguage,
+    targetLanguage: params.targetLanguage,
   }
 }
 

@@ -392,6 +392,15 @@ export async function runPipeline(projectId, fromStage = null) {
   if (activeRuns.has(projectId)) return
   const project = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
   if (!project) return
+
+  // If DB says 'running' but this process doesn't own it → stale from previous crash.
+  // Reset to pending so this run can take over.
+  if (project.status === 'running') {
+    console.warn(`[Pipeline] Project ${projectId} was stale 'running' — resetting to pending`)
+    await updateById('projects', projectId, { status: 'pending' })
+    project.status = 'pending'
+  }
+
   activeRuns.add(projectId)
 
   // Create AbortController for this pipeline run

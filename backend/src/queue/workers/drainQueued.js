@@ -1,22 +1,48 @@
 import { Worker } from 'bullmq'
 import { connection } from '../connection.js'
-import { queryOne, run } from '../../db/query.js'
+import { query, queryOne, run } from '../../db/query.js'
 import { runPipeline } from '../../pipeline/runner.js'
 import { config } from '../../config.js'
+
+const STALE_RUNNING_MINUTES = 30
 
 /**
  * DrainQueuedWorker — Quét projects có status='QUEUED', enqueue project
  * cũ nhất khi user đó có slot RUNNING trống.
+ * Đồng thời dọn các project stuck 'running' quá lâu (backend crash mid-pipeline).
  */
 const worker = new Worker('drain-queued', async (job) => {
   const maxConcurrent = config.maxConcurrentProjectsPerUser
 
-  // Find users with queued projects
+  // ── 1. Recover stuck projects (running too long → failed) ──
+  const staleCutoff = new Date(Date.now() - STALE_RUNNING_MINUTES * 60 * 1000).toISOString()
+  const staleProjects = await query(
+    `SELECT id, title, user_id FROM projects WHERE status = 'running' AND updated_date < ?`,
+    [staleCutoff]
+  )
+
+  let recovered = 0
+  for (const p of staleProjects) {
+    await run(
+      `UPDATE projects SET status = 'failed' WHERE id = ?`,
+      [p.id]
+    )
+    // Mark any running/pending jobs for this project as failed
+    await run(
+      `UPDATE generation_jobs SET status = 'failed', step = 'error', error_message = 'Pipeline interrupted — backend restarted or timed out'
+       WHERE project_id = ? AND status IN ('running', 'pending')`,
+      [p.id]
+    )
+    console.warn(`[DrainQueued] Recovered stuck project "${p.title}" (${p.id}) — marked failed`)
+    recovered++
+  }
+
+  // ── 2. Drain queued projects ──
   const usersWithQueued = await queryOne(
     `SELECT DISTINCT user_id FROM projects WHERE status = 'queued'`
   )
 
-  if (!usersWithQueued) return { drained: 0 }
+  if (!usersWithQueued) return { drained: 0, recovered }
 
   let drained = 0
 
@@ -57,11 +83,15 @@ const worker = new Worker('drain-queued', async (job) => {
     }
   }
 
-  return { drained }
+  return { drained, recovered }
 }, {
   connection,
   concurrency: 1,
   limiter: { max: 10, duration: 60000 }, // Max 10 jobs per minute
+})
+
+worker.on('error', (err) => {
+  console.error('[DrainQueued] Worker error:', err.message)
 })
 
 worker.on('failed', (job, err) => {
@@ -69,6 +99,9 @@ worker.on('failed', (job, err) => {
 })
 
 worker.on('completed', (job, result) => {
+  if (result.recovered > 0) {
+    console.log(`[DrainQueued] Recovered ${result.recovered} stuck project(s)`)
+  }
   if (result.drained > 0) {
     console.log(`[DrainQueued] Drained ${result.drained} queued project(s)`)
   }

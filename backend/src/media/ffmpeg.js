@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import path from 'node:path'
 import { execSync } from 'node:child_process'
 
 const sanitizeBin = (value) => String(value || '').trim().replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1')
@@ -23,7 +24,7 @@ function resolveBin(envName, name) {
   // Common install locations, in case FFMPEG_PATH is wrong/missing and the
   // binary isn't on PATH (e.g. user dropped it in C:\ffmpeg\bin).
   for (const dir of COMMON_BIN_DIRS) {
-    const candidate = require('node:path').join(dir, process.platform === 'win32' ? `${name}.exe` : name)
+    const candidate = path.join(dir, process.platform === 'win32' ? `${name}.exe` : name)
     try { if (fs.existsSync(candidate)) return candidate } catch (_) {}
   }
   return name
