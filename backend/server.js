@@ -94,41 +94,57 @@ async function start() {
     console.warn('[Server] Stale project recovery failed:', e.message)
   }
 
-  // Group 1: Start queue workers (graceful fallback if Redis unavailable)
-  try {
-    const drainMod = await import('./src/queue/workers/drainQueued.js')
-    drainQueuedWorker = drainMod.default
-    console.log('[Queue] DrainQueued worker started')
-  } catch (e) {
-    console.warn('[Queue] DrainQueued worker failed to start:', e.message)
-  }
+  // Group 1: Start queue workers (graceful fallback if Redis unavailable).
+  // Workers are only constructed once the Redis stream is writable — this
+  // avoids "Stream isn't writeable" command spam. If Redis is down at boot,
+  // boot is deferred until the connection is ready.
+  let queueBooted = false
+  async function bootQueueWorkers() {
+    if (queueBooted) return
+    queueBooted = true
+    try {
+      const drainMod = await import('./src/queue/workers/drainQueued.js')
+      drainQueuedWorker = drainMod.default
+      console.log('[Queue] DrainQueued worker started')
+    } catch (e) {
+      console.warn('[Queue] DrainQueued worker failed to start:', e.message)
+    }
 
-  try {
-    const notifyMod = await import('./src/queue/workers/notifyWorker.js')
-    notifyWorker = notifyMod.default
-    console.log('[Queue] Notify worker started')
-  } catch (e) {
-    console.warn('[Queue] Notify worker failed to start:', e.message)
-  }
+    try {
+      const notifyMod = await import('./src/queue/workers/notifyWorker.js')
+      notifyWorker = notifyMod.default
+      console.log('[Queue] Notify worker started')
+    } catch (e) {
+      console.warn('[Queue] Notify worker failed to start:', e.message)
+    }
 
-  try {
-    const cleanupMod = await import('./src/queue/workers/cleanupWorker.js')
-    cleanupWorker = cleanupMod.default
-    // Schedule cleanup to run every hour (non-blocking: don't stall boot if Redis is down)
-    const { cleanupQueue } = await import('./src/queue/cleanupQueue.js')
-    const scheduleTimeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Redis unavailable — cleanup cron skipped')), 5000)
-    )
-    await Promise.race([
-      cleanupQueue.add('sweep', {}, {
+    try {
+      const cleanupMod = await import('./src/queue/workers/cleanupWorker.js')
+      cleanupWorker = cleanupMod.default
+      // Schedule cleanup to run every hour (Redis is ready here by construction)
+      const { cleanupQueue } = await import('./src/queue/cleanupQueue.js')
+      await cleanupQueue.add('sweep', {}, {
         repeat: { every: 60 * 60 * 1000 }, // every hour
         removeOnComplete: true,
-      }),
-      scheduleTimeout,
-    ])
-    console.log('[Queue] Cleanup worker started (every hour)')
+      })
+      console.log('[Queue] Cleanup worker started (every hour)')
+    } catch (e) {
+      console.warn('[Queue] Cleanup worker/cron failed to start:', e.message)
+    }
+  }
+
+  try {
+    const { connection, waitForRedis } = await import('./src/queue/connection.js')
+    if (await waitForRedis(3000)) {
+      await bootQueueWorkers()
+    } else {
+      console.warn('[Queue] Redis unavailable — notifications, cleanup, and job draining are disabled (workers will start when Redis is ready)')
+      connection.once('ready', () => {
+        bootQueueWorkers().catch((e) => console.warn('[Queue] deferred worker boot failed:', e.message))
+      })
+    }
   } catch (e) {
-    console.warn('[Queue] Cleanup worker/cron failed to start:', e.message)
+    console.warn('[Queue] Redis module failed to load — queue features disabled:', e.message)
   }
 
   // Log final queue system status

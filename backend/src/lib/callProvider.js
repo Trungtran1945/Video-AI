@@ -13,6 +13,7 @@ import fs from 'node:fs'
 import { run, queryOne } from '../db/query.js'
 import { v4 as uuidv4 } from 'uuid'
 import { getRateLimiter, RateLimitExhaustedError } from '../lib/rateLimiter.js'
+import { classifyProviderError, ERROR_KINDS } from './providerErrors.js'
 
 /**
  * Compute SHA-256 hash of normalized input for cache key.
@@ -157,7 +158,11 @@ export async function callProvider({
     return result
   } catch (err) {
     const durationMs = Date.now() - startMs
-    const status = isRateLimitError(err) ? 'rate_limited' : 'error'
+    // 429/quota keeps 'rate_limited' (with limiter cooldown); other
+    // transient failures (503/timeout) are logged distinctly.
+    const status = isRateLimitError(err)
+      ? 'rate_limited'
+      : (classifyProviderError(err).kind === ERROR_KINDS.TRANSIENT ? 'transient' : 'error')
 
     if (status === 'rate_limited') {
       limiter.markRateLimited()

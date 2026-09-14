@@ -525,17 +525,22 @@ export async function runPipeline(projectId, fromStage = null) {
     await updateById('projects', projectId, { status: 'completed', progress: 100 })
     eventBus.publish(projectId, { stage: '__project__', status: 'success', percent: 100 })
 
-    // Group 2: Send notification on success
+    // Group 2: Send notification on success (skip when Redis is down)
     try {
-      const user = await queryOne('SELECT email FROM users WHERE id = ?', [project.user_id])
-      if (user?.email) {
-        await notifyQueue.add('projectDone', {
-          projectId,
-          projectTitle: project.title,
-          userEmail: user.email,
-          status: 'success',
-          mode: project.mode,
-        })
+      const { isRedisReady } = await import('../queue/connection.js')
+      if (!isRedisReady()) {
+        console.warn('[Pipeline] Redis unavailable — success notification skipped')
+      } else {
+        const user = await queryOne('SELECT email FROM users WHERE id = ?', [project.user_id])
+        if (user?.email) {
+          await notifyQueue.add('projectDone', {
+            projectId,
+            projectTitle: project.title,
+            userEmail: user.email,
+            status: 'success',
+            mode: project.mode,
+          })
+        }
       }
     } catch (notifyErr) {
       console.error('[Pipeline] Notification failed:', notifyErr.message)
@@ -545,17 +550,22 @@ export async function runPipeline(projectId, fromStage = null) {
     await updateById('projects', projectId, { status: 'failed' })
     eventBus.publish(projectId, { stage: '__project__', status: 'failed', percent: 0 })
 
-    // Group 2: Send notification on failure
+    // Group 2: Send notification on failure (skip when Redis is down)
     try {
-      const user = await queryOne('SELECT email FROM users WHERE id = ?', [project.user_id])
-      if (user?.email) {
-        await notifyQueue.add('projectDone', {
-          projectId,
-          projectTitle: project.title,
-          userEmail: user.email,
-          status: 'failed',
-          mode: project.mode,
-        })
+      const { isRedisReady } = await import('../queue/connection.js')
+      if (!isRedisReady()) {
+        console.warn('[Pipeline] Redis unavailable — failure notification skipped')
+      } else {
+        const user = await queryOne('SELECT email FROM users WHERE id = ?', [project.user_id])
+        if (user?.email) {
+          await notifyQueue.add('projectDone', {
+            projectId,
+            projectTitle: project.title,
+            userEmail: user.email,
+            status: 'failed',
+            mode: project.mode,
+          })
+        }
       }
     } catch (notifyErr) {
       console.error('[Pipeline] Notification failed:', notifyErr.message)

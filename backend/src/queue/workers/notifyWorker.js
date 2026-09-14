@@ -1,6 +1,6 @@
 import { Worker } from 'bullmq'
 import nodemailer from 'nodemailer'
-import { connection } from '../connection.js'
+import { connection, createThrottledLogger } from '../connection.js'
 import { config } from '../../config.js'
 
 /**
@@ -8,6 +8,9 @@ import { config } from '../../config.js'
  * Job không chặn pipeline chính, retry riêng tối đa 2 lần.
  */
 let transporter = null
+
+// Throttled: a dead Redis stream emits errors continuously — log without spam.
+const logWorkerError = createThrottledLogger(30000)
 
 function getTransporter() {
   if (transporter) return transporter
@@ -60,7 +63,7 @@ const worker = new Worker('notifications', async (job) => {
 })
 
 worker.on('error', (err) => {
-  console.error('[Notify] Worker error:', err.message)
+  logWorkerError(`[Notify] Worker error: ${err.message}`)
 })
 
 worker.on('failed', (job, err) => {

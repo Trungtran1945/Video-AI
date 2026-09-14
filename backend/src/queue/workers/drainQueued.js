@@ -1,10 +1,13 @@
 import { Worker } from 'bullmq'
-import { connection } from '../connection.js'
+import { connection, createThrottledLogger } from '../connection.js'
 import { query, queryOne, run } from '../../db/query.js'
 import { runPipeline } from '../../pipeline/runner.js'
 import { config } from '../../config.js'
 
 const STALE_RUNNING_MINUTES = 30
+
+// Throttled: a dead Redis stream emits errors continuously — log without spam.
+const logWorkerError = createThrottledLogger(30000)
 
 /**
  * DrainQueuedWorker — Quét projects có status='QUEUED', enqueue project
@@ -91,7 +94,7 @@ const worker = new Worker('drain-queued', async (job) => {
 })
 
 worker.on('error', (err) => {
-  console.error('[DrainQueued] Worker error:', err.message)
+  logWorkerError(`[DrainQueued] Worker error: ${err.message}`)
 })
 
 worker.on('failed', (job, err) => {

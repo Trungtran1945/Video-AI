@@ -147,20 +147,26 @@ router.post('/:id/complete', async (req, res) => {
     await fs.promises.rename(tmpPath, finalAbs)
 
     const rel = `uploads/${finalName}`
+    // Compute SHA-256 hash of the uploaded video BEFORE persisting it —
+    // updateById below references videoHash (TDZ if declared after).
+    let videoHash = null
+    try {
+      videoHash = await new Promise((resolve, reject) => {
+        const h = crypto.createHash('sha256')
+        const stream = fs.createReadStream(finalAbs)
+        stream.on('data', (d) => h.update(d))
+        stream.on('end', () => resolve(h.digest('hex')))
+        stream.on('error', reject)
+      })
+    } catch (hashErr) {
+      // Hash is a cache key only — never fail a successful upload for it.
+      console.warn('Upload hash error (continuing without video_hash):', hashErr.message)
+    }
     session = await updateById('upload_sessions', session.id, {
       status: 'completed',
       storage_key: rel,
       size: session.bytes_received,
       video_hash: videoHash,
-    })
-
-    // Compute SHA-256 hash of the uploaded video for consistency caching
-    const videoHash = await new Promise((resolve, reject) => {
-      const h = crypto.createHash('sha256')
-      const stream = fs.createReadStream(finalAbs)
-      stream.on('data', (d) => h.update(d))
-      stream.on('end', () => resolve(h.digest('hex')))
-      stream.on('error', reject)
     })
 
     res.json({

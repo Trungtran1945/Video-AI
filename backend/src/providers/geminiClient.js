@@ -1,12 +1,14 @@
 // Client chung cho mọi cuộc gọi generateContent của Gemini (LLM + Vision/OCR).
 // Đặc điểm: (1) tuân thủ rate-limit quota free-tier qua acquireGeminiQuota;
-// (2) tự động thử lại khi gặp lỗi 429 / quota, dùng đúng độ trễ API gợi ý
+// (2) tự động thử lại khi gặp lỗi transient (429/quota, 503 high-demand,
+// 5xx, timeout/network blips), dùng đúng độ trễ API gợi ý
 // ("Please retry in Xs" hoặc header Retry-After) kết hợp exponential backoff.
 //
 // Trả về { text, model, usage } — định dạng giống như các provider cũ để không
 // phải đổi code ở tầng stage.
 
 import { acquireGeminiQuota } from './rateLimit.js'
+import { classifyProviderError, ERROR_KINDS } from '../lib/providerErrors.js'
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
@@ -39,11 +41,26 @@ export async function generateContent({ model, apiKey, body, json = false, maxOu
 
   while (true) {
     await acquireGeminiQuota(apiKey)
-    const res = await fetch(`${BASE}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
+    let res
+    try {
+      res = await fetch(`${BASE}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+    } catch (netErr) {
+      // Network-level failure (DNS/timeout/reset) — retry only if transient.
+      if (classifyProviderError(netErr).kind !== ERROR_KINDS.TRANSIENT) throw netErr
+      attempt++
+      if (attempt > maxRetries()) throw netErr
+      const waitMs = Math.min(60_000, backoffMs)
+      console.warn(
+        `[Gemini] transient (network) — thử lại lần ${attempt}/${maxRetries()} sau ${(waitMs / 1000).toFixed(1)}s: ${netErr.message}`
+      )
+      await sleep(waitMs)
+      backoffMs = Math.min(30_000, backoffMs * 2)
+      continue
+    }
     const data = await res.json().catch(() => null)
 
     if (res.ok) {
@@ -61,11 +78,17 @@ export async function generateContent({ model, apiKey, body, json = false, maxOu
     }
 
     const message = data?.error?.message || `Gemini HTTP ${res.status}`
+    const probe = Object.assign(new Error(message), { status: res.status })
+    const classification = classifyProviderError(probe)
     const isQuota =
       res.status === 429 ||
       /quota|rate[ -_]?limit|resource has been exhausted|please retry/i.test(message)
+    // TRANSIENT covers 429/quota plus 503 high-demand, 5xx, timeouts and
+    // network blips. PERMANENT (401/403) and CONFIGURATION never retry.
+    const isRetryable =
+      isQuota || classification.kind === ERROR_KINDS.TRANSIENT
 
-    if (!isQuota) {
+    if (!isRetryable) {
       throw new Error(`${label} lỗi: ${message}`)
     }
 
@@ -84,7 +107,7 @@ export async function generateContent({ model, apiKey, body, json = false, maxOu
     // Ưu tiên độ trễ API gợi ý, nhưng luôn ít nhất bằng backoff để tránh spam.
     const waitMs = Math.min(60_000, Math.max(waitSec * 1000, backoffMs))
     console.warn(
-      `[Gemini] quota/429 — thử lại lần ${attempt}/${maxRetries()} sau ${(waitMs / 1000).toFixed(1)}s: ${message}`
+      `[Gemini] transient (${res.status}) — thử lại lần ${attempt}/${maxRetries()} sau ${(waitMs / 1000).toFixed(1)}s: ${message}`
     )
     await sleep(waitMs)
     backoffMs = Math.min(30_000, backoffMs * 2)

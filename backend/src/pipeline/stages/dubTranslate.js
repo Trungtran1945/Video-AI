@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne, updateById, insert, run } from '../../db/query.js'
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
+import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js'
 import { projectDir, extractJsonBlock, round2 } from '../context.js'
 
 // Wider context window for free tier = fewer LLM calls (docs/11 §3.1)
@@ -72,8 +73,10 @@ export async function dubTranslate(ctx) {
   const system = buildSystemPrompt(preset, targetLanguage)
   setProgress(5)
 
-  // BƯỚC 1: Google Translate — dịch sát nghĩa từng câu
-  const gtResults = new Map() // index_num → bản dịch Google Translate
+  // BƯỚC 1: Google Translate — dịch sát nghĩa từng câu.
+  // Mỗi segment độc lập: segment lỗi không làm hỏng segment khác.
+  const gtResults = new Map() // index_num → bản dịch Google Translate (base)
+  const gtErrors = new Map() // index_num → error kind (diagnostic)
   const segmentsToTranslate = segments.filter((s) => s.text && s.text.trim())
 
   for (let i = 0; i < segmentsToTranslate.length; i++) {
@@ -86,7 +89,12 @@ export async function dubTranslate(ctx) {
         gtResults.set(seg.index_num, translated.trim())
       }
     } catch (err) {
-      console.warn(`[dubTranslate] Google Translate lỗi segment #${seg.index_num}: ${err.message}`)
+      // Diagnostic only: kind + endpoint (origin+path). Never log source
+      // text, query strings, keys or secrets.
+      const cls = classifyProviderError(err)
+      gtErrors.set(seg.index_num, cls.kind)
+      const where = err.endpoint ? ` endpoint=${err.endpoint}` : ''
+      console.warn(`[dubTranslate] Google Translate lỗi segment #${seg.index_num} [${cls.kind}]${where}: ${String(err.message || err).slice(0, 200)}`)
     }
     setProgress(5 + Math.round(((i + 1) / segmentsToTranslate.length) * 40))
   }
@@ -97,10 +105,13 @@ export async function dubTranslate(ctx) {
   const translations = new Map() // segment id → bản dịch cuối cùng
 
   if (hasStyle && llm) {
-    // Có style preset + có LLM → LLM viết lại theo style
+    // Có style preset + có LLM → LLM viết lại theo style.
+    // Style là lớp optional: restyle lỗi → fallback bản GT đã validate,
+    // KHÔNG fail cả stage. Segment lỗi để unresolved (render validation chặn).
     const restyleSystem = buildRestyleSystemPrompt(preset, targetLanguage)
     const groups = groupByWindow(segments, getContextWindowSec(project))
-    let restyled = 0
+    let styleFallback = false
+    const unresolved = []
     for (let g = 0; g < groups.length; g++) {
       const group = groups[g]
       const groupTranslations = []
@@ -110,39 +121,71 @@ export async function dubTranslate(ctx) {
           groupTranslations.push({ index: seg.index_num, original: seg.text, translation: gtText })
         }
       }
-      if (!groupTranslations.length) continue
+      if (!groupTranslations.length) {
+        for (const seg of group) {
+          if (seg.text && seg.text.trim()) unresolved.push(seg.index_num)
+        }
+        continue
+      }
 
-      const restyledGroup = await restyleGroup(llm, restyleSystem, groupTranslations, preset, job, project.id, project.user_id)
+      const { map: restyledGroup, fallback } = await restyleWithFallback(
+        llm, restyleSystem, groupTranslations, preset, job, project.id, project.user_id
+      )
+      if (fallback) styleFallback = true
 
       for (const seg of group) {
-        const restyledText = restyledGroup.get(seg.index_num)
-        const gtText = gtResults.get(seg.index_num)
-        if (restyledText && validateTranslation(seg.text, restyledText, targetLanguage).ok) {
-          await updateById('transcript_segments', seg.id, { translation: restyledText })
-          translations.set(seg.id, restyledText)
-          restyled++
-        } else if (gtText && validateTranslation(seg.text, gtText, targetLanguage).ok) {
-          // Restyle làm sai nghĩa → fallback bản GT đúng nghĩa (style sau nghĩa)
-          await updateById('transcript_segments', seg.id, { translation: gtText })
-          translations.set(seg.id, gtText)
-          restyled++
-        } else {
+        const final = resolveFinalTranslation({
+          source: seg.text,
+          base: gtResults.get(seg.index_num),
+          styled: restyledGroup.get(seg.index_num),
+          targetLanguage,
+        })
+        if (final) {
+          await updateById('transcript_segments', seg.id, { translation: final.text })
+          translations.set(seg.id, final.text)
+          if (final.via === 'base') styleFallback = true
+        } else if (seg.text && seg.text.trim()) {
+          unresolved.push(seg.index_num)
           console.warn(`[dubTranslate] Block segment #${seg.index_num}: restyle+GT đều fail gate`)
         }
       }
       setProgress(45 + Math.round(((g + 1) / groups.length) * 45))
     }
-    if (!restyled) throw new Error('LLM không trả về bản dịch restyle hợp lệ nào')
+    if (!translations.size) {
+      throw new Error(
+        `LLM không trả về bản dịch restyle hợp lệ nào` +
+        (unresolved.length ? ` (unresolved: ${unresolved.join(',')})` : '')
+      )
+    }
+    // Sinh SRT từ timing gốc + bản dịch (docs/05 FR-T6)
+    const styleCues = segments
+      .filter((s) => translations.has(s.id))
+      .map((s) => ({ start: Number(s.start_sec), end: Number(s.end_sec), text: translations.get(s.id) }))
+    if (styleCues.length) await writeSrt(project, styleCues)
+
+    return {
+      translatedCount: translations.size,
+      segmentCount: segments.length,
+      presetSlug: preset?.slug || null,
+      targetLanguage,
+      method: 'google_translate + llm_restyle',
+      styleFallback,
+      unresolved,
+    }
   } else {
     // Không có style preset HOẶC không có LLM → dùng Google Translate trực tiếp (có gate ngữ nghĩa)
     if (hasStyle && !llm) {
       console.warn('[dubTranslate] Có style preset nhưng thiếu LLM provider — dùng Google Translate trực tiếp')
     }
     const repairLlm = llm || await getProvider(project.user_id, 'llm').catch(() => null)
+    const unresolved = []
     for (let si = 0; si < segments.length; si++) {
       const seg = segments[si]
       let gtText = gtResults.get(seg.index_num)
-      if (!gtText) continue
+      if (!gtText) {
+        if (seg.text && seg.text.trim()) unresolved.push(seg.index_num)
+        continue
+      }
       if (!validateTranslation(seg.text, gtText, targetLanguage).ok) {
         const fixed = repairLlm ? await repairTranslationWithLlm(repairLlm, {
           source: seg.text, badTranslation: gtText,
@@ -150,7 +193,7 @@ export async function dubTranslate(ctx) {
           targetLanguage, system,
         }, { job, projectId: project.id, userId: project.user_id }) : null
         if (fixed) gtText = fixed
-        else { console.warn(`[dubTranslate] Block segment #${seg.index_num}: semantic gate failed`); continue }
+        else { console.warn(`[dubTranslate] Block segment #${seg.index_num}: semantic gate failed`); unresolved.push(seg.index_num); continue }
       }
       await updateById('transcript_segments', seg.id, { translation: gtText })
       translations.set(seg.id, gtText)
@@ -172,7 +215,55 @@ export async function dubTranslate(ctx) {
     presetSlug: preset?.slug || null,
     targetLanguage,
     method: hasStyle ? 'google_translate + llm_restyle' : 'google_translate',
+    styleFallback: false,
+    unresolved,
   }
+}
+
+// ── Fault isolation cho style transformation ─────────────────────────
+// sourceText → baseTranslation (Google, đã validate) → styledTranslation
+// (LLM, phải qua validate) → finalTranslation.
+//
+// Quy tắc: base đã validate KHÔNG BAO GIỜ bị hủy chỉ vì style lỗi.
+// styled hợp lệ → dùng styled; ngược lại → dùng base; cả hai lỗi → null
+// (segment unresolved — KHÔNG bịa bản dịch, render validation sẽ chặn).
+export function resolveFinalTranslation({ source, base, styled, targetLanguage = 'vi' }) {
+  if (styled && validateTranslation(source, styled, targetLanguage).ok) {
+    return { text: styled, via: 'styled' }
+  }
+  if (base && validateTranslation(source, base, targetLanguage).ok) {
+    return { text: base, via: 'base' }
+  }
+  return null
+}
+
+function sleepMs(ms) {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+// Gọi restyleGroup với retry giới hạn cho lỗi TRANSIENT rồi fallback.
+// Không bao giờ throw: trả về { map, fallback } — caller dùng base cho
+// phần còn thiếu. Lỗi PERMANENT/CONFIGURATION → fallback ngay, không retry.
+async function restyleWithFallback(llm, restyleSystem, groupTranslations, preset, job, projectId, userId) {
+  const required = groupTranslations.map((t) => t.index)
+  let lastError = null
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const map = await restyleGroup(llm, restyleSystem, groupTranslations, preset, job, projectId, userId)
+      const complete = required.every((i) => map.has(i))
+      return { map, fallback: !complete, error: complete ? null : new Error('incomplete restyle coverage') }
+    } catch (err) {
+      lastError = err
+      const classification = classifyProviderError(err)
+      console.warn(`[dubTranslate] restyle attempt ${attempt} failed [${classification.kind}]: ${String(err.message || err).slice(0, 200)}`)
+      if (classification.kind === ERROR_KINDS.TRANSIENT && attempt < 2) {
+        await sleepMs(1500 * attempt)
+        continue
+      }
+      break
+    }
+  }
+  return { map: new Map(), fallback: true, error: lastError }
 }
 
 // LLM restyle: chỉ viết lại bản dịch đã chính xác theo style preset.

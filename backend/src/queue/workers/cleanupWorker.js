@@ -1,10 +1,13 @@
 import { Worker } from 'bullmq'
 import fs from 'node:fs'
 import path from 'path'
-import { connection } from '../connection.js'
+import { connection, createThrottledLogger } from '../connection.js'
 import { query, run } from '../../db/query.js'
 import { projectDir, resolveStorageKey } from '../../pipeline/context.js'
 import { config } from '../../config.js'
+
+// Throttled: a dead Redis stream emits errors continuously — log without spam.
+const logWorkerError = createThrottledLogger(30000)
 
 /**
  * CleanupWorker — Cron repeatable job: cleanup.sweep
@@ -98,7 +101,7 @@ const worker = new Worker('cleanup', async (job) => {
 })
 
 worker.on('error', (err) => {
-  console.error('[Cleanup] Worker error:', err.message)
+  logWorkerError(`[Cleanup] Worker error: ${err.message}`)
 })
 
 worker.on('failed', (job, err) => {
