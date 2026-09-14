@@ -49,6 +49,7 @@ import dubStt from './stages/dubStt.js'
 import dubOcr from './stages/dubOcr.js'
 
 import dubMerge from './stages/dubMerge.js'
+import { validateForRender } from './stages/dubMerge.js'
 import dubTranslate from './stages/dubTranslate.js'
 import dubTtsAlign from './stages/dubTtsAlign.js'
 import dubRender from './stages/dubRender.js'
@@ -290,6 +291,14 @@ function withTimeout(promise, ms, label = 'Stage') {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
+// Retry policy (transflow doc 15 §7): backoff theo từng nhóm stage
+export const RETRY_POLICY = {
+  'dub.ttsAlign': { maxRetries: 3, backoffMs: [10_000, 30_000, 60_000] }, // 10s, 30s, 60s
+  'dub.render': { maxRetries: 2, backoffMs: [30_000, 120_000] },           // 30s, 120s
+  'dub.stt': { maxRetries: 3, backoffMs: [10_000, 30_000, 60_000] },
+  'dub.translate': { maxRetries: 3, backoffMs: [5_000, 15_000, 30_000] },
+}
+
 const STAGE_TIMEOUTS = {
   'summary.render': 30 * 60 * 1000,
   'dub.render': 30 * 60 * 1000,
@@ -331,6 +340,16 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
     // Check if already cancelled
     if (signal && signal.aborted) {
       throw new Error('Cancelled')
+    }
+
+    // BLOCK_RENDER validation trước khi render (transflow doc 15 §5.0)
+    if (job.type === 'dub.render') {
+      const validation = await validateForRender(projectId)
+      if (!validation.valid) {
+        const errorMsg = `BLOCK_RENDER: ${validation.errors.map(e => e.message).join('; ')}`
+        await failJob(job, projectId, errorMsg)
+        return false
+      }
     }
 
     const impl = STAGE_IMPL[job.type]

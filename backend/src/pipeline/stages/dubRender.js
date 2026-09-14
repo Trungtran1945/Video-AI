@@ -14,7 +14,8 @@ import {
   projectDir, ensureDir, requireSourceFile, toStorageKey, round3,
 } from '../context.js'
 
-// dub.render (docs/05 §B.7): burn-in ASS → audio mix → mux NVENC.
+// dub.render (docs/05 §B.7, transflow doc 15 §5): burn-in ASS → audio mix → mux NVENC.
+// Partial success handling: segment thiếu TTS audio sẽ dùng giọng gốc (transflow doc 15 §8.3).
 const BURN_TIMEOUT = 20 * 60 * 1000
 const DUB_TRACK_TIMEOUT = 15 * 60 * 1000
 
@@ -55,18 +56,21 @@ export async function dubRender(ctx) {
   }
   setProgress(60)
 
-  // ── 3. Audio mix + mux (docs/05 §B.7) ─────────────────────────────────
+  // ── 3. Audio mix + mux (docs/05 §B.7, transflow doc 15 §5.3) ──────────
   const enableDubbing = !!params.enableDubbing
   const ext = params.outputFormat === 'mkv' ? '.mkv' : '.mp4'
   const finalFile = path.join(dir, `final${ext}`)
+  let fallbackToOriginal = 0
 
   if (enableDubbing) {
     // Segment audio đã được tạo & căn offset ở dub.ttsAlign (audio_segments/*.wav
     // đặt tên seg_fit_XXXXX.wav đúng thứ tự start_sec tăng dần).
+    // Partial success: chỉ lấy segment có tts_audio_id, segment thiếu sẽ dùng giọng gốc.
     const rows = await query(
-      `SELECT ts.start_sec, a.id AS audio_id FROM transcript_segments ts
-       JOIN audios a ON a.id = ts.tts_audio_id
-       WHERE ts.project_id = ? ORDER BY ts.start_sec ASC`,
+      `SELECT ts.id, ts.start_sec, ts.end_sec, a.id AS audio_id FROM transcript_segments ts
+       LEFT JOIN audios a ON a.id = ts.tts_audio_id
+       WHERE ts.project_id = ? AND ts.translation IS NOT NULL AND ts.translation != ''
+       ORDER BY ts.start_sec ASC`,
       [project.id]
     )
     const aligns = parseAlignments(ctx.results?.['dub.ttsAlign'])
@@ -75,18 +79,41 @@ export async function dubRender(ctx) {
       ? fs.readdirSync(segDir).filter((f) => f.startsWith('seg_fit_') && f.endsWith('.wav')).sort()
       : []
 
-    const entries = []
+    // Phân loại: segment có TTS audio và segment dùng giọng gốc
+    const entriesWithTts = []
+    const segmentsNeedingOriginal = []
+
     rows.forEach((row, i) => {
-      const file = files[i] ? path.join(segDir, files[i]) : null
-      if (!file || !fs.existsSync(file)) return
-      const align = aligns.find((a) => String(a.audioId) === String(row.audio_id))
-      entries.push({ file, offsetSec: align ? align.startAtSec : Number(row.start_sec) })
+      if (row.audio_id) {
+        // Segment có TTS audio → tìm file tương ứng
+        const file = files[i] ? path.join(segDir, files[i]) : null
+        if (file && fs.existsSync(file)) {
+          const align = aligns.find((a) => String(a.audioId) === String(row.audio_id))
+          entriesWithTts.push({
+            file,
+            offsetSec: align ? align.startAtSec : Number(row.start_sec),
+            segmentId: row.id,
+          })
+        } else {
+          // File không tìm thấy → fallback giọng gốc
+          segmentsNeedingOriginal.push(row)
+        }
+      } else {
+        // Segment không có TTS audio → dùng giọng gốc
+        segmentsNeedingOriginal.push(row)
+      }
     })
+
+    // Log partial success info
+    if (segmentsNeedingOriginal.length > 0) {
+      console.warn(`[dubRender] ${segmentsNeedingOriginal.length}/${rows.length} segment dùng giọng gốc (thiếu TTS audio)`)
+    }
+    fallbackToOriginal = segmentsNeedingOriginal.length
 
     const dubTrackWav = path.join(dir, 'dub_track.wav')
     await buildDubTrack({
       originalMedia: src, // audio gốc làm background, duck ×0.25
-      entries,
+      entries: entriesWithTts,
       totalSec,
       out: dubTrackWav,
       backgroundVolume: 0.25,
@@ -130,12 +157,15 @@ export async function dubRender(ctx) {
   })
   setProgress(100)
 
+  // Trả về thông tin partial success (transflow doc 15 §8.3)
   return {
     outputKey,
     thumbnailKey: thumbKey,
     durationSec: round3(finalInfo.durationSec),
     burnedCues: segments.length,
     dubbedAudio: enableDubbing,
+    // Thông tin về segment dùng giọng gốc
+    fallbackToOriginal,
   }
 }
 

@@ -1,6 +1,78 @@
 import { query } from '../../db/query.js'
 import { logProviderCall } from '../../providers/tracked.js'
 
+function parseParams(raw) {
+  try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
+}
+
+/**
+ * Validate before render (transflow doc 15 §5.0 — BLOCK_RENDER pattern).
+ * Kiểm tra tất cả điều kiện cần thiết TRƯỚC khi kích hoạt Stage RENDER.
+ *
+ * @param {string} projectId
+ * @returns {{valid:boolean, errors:Array<{code:string, message:string, segmentId?:string}>}}
+ */
+export async function validateForRender(projectId) {
+  const errors = []
+
+  // Kiểm tra 1: Có transcript segments không
+  const segments = await query(
+    'SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC',
+    [projectId]
+  )
+  if (!segments.length) {
+    errors.push({ code: 'NO_SEGMENTS', message: 'Không có transcript segments' })
+    return { valid: false, errors }
+  }
+
+  // Kiểm tra 2: Có translation không
+  const untranslated = segments.filter(s => !s.translation || s.translation.trim() === '')
+  if (untranslated.length > 0) {
+    errors.push({
+      code: 'UNTRANSLATED_SEGMENTS',
+      message: `${untranslated.length} segment chưa có translation`,
+      segmentIds: untranslated.map(s => s.id),
+    })
+  }
+
+  // Kiểm tra 3: Duration validation (>0 và <=300s)
+  const invalidDuration = segments.filter(s => {
+    const dur = (Number(s.end_sec) || 0) - (Number(s.start_sec) || 0)
+    return dur <= 0 || dur > 300
+  })
+  if (invalidDuration.length > 0) {
+    errors.push({
+      code: 'INVALID_DURATION',
+      message: `${invalidDuration.length} segment có duration không hợp lệ (phải >0 và <=300s)`,
+      segmentIds: invalidDuration.map(s => s.id),
+    })
+  }
+
+  // Kiểm tra 4: Nếu enableDubbing, kiểm tra TTS audio
+  const project = await query(
+    'SELECT params FROM projects WHERE id = ?',
+    [projectId]
+  ).then(rows => rows[0])
+
+  if (project) {
+    const params = parseParams(project.params)
+    if (params.enableDubbing) {
+      const noTtsAudio = segments.filter(s =>
+        s.translation && s.translation.trim() && (!s.tts_audio_id)
+      )
+      if (noTtsAudio.length > 0) {
+        errors.push({
+          code: 'MISSING_TTS_AUDIO',
+          message: `${noTtsAudio.length} segment chưa có TTS audio (cần chạy dub.ttsAlign)`,
+          segmentIds: noTtsAudio.map(s => s.id),
+        })
+      }
+    }
+  }
+
+  return { valid: errors.length === 0, errors }
+}
+
 /**
  * dub.merge — Post-STT barrier stage
  * Validates that dub.stt produced valid transcript segments and that
@@ -74,8 +146,4 @@ export default async function dubMerge({ project, job, setProgress }) {
     sourceLanguage: params.sourceLanguage,
     targetLanguage: params.targetLanguage,
   }
-}
-
-function parseParams(raw) {
-  try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
 }

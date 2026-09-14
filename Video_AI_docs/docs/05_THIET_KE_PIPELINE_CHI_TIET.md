@@ -268,26 +268,37 @@ cho mỗi TranscriptSegment seg (đã có translation):
      └───────────────────────────────────────────────────────────────────────┘
 ```
 
-### Partial success handling (TTS)
+### Partial success handling (TTS) — ✅ ĐÃ TRIỂN KHAI
 
-- **MVP**: Nếu bất kỳ segment nào bị lỗi TTS (provider timeout, voice không tồn tại, v.v.), **toàn bộ MediaJob → `FAILED`** và yêu cầu user chỉnh lại voice hoặc rerun. Chưa có partial TTS audio trong DB.
-- **Tương lai**: Cho phép lưu `translation_segments.tts_audio_ref` cho các segment thành công, và ghi nhận segment lỗi để rerun đúng đoạn đó; MediaJob giữ `PROCESSING` (không `FAILED` toàn bộ), hiển thị progress "27/30 segment đã dub thành công, 3 segment lỗi — [Xem chi tiết]".
+- **Hiện tại**: Mỗi segment xử lý độc lập, segment lỗi không chặn các segment khác.
+  - Stage `TTS` → `COMPLETED` nếu có ít nhất 1 segment thành công.
+  - Stage `TTS` → `FAILED` nếu toàn bộ segment đều lỗi.
+  - Segment lỗi giữ `tts_audio_id = NULL`, render fallback giọng gốc.
+- **Trả về**: `{ dubbedCount, errorCount, errors: [{segmentId, indexNum, error}], stageStatus }`
+- **User có thể retry thủ công segment lỗi** (UI hiển thị danh sách segment lỗi).
 
 ### Đảm bảo khớp (Invariant)
 
 - Lệch biên mỗi segment < 5% slot; **không segment nào chồng lên segment kế**.
-- `atempo` bị chặn trong [0.9–1.15] để giọng không méo; ưu tiên **rút gọn câu thay vì hớt tốc độ**.
+- `atempo` bị chặn trong [0.8–1.2] để giọng không méo; ưu tiên **rút gọn câu thay vì hớt tốc độ**.
 - Word-level khớp (karaoke-style) dùng tham khảo **Dynamic Time Warping (DTW)** khi cần.
 
-## B.5. Stage: render — Burn-in sub mới
+## B.5. Stage: render — Burn-in sub mới — ✅ ĐÃ CẢI THIỆN
 
+- **BLOCK_RENDER validation** (transflow doc 15 §5.0): Kiểm tra TRƯỚC khi kích hoạt render:
+  - Có transcript segments không
+  - Tất cả segments đã có translation
+  - Duration hợp lệ (>0 và <=300s)
+  - Nếu enableDubbing: tất cả segments có translation phải có TTS audio
+  - Nếu validation fail → FAILED ngay, không gọi FFmpeg
 - **Burn-in phụ đề mới**: file ASS có vị trí mặc định đáy khung hình →
   `media.burnSubtitlesStyled`.
 - **Audio mixing** (xem `07_MODULE_FFMPEG.md` chi tiết):
   - **Dubbing bật**: thay voice gốc bằng dub track.
-    - **Timing lệch lớn (>20%)**: MediaJob → `FAILED`, thông báo user cần rerun.
+    - **Timing lệch lớn (>20%)**: Stage đề xuất rút gọn câu dịch.
     - **Timing lệch nhỏ (5-20%)**: time-stretch audio dub ±20% cho khớp slot (atempo 0.8–1.2).
     - **Timing khớp (±20%)**: giữ nguyên audio dub thực tế.
+    - **Partial success**: Segment thiếu TTS audio dùng giọng gốc (fallback).
     - Giữ background (nhạc/tiếng động môi trường) nếu hệ thống tách stem được; ducking −12dB;
       `loudnorm` lần cuối.
     - **Lưu ý quan trọng**: `tts_audio_ref` là source of truth cho audio đã dub, KHÔNG dùng
@@ -297,7 +308,12 @@ cho mỗi TranscriptSegment seg (đã có translation):
 - **Render validation**:
   - Kiểm tra output không bị corrupt (FFmpeg probe).
   - Kiểm tra duration output ±2s so với duration gốc.
-  - Nếu render fail → retry 1 lần (FFmpeg có thể do transient), sau đó `FAILED`.
+  - Nếu render fail → retry theo policy (2 lần, backoff 30s→120s), sau đó `FAILED`.
+- **Retry policy** (transflow doc 15 §7):
+  - `dub.render`: max 2 retries, backoff 30s → 120s
+  - `dub.ttsAlign`: max 3 retries, backoff 10s → 30s → 60s
+  - `dub.stt`: max 3 retries, backoff 10s → 30s → 60s
+  - `dub.translate`: max 3 retries, backoff 5s → 15s → 30s
 - **Subtitle presentation options** (user chọn trước render):
   - `target_font`: Font-family từ danh sách có sẵn (Arial, Noto Sans CJK, v.v.).
   - `target_font_size`: Font size (16–48px), mặc định 22px.

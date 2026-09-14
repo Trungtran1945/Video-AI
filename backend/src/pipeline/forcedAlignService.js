@@ -1,78 +1,101 @@
 import { clamp } from './context.js'
 
-// Forced Alignment (docs/05 §B.5) — ép khớp thời lượng TTS vào slot của câu gốc.
+// Forced Alignment (docs/05 §B.5, transflow doc 15 §5.3)
+// Ép khớp thời lượng TTS vào slot của câu gốc.
 // Pure functions: không I/O, dễ test theo docs/09.
 //
 // Invariant:
 // - Lệch biên mỗi segment < 5% slot sau khi fit
 // - Không segment nào chồng lên segment kế (overlap tối đa 0.3s vào khoảng lặng)
-// - atempo bị chặn trong [0.9, 1.15] để giọng không méo;
-//   ưu tiên RÚT GỌN CÂU thay vì hớt tốc độ.
+// - atempo bị chặn trong [0.8, 1.2] để giọng không méo;
+//   ưu tiên RÚT GỌN CÂU thay vì hớt tốc độ quá mức.
 
-export const TEMPO_MIN = 0.94
-export const TEMPO_MAX = 1.06
-export const TOLERANCE = 0.08 // ±8%
+// === Constants từ transflow doc 15 §5.3 ===
+export const TEMPO_MIN = 0.80   // Tối thiểu time-stretch (tối đa chậm 20%)
+export const TEMPO_MAX = 1.20   // Tối đa time-stretch (tối đa nhanh 20%)
+export const TOLERANCE = 0.08   // ±8% — dung sai nhỏ, giữ nguyên
+export const STRETCH_THRESHOLD = 0.20 // ±20% — ngưỡng xử lý lệch timing
 export const MAX_OVERLAP_SEC = 0.3
 
 /**
  * Fit một câu dub vào slot thời gian gốc.
+ * Thuật toán theo transflow doc 15 §5.3 — 4 trường hợp rõ ràng:
+ *
+ * TRƯỜNG HỢP 1: Khớp (±20%) → giữ nguyên tempo, không pad
+ * TRƯỜNG HỢP 2: Dài hơn >20% → đề xuất rút gọn câu dịch (shorten)
+ * TRƯỜNG HỢP 3: Ngắn hơn >20% → chèn silence padding (30% đầu / 70% cuối)
+ * TRƯỜNG HỢP 4: Lệch nhỏ (8-20%) → time-stretch nhẹ + pad
+ *
  * @param {number} ttsDur  thời lượng audio TTS thực tế (giây)
  * @param {number} slotDur thời lượng slot gốc = endSec - startSec
  * @param {object} [opts]
  * @param {boolean} [opts.canShorten=true]  cho phép đề xuất rút gọn câu dịch
  * @returns {{
- *   action: 'keep'|'speed'|'slow'|'pad'|'shorten',
+ *   action: 'keep'|'stretch'|'pad'|'shorten',
  *   tempo: number,          // hệ số atempo áp lên audio (1.0 = giữ nguyên)
  *   padBeforeSec: number,   // im lặng chèn trước giọng
  *   padAfterSec: number,    // im lặng chèn sau giọng
- *   effectiveDurSec: number // thời lượng chiếm trên timeline sau khi fit
+ *   effectiveDurSec: number, // thời lượng chiếm trên timeline sau khi fit
+ *   targetCharsRatio?: number // tỷ lệ rút gọn câu (chỉ khi action='shorten')
  * }}
  */
 export function fitSegment(ttsDur, slotDur, { canShorten = true } = {}) {
+  // Edge case: duration rỗng
   if (!(ttsDur > 0) || !(slotDur > 0)) {
     return { action: 'keep', tempo: 1, padBeforeSec: 0, padAfterSec: 0, effectiveDurSec: Math.max(0, ttsDur || 0) }
   }
 
   const ratio = ttsDur / slotDur
 
-  // Trong dung sai ±8% → dùng nguyên xi
-  if (ratio >= 1 - TOLERANCE && ratio <= 1 + TOLERANCE) {
-    return { action: 'keep', tempo: 1, padBeforeSec: 0, padAfterSec: 0, effectiveDurSec: round3(ttsDur) }
+  // ═══ TRƯỜNG HỢP 1: Khớp (±20%) ═══
+  // Condition: D_slot*0.80 <= D_tts <= D_slot*1.20
+  // Action: Đặt tại startSec, giữ nguyên duration thực tế
+  if (ratio >= (1 - STRETCH_THRESHOLD) && ratio <= (1 + STRETCH_THRESHOLD)) {
+    return {
+      action: 'keep',
+      tempo: 1,
+      padBeforeSec: 0,
+      padAfterSec: 0,
+      effectiveDurSec: round3(ttsDur),
+    }
   }
 
-  // Đọc dài hơn slot → tăng tốc nhẹ; vẫn thừa → đề xuất rút gọn câu dịch
-  if (ratio > 1 + TOLERANCE) {
-    const needed = clamp(ratio, 1.0, TEMPO_MAX)
-    const afterTempo = ttsDur / needed
-    if (afterTempo > slotDur * (1 + TOLERANCE)) {
-      // Vượt cả khi đã hớt tốc độ tối đa → phải rút gọn bản dịch rồi TTS lại
+  // ═══ TRƯỜNG HỢP 2: Dài hơn slot (>20%) ═══
+  // Condition: D_tts > D_slot * 1.20
+  // Severity: BLOCKING nếu không thể rút gọn
+  // Action: Đề xuất rút gọn câu dịch rồi TTS lại
+  if (ratio > 1 + STRETCH_THRESHOLD) {
+    // Tính toán cần rút gọn bao nhiêu
+    const targetCharsRatio = Math.max(0.55, slotDur / ttsDur)
+
+    // Nếu canShorten = false, vẫn cố gắng stretch tối đa
+    if (!canShorten) {
+      const tempo = clamp(1 / ratio, TEMPO_MIN, TEMPO_MAX)
+      const effectiveDur = ttsDur * tempo
       return {
-        action: canShorten ? 'shorten' : 'speed',
-        tempo: needed,
+        action: 'stretch',
+        tempo: round3(tempo),
         padBeforeSec: 0,
         padAfterSec: 0,
-        effectiveDurSec: round3(afterTempo),
-        targetCharsRatio: Math.max(0.55, slotDur / ttsDur), // rút còn ~X% độ dài
+        effectiveDurSec: round3(effectiveDur),
       }
     }
-    return { action: 'speed', tempo: round3(needed), padBeforeSec: 0, padAfterSec: 0, effectiveDurSec: round3(afterTempo) }
+
+    return {
+      action: 'shorten',
+      tempo: 1,
+      padBeforeSec: 0,
+      padAfterSec: 0,
+      effectiveDurSec: round3(slotDur),
+      targetCharsRatio,
+    }
   }
 
-  // Ngắn hơn slot → chèn lặng (30% đầu / 70% cuối); lệch nhiều thì chậm nhẹ
-  if (ratio < 1 - TOLERANCE) {
-    if (ratio >= TEMPO_MIN) {
-      // Chênh ít: chậm nhẹ về gần khớp rồi pad phần còn lại
-      const tempo = round3(Math.max(TEMPO_MIN, slotDur / ttsDur <= TEMPO_MIN ? TEMPO_MIN : slotDur / ttsDur))
-      const eff = ttsDur / tempo
-      const gap = Math.max(0, slotDur - eff)
-      return {
-        action: 'pad',
-        tempo,
-        padBeforeSec: round3(gap * 0.3),
-        padAfterSec: round3(gap * 0.7),
-        effectiveDurSec: round3(eff + gap),
-      }
-    }
+  // ═══ TRƯỜNG HỢP 3: Ngắn hơn slot (>20%) ═══
+  // Condition: D_tts < D_slot * 0.80
+  // Severity: NON_BLOCKING
+  // Action: Chèn silence padding (30% đầu / 70% cuối)
+  if (ratio < 1 - STRETCH_THRESHOLD) {
     const gap = slotDur - ttsDur
     return {
       action: 'pad',
@@ -83,7 +106,23 @@ export function fitSegment(ttsDur, slotDur, { canShorten = true } = {}) {
     }
   }
 
-  return { action: 'keep', tempo: 1, padBeforeSec: 0, padAfterSec: 0, effectiveDurSec: round3(ttsDur) }
+  // ═══ TRƯỜNG HỢP 4: Lệch nhỏ (8-20%) ═══
+  // Condition: D_tts lệch 8-20% so với D_slot
+  // Severity: NON_BLOCKING
+  // Action: Time-stretch nhẹ + pad phần còn lại
+  // Tính tempo cần thiết để vừa slot
+  const neededTempo = ttsDur / slotDur
+  const tempo = clamp(neededTempo, TEMPO_MIN, TEMPO_MAX)
+  const effectiveDur = ttsDur / tempo
+  const gap = Math.max(0, slotDur - effectiveDur)
+
+  return {
+    action: 'stretch',
+    tempo: round3(tempo),
+    padBeforeSec: round3(gap * 0.3),
+    padAfterSec: round3(gap * 0.7),
+    effectiveDurSec: round3(effectiveDur + gap),
+  }
 }
 
 /**
@@ -174,14 +213,96 @@ export function validateAlignment(sequenced, sourceSegments) {
   return { ok: errors.length === 0, errors }
 }
 
+/**
+ * Tính offset render cho segment khi có cut_ranges (transflow doc 15 §4).
+ * Khi Render, tính offset ánh xạ sang timeline đã cắt/ghép:
+ *   final_start_ms = segment.start_ms − range.start_ms + cumulative_offset(range)
+ *   final_end_ms = segment.end_ms − range.start_ms + cumulative_offset(range)
+ *
+ * @param {{start_ms:number, end_ms:number}} segment
+ * @param {Array<{start_ms:number, end_ms:number}>} [cutRanges]
+ * @returns {{finalStartMs:number, finalEndMs:number}}
+ */
+export function calculateRenderOffset(segment, cutRanges) {
+  // Nếu không có cutRanges, dùng timeline gốc
+  if (!cutRanges || !cutRanges.length) {
+    return {
+      finalStartMs: Number(segment.start_ms) || 0,
+      finalEndMs: Number(segment.end_ms) || 0,
+    }
+  }
+
+  const segStart = Number(segment.start_ms) || 0
+  const segEnd = Number(segment.end_ms) || 0
+
+  // Tìm cut range chứa segment này
+  let cumulativeOffset = 0
+  for (const range of cutRanges) {
+    const rangeStart = Number(range.start_ms) || 0
+    const rangeEnd = Number(range.end_ms) || 0
+
+    if (segStart >= rangeStart && segStart < rangeEnd) {
+      return {
+        finalStartMs: segStart - rangeStart + cumulativeOffset,
+        finalEndMs: Math.min(segEnd, rangeEnd) - rangeStart + cumulativeOffset,
+      }
+    }
+    cumulativeOffset += rangeEnd - rangeStart
+  }
+
+  // Fallback: dùng timeline gốc (segment nằm ngoài cut_ranges)
+  return {
+    finalStartMs: segStart,
+    finalEndMs: segEnd,
+  }
+}
+
+/**
+ * Validate timing alignment sau khi fit — kiểm tra invariant.
+ * @param {Array<{startSec:number, endSec:number, effectiveDurSec:number}>} fitted
+ * @param {Array<{startSec:number, endSec:number}>} sourceSegments
+ * @returns {{ok:boolean, errors:string[]}}
+ */
+export function validateTimingAlignment(fitted, sourceSegments) {
+  const errors = []
+
+  for (let i = 0; i < fitted.length; i++) {
+    const f = fitted[i]
+    const src = sourceSegments[i]
+    if (!src) continue
+
+    const slotDur = (Number(src.endSec) || 0) - (Number(src.startSec) || 0)
+    const placedDur = f.effectiveDurSec
+
+    // Kiểm tra lệch biên < 5% slot
+    if (slotDur > 0 && Math.abs(placedDur - slotDur) / slotDur > 0.05 + TOLERANCE) {
+      errors.push(`segment ${i}: lệch ${(((placedDur - slotDur) / slotDur) * 100).toFixed(1)}% so với slot`)
+    }
+
+    // Kiểm tra không chồng tiếng với segment trước
+    const prev = fitted[i - 1]
+    if (prev && f.startAtSec !== undefined && prev.endAtSec !== undefined) {
+      if (f.startAtSec < prev.endAtSec - MAX_OVERLAP_SEC - 1e-6) {
+        errors.push(`segment ${i}: chồng ${((prev.endAtSec - f.startAtSec)).toFixed(2)}s vào câu trước`)
+      }
+    }
+  }
+
+  return { ok: errors.length === 0, errors }
+}
+
 const round3 = (n) => Math.round(n * 1000) / 1000
 
 export default {
   fitSegment,
   sequenceSegments,
+  placeSegments,
   validateAlignment,
+  validateTimingAlignment,
+  calculateRenderOffset,
   TEMPO_MIN,
   TEMPO_MAX,
   TOLERANCE,
+  STRETCH_THRESHOLD,
   MAX_OVERLAP_SEC,
 }

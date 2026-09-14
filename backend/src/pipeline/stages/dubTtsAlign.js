@@ -14,6 +14,8 @@ import {
 import { fitSegment, placeSegments } from '../forcedAlignService.js'
 
 // dub.ttsAlign (docs/05 §B.5 — KHÓ NHẤT): TTS + Forced Alignment ép khớp slot gốc.
+// Partial success handling (transflow doc 15 §8.3): mỗi segment xử lý độc lập,
+// segment lỗi không chặn các segment khác.
 export async function dubTtsAlign(ctx) {
   const { project, job, setProgress, signal } = ctx
   const params = parseParams(project.params)
@@ -46,58 +48,81 @@ export async function dubTtsAlign(ctx) {
   const SPEED_MIN = 0.5
   const SPEED_MAX = 2.0
 
+  // Partial success tracking (transflow doc 15 §8.3)
   const fitted = []
+  const errors = []
+  let successCount = 0
+  let errorCount = 0
+
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i]
     const slotDur = Math.max(0.2, Number(seg.end_sec) - Number(seg.start_sec))
     let translation = seg.translation
 
-    // Sinh audio + căn chỉnh cho 1 bản dịch. Nếu provider hỗ trợ tốc độ native,
-    // synthesize lại đúng tốc độ (speed = tempo cần thiết) thay vì dùng atempo.
-    const makeAudio = async (text) => {
-      let audio = await synth(tts, text, path.join(segDir, `seg_${String(i).padStart(5, '0')}.mp3`), job, project.id, 1, project.user_id)
-      let fit = fitSegment(audio.durationSec, slotDur)
-      if (supportsNativeSpeed && fit.tempo !== 1) {
-        const speed = clamp(fit.tempo, SPEED_MIN, SPEED_MAX)
-        audio = await synth(tts, text, audio.audioPath, job, project.id, speed, project.user_id)
-        fit = fitSegment(audio.durationSec, slotDur)
+    try {
+      // Sinh audio + căn chỉnh cho 1 bản dịch. Nếu provider hỗ trợ tốc độ native,
+      // synthesize lại đúng tốc độ (speed = tempo cần thiết) thay vì dùng atempo.
+      const makeAudio = async (text) => {
+        let audio = await synth(tts, text, path.join(segDir, `seg_${String(i).padStart(5, '0')}.mp3`), job, project.id, 1, project.user_id)
+        let fit = fitSegment(audio.durationSec, slotDur)
+        if (supportsNativeSpeed && fit.tempo !== 1) {
+          const speed = clamp(fit.tempo, SPEED_MIN, SPEED_MAX)
+          audio = await synth(tts, text, audio.audioPath, job, project.id, speed, project.user_id)
+          fit = fitSegment(audio.durationSec, slotDur)
+        }
+        return { audio, fit }
       }
-      return { audio, fit }
+
+      let { audio, fit } = await makeAudio(translation)
+
+      // Đọc dài hơn cả khi hớt tốc độ tối đa → rút gọn bản dịch rồi TTS lại (tối đa 2 lần)
+      let attempt = 0
+      while (fit.action === 'shorten' && llm && attempt < 2) {
+        const shortened = await shortenTranslation(llm, translation, fit.targetCharsRatio, job, project.id, attempt, project.user_id)
+        if (!shortened || shortened === translation) break
+        translation = shortened
+        ;({ audio, fit } = await makeAudio(translation))
+        attempt++
+      }
+
+      // Áp tempo + padding → file wav chuẩn 48k stereo đặt đúng offset
+      // (với provider native speed, tempo thường = 1 nên không bị méo giọng).
+      const finalPath = path.join(segDir, `seg_fit_${String(i).padStart(5, '0')}.wav`)
+      await applyTempoAudio(audio.audioPath, finalPath, {
+        tempo: fit.tempo,
+        padBeforeSec: fit.padBeforeSec,
+        padAfterSec: fit.padAfterSec,
+      })
+      try { fs.unlinkSync(audio.audioPath) } catch (_) {}
+      const finalDur = (await probe(finalPath)).durationSec || fit.effectiveDurSec
+
+      fitted.push({
+        segmentId: seg.id,
+        indexNum: seg.index_num,
+        file: finalPath,
+        effectiveDurSec: round3(Math.min(finalDur, slotDur * 1.08 + 0.01)),
+        action: fit.action,
+        tempo: fit.tempo,
+      })
+      await updateById('transcript_segments', seg.id, { translation })
+      successCount++
+    } catch (err) {
+      // Partial success: ghi nhận lỗi nhưng không throw → tiếp tục segment tiếp theo
+      errorCount++
+      errors.push({
+        segmentId: seg.id,
+        indexNum: seg.index_num,
+        error: err.message,
+      })
+      console.warn(`[dubTtsAlign] Segment ${seg.index_num} lỗi: ${err.message}`)
     }
 
-    let { audio, fit } = await makeAudio(translation)
-
-    // Đọc dài hơn cả khi hớt tốc độ tối đa → rút gọn bản dịch rồi TTS lại (tối đa 2 lần)
-    let attempt = 0
-    while (fit.action === 'shorten' && llm && attempt < 2) {
-      const shortened = await shortenTranslation(llm, translation, fit.targetCharsRatio, job, project.id, attempt, project.user_id)
-      if (!shortened || shortened === translation) break
-      translation = shortened
-      ;({ audio, fit } = await makeAudio(translation))
-      attempt++
-    }
-
-    // Áp tempo + padding → file wav chuẩn 48k stereo đặt đúng offset
-    // (với provider native speed, tempo thường = 1 nên không bị méo giọng).
-    const finalPath = path.join(segDir, `seg_fit_${String(i).padStart(5, '0')}.wav`)
-    await applyTempoAudio(audio.audioPath, finalPath, {
-      tempo: fit.tempo,
-      padBeforeSec: fit.padBeforeSec,
-      padAfterSec: fit.padAfterSec,
-    })
-    try { fs.unlinkSync(audio.audioPath) } catch (_) {}
-    const finalDur = (await probe(finalPath)).durationSec || fit.effectiveDurSec
-
-    fitted.push({
-      segmentId: seg.id,
-      indexNum: seg.index_num,
-      file: finalPath,
-      effectiveDurSec: round3(Math.min(finalDur, slotDur * 1.08 + 0.01)),
-      action: fit.action,
-      tempo: fit.tempo,
-    })
-    await updateById('transcript_segments', seg.id, { translation })
     setProgress(3 + Math.round(((i + 1) / segments.length) * 82))
+  }
+
+  // Stage FAILED nếu không có segment nào thành công (transflow doc 15 §8.3)
+  if (successCount === 0 && errorCount > 0) {
+    throw new Error(`Tất cả ${errorCount} segment đều lỗi TTS — không có audio nào được tạo`)
   }
 
   // Không cho chồng tiếng (docs/05 §B.5 invariant) — nhưng QUAN TRỌNG: neo mỗi
@@ -108,8 +133,8 @@ export async function dubTtsAlign(ctx) {
   // slot [start_sec, end_sec] (hoặc đến start_sec đoạn kế) để không chồng tiếng.
   const sequenced = placeSegments(
     fitted.map((f, i) => ({
-      startSec: Number(segments[i].start_sec),
-      endSec: Number(segments[i].end_sec),
+      startSec: Number(segments.find(s => s.id === f.segmentId)?.start_sec) || 0,
+      endSec: Number(segments.find(s => s.id === f.segmentId)?.end_sec) || 0,
       effectiveDurSec: f.effectiveDurSec,
     }))
   )
@@ -131,9 +156,12 @@ export async function dubTtsAlign(ctx) {
     f.endAtSec = sequenced[i].endAtSec
   }
 
+  // Trả về kết quả partial success (transflow doc 15 §8.3)
   return {
     dubbedCount: fitted.length,
     skippedCount: (await countAll(project.id)) - fitted.length,
+    errorCount,
+    errors: errors.length > 0 ? errors : undefined,
     alignments: fitted.map((f) => ({
       segmentId: f.segmentId,
       audioId: f.audioId,
@@ -143,6 +171,8 @@ export async function dubTtsAlign(ctx) {
       tempo: f.tempo,
     })),
     voiceProvider: tts.id,
+    // Stage COMPLETED nếu có ít nhất 1 segment thành công
+    stageStatus: successCount > 0 ? 'completed' : 'failed',
   }
 }
 
