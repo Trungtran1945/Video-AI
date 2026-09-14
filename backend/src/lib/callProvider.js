@@ -9,6 +9,7 @@
  */
 
 import crypto from 'crypto'
+import fs from 'node:fs'
 import { run, queryOne } from '../db/query.js'
 import { v4 as uuidv4 } from 'uuid'
 import { getRateLimiter, RateLimitExhaustedError } from '../lib/rateLimiter.js'
@@ -83,6 +84,18 @@ async function storeCache(provider, type, model, input, result, ttlDays) {
   }
 }
 
+function isRemoteArtifact(p) {
+  const s = String(p || '').trim()
+  return /^(https?:\/\/|data:|blob:)/i.test(s)
+}
+function isStaleLocalArtifact(cached) {
+  if (!cached || typeof cached !== 'object' || Array.isArray(cached)) return false
+  const p = cached.audioPath
+  if (typeof p !== 'string' || p.trim() === '') return false
+  if (isRemoteArtifact(p)) return false
+  try { return !fs.existsSync(p) } catch (_) { return false }
+}
+
 /**
  * Call provider with rate limiting, caching, and tracking.
  *
@@ -115,7 +128,7 @@ export async function callProvider({
 }) {
   // 1. Cache check
   const cached = await checkCache(provider, type, model, input)
-  if (cached !== null) {
+  if (cached !== null && !isStaleLocalArtifact(cached)) {
     // Still log for analytics but mark as cache hit
     await logCall({ projectId, jobId, provider, type, model, status: 'cache_hit', durationMs: 0 })
     return cached
