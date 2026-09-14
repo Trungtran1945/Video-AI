@@ -72,6 +72,7 @@ router.post('/', async (req, res) => {
       params.sourceLanguage = b.sourceLanguage || params.sourceLanguage || 'auto'
       params.targetLanguage = b.targetLanguage || params.targetLanguage || 'vi'
       params.enableDubbing = Boolean(b.enableDubbing ?? params.enableDubbing ?? false)
+      params.ocrMode = Boolean(b.ocrMode ?? params.ocrMode ?? false)
       if (params.enableDubbing && !b.voiceId && !params.voiceProvider && !params.voiceName) {
         // voice tuỳ chọn — chỉ cảnh báo qua log, không chặn tạo dự án
         console.warn('[Projects] TRANSLATE_DUB enableDubbing=true nhưng chưa chọn voice; dùng voice mặc định của provider')
