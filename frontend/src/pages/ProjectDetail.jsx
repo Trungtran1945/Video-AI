@@ -4,6 +4,7 @@ import { projectsApi } from '@/api/projects';
 import Layout from '@/components/Layout';
 import Loading from '@/components/Loading';
 import { VideoTimeline } from '@/components/timeline';
+import { useTimelineStore } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock } from 'lucide-react';
 import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES } from '@/lib/constants';
@@ -86,6 +87,9 @@ export default function ProjectDetail() {
   const navigate = useNavigate();
   const { toast } = useToast();
 
+  // Zustand store setter for smooth playhead sync
+  const setStoreCurrentTime = useTimelineStore((s) => s.setCurrentTime);
+
   // SSE realtime — tự tắt và fallback polling nếu backend chưa hỗ trợ
   const { events: sseEvents, sseAvailable } = useJobEvents(id, !!project && ACTIVE_STATUSES.includes(project?.status));
 
@@ -114,8 +118,9 @@ export default function ProjectDetail() {
     if (video) {
       video.currentTime = time;
       setCurrentTime(time);
+      setStoreCurrentTime(time);
     }
-  }, []);
+  }, [setStoreCurrentTime]);
 
   const handleSpeedChange = useCallback((speed) => {
     const video = videoRef.current || document.getElementById('output-video');
@@ -180,6 +185,24 @@ export default function ProjectDetail() {
       video.removeEventListener('loadedmetadata', onLoadedMetadata);
     };
   }, [playbackSpeed, outputUrl]);
+
+  // RAF-based smooth playhead sync: pushes video.currentTime into Zustand store
+  // This replaces throttled timeupdate for smooth 60fps playhead movement
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !isPlaying) return;
+    let rafId;
+    const syncLoop = () => {
+      if (!video.paused) {
+        const t = video.currentTime;
+        setCurrentTime(t);
+        setStoreCurrentTime(t);
+      }
+      rafId = requestAnimationFrame(syncLoop);
+    };
+    rafId = requestAnimationFrame(syncLoop);
+    return () => cancelAnimationFrame(rafId);
+  }, [isPlaying, outputUrl, setStoreCurrentTime]);
 
   const load = useCallback(async () => {
     try {
@@ -351,6 +374,8 @@ export default function ProjectDetail() {
     const el = videoRef.current || document.getElementById('output-video');
     if (el) {
       el.currentTime = sec;
+      setCurrentTime(sec);
+      setStoreCurrentTime(sec);
       el.play?.().catch(() => {});
     }
   };

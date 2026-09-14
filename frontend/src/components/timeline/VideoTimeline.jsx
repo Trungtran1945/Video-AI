@@ -6,6 +6,8 @@ import {
   ZoomIn,
   ZoomOut,
   Magnet,
+  SkipBack,
+  SkipForward,
 } from 'lucide-react';
 import { useTimelineStore } from './timelineStore';
 import { formatTimeCode } from './timelineUtils';
@@ -89,31 +91,10 @@ export default function VideoTimeline({
 
   const isControlledPlayback = propIsPlaying !== undefined;
 
-  const activeCurrentTime = storeCurrentTime;
+  // Use propCurrentTime directly as the single source of truth
+  // ProjectDetail pushes video.currentTime into the Zustand store via RAF loop
+  const activeCurrentTime = propCurrentTime;
   const activeIsPlaying = isControlledPlayback ? propIsPlaying : storeIsPlaying;
-
-  // Sync external currentTime into store
-  useEffect(() => {
-    if (propCurrentTime !== undefined && Math.abs(propCurrentTime - storeCurrentTime) > 0.05) {
-      setStoreCurrentTime(propCurrentTime);
-    }
-  }, [propCurrentTime, storeCurrentTime, setStoreCurrentTime]);
-
-  // Smooth playhead sync via RAF during controlled playback
-  useEffect(() => {
-    if (!isControlledPlayback || !activeIsPlaying) return;
-    let rafId;
-    const syncLoop = () => {
-      const video = document.getElementById('output-video');
-      if (video && !video.paused) {
-        const t = video.currentTime;
-        setStoreCurrentTime(t);
-      }
-      rafId = requestAnimationFrame(syncLoop);
-    };
-    rafId = requestAnimationFrame(syncLoop);
-    return () => cancelAnimationFrame(rafId);
-  }, [isControlledPlayback, activeIsPlaying, setStoreCurrentTime]);
 
   // Sync transcript and video duration into clips
   useEffect(() => {
@@ -212,31 +193,6 @@ export default function VideoTimeline({
   const tracksHeight = tracks.length * 56;
   const totalRulerAndTracksHeight = tracksHeight + 36;
 
-  // Internal Playback Loop only when uncontrolled
-  useEffect(() => {
-    if (isControlledPlayback || !activeIsPlaying) return;
-
-    let animationFrameId;
-    let lastTime = performance.now();
-
-    const loop = (now) => {
-      const deltaSec = (now - lastTime) / 1000;
-      lastTime = now;
-
-      const nextTime = useTimelineStore.getState().currentTime + deltaSec;
-      if (nextTime >= totalDuration) {
-        handleSeek(0);
-        setStoreIsPlaying(false);
-      } else {
-        handleSeek(nextTime);
-        animationFrameId = requestAnimationFrame(loop);
-      }
-    };
-
-    animationFrameId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [isControlledPlayback, activeIsPlaying, totalDuration, setStoreIsPlaying, handleSeek]);
-
   // Global Keyboard Shortcuts (Space: Play/Pause, Arrow: scrub)
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -294,6 +250,15 @@ export default function VideoTimeline({
 
           <button
             type="button"
+            onClick={() => handleSeek(Math.max(0, activeCurrentTime - 5))}
+            title="Seek Backward 5s"
+            className="p-1.5 rounded-lg bg-zinc-800/60 hover:bg-zinc-700/60 text-zinc-300 hover:text-white transition-colors"
+          >
+            <SkipBack size={13} />
+          </button>
+
+          <button
+            type="button"
             onClick={handleTogglePlay}
             title={activeIsPlaying ? 'Pause (Space)' : 'Play (Space)'}
             className={`px-3 py-1 rounded-lg flex items-center gap-1 font-medium text-xs transition-all shadow-md active:scale-95 ${
@@ -304,6 +269,15 @@ export default function VideoTimeline({
           >
             {activeIsPlaying ? <Pause size={12} /> : <Play size={12} className="fill-current" />}
             <span>{activeIsPlaying ? 'Pause' : 'Play'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleSeek(Math.min(activeCurrentTime + 5, propDuration || totalDuration))}
+            title="Seek Forward 5s"
+            className="p-1.5 rounded-lg bg-zinc-800/60 hover:bg-zinc-700/60 text-zinc-300 hover:text-white transition-colors"
+          >
+            <SkipForward size={13} />
           </button>
         </div>
 
