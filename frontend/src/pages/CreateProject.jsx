@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, Languages, AlertCircle, AudioLines, AlertTriangle } from 'lucide-react';
+import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, Languages, AlertCircle, AudioLines, AlertTriangle, ScanText } from 'lucide-react';
 import {
   LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS,
   MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
@@ -64,6 +64,7 @@ export default function CreateProject() {
     voiceProvider: 'elevenlabs',
     voiceName: '',
     subPosition: 'original',
+    ocrMode: false,
   });
 
   const update = (key, val) => setForm((f) => ({ ...f, [key]: val }));
@@ -131,7 +132,11 @@ export default function CreateProject() {
     }
     // TRANSLATE_DUB
     if (step === 0) return !!form.sourceVideoKey && !uploading;
-    if (step === 1) return !!form.targetLanguage;
+    if (step === 1) {
+      if (!form.targetLanguage) return false
+      if (form.ocrMode && form.sourceLanguage === 'auto') return false
+      return true
+    }
     if (step === 2) return !!form.stylePreset;
     if (step === 3) return !form.enableDubbing || !!form.voiceProvider;
     return true;
@@ -165,6 +170,7 @@ export default function CreateProject() {
           subPosition: form.subPosition,
           sourceVideoKey: form.sourceVideoKey,
           videoHash: form.videoHash,
+          ocrMode: form.ocrMode,
           copyrightAcknowledged: copyrightAck, // Group 1: Copyright
           params: form.enableDubbing
             ? { voiceProvider: form.voiceProvider, voiceName: form.voiceName, subPosition: form.subPosition }
@@ -278,6 +284,25 @@ export default function CreateProject() {
                       ))}
                     </div>
                   </div>
+                  {/* OCR mode toggle — only when source language is not auto */}
+                  {isDub && step === 1 && form.sourceLanguage !== 'auto' && (
+                    <div className="mt-4">
+                      <button onClick={() => update('ocrMode', !form.ocrMode)}
+                        className={`w-full flex items-center justify-between p-4 rounded-xl border transition ${form.ocrMode ? 'border-blue-500 bg-blue-500/10' : 'border-white/5 bg-white/[0.02] hover:border-white/15'}`}>
+                        <div className="text-left">
+                          <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                            <ScanText className="w-4 h-4 text-blue-400" /> OCR phụ đề cứng
+                          </div>
+                          <div className="text-xs text-slate-400 mt-0.5">
+                            {form.ocrMode ? 'Bật — nhận dạng chữ từ phụ đề cứng trong video' : 'Tắt — dùng nhận dạng giọng nói (ASR)'}
+                          </div>
+                        </div>
+                        <span className={`relative w-11 h-6 rounded-full transition shrink-0 ${form.ocrMode ? 'bg-blue-600' : 'bg-white/10'}`}>
+                          <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${form.ocrMode ? 'translate-x-5' : ''}`} />
+                        </span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -388,6 +413,7 @@ export default function CreateProject() {
                             ['Ngôn ngữ', `${SOURCE_LANGUAGES[form.sourceLanguage]} → ${TARGET_LANGUAGES[form.targetLanguage]}`],
                             ['Phong cách dịch', selectedPreset ? `${selectedPreset.name}` : form.stylePreset],
                             ['Lồng tiếng AI', form.enableDubbing ? `Bật (${VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider})` : 'Tắt'],
+                            ['OCR phụ đề cứng', form.ocrMode ? 'Bật' : 'Tắt'],
                           ]
                         : [
                             ['Chế độ', MODE_LABELS.SUMMARY],
