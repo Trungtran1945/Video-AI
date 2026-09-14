@@ -46,31 +46,40 @@ import summaryRender from './stages/summaryRender.js'
 
 import dubIngest from './stages/dubIngest.js'
 import dubStt from './stages/dubStt.js'
+import dubOcr from './stages/dubOcr.js'
 
 import dubMerge from './stages/dubMerge.js'
 import dubTranslate from './stages/dubTranslate.js'
 import dubTtsAlign from './stages/dubTtsAlign.js'
 import dubRender from './stages/dubRender.js'
 
+function parseParams(raw) {
+  try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
+}
+
 async function startDubSequential(project, setProgress, results, signal) {
   const projectId = project.id
-  await ensureStageJob(projectId, 'dub.stt')
+  const params = parseParams(project.params)
+  const useOcr = Boolean(params.ocrMode)
+  const firstStage = useOcr ? 'dub.ocr' : 'dub.stt'
+
+  await ensureStageJob(projectId, firstStage)
   await ensureStageJob(projectId, 'dub.merge')
 
-  const sttJob = await loadJob(projectId, 'dub.stt')
-  const sttOk = await executeStage(
-    project, sttJob, {},
+  const firstJob = await loadJob(projectId, firstStage)
+  const firstOk = await executeStage(
+    project, firstJob, {},
     (pct) => {
       const p = Math.max(0, Math.min(99, Math.round(pct)))
-      updateById('generation_jobs', sttJob.id, { progress: p }).catch(() => {})
-      eventBus.publish(projectId, { stage: 'dub.stt', status: 'running', percent: p })
+      updateById('generation_jobs', firstJob.id, { progress: p }).catch(() => {})
+      eventBus.publish(projectId, { stage: firstStage, status: 'running', percent: p })
     },
     results,
     false,
     signal
   )
 
-  if (!sttOk) return false
+  if (!firstOk) return false
 
   const mergeJob = await loadJob(projectId, 'dub.merge')
   const mergeOk = await executeStage(
@@ -125,6 +134,7 @@ const STAGE_IMPL = {
   'summary.render': summaryRender,
   'dub.ingest': dubIngest,
   'dub.stt': dubStt,
+  'dub.ocr': dubOcr,
 
   'dub.merge': dubMerge,
   'dub.translate': dubTranslate,
@@ -143,6 +153,7 @@ const STAGE_PROVIDER = {
   'summary.render': 'ffmpeg',
   'dub.ingest': 'ffmpeg',
   'dub.stt': 'asr',
+  'dub.ocr': 'ocr',
 
   'dub.merge': 'core',
   'dub.translate': 'llm',
@@ -162,6 +173,7 @@ const RESETS = {
   // TRANSLATE_DUB (docs/02: TranscriptSegment riêng cho từng mode)
   'dub.ingest': ['transcriptSegments', 'audios', 'subtitles', 'outputs'],
   'dub.stt': ['transcriptSegments', 'audios', 'subtitles', 'outputs'],
+  'dub.ocr': ['transcriptSegments', 'audios', 'subtitles', 'outputs'],
 
   'dub.merge': [], // dub.merge chỉ kiểm tra DB, không tạo artifacts
   'dub.translate': ['audios', 'subtitles', 'outputs'],
