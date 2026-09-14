@@ -1,12 +1,34 @@
 import os from 'node:os'
+import fs from 'node:fs'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { createWorker } from 'tesseract.js'
 
-// Provider OCR cục bộ (docs/05 §B.3) dùng Tesseract.js — chạy trên máy,
-// KHÔNG gọi API, không bị giới hạn quota. Trả cùng định dạng {boxes,model,usage}
-// như GeminiVision để stage dubOcr không cần đổi code.
+const execFileAsync = promisify(execFile)
 
-// Ngôn ngữ phụ đề nguồn (tesseract hỗ trợ 'eng', 'vie', 'eng+vie', ...).
-const LANG = (process.env.OCR_LANG || 'eng').split('+').filter(Boolean)
+// Language mapping from project sourceLanguage to Tesseract traineddata codes
+const LANG_MAP = {
+  en: 'eng',
+  ja: 'jpn',
+  ko: 'kor',
+  zh: 'chi_sim',
+  'zh-TW': 'chi_tra',
+  vi: 'vie',
+  fr: 'fra',
+  de: 'deu',
+  es: 'spa',
+}
+
+function mapLanguage(sourceLanguage) {
+  if (!sourceLanguage || sourceLanguage === 'auto') return ['eng']
+  const code = sourceLanguage.trim()
+  if (code.includes('+')) {
+    return code.split('+').map(c => LANG_MAP[c] || c).filter(Boolean)
+  }
+  const mapped = LANG_MAP[code]
+  return mapped ? [mapped] : [code]
+}
+
 // Vùng quét: chỉ giữ chữ nằm dưới tỷ lệ này của khung (phụ đề thường ở đáy).
 const BOTTOM_RATIO = Number(process.env.OCR_BOTTOM_RATIO || 0.6)
 // Page segmentation mode: 6 = khối văn bản đồng nhất (phù hợp 1-2 dòng phụ đề).
@@ -15,21 +37,64 @@ const PSM = Number.isFinite(Number(process.env.OCR_PSM)) ? Number(process.env.OC
 const POOL = Math.max(1, Number(process.env.OCR_CONCURRENCY) || Math.min(os.cpus().length || 1, 4))
 
 let workersPromise = null
+let currentLang = null
 let rr = 0
 
-// Tạo pool POOL worker Tesseract chia sẻ, khởi tạo 1 lần duy nhất.
-// (Không dùng createScheduler vì API addJob ở v6 hay treo; tự phân phối round-robin.)
-async function getWorkers() {
-  if (!workersPromise) {
-    workersPromise = (async () => {
-      const ws = []
-      // createWorker chấp nhận chuỗi ('eng') hoặc mảng; chuỗi an toàn hơn trên v6.
-      const langArg = LANG.length === 1 ? LANG[0] : LANG
-      for (let i = 0; i < POOL; i++) ws.push(await createWorker(langArg))
-      return ws
-    })()
+async function getWorkers(langKey) {
+  const langStr = Array.isArray(langKey) ? langKey.join('+') : (langKey || 'eng')
+  if (workersPromise && currentLang === langStr) {
+    return workersPromise
   }
+  if (workersPromise) {
+    const old = await workersPromise
+    await Promise.all(old.map(w => w.terminate().catch(() => {})))
+  }
+  currentLang = langStr
+  workersPromise = (async () => {
+    const ws = []
+    try {
+      for (let i = 0; i < POOL; i++) ws.push(await createWorker(langStr))
+    } catch (err) {
+      const msg = `Failed to create Tesseract worker for language "${langStr}". `
+        + `Ensure the traineddata file is downloaded. `
+        + `Original error: ${err.message}`
+      throw new Error(msg)
+    }
+    return ws
+  })()
   return workersPromise
+}
+
+async function cropSubtitleROI(imagePath, width, height, bottomRatio = 0.4) {
+  const cropHeight = Math.round(height * bottomRatio)
+  const cropY = height - cropHeight
+  const outPath = imagePath.replace(/\.jpg$/i, '_crop.jpg')
+  try {
+    await execFileAsync('ffmpeg', [
+      '-y', '-i', imagePath,
+      '-vf', `crop=${width}:${cropHeight}:0:${cropY}`,
+      '-q:v', '3',
+      outPath,
+    ])
+    return { croppedPath: outPath, cropY, cropHeight }
+  } catch {
+    return { croppedPath: imagePath, cropY: 0, cropHeight: height }
+  }
+}
+
+async function preprocessImage(imagePath) {
+  const outPath = imagePath.replace(/\.jpg$/i, '_pre.jpg')
+  try {
+    await execFileAsync('ffmpeg', [
+      '-y', '-i', imagePath,
+      '-vf', 'eq=contrast=1.3:brightness=0.05,format=gray',
+      '-q:v', '3',
+      outPath,
+    ])
+    return outPath
+  } catch {
+    return imagePath
+  }
 }
 
 export class TesseractOcr {
@@ -38,68 +103,81 @@ export class TesseractOcr {
     this.model = 'tesseract'
   }
 
-  // Phát hiện phụ đề cứng: OCR toàn bộ frame, lọc chỉ vùng dưới khung.
-  // Trả về [{x, y, width, height, text, confidence}] theo pixel khung hình.
-  async detectSubtitle({ imagePath, width, height }) {
+  async detectSubtitle({ imagePath, width, height, sourceLanguage }) {
     const w = Number(width) || 1280
     const h = Number(height) || 720
-    const top = Math.floor(h * BOTTOM_RATIO)
 
-    const workers = await getWorkers()
+    const langCodes = mapLanguage(sourceLanguage)
+    const workers = await getWorkers(langCodes)
     const worker = workers[rr++ % workers.length]
-    const { data } = await worker.recognize(
-      imagePath,
-      { tessedit_pageseg_mode: PSM },
-      { blocks: true }
-    )
 
-    const boxes = []
-    const blocks = Array.isArray(data.blocks) ? data.blocks : []
-    for (const block of blocks) {
-      const lines = block.lines || []
-      for (const line of lines) {
-        const words = line.words || []
-        if (!words.length) continue
+    let croppedPath = imagePath
+    let preprocessedPath = imagePath
+    let cropY = 0
+    try {
+      const roi = await cropSubtitleROI(imagePath, w, h, BOTTOM_RATIO)
+      croppedPath = roi.croppedPath
+      cropY = roi.cropY
 
-        let minX = Infinity
-        let minY = Infinity
-        let maxX = -Infinity
-        let maxY = -Infinity
-        let text = ''
-        let confSum = 0
-        for (const word of words) {
-          const b = word.bbox || {}
-          const x0 = Number(b.x0)
-          const y0 = Number(b.y0)
-          const x1 = Number(b.x1)
-          const y1 = Number(b.y1)
-          if (!Number.isFinite(x0) || !Number.isFinite(x1)) continue
-          minX = Math.min(minX, x0)
-          minY = Math.min(minY, y0)
-          maxX = Math.max(maxX, x1)
-          maxY = Math.max(maxY, y1)
-          text += (text ? ' ' : '') + (word.text || '')
-          confSum += Number(word.confidence) || 0
+      preprocessedPath = await preprocessImage(croppedPath)
+
+      const { data } = await worker.recognize(
+        preprocessedPath,
+        { tessedit_pageseg_mode: PSM },
+        { blocks: true }
+      )
+
+      const boxes = []
+      const blocks = Array.isArray(data.blocks) ? data.blocks : []
+      for (const block of blocks) {
+        const lines = block.lines || []
+        for (const line of lines) {
+          const words = line.words || []
+          if (!words.length) continue
+
+          let minX = Infinity
+          let minY = Infinity
+          let maxX = -Infinity
+          let maxY = -Infinity
+          let text = ''
+          let confSum = 0
+          for (const word of words) {
+            const b = word.bbox || {}
+            const x0 = Number(b.x0)
+            const y0 = Number(b.y0)
+            const x1 = Number(b.x1)
+            const y1 = Number(b.y1)
+            if (!Number.isFinite(x0) || !Number.isFinite(x1)) continue
+            minX = Math.min(minX, x0)
+            minY = Math.min(minY, y0)
+            maxX = Math.max(maxX, x1)
+            maxY = Math.max(maxY, y1)
+            text += (text ? ' ' : '') + (word.text || '')
+            confSum += Number(word.confidence) || 0
+          }
+          if (!Number.isFinite(minX)) continue
+
+          const confidence = words.length ? confSum / words.length / 100 : 0.6
+          boxes.push({
+            x: Math.round(minX),
+            y: Math.round(minY + cropY),
+            width: Math.round(Math.max(1, maxX - minX)),
+            height: Math.round(Math.max(1, maxY - minY)),
+            text: text.trim(),
+            confidence: Number.isFinite(confidence) ? confidence : 0.6,
+          })
         }
-        if (!Number.isFinite(minX)) continue
+      }
 
-        // Chỉ giữ dòng có tâm nằm trong vùng phụ đề (dưới BOTTOM_RATIO).
-        const cy = (minY + maxY) / 2
-        if (cy < top) continue
-
-        const confidence = words.length ? confSum / words.length / 100 : 0.6
-        boxes.push({
-          x: Math.round(minX),
-          y: Math.round(minY),
-          width: Math.round(Math.max(1, maxX - minX)),
-          height: Math.round(Math.max(1, maxY - minY)),
-          text: text.trim(),
-          confidence: Number.isFinite(confidence) ? confidence : 0.6,
-        })
+      return { boxes, model: this.model, usage: null }
+    } finally {
+      if (croppedPath !== imagePath) {
+        fs.promises.unlink(croppedPath).catch(() => {})
+      }
+      if (preprocessedPath !== imagePath && preprocessedPath !== croppedPath) {
+        fs.promises.unlink(preprocessedPath).catch(() => {})
       }
     }
-
-    return { boxes, model: this.model, usage: null }
   }
 }
 
