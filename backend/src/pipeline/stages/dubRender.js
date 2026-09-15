@@ -15,7 +15,8 @@ import {
 } from '../context.js'
 
 // dub.render (docs/05 §B.7, transflow doc 15 §5): burn-in ASS → audio mix → mux NVENC.
-// Partial success handling: segment thiếu TTS audio sẽ dùng giọng gốc (transflow doc 15 §8.3).
+// BLOCK_RENDER: segment thiếu TTS audio khi dubbing bật → throw, không dùng giọng gốc,
+// không mượn file segment khác.
 const BURN_TIMEOUT = 20 * 60 * 1000
 const DUB_TRACK_TIMEOUT = 15 * 60 * 1000
 
@@ -41,7 +42,10 @@ export async function dubRender(ctx) {
     [project.id]
   )
   if (segments.length) {
-    const assPath = buildAss(dir, segments, [], {
+    // Minimal plumbing: đọc ocr_regions nếu tồn tại (scale-invariant ratio 0..1),
+    // normalize snake_case → camelCase, truyền đúng vào buildAss. Rỗng → fallback đáy.
+    const regions = await loadSubtitleRegions(project.id)
+    const assPath = buildAss(dir, segments, regions, {
       width: info.width || 1280,
       height: info.height || 720,
       title: project.title,
@@ -189,9 +193,42 @@ export async function dubRender(ctx) {
   }
 }
 
+// Đọc subtitle/mask regions đã persist (nếu có). Scale-invariant ratio 0..1,
+// tương ứng resolution video thực tế qua PlayResX/Y + centerOf().
+// Không hard-code vị trí khi region tồn tại; rỗng → fallback top/bottom/default.
+export async function loadSubtitleRegions(projectId) {
+  try {
+    const rows = await query(
+      `SELECT * FROM ocr_regions WHERE project_id = ? ORDER BY start_sec ASC`,
+      [projectId]
+    )
+    return (rows || []).map(normalizeRegion).filter(Boolean)
+  } catch (_) {
+    return []
+  }
+}
+
+export function normalizeRegion(r) {
+  if (!r) return null
+  const ratioX = Number(r.ratioX ?? r.ratio_x)
+  const ratioY = Number(r.ratioY ?? r.ratio_y)
+  const ratioW = Number(r.ratioW ?? r.ratio_w)
+  const ratioH = Number(r.ratioH ?? r.ratio_h)
+  const startSec = Number(r.start_sec ?? r.startSec)
+  const endSec = Number(r.end_sec ?? r.endSec)
+  if (![ratioX, ratioY, ratioW, ratioH, startSec, endSec].every(Number.isFinite)) return null
+  if (ratioW <= 0 || ratioH <= 0) return null
+  if (ratioX < 0 || ratioY < 0 || ratioX > 1 || ratioY > 1) return null
+  if (!(endSec > startSec)) return null
+  return {
+    ratioX, ratioY, ratioW: Math.min(1, ratioW), ratioH: Math.min(1, ratioH),
+    start_sec: startSec, end_sec: endSec,
+  }
+}
+
 // Sinh file ASS với Dialogue \pos định vị theo vùng mask (tính từ ratioX/Y/W/H).
 // subPosition: 'original' (đè lên vùng mask) | 'top' | 'bottom' | 'custom' (docs/01 §3.2).
-function buildAss(dir, segments, regions, { width, height, title, subPosition = 'original' }) {
+export function buildAss(dir, segments, regions, { width, height, title, subPosition = 'original' }) {
   const header = [
     '[Script Info]',
     `Title: ${title || 'SubVideo AI dub'}`,
@@ -241,13 +278,13 @@ function buildAss(dir, segments, regions, { width, height, title, subPosition = 
   return filePath
 }
 
-function pickRegion(regions, startSec, endSec) {
+export function pickRegion(regions, startSec, endSec) {
   const mid = (startSec + endSec) / 2
-  return regions.find((r) => mid >= Number(r.start_sec) && mid <= Number(r.end_sec)) || null
+  return (regions || []).find((r) => mid >= Number(r.start_sec) && mid <= Number(r.end_sec)) || null
 }
 
 // Kéo dài end tới hết region nếu câu kết thúc sát mép dưới của vùng chữ đang hiển thị.
-function alignEnd(seg, regions) {
+export function alignEnd(seg, regions) {
   const end = Number(seg.end_sec)
   const region = pickRegion(regions, Number(seg.start_sec), end)
   if (region && end < Number(region.end_sec) && Number(region.end_sec) - end < 1.2) {

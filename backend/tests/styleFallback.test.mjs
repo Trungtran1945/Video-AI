@@ -152,8 +152,9 @@ styledFor = () => 'tôi có 3 quả táo và thêm chuyện bịa đặt'
   assert(res.translatedCount === 1, 'invalid styled: stage succeeds via base')
 }
 
-// Scenario 4: GT 404 on one segment -> others intact, segment unresolved,
-// render validation blocks.
+// Scenario 4: GT 404 on one segment + LLM-direct mock returns invalid (no |tgt:|
+// line for direct prompt) -> all fallbacks exhausted -> stage FAILED strict,
+// không success giả. DB giữ 6 bản dịch còn lại, segment lỗi unresolved (not fabricated).
 await run('DELETE FROM provider_cache')
 geminiMode = 'ok'
 {
@@ -163,14 +164,17 @@ geminiMode = 'ok'
   gt404 = new Set(['this place is very beautiful'])
   styledFor = (base) => (/[?？]\s*$/.test(base) ? base : `${base} nhé`)
   const { project, ctx } = await makeProject({ sources: src, presetSlug: 'warm-d' })
-  // styled output keeps meaning/numbers/negation/questions, so styled wins
-  // wherever a base exists (fallback to base would still count as intact).
-  const res = await dubTranslate(ctx)
+  let threw = null
+  try {
+    await dubTranslate(ctx)
+  } catch (e) {
+    threw = e
+  }
   const rows = await query('SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num', [project.id])
   const failed = rows.find((r) => r.text === 'this place is very beautiful')
+  assert(threw && /incomplete: 6\/7|unresolved/.test(threw.message), `404+LLM-invalid -> stage FAILED strict (got: ${threw?.message || 'no throw'})`)
   assert(failed && !failed.translation, '404 segment left unresolved (not fabricated)')
   assert(rows.filter((r) => r.translation).length === 6, `other 6 segments intact (got ${rows.filter((r) => r.translation).length})`)
-  assert(res.translatedCount === 6, 'stage reports 6 translations')
   const v = await validateForRender(project.id)
   assert(v.valid === false && v.errors.some((e) => e.code === 'UNTRANSLATED_SEGMENTS'), 'render validation blocks unresolved segment')
 }

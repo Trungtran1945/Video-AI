@@ -7,7 +7,8 @@
   },
   "scripts": {
     "dev": "node server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -75,39 +75,100 @@ export async function dubTranslate(ctx) {
 
   // BƯỚC 1: Google Translate — dịch sát nghĩa từng câu.
   // Mỗi segment độc lập: segment lỗi không làm hỏng segment khác.
+  // CONFIGURATION (404/missing) → sau 3 lỗi liên tiếp đánh dấu provider unhealthy
+  // cho job hiện tại, không gọi lại vô hạn (endpoint hỏng thì mọi segment đều 404).
+  // Lỗi CONFIGURATION rời rạc (1-2 segment) vẫn fault-isolated, LLM-direct cứu từng câu.
+  // TRANSIENT → retry bounded exponential backoff (tối đa 2 lần retry / segment).
   const gtResults = new Map() // index_num → bản dịch Google Translate (base)
   const gtErrors = new Map() // index_num → error kind (diagnostic)
   const segmentsToTranslate = segments.filter((s) => s.text && s.text.trim())
+  let googleUnhealthy = false
+  let consecutiveConfig = 0
 
   for (let i = 0; i < segmentsToTranslate.length; i++) {
     const seg = segmentsToTranslate[i]
     const text = (seg.text || '').trim()
     if (!text) continue
-    try {
-      const translated = await gt.provider.translate(text, sourceLanguage, targetLanguage)
-      if (translated && translated !== text) {
-        gtResults.set(seg.index_num, translated.trim())
+    if (googleUnhealthy) {
+      gtErrors.set(seg.index_num, ERROR_KINDS.CONFIGURATION)
+      continue
+    }
+    let translated = null
+    let lastCls = null
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      try {
+        translated = await gt.provider.translate(text, sourceLanguage, targetLanguage)
+        break
+      } catch (err) {
+        // Diagnostic only: kind + endpoint (origin+path). Never log source
+        // text, query strings, keys or secrets.
+        const cls = classifyProviderError(err)
+        lastCls = cls
+        gtErrors.set(seg.index_num, cls.kind)
+        const where = err.endpoint ? ` endpoint=${err.endpoint}` : ''
+        console.warn(`[dubTranslate] Google Translate lỗi segment #${seg.index_num} [${cls.kind}]${where} attempt=${attempt + 1}: ${String(err.message || err).slice(0, 200)}`)
+        if (cls.kind === ERROR_KINDS.CONFIGURATION) {
+          // 404 endpoint — retrying the same URL cannot help. Sau 3 lỗi liên
+          // tiếp thì endpoint chắc chắn hỏng → short-circuit phần còn lại.
+          consecutiveConfig++
+          if (consecutiveConfig >= 3) {
+            googleUnhealthy = true
+          }
+          break
+        }
+        if (cls.kind === ERROR_KINDS.TRANSIENT && attempt < 2) {
+          await sleepMs(500 * (attempt + 1))
+          continue
+        }
+        break
       }
-    } catch (err) {
-      // Diagnostic only: kind + endpoint (origin+path). Never log source
-      // text, query strings, keys or secrets.
-      const cls = classifyProviderError(err)
-      gtErrors.set(seg.index_num, cls.kind)
-      const where = err.endpoint ? ` endpoint=${err.endpoint}` : ''
-      console.warn(`[dubTranslate] Google Translate lỗi segment #${seg.index_num} [${cls.kind}]${where}: ${String(err.message || err).slice(0, 200)}`)
+    }
+    if (translated && translated !== text) {
+      gtResults.set(seg.index_num, translated.trim())
+      consecutiveConfig = 0
+    } else if (translated && translated === text && lastCls) {
+      // Giữ nguyên diagnostic; untranslated copy không tính là base hợp lệ.
+    } else if (!translated && !lastCls) {
+      consecutiveConfig = 0
     }
     setProgress(5 + Math.round(((i + 1) / segmentsToTranslate.length) * 40))
   }
 
-  if (!gtResults.size) throw new Error('Google Translate không trả về bản dịch hợp lệ nào')
+  // BƯỚC 1b: LLM DIRECT TRANSLATION fallback cho segment chưa có base.
+  // Không chỉ restyle — dịch trực tiếp source → target, có validate + repair bounded.
+  const missingAfterGt = segmentsToTranslate.filter((s) => !gtResults.has(s.index_num))
+  let usedLlmDirect = false
+  if (missingAfterGt.length > 0) {
+    let fallbackLlm = llm
+    if (!fallbackLlm) {
+      fallbackLlm = await getProvider(project.user_id, 'llm').catch(() => null)
+    }
+    if (fallbackLlm) {
+      const directMap = await translateMissingWithLlm(fallbackLlm, missingAfterGt, {
+        system, targetLanguage, job, projectId: project.id, userId: project.user_id,
+      })
+      for (const [idx, txt] of directMap) {
+        if (!gtResults.has(idx)) {
+          gtResults.set(idx, txt)
+          usedLlmDirect = true
+        }
+      }
+    } else {
+      console.warn(`[dubTranslate] Thiếu LLM fallback cho ${missingAfterGt.length} segment Google lỗi (indexes: ${missingAfterGt.map((s) => s.index_num).join(',')})`)
+    }
+  }
+
+  if (!gtResults.size) throw new Error('Google Translate không trả về bản dịch hợp lệ nào (kèm LLM fallback cũng thất bại)')
 
   // BƯỚC 2: LLM restyle (chỉ khi có style preset VÀ có LLM)
   const translations = new Map() // segment id → bản dịch cuối cùng
+  let noStyleUnresolved = []
 
   if (hasStyle && llm) {
     // Có style preset + có LLM → LLM viết lại theo style.
-    // Style là lớp optional: restyle lỗi → fallback bản GT đã validate,
-    // KHÔNG fail cả stage. Segment lỗi để unresolved (render validation chặn).
+    // Style là lớp optional: restyle lỗi → fallback bản GT/LLM-direct đã validate,
+    // KHÔNG fail cả stage vì style. Nhưng mọi segment required đều phải có
+    // translation hợp lệ — còn unresolved thì stage FAILED (không defer cho render).
     const restyleSystem = buildRestyleSystemPrompt(preset, targetLanguage)
     const groups = groupByWindow(segments, getContextWindowSec(project))
     let styleFallback = false
@@ -157,6 +218,8 @@ export async function dubTranslate(ctx) {
         (unresolved.length ? ` (unresolved: ${unresolved.join(',')})` : '')
       )
     }
+    // Invariant: COMPLETED chỉ khi 100% required translations hợp lệ.
+    assertTranslateComplete(segments, translations, unresolved)
     // Sinh SRT từ timing gốc + bản dịch (docs/05 FR-T6)
     const styleCues = segments
       .filter((s) => translations.has(s.id))
@@ -168,7 +231,7 @@ export async function dubTranslate(ctx) {
       segmentCount: segments.length,
       presetSlug: preset?.slug || null,
       targetLanguage,
-      method: 'google_translate + llm_restyle',
+      method: usedLlmDirect ? 'google_translate + llm_direct + llm_restyle' : 'google_translate + llm_restyle',
       styleFallback,
       unresolved,
     }
@@ -178,12 +241,12 @@ export async function dubTranslate(ctx) {
       console.warn('[dubTranslate] Có style preset nhưng thiếu LLM provider — dùng Google Translate trực tiếp')
     }
     const repairLlm = llm || await getProvider(project.user_id, 'llm').catch(() => null)
-    const unresolved = []
+    noStyleUnresolved = []
     for (let si = 0; si < segments.length; si++) {
       const seg = segments[si]
       let gtText = gtResults.get(seg.index_num)
       if (!gtText) {
-        if (seg.text && seg.text.trim()) unresolved.push(seg.index_num)
+        if (seg.text && seg.text.trim()) noStyleUnresolved.push(seg.index_num)
         continue
       }
       if (!validateTranslation(seg.text, gtText, targetLanguage).ok) {
@@ -193,7 +256,7 @@ export async function dubTranslate(ctx) {
           targetLanguage, system,
         }, { job, projectId: project.id, userId: project.user_id }) : null
         if (fixed) gtText = fixed
-        else { console.warn(`[dubTranslate] Block segment #${seg.index_num}: semantic gate failed`); unresolved.push(seg.index_num); continue }
+        else { console.warn(`[dubTranslate] Block segment #${seg.index_num}: semantic gate failed`); noStyleUnresolved.push(seg.index_num); continue }
       }
       await updateById('transcript_segments', seg.id, { translation: gtText })
       translations.set(seg.id, gtText)
@@ -202,6 +265,9 @@ export async function dubTranslate(ctx) {
   }
 
   if (!translations.size) throw new Error('Không có bản dịch hợp lệ nào')
+
+  // Invariant: COMPLETED chỉ khi 100% required translations hợp lệ.
+  assertTranslateComplete(segments, translations, noStyleUnresolved)
 
   // Sinh SRT từ timing gốc + bản dịch (docs/05 FR-T6)
   const cues = segments
@@ -214,10 +280,107 @@ export async function dubTranslate(ctx) {
     segmentCount: segments.length,
     presetSlug: preset?.slug || null,
     targetLanguage,
-    method: hasStyle ? 'google_translate + llm_restyle' : 'google_translate',
+    method: usedLlmDirect ? 'google_translate + llm_direct' : (hasStyle ? 'google_translate + llm_restyle' : 'google_translate'),
     styleFallback: false,
-    unresolved,
+    unresolved: noStyleUnresolved,
   }
+}
+
+// Invariant: dub.translate COMPLETED chỉ khi mọi transcript segment có text
+// đều có translation hợp lệ. Còn unresolved → throw FAILED, không success giả.
+export function assertTranslateComplete(segments, translations, unresolved) {
+  const required = (segments || []).filter((s) => s.text && String(s.text).trim())
+  const requiredCount = required.length
+  const translatedCount = translations?.size || 0
+  const unresolvedList = Array.isArray(unresolved) ? unresolved : []
+  if (unresolvedList.length > 0 || translatedCount !== requiredCount) {
+    throw new Error(
+      `dub.translate incomplete: ${translatedCount}/${requiredCount} translations` +
+      (unresolvedList.length ? ` (unresolved: ${unresolvedList.join(',')})` : '')
+    )
+  }
+}
+
+// LLM DIRECT TRANSLATION fallback cho segment Google lỗi (404/configuration).
+// Dịch trực tiếp source → target (không phải restyle), có validate + repair bounded.
+// Không bịa translation, không copy source. Preserve index_num. Bounded: mỗi group
+// tối đa 2 attempts cho TRANSIENT, PERMANENT/CONFIGURATION → dừng ngay.
+export async function translateMissingWithLlm(llm, missingSegments, { system, targetLanguage, job, projectId, userId }) {
+  const out = new Map() // index_num → validated translation
+  if (!llm || !missingSegments?.length) return out
+  const list = [...missingSegments].sort((a, b) => (a.index_num || 0) - (b.index_num || 0))
+  // Nhóm theo window để giảm số LLM calls, giữ thứ tự/timing ở caller.
+  const groups = []
+  let cur = []
+  let winStart = 0
+  for (const s of list) {
+    if (!cur.length) winStart = Number(s.start_sec) || 0
+    if (cur.length && (Number(s.end_sec) - winStart) > 45) {
+      groups.push(cur)
+      cur = [s]
+      winStart = Number(s.start_sec) || 0
+    } else {
+      cur.push(s)
+    }
+  }
+  if (cur.length) groups.push(cur)
+
+  for (const group of groups) {
+    const requiredIndexes = group.map((s) => s.index_num)
+    const prompt =
+      `Dịch các câu sau sang ${languageName(targetLanguage)}. GIỮ ĐÚNG nghĩa, tên riêng, con số, phủ định, nghi vấn. Không bịa thêm, không copy nguyên văn nguồn.\n` +
+      `Mỗi dòng có định dạng "index|src:câu nguồn". Giữ nguyên index.\n\n` +
+      group.map((s) => `${s.index_num}|src:${s.text}`).join('\n') +
+      `\n\nTrả về DUY NHẤT JSON: {"segments":[{"index":int,"translation":string}]}`
+
+    const estTokens = group.reduce((n, s) => n + Math.max(8, Math.ceil(String(s.text || '').length * 2.5)), 0) + 256
+    const maxOutputTokens = Math.min(65536, Math.max(1024, Math.ceil(estTokens * 1.5)))
+
+    let collected = new Map()
+    let lastErr = null
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        collected = await translateGroup(llm, system, prompt, job, projectId, {
+          requiredIndexes, maxOutputTokens, userId,
+        })
+        lastErr = null
+        break
+      } catch (err) {
+        lastErr = err
+        const cls = classifyProviderError(err)
+        console.warn(`[dubTranslate] llm-direct attempt ${attempt} failed [${cls.kind}]: ${String(err.message || err).slice(0, 200)}`)
+        if (cls.kind === ERROR_KINDS.TRANSIENT && attempt < 2) {
+          await sleepMs(1000 * attempt)
+          continue
+        }
+        break
+      }
+    }
+    if (lastErr && collected.size === 0) continue
+
+    for (const seg of group) {
+      let txt = collected.get(seg.index_num)
+      if (txt) txt = String(txt).trim()
+      // Từ chối JSON artifact lọt qua gate yếu (không phải bản dịch thật).
+      if (txt && !/[{}[\]]/.test(txt) && validateTranslation(seg.text, txt, targetLanguage).ok) {
+        out.set(seg.index_num, txt)
+        continue
+      }
+      // Semantic fail → repair bounded 1 lần. Vẫn fail → để unresolved (caller fail stage).
+      if (txt) {
+        const fixed = await repairTranslationWithLlm(llm, {
+          source: seg.text, badTranslation: txt, prev: '', next: '',
+          targetLanguage, system,
+        }, { job, projectId, userId }).catch(() => null)
+        if (fixed && !/[{}[\]]/.test(fixed) && validateTranslation(seg.text, fixed, targetLanguage).ok) {
+          out.set(seg.index_num, fixed)
+        } else {
+          console.warn(`[dubTranslate] Block segment #${seg.index_num}: llm-direct semantic gate failed`)
+        }
+      }
+    }
+  }
+  return out
 }
 
 // ── Fault isolation cho style transformation ─────────────────────────
@@ -226,7 +389,7 @@ export async function dubTranslate(ctx) {
 //
 // Quy tắc: base đã validate KHÔNG BAO GIỜ bị hủy chỉ vì style lỗi.
 // styled hợp lệ → dùng styled; ngược lại → dùng base; cả hai lỗi → null
-// (segment unresolved — KHÔNG bịa bản dịch, render validation sẽ chặn).
+// (segment unresolved — stage FAILED, KHÔNG success giả, KHÔNG bịa bản dịch).
 export function resolveFinalTranslation({ source, base, styled, targetLanguage = 'vi' }) {
   if (styled && validateTranslation(source, styled, targetLanguage).ok) {
     return { text: styled, via: 'styled' }
