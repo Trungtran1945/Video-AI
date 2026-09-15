@@ -7,7 +7,7 @@ export class GeminiLlm {
     this.apiKey = apiKey
   }
 
-  async complete({ system, prompt, json = false, temperature = 0.7, maxOutputTokens }) {
+  async complete({ system, prompt, json = false, temperature = 0.7, maxOutputTokens, maxRetries }) {
     const body = {
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
@@ -18,7 +18,7 @@ export class GeminiLlm {
     }
     if (system) body.systemInstruction = { parts: [{ text: system }] }
 
-    const result = await generateContent({ model: this.model, apiKey: this.apiKey, body, json, maxOutputTokens, label: 'Gemini LLM' })
+    const result = await generateContent({ model: this.model, apiKey: this.apiKey, body, json, maxOutputTokens, label: 'Gemini LLM', maxRetries })
     if (!result.text.trim()) {
       throw new Error('Gemini trả về nội dung rỗng (có thể do chặn an toàn nội dung)')
     }

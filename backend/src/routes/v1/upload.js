@@ -162,12 +162,26 @@ router.post('/:id/complete', async (req, res) => {
       // Hash is a cache key only — never fail a successful upload for it.
       console.warn('Upload hash error (continuing without video_hash):', hashErr.message)
     }
-    session = await updateById('upload_sessions', session.id, {
-      status: 'completed',
-      storage_key: rel,
-      size: session.bytes_received,
-      video_hash: videoHash,
-    })
+    try {
+      session = await updateById('upload_sessions', session.id, {
+        status: 'completed',
+        storage_key: rel,
+        size: session.bytes_received,
+        video_hash: videoHash,
+      })
+    } catch (updErr) {
+      // Old data.db without the video_hash migration (fixed in initSchema) —
+      // migrate inline once and retry instead of failing a successful upload.
+      if (!/no such column: video_hash/i.test(String(updErr?.message || ''))) throw updErr
+      const { run: runSql } = await import('../../db/query.js')
+      try { await runSql(`ALTER TABLE upload_sessions ADD COLUMN video_hash TEXT`) } catch (_) {}
+      session = await updateById('upload_sessions', session.id, {
+        status: 'completed',
+        storage_key: rel,
+        size: session.bytes_received,
+        video_hash: videoHash,
+      })
+    }
 
     res.json({
       storageKey: rel,

@@ -12,7 +12,7 @@ import { classifyProviderError, ERROR_KINDS } from '../lib/providerErrors.js'
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
-function maxRetries() {
+function defaultMaxRetries() {
   return Number(process.env.GEMINI_MAX_RETRIES) || 5
 }
 
@@ -29,11 +29,14 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-export async function generateContent({ model, apiKey, body, json = false, maxOutputTokens, label = 'Gemini' }) {
+export async function generateContent({ model, apiKey, body, json = false, maxOutputTokens, label = 'Gemini', maxRetries }) {
   const payload = { ...body }
   if (json) payload.generationConfig = { ...payload.generationConfig, response_mime_type: 'application/json' }
   if (maxOutputTokens) payload.generationConfig = { ...payload.generationConfig, maxOutputTokens }
   if (payload.generationConfig && !Object.keys(payload.generationConfig).length) delete payload.generationConfig
+  // Per-call retry budget (best-effort callers like TTS shorten pass 0 to fail
+  // fast instead of burning N x suggested-wait). Default: env GEMINI_MAX_RETRIES.
+  const retryBudget = Number.isInteger(maxRetries) && maxRetries >= 0 ? maxRetries : defaultMaxRetries()
 
   let attempt = 0
   // backoff: 1s, 2s, 4s, 8s, 16s ... (capped 30s), cộng thêm độ trễ API gợi ý.
@@ -52,10 +55,10 @@ export async function generateContent({ model, apiKey, body, json = false, maxOu
       // Network-level failure (DNS/timeout/reset) — retry only if transient.
       if (classifyProviderError(netErr).kind !== ERROR_KINDS.TRANSIENT) throw netErr
       attempt++
-      if (attempt > maxRetries()) throw netErr
+      if (attempt > retryBudget) throw netErr
       const waitMs = Math.min(60_000, backoffMs)
       console.warn(
-        `[Gemini] transient (network) — thử lại lần ${attempt}/${maxRetries()} sau ${(waitMs / 1000).toFixed(1)}s: ${netErr.message}`
+        `[Gemini] transient (network) — thử lại lần ${attempt}/${retryBudget} sau ${(waitMs / 1000).toFixed(1)}s: ${netErr.message}`
       )
       await sleep(waitMs)
       backoffMs = Math.min(30_000, backoffMs * 2)
@@ -93,9 +96,9 @@ export async function generateContent({ model, apiKey, body, json = false, maxOu
     }
 
     attempt++
-    if (attempt > maxRetries()) {
+    if (attempt > retryBudget) {
       throw new Error(
-        `${label} lỗi (quá giới hạn quota sau ${maxRetries()} lần thử lại): ${message}. ` +
+        `${label} lỗi (quá giới hạn quota sau ${retryBudget} lần thử lại): ${message}. ` +
           `Hãy nâng cấp gói Gemini hoặc đặt GEMINI_RPM thấp hơn để tránh vượt hạn mức.`
       )
     }
@@ -107,7 +110,7 @@ export async function generateContent({ model, apiKey, body, json = false, maxOu
     // Ưu tiên độ trễ API gợi ý, nhưng luôn ít nhất bằng backoff để tránh spam.
     const waitMs = Math.min(60_000, Math.max(waitSec * 1000, backoffMs))
     console.warn(
-      `[Gemini] transient (${res.status}) — thử lại lần ${attempt}/${maxRetries()} sau ${(waitMs / 1000).toFixed(1)}s: ${message}`
+      `[Gemini] transient (${res.status}) — thử lại lần ${attempt}/${retryBudget} sau ${(waitMs / 1000).toFixed(1)}s: ${message}`
     )
     await sleep(waitMs)
     backoffMs = Math.min(30_000, backoffMs * 2)

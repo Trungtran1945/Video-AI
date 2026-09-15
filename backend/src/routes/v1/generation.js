@@ -2,7 +2,8 @@ import { Router } from 'express'
 import { query, queryOne } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
-import { runPipeline, flatStages, isPipelineRunning } from '../../pipeline/runner.js'
+import { runPipeline, flatStages, isPipelineRunning, STAGES } from '../../pipeline/runner.js'
+import { firstRunnableStage } from '../../pipeline/context.js'
 import { sendError, ERR } from '../../lib/httpError.js'
 
 const router = Router()
@@ -52,7 +53,11 @@ router.get('/:id/jobs', requireProjectOwner, async (req, res) => {
   res.json(jobs)
 })
 
-// POST /api/v1/projects/:id/jobs/:type/retry — only failed jobs of this project
+// POST /api/v1/projects/:id/jobs/:type/retry — only failed jobs of this project.
+// Resume starts from the earliest incomplete stage in pipeline order (which is
+// at-or-before the requested job): retrying dub.render while dub.ttsAlign is
+// still pending would only BLOCK_RENDER-fail again, so the chain runs from the
+// real gap. When predecessors are healthy this still runs just the one job.
 router.post('/:id/jobs/:type/retry', requireProjectOwner, async (req, res) => {
   const { type } = req.params
   const stages = flatStages(String(req.project.mode).toUpperCase().replace('-', '_'))
@@ -64,8 +69,17 @@ router.post('/:id/jobs/:type/retry', requireProjectOwner, async (req, res) => {
   if (!['failed', 'error', 'timeout'].includes(job.status)) {
     return sendError(res, 409, ERR.JOB_NOT_RETRYABLE, `Job is ${job.status}; only failed jobs can be retried`)
   }
-  runPipeline(req.project.id, type).catch(() => {})
-  res.json({ message: 'Retrying', status: 'running' })
+  const jobs = await query('SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?', [req.project.id])
+  const r = firstRunnableStage(STAGES[req.project.mode] || [], jobs)
+  if (r.waiting) {
+    return sendError(res, 429, 'RETRY_WAITING', `Stage ${r.type} đang chờ quota hồi phục, thử lại sau ${new Date(r.nextRetryAt).toLocaleTimeString('vi-VN')}`, {
+      stage: r.type,
+      nextRetryAt: r.nextRetryAt,
+    })
+  }
+  const fromStage = r.type || type
+  runPipeline(req.project.id, fromStage).catch(() => {})
+  res.json({ message: 'Retrying', status: 'running', fromStage })
 })
 
 export default router

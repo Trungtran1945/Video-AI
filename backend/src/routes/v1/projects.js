@@ -3,12 +3,12 @@ import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne, insert, updateById, run } from '../../db/query.js'
 import { authMiddleware, requireRole } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
-import { runPipeline, isPipelineRunning } from '../../pipeline/runner.js'
+import { runPipeline, isPipelineRunning, STAGES } from '../../pipeline/runner.js'
 import { deleteProjectFiles, collectProjectKeys } from '../../services/projectCleanup.js'
 import { cancelProjectUseCase } from '../../usecases/cancelProjectUseCase.js'
 import { sendError, ERR } from '../../lib/httpError.js'
 import { config } from '../../config.js'
-import { projectDir } from '../../pipeline/context.js'
+import { projectDir, firstRunnableStage } from '../../pipeline/context.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -225,19 +225,27 @@ router.post('/:id/cancel', requireProjectOwner, async (req, res) => {
   }
 })
 
-// POST /api/v1/projects/:id/regenerate — rerun pipeline from the first failed
-// job (or from scratch when everything succeeded). Idempotent: the pipeline
-// clears derived rows before rewriting them.
+// POST /api/v1/projects/:id/regenerate — rerun pipeline from the earliest
+// incomplete stage in pipeline order (or from scratch when everything
+// succeeded). Idempotent: the pipeline clears derived rows before rewriting
+// them. Resuming strictly from the first FAILED job would skip pending/retry
+// predecessors and BLOCK_RENDER-fail downstream (e.g. render while ttsAlign
+// never ran), so resume follows stage order via firstRunnableStage.
 router.post('/:id/regenerate', requireProjectOwner, async (req, res) => {
   const project = req.project
-  const failed = await queryOne(
-    `SELECT type FROM generation_jobs
-     WHERE project_id = ? AND status IN ('failed','error','timeout')
-     ORDER BY created_date ASC LIMIT 1`,
+  const jobs = await query(
+    `SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?`,
     [project.id]
   )
-  runPipeline(project.id, failed ? failed.type : null).catch(() => {})
-  res.json({ message: 'Pipeline restarted', status: 'running' })
+  const r = firstRunnableStage(STAGES[project.mode] || [], jobs)
+  if (r.waiting) {
+    return sendError(res, 429, 'RETRY_WAITING', `Stage ${r.type} đang chờ quota hồi phục, thử lại sau ${new Date(r.nextRetryAt).toLocaleTimeString('vi-VN')}`, {
+      stage: r.type,
+      nextRetryAt: r.nextRetryAt,
+    })
+  }
+  runPipeline(project.id, r.type).catch(() => {})
+  res.json({ message: 'Pipeline restarted', status: 'running', ...(r.type ? { fromStage: r.type } : {}) })
 })
 
 // DELETE /api/v1/projects/:id

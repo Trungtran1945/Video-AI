@@ -207,7 +207,9 @@ export async function dubTranslate(ctx) {
           if (final.via === 'base') styleFallback = true
         } else if (seg.text && seg.text.trim()) {
           unresolved.push(seg.index_num)
-          console.warn(`[dubTranslate] Block segment #${seg.index_num}: restyle+GT đều fail gate`)
+          const bErr = (validateTranslation(seg.text, gtResults.get(seg.index_num) || '', targetLanguage).errors || []).join(';')
+          const sErr = (validateTranslation(seg.text, restyledGroup.get(seg.index_num) || '', targetLanguage).errors || []).join(';')
+          console.warn(`[dubTranslate] Block segment #${seg.index_num}: restyle+GT đều fail gate (base:[${bErr}] styled:[${sErr}])`)
         }
       }
       setProgress(45 + Math.round(((g + 1) / groups.length) * 45))
@@ -256,7 +258,11 @@ export async function dubTranslate(ctx) {
           targetLanguage, system,
         }, { job, projectId: project.id, userId: project.user_id }) : null
         if (fixed) gtText = fixed
-        else { console.warn(`[dubTranslate] Block segment #${seg.index_num}: semantic gate failed`); noStyleUnresolved.push(seg.index_num); continue }
+        else {
+          const errs = (validateTranslation(seg.text, gtText, targetLanguage).errors || []).join(';')
+          console.warn(`[dubTranslate] Block segment #${seg.index_num}: semantic gate failed [${errs}]`)
+          noStyleUnresolved.push(seg.index_num); continue
+        }
       }
       await updateById('transcript_segments', seg.id, { translation: gtText })
       translations.set(seg.id, gtText)
@@ -375,7 +381,8 @@ export async function translateMissingWithLlm(llm, missingSegments, { system, ta
         if (fixed && !/[{}[\]]/.test(fixed) && validateTranslation(seg.text, fixed, targetLanguage).ok) {
           out.set(seg.index_num, fixed)
         } else {
-          console.warn(`[dubTranslate] Block segment #${seg.index_num}: llm-direct semantic gate failed`)
+          const errs = (validateTranslation(seg.text, txt, targetLanguage).errors || []).join(';')
+          console.warn(`[dubTranslate] Block segment #${seg.index_num}: llm-direct semantic gate failed [${errs}]`)
         }
       }
     }
@@ -594,6 +601,14 @@ function looksVietnamese(s) {
   return /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(String(s || ''))
 }
 
+// CJK chars (zh/ja/ko) expand ~3-8x when translated into Vietnamese
+// (verified live zh->vi GT outputs, ratios 3.4-7.7 for correct translations),
+// so latin-oriented heuristics must not apply to them as-is.
+function countCjk(s) {
+  const m = String(s || '').match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef\uac00-\ud7af]/g)
+  return m ? m.length : 0
+}
+
 export function validateTranslation(src, tgt, targetLang = 'vi') {
   const errors = []
   const s = String(src || '').trim(), t = String(tgt || '').trim()
@@ -603,8 +618,10 @@ export function validateTranslation(src, tgt, targetLang = 'vi') {
   if (s.toLowerCase() === t.toLowerCase()) errors.push('untranslated copy')
   const sn = extractNumbers(s), tn = extractNumbers(t)
   if (sn.length !== tn.length || sn.some((n, i) => n !== tn[i])) errors.push(`number mismatch (${sn.join(',')}→${tn.join(',')})`)
-  const sQ = /\?\s*$/.test(s), tQ = /[?\？]\s*$/.test(t)
-  if (sQ !== tQ) errors.push('question intent changed')
+  const sQ = /\?\s*$/.test(s), tQ = /[?？]\s*$/.test(t)
+  // CJK ASR transcripts carry no reliable punctuation (questions end with
+  // particles like 吗/呢/吧, not "?") while vi correctly adds "?" — skip check.
+  if (countCjk(s) === 0 && sQ !== tQ) errors.push('question intent changed')
   if (hasNegation(s, 'en') !== hasNegation(t, 'vi') && /[a-z]/i.test(s)) {
     // Only enforce when source is English-like; avoids false positives on other langs
     errors.push('negation changed')
@@ -615,11 +632,14 @@ export function validateTranslation(src, tgt, targetLang = 'vi') {
     const kept = se.filter((e) => e.length > 2 && tl.includes(e.split(' ')[0]))
     if (kept.length / se.length < 0.5) errors.push('entity changed')
   }
-  if (targetLang === 'vi' && /^[A-Za-z0-9\s.,!?'"()-]+$/.test(t) && !looksVietnamese(t) && t.length > 12) {
+  if (targetLang === 'vi' && /^[A-Za-z0-9\s.,!?'"():;—–-]+$/.test(t) && !looksVietnamese(t) && t.length > 12) {
     errors.push('wrong target language')
   }
   const ratio = t.length / Math.max(1, s.length)
-  if (ratio < 0.3 || ratio > 3) errors.push('length implausible (hallucination?)')
+  // CJK chars expand ~3-8x into Vietnamese; the latin 0.3-3 band would reject
+  // every correct zh->vi translation (live GT ratios 3.4-7.7).
+  const maxRatio = countCjk(s) > 0 ? 8 : 3
+  if (ratio < 0.3 || ratio > maxRatio) errors.push('length implausible (hallucination?)')
   return { ok: errors.length === 0, errors }
 }
 

@@ -80,6 +80,7 @@ async function startDubSequential(project, setProgress, results, signal) {
     signal
   )
 
+  if (firstOk === 'waiting') return 'waiting'
   if (!firstOk) return false
 
   const mergeJob = await loadJob(projectId, 'dub.merge')
@@ -260,6 +261,15 @@ async function failJob(job, projectId, message) {
   })
 }
 
+// Park a run halted by a rate-limit cooldown: mark the project queued so
+// drainQueued (or a manual retry after next_retry_at) resumes from the
+// earliest incomplete stage. Marking it failed would mislead; advancing
+// would BLOCK_RENDER-fail downstream stages on missing artifacts.
+async function parkProjectForRetry(projectId, stageType) {
+  await updateById('projects', projectId, { status: 'queued' })
+  eventBus.publish(projectId, { stage: stageType, status: 'retry', percent: 0 })
+}
+
 async function ensureStageJob(projectId, type) {
   const existing = await queryOne(
     'SELECT id FROM generation_jobs WHERE project_id = ? AND type = ?',
@@ -312,11 +322,14 @@ const DEFAULT_STAGE_TIMEOUT = 15 * 60 * 1000
 async function executeStage(project, job, settings, setProgress, results, isFirstExecutedStage, signal) {
   const projectId = project.id
   try {
-    // Check if this is a retry-stage waiting for cooldown
+    // Check if this is a retry-stage waiting for cooldown.
+    // Return the 'waiting' sentinel (NOT true): the caller must halt the run,
+    // otherwise it would advance to downstream stages that BLOCK_RENDER-fail
+    // on the missing artifacts of this stage.
     if (job.status === 'retry' && job.next_retry_at) {
       const retryAt = new Date(job.next_retry_at)
       if (Date.now() < retryAt.getTime()) {
-        return true
+        return 'waiting'
       }
     }
 
@@ -399,7 +412,9 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
         nextRetryAt,
         percent: 0,
       })
-      return true
+      // Halt (don't advance): downstream stages would fail on this stage's
+      // missing artifacts. runPipeline parks the project as queued for resume.
+      return 'waiting'
     }
 
     await failJob(job, projectId, err.message)
@@ -488,6 +503,10 @@ export async function runPipeline(projectId, fromStage = null) {
           signal
         )
         isFirstExecutedStage = false
+        if (ok === 'waiting') {
+          await parkProjectForRetry(projectId, types[0])
+          return
+        }
         if (!ok) groupFailed = true
       } else {
         // dub.stt followed by dub.merge sequentially
@@ -501,6 +520,10 @@ export async function runPipeline(projectId, fromStage = null) {
           signal
         )
         isFirstExecutedStage = false
+        if (ok === 'waiting') {
+          await parkProjectForRetry(projectId, 'dub.stt')
+          return
+        }
         if (!ok) groupFailed = true
       }
 

@@ -68,6 +68,9 @@ export async function initSchema() {
     `ALTER TABLE settings ADD COLUMN active_video_provider TEXT DEFAULT ''`,
     `ALTER TABLE settings ADD COLUMN active_subtitle_provider TEXT DEFAULT 'whisper'`,
     `ALTER TABLE settings ADD COLUMN active_translate_provider TEXT DEFAULT 'google_translate'`,
+    `ALTER TABLE settings ADD COLUMN active_voice_provider TEXT DEFAULT 'edge_tts'`,
+    `ALTER TABLE settings ADD COLUMN voice_provider TEXT DEFAULT 'edge_tts'`,
+    `ALTER TABLE settings ADD COLUMN aspect_ratio TEXT DEFAULT '16:9'`,
   ]) {
     try { db.run(col) } catch (_) {}
   }
@@ -366,6 +369,11 @@ export async function initSchema() {
   addCol('ocr_regions', 'ratio_h', 'REAL DEFAULT 0')
   addCol('ocr_regions', 'mask_strength', 'REAL DEFAULT 0.6')
   addCol('ocr_regions', 'is_static', 'INTEGER DEFAULT 0')
+  // Upload sessions created before 2026-09-12 lack video_hash (only projects
+  // got an ALTER migration). Without this, POST /uploads/:id/complete throws
+  // "no such column: video_hash" on old data.db files.
+  addCol('upload_sessions', 'storage_key', 'TEXT')
+  addCol('upload_sessions', 'video_hash', 'TEXT')
 
   save()
   console.log('[DB] Schema initialized (sql.js)')

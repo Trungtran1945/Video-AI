@@ -7,10 +7,10 @@ import { probe } from '../../media/ffmpeg.js'
 // Edge-TTS (dịch vụ Read Aloud của Microsoft Edge) — miễn phí, không cần API key.
 // Giao thức WebSocket + token Sec-MS-GEC (SHA256 theo tick Windows, làm tròn 5 phút).
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4'
-const WSS_URL =
-  `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1` +
-  `?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}`
-const CHROMIUM_FULL_VERSION = '130.0.2849.68'
+const WSS_BASE_URL =
+  `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`
+const CHROMIUM_FULL_VERSION = '143.0.3650.75'
+const CHROMIUM_MAJOR_VERSION = CHROMIUM_FULL_VERSION.split('.')[0]
 const SEC_MS_GEC_VERSION = `1-${CHROMIUM_FULL_VERSION}`
 const OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3'
 const REQUEST_TIMEOUT_MS = 30000
@@ -59,8 +59,16 @@ function secMsGecToken() {
   return crypto.createHash('sha256').update(`${ticks}${TRUSTED_CLIENT_TOKEN}`, 'ascii').digest('hex').toUpperCase()
 }
 
+function generateMuid() {
+  return crypto.randomBytes(16).toString('hex').toUpperCase()
+}
+
+function connectId() {
+  return crypto.randomUUID().replace(/-/g, '')
+}
+
 function buildUrl() {
-  return `${WSS_URL}&Sec-MS-GEC=${secMsGecToken()}&Sec-MS-GEC-Version=${SEC_MS_GEC_VERSION}`
+  return `${WSS_BASE_URL}?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}&ConnectionId=${connectId()}&Sec-MS-GEC=${secMsGecToken()}&Sec-MS-GEC-Version=${SEC_MS_GEC_VERSION}`
 }
 
 function ssmlFor(text, voice, speed) {
@@ -112,10 +120,15 @@ async function synthesizeOnce(text, voice, speed) {
     try {
       ws = new WebSocket(buildUrl(), {
         headers: {
+          Pragma: 'no-cache',
+          'Cache-Control': 'no-cache',
           Origin: 'chrome-extension://jdiccldimpahbcfhbmnnjbclgnbnkgof',
           'User-Agent':
             `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ` +
-            `Chrome/${CHROMIUM_FULL_VERSION.split('.').slice(0, 3).join('.')} Safari/537.36 Edg/${CHROMIUM_FULL_VERSION}`,
+            `Chrome/${CHROMIUM_MAJOR_VERSION}.0.0.0 Safari/537.36 Edg/${CHROMIUM_MAJOR_VERSION}.0.0.0`,
+          'Accept-Encoding': 'gzip, deflate, br, zstd',
+          'Accept-Language': 'en-US,en;q=0.9',
+          Cookie: `muid=${generateMuid()};`,
         },
       })
     } catch (err) {

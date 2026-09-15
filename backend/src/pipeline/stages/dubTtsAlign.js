@@ -31,6 +31,7 @@ import {
   projectDir, ensureDir, round3, clamp,
 } from '../context.js'
 import { fitSegment, placeSegments } from '../forcedAlignService.js'
+import { validateTranslation } from './dubTranslate.js'
 
 function sleepMs(ms) {
   return new Promise((r) => setTimeout(r, ms))
@@ -38,10 +39,11 @@ function sleepMs(ms) {
 
 // dub.ttsAlign (docs/05 §B.5 — KHÓ NHẤT): TTS + Forced Alignment ép khớp slot gốc.
 // Partial success handling (transflow doc 15 §8.3): mỗi segment xử lý độc lập,
-// segment lỗi không chặn các segment khác.
+// lỗi 1 segment không làm dừng toàn bộ, thu thập partial results.
 export async function dubTtsAlign(ctx) {
   const { project, job, setProgress, signal } = ctx
   const params = parseParams(project.params)
+  const targetLanguage = params.targetLanguage || 'vi'
 
   // Check abort signal
   if (signal?.aborted) throw new Error('Cancelled')
@@ -95,23 +97,34 @@ export async function dubTtsAlign(ctx) {
         const makeAudio = async (text) => {
           let audio = await synth(tts, text, path.join(segDir, `seg_${segKey}.mp3`), job, project.id, 1, project.user_id)
           let fit = fitSegment(audio.durationSec, slotDur)
-          if (supportsNativeSpeed && fit.tempo !== 1) {
-            const speed = clamp(fit.tempo, SPEED_MIN, SPEED_MAX)
-            audio = await synth(tts, text, audio.audioPath, job, project.id, speed, project.user_id)
-            fit = fitSegment(audio.durationSec, slotDur)
+          if (supportsNativeSpeed) {
+            let targetSpeed = 1
+            if (fit.tempo !== 1) {
+              targetSpeed = fit.tempo
+            } else if (fit.action === 'shorten' && audio.durationSec > slotDur) {
+              targetSpeed = audio.durationSec / slotDur
+            }
+            if (targetSpeed !== 1) {
+              const speed = clamp(targetSpeed, SPEED_MIN, SPEED_MAX)
+              audio = await synth(tts, text, audio.audioPath, job, project.id, speed, project.user_id)
+              fit = fitSegment(audio.durationSec, slotDur)
+            }
           }
           return { audio, fit }
         }
 
         let { audio, fit } = await makeAudio(translation)
 
-        // Đọc dài hơn cả khi hớt tốc độ tối đa → rút gọn bản dịch rồi TTS lại (tối đa 2 lần)
+        // Đọc dài hơn cả khi hớt tốc độ tối đa → rút gọn bản dịch rồi TTS lại (tối đa 2 lần).
+        // Chỉ chấp nhận bản dịch rút gọn khi VƯỢT QUA semantic gate (validateTranslation).
         let attempt = 0
         while (fit.action === 'shorten' && llm && attempt < 2) {
-          const shortened = await shortenTranslation(llm, translation, fit.targetCharsRatio, job, project.id, attempt, project.user_id)
+          const shortened = await shortenTranslation(llm, seg.text, translation, fit.targetCharsRatio, job, project.id, targetLanguage, attempt, project.user_id)
           if (!shortened || shortened === translation) break
+          const candidate = await makeAudio(shortened)
           translation = shortened
-          ;({ audio, fit } = await makeAudio(translation))
+          audio = candidate.audio
+          fit = candidate.fit
           attempt++
         }
 
@@ -125,14 +138,15 @@ export async function dubTtsAlign(ctx) {
         })
         try { fs.unlinkSync(audio.audioPath) } catch (_) {}
         let finalDur = (await probe(finalPath)).durationSec || fit.effectiveDurSec
-        // Physical consistency: audio thật không được dài hơn slot + dung sai nhỏ
-        const maxAllowed = slotDur + 0.08
+        // Physical consistency: audio thật không được dài hơn slot hoặc tràn sang segment kế
+        const nextStart = segments[i + 1] ? Number(segments[i + 1].start_sec) : Infinity
+        const maxAllowed = Math.min(slotDur, Math.max(0.1, nextStart - Number(seg.start_sec)))
         if (finalDur > maxAllowed) {
           const trimmed = path.join(segDir, `seg_fit_${segKey}_trim.wav`)
-          await trimWavToDur(finalPath, trimmed, slotDur)
+          await trimWavToDur(finalPath, trimmed, maxAllowed)
           try { fs.unlinkSync(finalPath) } catch (_) {}
           try { fs.renameSync(trimmed, finalPath) } catch (_) {}
-          finalDur = (await probe(finalPath)).durationSec || slotDur
+          finalDur = (await probe(finalPath)).durationSec || maxAllowed
         }
         if (finalDur <= 0) throw new Error(`audio rỗng sau fit (segment ${seg.index_num})`)
 
@@ -245,33 +259,54 @@ async function synth(tts, text, outPath, job, projectId, speed = 1, userId = nul
   })
 }
 
-async function shortenTranslation(llm, translation, ratio, job, projectId, attempt = 0, userId = null) {
+export async function shortenTranslation(llm, sourceText, translation, ratio, job, projectId, targetLanguage = 'vi', attempt = 0, userId = null) {
+  // Best-effort cosmetic call: fail fast (no retry storm) when the LLM is
+  // exhausted — the stage keeps the original translation and fits via tempo.
   try {
+    const targetWords = Math.max(2, Math.round((String(translation || '').trim().split(/\s+/).length) * (ratio || 0.7)))
+    const prompt =
+      `Rút gọn câu lồng tiếng sau còn khoảng ${targetWords} từ nhưng BẮT BUỘC GIỮ NGUYÊN Ý CHÍNH, tên riêng, con số, phủ định, nghi vấn. Tự nhiên như lồng tiếng:\n"${translation}"\n` +
+      `Chỉ trả về DUY NHẤT 1 câu rút gọn không giải thích, không tiêu đề, không để trong ngoặc hay dấu nháy.`
+
     const res = await callProvider({
       provider: llm.id,
       type: 'llm',
       model: llm.provider.model || llm.id,
       input: {
-        prompt:
-          `Rút gọn câu lồng tiếng sau còn khoảng ${Math.round(ratio * 100)}% độ dài nhưng GIỮ NGUYÊN Ý CHÍNH, tự nhiên như lồng tiếng:\n"${translation}"\n` +
-          `Trả về DUY NHẤT chuỗi kết quả, không giải thích${attempt > 0 ? ', cắt gọn hơn nữa' : ''}.`,
-        temperature: 0.3,
-        maxOutputTokens: 200,
+        prompt,
+        temperature: 0.2,
+        maxOutputTokens: 150,
+        maxRetries: 0,
       },
       fn: () => llm.provider.complete({
-        prompt:
-          `Rút gọn câu lồng tiếng sau còn khoảng ${Math.round(ratio * 100)}% độ dài nhưng GIỮ NGUYÊN Ý CHÍNH, tự nhiên như lồng tiếng:\n"${translation}"\n` +
-          `Trả về DUY NHẤT chuỗi kết quả, không giải thích${attempt > 0 ? ', cắt gọn hơn nữa' : ''}.`,
-        temperature: 0.3,
-        maxOutputTokens: 200,
+        prompt,
+        temperature: 0.2,
+        maxOutputTokens: 150,
+        maxRetries: 0,
       }),
       userId,
       apiKeyId: llm.apiKeyId,
       projectId,
-      jobId: job.id,
+      jobId: job?.id,
     })
-    const cleaned = res.text.replace(/^["'\s]+|["'\s]+$/g, '').trim()
-    return cleaned || null
+
+    let text = String(res?.text || '').trim()
+    text = text.replace(/[*_`]/g, '')
+    const lines = text.split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.endsWith(':') && !l.startsWith('#'))
+    const candidateLine = lines[0] || ''
+    const cleaned = candidateLine
+      .replace(/^[\d+.)\-*•\s]+/, '')
+      .replace(/^["'“”(\s]+|["'“”)\s]+$/g, '')
+      .trim()
+
+    // BẮT BUỘC: Bản dịch rút gọn phải vượt qua semantic gate (số/phủ định/thực thể/ngôn ngữ).
+    // Nếu fail gate (ví dụ LLM trả lời giải thích, bịa số, mất phủ định) -> coi như thất bại và giữ bản dịch gốc.
+    if (cleaned && validateTranslation(sourceText, cleaned, targetLanguage).ok) {
+      return cleaned
+    }
+    return null
   } catch (_) {
     return null
   }

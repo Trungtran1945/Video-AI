@@ -131,3 +131,28 @@ export function isImageAsset(asset) {
   if (String(asset.kind || '').toLowerCase() === 'image') return true
   return /\.(jpe?g|png|webp|bmp|gif)$/i.test(asset.storage_key || '')
 }
+
+// Resume order for pipeline retry/regenerate (pure, testable).
+// Returns the earliest stage that still needs work, following STAGE ORDER —
+// never created_date (ties are undefined) and never skipping pending/retry
+// predecessors. Running a downstream stage while predecessors are incomplete
+// can only reproduce BLOCK_RENDER loops (e.g. dub.render while dub.ttsAlign
+// is pending → "12 segment chưa có TTS audio" forever).
+//
+// Returns { type: null, waiting: false } when every stage succeeded,
+// { type, waiting: true, nextRetryAt } when the earliest incomplete stage is
+// a rate-limit cooldown that has not elapsed yet (caller must halt, not skip).
+export function firstRunnableStage(order, jobs, now = Date.now()) {
+  const flat = (order || []).flat()
+  const byType = new Map((jobs || []).map((j) => [j.type, j]))
+  for (const type of flat) {
+    const job = byType.get(type)
+    if (!job) return { type, waiting: false, nextRetryAt: null }
+    if (job.status === 'success') continue
+    if (job.status === 'retry' && job.next_retry_at && new Date(job.next_retry_at).getTime() > now) {
+      return { type, waiting: true, nextRetryAt: job.next_retry_at }
+    }
+    return { type, waiting: false, nextRetryAt: null }
+  }
+  return { type: null, waiting: false, nextRetryAt: null }
+}
