@@ -12,28 +12,28 @@ import { uploadApi } from '@/api/upload';
 import Layout from '@/components/Layout';
 
 function FreeTierWarning({ mode, estimatedDuration }) {
-  const thresholds = { SUMMARY: 60 * 60, TRANSLATE_DUB: 20 * 60 }
-  const threshold = thresholds[mode]
-  if (!threshold || !estimatedDuration || estimatedDuration <= threshold) return null
+  const thresholds = { SUMMARY: 60 * 60, TRANSLATE_DUB: 20 * 60 };
+  const threshold = thresholds[mode];
+  if (!threshold || !estimatedDuration || estimatedDuration <= threshold) return null;
 
   return (
-    <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 mb-4">
-      <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+    <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 mb-4 text-left">
+      <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
       <div>
-        <p className="text-sm text-amber-200 font-medium">Cảnh báo free tier</p>
-        <p className="text-xs text-amber-300/70 mt-1">
+        <p className="text-sm text-amber-800 dark:text-amber-300 font-semibold">Cảnh báo hạn mức miễn phí (Free Tier)</p>
+        <p className="text-xs text-amber-700/80 dark:text-amber-300/70 mt-1 leading-relaxed">
           Với API key miễn phí, xử lý nội dung dài có thể chậm hơn nhiều do giới hạn tốc độ của nhà cung cấp.
-          Khuyến nghị test với clip ngắn (≤ 10 phút) trước.
+          Khuyến nghị thử nghiệm với clip ngắn (≤ 10 phút) trước.
         </p>
       </div>
     </div>
-  )
+  );
 }
 
 const SUMMARY_DURATIONS = [
-  { value: 1200, label: '20 phút', desc: 'Ngắn gọn' },
-  { value: 1500, label: '25 phút', desc: 'Tiêu chuẩn' },
-  { value: 1800, label: '30 phút', desc: 'Chi tiết' },
+  { value: 1200, label: '20 phút', desc: 'Ngắn gọn, súc tích' },
+  { value: 1500, label: '25 phút', desc: 'Tiêu chuẩn thịnh hành' },
+  { value: 1800, label: '30 phút', desc: 'Chi tiết, phân tích sâu' },
 ];
 
 export default function CreateProject() {
@@ -44,9 +44,9 @@ export default function CreateProject() {
   const [uploadPercent, setUploadPercent] = useState(0);
   const [error, setError] = useState('');
   const [presets, setPresets] = useState(STYLE_PRESETS_FALLBACK);
-  const [copyrightAck, setCopyrightAck] = useState(false); // Group 1: Copyright checkbox
+  const [copyrightAck, setCopyrightAck] = useState(false);
   const [form, setForm] = useState({
-    mode: null, // 'SUMMARY' | 'TRANSLATE_DUB'
+    mode: null,
     title: '',
     sourceVideoKey: null,
     sourceFileName: '',
@@ -56,7 +56,6 @@ export default function CreateProject() {
     style: 'cinematic',
     tone: '',
     spoilerAllowed: false,
-    // TRANSLATE_DUB
     sourceLanguage: 'auto',
     targetLanguage: 'vi',
     stylePreset: null,
@@ -75,18 +74,17 @@ export default function CreateProject() {
     { key: 'duration', label: 'Độ dài', icon: Clock },
     { key: 'style', label: 'Phong cách', icon: Palette },
     { key: 'voice', label: 'Giọng đọc', icon: Mic },
-    { key: 'generate', label: 'Tạo', icon: Wand2 },
+    { key: 'generate', label: 'Tạo video', icon: Wand2 },
   ];
   const dubSteps = [
     { key: 'video', label: 'Video', icon: Film },
     { key: 'language', label: 'Ngôn ngữ', icon: Globe },
-    { key: 'preset', label: 'Phong cách dịch', icon: Languages },
+    { key: 'preset', label: 'Biên dịch', icon: Languages },
     { key: 'dubbing', label: 'Lồng tiếng AI', icon: Mic },
-    { key: 'generate', label: 'Tạo', icon: Wand2 },
+    { key: 'generate', label: 'Tạo video', icon: Wand2 },
   ];
   const steps = form.mode === 'SUMMARY' ? summarySteps : dubSteps;
 
-  // Lấy danh sách 12 preset từ backend; lỗi/404 → fallback hardcode
   useEffect(() => {
     if (form.mode !== 'TRANSLATE_DUB') return;
     let alive = true;
@@ -100,7 +98,6 @@ export default function CreateProject() {
     return () => { alive = false; };
   }, [form.mode]);
 
-  // ── Upload handlers ──
   const handleMovie = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -120,7 +117,6 @@ export default function CreateProject() {
     }
   };
 
-  // ── Validation ──
   const canNext = () => {
     if (form.mode === 'SUMMARY') {
       if (step === 0) return !!form.sourceVideoKey;
@@ -130,12 +126,11 @@ export default function CreateProject() {
       if (step === 4) return !!form.voiceProvider;
       return true;
     }
-    // TRANSLATE_DUB
     if (step === 0) return !!form.sourceVideoKey && !uploading;
     if (step === 1) {
-      if (!form.targetLanguage) return false
-      if (form.ocrMode && form.sourceLanguage === 'auto') return false
-      return true
+      if (!form.targetLanguage) return false;
+      if (form.ocrMode && form.sourceLanguage === 'auto') return false;
+      return true;
     }
     if (step === 2) return !!form.stylePreset;
     if (step === 3) return !form.enableDubbing || !!form.voiceProvider;
@@ -156,7 +151,7 @@ export default function CreateProject() {
           targetDurationSec: form.targetDurationSec,
           sourceVideoKey: form.sourceVideoKey,
           videoHash: form.videoHash,
-          copyrightAcknowledged: copyrightAck, // Group 1: Copyright
+          copyrightAcknowledged: copyrightAck,
           params: { tone: form.tone, spoilerAllowed: form.spoilerAllowed, voiceProvider: form.voiceProvider, voiceName: form.voiceName },
         };
       } else {
@@ -171,7 +166,7 @@ export default function CreateProject() {
           sourceVideoKey: form.sourceVideoKey,
           videoHash: form.videoHash,
           ocrMode: form.ocrMode,
-          copyrightAcknowledged: copyrightAck, // Group 1: Copyright
+          copyrightAcknowledged: copyrightAck,
           params: form.enableDubbing
             ? { voiceProvider: form.voiceProvider, voiceName: form.voiceName, subPosition: form.subPosition }
             : { subPosition: form.subPosition },
@@ -185,25 +180,26 @@ export default function CreateProject() {
     }
   };
 
-  // ── Mode selection screen ──
   if (!form.mode) {
     return (
       <Layout>
         <div className="max-w-3xl mx-auto p-6 lg:p-8">
-          <h1 className="text-2xl font-bold text-white mb-1">Tạo Dự Án Mới</h1>
-          <p className="text-sm text-slate-400 mb-8">Chọn chế độ sản xuất video tự động</p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="mb-8">
+            <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Tạo Dự Án Mới</h1>
+            <p className="text-sm text-muted-foreground mt-1.5">Chọn chế độ sản xuất video tự động bằng trí tuệ nhân tạo</p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
             <ModeCard
               onClick={() => update('mode', 'SUMMARY')}
               icon={Clapperboard}
-              title="Review Phim"
-              desc="Tải phim 2–3 tiếng, AI cắt cảnh và viết lời review thành video 20–30 phút. Giọng đọc khớp với cảnh."
+              title="Review Phim Tự Động"
+              desc="Tải phim 2–3 tiếng, AI cắt cảnh và viết lời review thành video 20–30 phút. Giọng đọc khớp nhịp cảnh hoàn hảo."
             />
             <ModeCard
               onClick={() => update('mode', 'TRANSLATE_DUB')}
               icon={Languages}
               title="Dịch Thuật & Lồng Tiếng"
-              desc="Tải video nước ngoài có phụ đề cứng, dịch tiếng Việt theo 12 phong cách, tuỳ chọn lồng giọng AI — giữ nguyên hình ảnh gốc. Bạn tự khoanh vùng che phụ đề trên editor."
+              desc="Tải video nước ngoài có phụ đề cứng, dịch tiếng Việt theo 13 phong cách, tuỳ chọn lồng giọng AI. Tự khoanh vùng che chữ trên editor."
             />
           </div>
         </div>
@@ -218,45 +214,58 @@ export default function CreateProject() {
     <Layout>
       <div className="p-6 lg:p-8 max-w-2xl mx-auto">
         <div className="mb-6">
-          <h1 className="text-2xl font-bold text-white">
+          <h1 className="text-2xl font-bold text-foreground">
             {MODE_LABELS[form.mode] || form.mode}
           </h1>
-          <p className="text-sm text-slate-400 mt-1">Hoàn thành {steps.length} bước để AI bắt đầu tạo video</p>
+          <p className="text-sm text-muted-foreground mt-1">Hoàn thành {steps.length} bước để AI bắt đầu quy trình sản xuất</p>
         </div>
 
         <StepIndicator steps={steps} step={step} />
 
-        <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 min-h-[300px]">
+        <div className="rounded-2xl bg-card border border-border p-6 min-h-[320px] shadow-sm">
           <AnimatePresence mode="wait">
             <motion.div
               key={form.mode + step}
-              initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
-              transition={{ duration: 0.2 }}
+              initial={{ opacity: 0, x: 16 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -16 }}
+              transition={{ duration: 0.18 }}
             >
-              {/* SUMMARY: movie */}
               {form.mode === 'SUMMARY' && step === 0 && (
-                <UploadBlock label="Tải phim cần review (2–3 tiếng)" fileName={form.sourceFileName}
-                  onChange={handleMovie} accept="video/*" uploading={uploading} hint="Định dạng MP4, MOV, MKV..." />
+                <UploadBlock
+                  label="Tải phim cần review (2–3 tiếng)"
+                  fileName={form.sourceFileName}
+                  onChange={handleMovie}
+                  accept="video/*"
+                  uploading={uploading}
+                  hint="Định dạng MP4, MOV, MKV..."
+                />
               )}
 
-              {/* TRANSLATE_DUB: video nguồn (≤2GB, resumable) */}
               {isDub && step === 0 && (
-                <div className="space-y-3">
-                  <UploadBlock label="Tải video cần Việt hoá (tối đa 2GB)" fileName={form.sourceFileName}
-                    onChange={handleMovie} accept="video/*" uploading={uploading}
-                    hint="Upload chia chunk tự động phục hồi khi mất mạng" />
+                <div className="space-y-4">
+                  <UploadBlock
+                    label="Tải video cần Việt hoá (tối đa 2GB)"
+                    fileName={form.sourceFileName}
+                    onChange={handleMovie}
+                    accept="video/*"
+                    uploading={uploading}
+                    hint="Cơ chế chunking tự động khôi phục khi mất mạng"
+                  />
                   {uploading && (
                     <div className="space-y-1.5">
-                      <div className="h-2 rounded-full bg-white/5 overflow-hidden">
-                        <div className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all" style={{ width: `${uploadPercent}%` }} />
+                      <div className="h-2 rounded-full bg-muted overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all"
+                          style={{ width: `${uploadPercent}%` }}
+                        />
                       </div>
-                      <p className="text-xs text-slate-400 text-right">{uploadPercent}%</p>
+                      <p className="text-xs text-muted-foreground text-right">{uploadPercent}%</p>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* Language (SUMMARY) */}
               {form.mode === 'SUMMARY' && step === 1 && (
                 <div className="grid grid-cols-2 gap-3">
                   {Object.entries(LANGUAGE_LABELS).map(([code, label]) => (
@@ -265,11 +274,10 @@ export default function CreateProject() {
                 </div>
               )}
 
-              {/* TRANSLATE_DUB: ngôn ngữ nguồn → đích */}
               {isDub && step === 1 && (
                 <div className="space-y-5">
                   <div>
-                    <label className="text-sm font-medium text-slate-300 mb-2 block">Ngôn ngữ nguồn</label>
+                    <label className="text-sm font-semibold text-foreground mb-2 block">Ngôn ngữ nguồn</label>
                     <div className="grid grid-cols-2 gap-3">
                       {Object.entries(SOURCE_LANGUAGES).map(([code, label]) => (
                         <OptionCard key={code} selected={form.sourceLanguage === code} onClick={() => update('sourceLanguage', code)} title={label} />
@@ -277,27 +285,34 @@ export default function CreateProject() {
                     </div>
                   </div>
                   <div>
-                    <label className="text-sm font-medium text-slate-300 mb-2 block">Dịch sang</label>
+                    <label className="text-sm font-semibold text-foreground mb-2 block">Dịch sang</label>
                     <div className="grid grid-cols-2 gap-3">
                       {Object.entries(TARGET_LANGUAGES).map(([code, label]) => (
                         <OptionCard key={code} selected={form.targetLanguage === code} onClick={() => update('targetLanguage', code)} title={label} />
                       ))}
                     </div>
                   </div>
-                  {/* OCR mode toggle — only when source language is not auto */}
                   {isDub && step === 1 && form.sourceLanguage !== 'auto' && (
                     <div className="mt-4">
-                      <button onClick={() => update('ocrMode', !form.ocrMode)}
-                        className={`w-full flex items-center justify-between p-4 rounded-xl border transition ${form.ocrMode ? 'border-blue-500 bg-blue-500/10' : 'border-white/5 bg-white/[0.02] hover:border-white/15'}`}>
+                      <button
+                        type="button"
+                        onClick={() => update('ocrMode', !form.ocrMode)}
+                        className={`w-full flex items-center justify-between p-4 rounded-xl border transition-all ${
+                          form.ocrMode
+                            ? 'border-primary bg-primary/10'
+                            : 'border-border bg-card hover:bg-muted/40'
+                        }`}
+                      >
                         <div className="text-left">
-                          <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                            <ScanText className="w-4 h-4 text-blue-400" /> OCR phụ đề cứng
+                          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                            <ScanText className="w-4 h-4 text-primary" />
+                            <span>OCR phụ đề cứng trong video</span>
                           </div>
-                          <div className="text-xs text-slate-400 mt-0.5">
-                            {form.ocrMode ? 'Bật — nhận dạng chữ từ phụ đề cứng trong video' : 'Tắt — dùng nhận dạng giọng nói (ASR)'}
+                          <div className="text-xs text-muted-foreground mt-0.5">
+                            {form.ocrMode ? 'Bật — nhận dạng chữ từ phụ đề trong video' : 'Tắt — dùng nhận dạng giọng nói (ASR)'}
                           </div>
                         </div>
-                        <span className={`relative w-11 h-6 rounded-full transition shrink-0 ${form.ocrMode ? 'bg-blue-600' : 'bg-white/10'}`}>
+                        <span className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${form.ocrMode ? 'bg-primary' : 'bg-muted'}`}>
                           <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${form.ocrMode ? 'translate-x-5' : ''}`} />
                         </span>
                       </button>
@@ -306,20 +321,18 @@ export default function CreateProject() {
                 </div>
               )}
 
-              {/* Duration (SUMMARY) */}
               {form.mode === 'SUMMARY' && step === 2 && (
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   {SUMMARY_DURATIONS.map((d) => (
                     <OptionCard key={d.value} selected={form.targetDurationSec === d.value} onClick={() => update('targetDurationSec', d.value)} title={d.label} desc={d.desc} />
                   ))}
                 </div>
               )}
 
-              {/* SUMMARY style + tone + spoiler */}
               {form.mode === 'SUMMARY' && step === 3 && (
                 <div className="space-y-4">
                   <div>
-                    <label className="text-sm font-medium text-slate-300 mb-2 block">Phong cách review</label>
+                    <label className="text-sm font-semibold text-foreground mb-2 block">Phong cách review</label>
                     <div className="grid grid-cols-2 gap-3">
                       {Object.entries(STYLE_LABELS).map(([code, label]) => (
                         <OptionCard key={code} selected={form.style === code} onClick={() => update('style', code)} title={label} />
@@ -327,49 +340,68 @@ export default function CreateProject() {
                     </div>
                   </div>
                   <div>
-                    <label className="text-sm font-medium text-slate-300 mb-2 block">Giọng điệu (tone)</label>
-                    <input value={form.tone} onChange={(e) => update('tone', e.target.value)} placeholder="VD: nghiêm túc, hài hước, sâu sắc..."
-                      className="w-full px-4 py-2.5 rounded-xl bg-[#0F1117] border border-white/5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50" />
+                    <label className="text-sm font-semibold text-foreground mb-2 block">Giọng điệu (tone)</label>
+                    <input
+                      value={form.tone}
+                      onChange={(e) => update('tone', e.target.value)}
+                      placeholder="VD: hài hước, gay cấn, sâu sắc..."
+                      className="w-full px-4 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
                   </div>
-                  <label className="flex items-center gap-3 cursor-pointer">
-                    <input type="checkbox" checked={form.spoilerAllowed} onChange={(e) => update('spoilerAllowed', e.target.checked)} className="w-4 h-4 accent-blue-600" />
-                    <span className="text-sm text-slate-300">Cho phép tiết lộ chi tiết (spoiler)</span>
+                  <label className="flex items-center gap-3 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={form.spoilerAllowed}
+                      onChange={(e) => update('spoilerAllowed', e.target.checked)}
+                      className="w-4 h-4 accent-primary rounded"
+                    />
+                    <span className="text-sm text-foreground">Cho phép tiết lộ toàn bộ chi tiết (spoiler kết phim)</span>
                   </label>
                 </div>
               )}
 
-              {/* SUMMARY voice */}
               {form.mode === 'SUMMARY' && step === 4 && (
                 <VoiceStep form={form} update={update} />
               )}
 
-              {/* TRANSLATE_DUB: chọn 1 trong 12 phong cách dịch */}
               {isDub && step === 2 && (
                 <div>
-                  <label className="text-sm font-medium text-slate-300 mb-2 block">Phong cách dịch (12 lựa chọn)</label>
-                  <div className="grid grid-cols-2 gap-3 max-h-[360px] overflow-y-auto pr-1">
+                  <label className="text-sm font-semibold text-foreground mb-2 block">Phong cách dịch (13 phong cách chuyên nghiệp)</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[360px] overflow-y-auto pr-1">
                     {presets.map((p) => (
-                      <OptionCard key={p.slug} selected={form.stylePreset === p.slug}
-                        onClick={() => update('stylePreset', p.slug)} title={p.name} desc={p.description} />
+                      <OptionCard
+                        key={p.slug}
+                        selected={form.stylePreset === p.slug}
+                        onClick={() => update('stylePreset', p.slug)}
+                        title={p.name}
+                        desc={p.description}
+                      />
                     ))}
                   </div>
                 </div>
               )}
 
-              {/* TRANSLATE_DUB: lồng tiếng AI bật/tắt */}
               {isDub && step === 3 && (
                 <div className="space-y-4">
-                  <button onClick={() => update('enableDubbing', !form.enableDubbing)}
-                    className={`w-full flex items-center justify-between p-4 rounded-xl border transition ${form.enableDubbing ? 'border-blue-500 bg-blue-500/10' : 'border-white/5 bg-white/[0.02] hover:border-white/15'}`}>
+                  <button
+                    type="button"
+                    onClick={() => update('enableDubbing', !form.enableDubbing)}
+                    className={`w-full flex items-center justify-between p-4 rounded-xl border transition-all ${
+                      form.enableDubbing
+                        ? 'border-primary bg-primary/10'
+                        : 'border-border bg-card hover:bg-muted/40'
+                    }`}
+                  >
                     <div className="text-left">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                        <AudioLines className="w-4 h-4 text-blue-400" /> Lồng tiếng AI
+                      <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                        <AudioLines className="w-4 h-4 text-primary" />
+                        <span>Lồng tiếng AI ép khớp thời gian</span>
                       </div>
-                      <div className="text-xs text-slate-400 mt-0.5">
-                        {form.enableDubbing ? 'Bật — giọng đọc AI thay thế audio gốc, ép khớp thời gian' : 'Tắt — giữ nguyên âm thanh gốc, chỉ thay phụ đề'}
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        {form.enableDubbing ? 'Bật — giọng đọc AI thay thế audio gốc, ép khớp thời gian thoại' : 'Tắt — giữ nguyên âm thanh gốc, chỉ thay phụ đề'}
                       </div>
                     </div>
-                    <span className={`relative w-11 h-6 rounded-full transition shrink-0 ${form.enableDubbing ? 'bg-blue-600' : 'bg-white/10'}`}>
+                    <span className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${form.enableDubbing ? 'bg-primary' : 'bg-muted'}`}>
                       <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${form.enableDubbing ? 'translate-x-5' : ''}`} />
                     </span>
                   </button>
@@ -377,39 +409,44 @@ export default function CreateProject() {
                 </div>
               )}
 
-              {/* Generate */}
-              {(form.mode === 'SUMMARY' && step === 5) || (isDub && step === 4) ? (
+              {((form.mode === 'SUMMARY' && step === 5) || (isDub && step === 4)) && (
                 <div>
                   <div className="text-center mb-6">
-                    <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-600/30">
-                      <Wand2 className="w-8 h-8 text-white" />
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center mx-auto mb-3 shadow-lg shadow-blue-500/25">
+                      <Wand2 className="w-7 h-7 text-white" />
                     </div>
-                    <h3 className="text-lg font-semibold text-white">Sẵn sàng tạo!</h3>
-                    <p className="text-sm text-slate-400 mt-1">Kiểm tra cấu hình rồi nhấn tạo để AI chạy pipeline.</p>
+                    <h3 className="text-lg font-bold text-foreground">Sẵn sàng khởi tạo!</h3>
+                    <p className="text-xs sm:text-sm text-muted-foreground mt-1">Kiểm tra lại thông số trước khi đưa dự án vào hàng đợi xử lý.</p>
                   </div>
-                  {/* Group 1: Copyright checkbox */}
+
                   <div className="mb-4">
-                    <label className="flex items-start gap-3 p-3 rounded-xl bg-[#0F1117] border border-white/5 cursor-pointer hover:border-blue-500/30 transition">
+                    <label className="flex items-start gap-3 p-3.5 rounded-xl bg-muted/50 border border-border cursor-pointer hover:border-primary/40 transition-colors">
                       <input
                         type="checkbox"
                         checked={copyrightAck}
                         onChange={(e) => setCopyrightAck(e.target.checked)}
-                        className="mt-0.5 w-4 h-4 rounded border-white/20 bg-[#0F1117] text-blue-500 focus:ring-blue-500/50"
+                        className="mt-0.5 w-4 h-4 rounded border-input text-primary focus:ring-primary accent-primary"
                       />
-                      <span className="text-sm text-slate-300 leading-relaxed">
-                        Tôi xác nhận quyền sử dụng nội dung nguồn và chịu trách nhiệm về pháp lý đối với nội dung đầu ra.
+                      <span className="text-xs sm:text-sm text-foreground leading-relaxed">
+                        Tôi xác nhận quyền sở hữu hoặc quyền sử dụng hợp pháp đối với video nguồn và chịu trách nhiệm pháp lý với nội dung thành phẩm.
                       </span>
                     </label>
                   </div>
+
                   <FreeTierWarning mode={form.mode} estimatedDuration={isDub ? form.targetDurationSec : form.targetDurationSec} />
+
                   <div className="space-y-3">
-                    <input value={form.title} onChange={(e) => update('title', e.target.value)} placeholder="Tên dự án (tùy chọn)"
-                      className="w-full px-4 py-2.5 rounded-xl bg-[#0F1117] border border-white/5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50" />
-                    <div className="rounded-xl bg-[#0F1117] border border-white/5 p-4 space-y-2 text-sm">
+                    <input
+                      value={form.title}
+                      onChange={(e) => update('title', e.target.value)}
+                      placeholder="Tên dự án (tùy chọn)"
+                      className="w-full px-4 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                    />
+                    <div className="rounded-xl bg-muted/40 border border-border p-4 space-y-2.5 text-xs sm:text-sm">
                       {(isDub
                         ? [
                             ['Chế độ', MODE_LABELS.TRANSLATE_DUB],
-                            ['Video', form.sourceFileName],
+                            ['Video nguồn', form.sourceFileName],
                             ['Ngôn ngữ', `${SOURCE_LANGUAGES[form.sourceLanguage]} → ${TARGET_LANGUAGES[form.targetLanguage]}`],
                             ['Phong cách dịch', selectedPreset ? `${selectedPreset.name}` : form.stylePreset],
                             ['Lồng tiếng AI', form.enableDubbing ? `Bật (${VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider})` : 'Tắt'],
@@ -418,53 +455,67 @@ export default function CreateProject() {
                         : [
                             ['Chế độ', MODE_LABELS.SUMMARY],
                             ['Ngôn ngữ', LANGUAGE_LABELS[form.language] || form.language],
-                            ['Độ dài', form.targetDurationSec >= 60 ? `${Math.round(form.targetDurationSec / 60)} phút` : `${form.targetDurationSec} giây`],
-                            ['Phong cách', STYLE_LABELS[form.style] || form.style],
-                            ['Giọng đọc', VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider],
+                            ['Độ dài mục tiêu', form.targetDurationSec >= 60 ? `${Math.round(form.targetDurationSec / 60)} phút` : `${form.targetDurationSec} giây`],
+                            ['Phong cách review', STYLE_LABELS[form.style] || form.style],
+                            ['Giọng đọc AI', VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider],
                           ]
                       ).map(([k, v]) => (
                         <div key={k} className="flex items-center justify-between">
-                          <span className="text-slate-400">{k}</span>
-                          <span className="text-slate-200 font-medium text-right max-w-[60%] truncate">{v}</span>
+                          <span className="text-muted-foreground">{k}</span>
+                          <span className="text-foreground font-semibold text-right max-w-[60%] truncate">{v}</span>
                         </div>
                       ))}
                     </div>
                   </div>
                 </div>
-              ) : null}
+              )}
             </motion.div>
           </AnimatePresence>
         </div>
 
         {error && (
-          <div className="mt-4 flex items-center gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
-            <AlertCircle className="w-4 h-4" /> {error}
+          <div className="mt-4 flex items-center gap-2 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-3">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>{error}</span>
           </div>
         )}
 
+        {/* Action buttons */}
         <div className="flex items-center justify-between mt-6">
           <button
             onClick={() => (step > 0 ? setStep(step - 1) : update('mode', null))}
             disabled={creating || uploading}
-            className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-medium text-slate-400 hover:text-white disabled:opacity-30 transition"
+            className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 transition-colors"
           >
-            <ChevronLeft className="w-4 h-4" /> {step === 0 ? 'Chọn lại' : 'Quay lại'}
+            <ChevronLeft className="w-4 h-4" />
+            <span>{step === 0 ? 'Chọn lại chế độ' : 'Quay lại'}</span>
           </button>
           {step < steps.length - 1 ? (
             <button
               onClick={() => canNext() && setStep(step + 1)}
               disabled={!canNext() || uploading}
-              className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition disabled:opacity-30"
+              className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition-all disabled:opacity-40 shadow-sm shadow-primary/20"
             >
-              Tiếp tục <ChevronRight className="w-4 h-4" />
+              <span>Tiếp tục</span>
+              <ChevronRight className="w-4 h-4" />
             </button>
           ) : (
             <button
               onClick={handleCreate}
               disabled={creating || uploading || !copyrightAck}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-sm font-semibold transition shadow-lg shadow-blue-600/30 disabled:opacity-50"
+              className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-sm font-semibold transition-all shadow-md shadow-primary/25 disabled:opacity-50"
             >
-              {creating ? <><Loader2 className="w-4 h-4 animate-spin" /> Đang tạo...</> : <><Wand2 className="w-4 h-4" /> Bắt đầu tạo</>}
+              {creating ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Đang khởi tạo...</span>
+                </>
+              ) : (
+                <>
+                  <Wand2 className="w-4 h-4" />
+                  <span>Bắt đầu tạo</span>
+                </>
+              )}
             </button>
           )}
         </div>
@@ -473,17 +524,25 @@ export default function CreateProject() {
   );
 }
 
-// ── Small components ──
+// ── Shared Subcomponents ──
 function StepIndicator({ steps, step }) {
   return (
     <div className="flex items-center justify-center gap-1 mb-8 overflow-x-auto pb-2">
       {steps.map((s, i) => (
         <div key={s.key} className="flex items-center gap-1 shrink-0">
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition ${i === step ? 'bg-blue-600 text-white' : i < step ? 'bg-blue-500/15 text-blue-400' : 'bg-white/5 text-slate-500'}`}>
-            {i < step ? <Check className="w-3 h-3" /> : <s.icon className="w-3 h-3" />}
+          <div
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+              i === step
+                ? 'bg-primary text-primary-foreground shadow-xs'
+                : i < step
+                ? 'bg-primary/15 text-primary'
+                : 'bg-muted text-muted-foreground'
+            }`}
+          >
+            {i < step ? <Check className="w-3.5 h-3.5" /> : <s.icon className="w-3.5 h-3.5" />}
             <span className="hidden sm:inline">{s.label}</span>
           </div>
-          {i < steps.length - 1 && <ChevronRight className="w-3 h-3 text-slate-600" />}
+          {i < steps.length - 1 && <ChevronRight className="w-3 h-3 text-muted-foreground/40" />}
         </div>
       ))}
     </div>
@@ -492,13 +551,21 @@ function StepIndicator({ steps, step }) {
 
 function OptionCard({ selected, onClick, title, desc, children }) {
   return (
-    <button onClick={onClick} className={`text-left p-4 rounded-xl border transition-all w-full ${selected ? 'border-blue-500 bg-blue-500/10' : 'border-white/5 bg-white/[0.02] hover:border-white/15'}`}>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-left p-4 rounded-xl border transition-all w-full ${
+        selected
+          ? 'border-primary bg-primary/10 shadow-xs'
+          : 'border-border bg-card hover:bg-muted/40 hover:border-primary/30'
+      }`}
+    >
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-sm font-semibold text-white">{title}</div>
-          {desc && <div className="text-xs text-slate-400 mt-0.5">{desc}</div>}
+          <div className="text-sm font-semibold text-foreground">{title}</div>
+          {desc && <div className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{desc}</div>}
         </div>
-        {selected && <Check className="w-4 h-4 text-blue-400 shrink-0 ml-2" />}
+        {selected && <Check className="w-4 h-4 text-primary shrink-0 ml-2" />}
       </div>
       {children}
     </button>
@@ -507,12 +574,16 @@ function OptionCard({ selected, onClick, title, desc, children }) {
 
 function ModeCard({ onClick, icon: Icon, title, desc }) {
   return (
-    <button onClick={onClick} className="text-left p-6 rounded-2xl border border-white/5 bg-white/[0.02] hover:border-blue-500/30 hover:bg-blue-500/5 transition group">
-      <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center mb-4 group-hover:bg-blue-500/20 transition">
-        <Icon className="w-6 h-6 text-blue-400" />
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-left p-6 rounded-2xl border border-border bg-card hover:border-primary/40 hover:bg-primary/5 transition-all group shadow-sm hover:shadow-md"
+    >
+      <div className="w-12 h-12 rounded-xl bg-primary/10 text-primary flex items-center justify-center mb-4 group-hover:scale-105 transition-transform">
+        <Icon className="w-6 h-6" />
       </div>
-      <div className="text-lg font-semibold text-white">{title}</div>
-      <p className="text-sm text-slate-400 mt-1.5 leading-relaxed">{desc}</p>
+      <div className="text-lg font-bold text-foreground group-hover:text-primary transition-colors">{title}</div>
+      <p className="text-sm text-muted-foreground mt-2 leading-relaxed">{desc}</p>
     </button>
   );
 }
@@ -520,12 +591,20 @@ function ModeCard({ onClick, icon: Icon, title, desc }) {
 function UploadBlock({ label, fileName, onChange, accept, multiple, uploading, hint }) {
   return (
     <div>
-      <label className="text-sm font-medium text-slate-300 mb-2 block">{label}</label>
-      <label className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-2xl py-8 transition ${uploading ? 'pointer-events-none opacity-60' : 'cursor-pointer'} ${fileName ? 'border-blue-500/40 bg-blue-500/5' : 'border-white/10 hover:border-blue-500/30 bg-white/[0.02]'}`}>
-        <Upload className="w-7 h-7 text-slate-400" />
-        <span className="text-sm text-slate-300">{fileName || 'Nhấn để chọn tệp'}</span>
-        {hint && <span className="text-xs text-slate-500">{hint}</span>}
-        {uploading && <Loader2 className="w-5 h-5 animate-spin text-blue-400" />}
+      <label className="text-sm font-semibold text-foreground mb-2 block">{label}</label>
+      <label
+        className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-2xl py-10 transition-all ${
+          uploading ? 'pointer-events-none opacity-60' : 'cursor-pointer'
+        } ${
+          fileName
+            ? 'border-primary/50 bg-primary/5'
+            : 'border-border hover:border-primary/40 bg-muted/20'
+        }`}
+      >
+        <Upload className="w-8 h-8 text-primary/70" />
+        <span className="text-sm font-semibold text-foreground">{fileName || 'Nhấn hoặc kéo thả tệp video vào đây'}</span>
+        {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
+        {uploading && <Loader2 className="w-5 h-5 animate-spin text-primary mt-2" />}
         <input type="file" accept={accept} multiple={multiple} onChange={onChange} className="hidden" />
       </label>
     </div>
@@ -534,19 +613,30 @@ function UploadBlock({ label, fileName, onChange, accept, multiple, uploading, h
 
 function VoiceStep({ form, update, optional }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <div>
-        <label className="text-sm font-medium text-slate-300 mb-2 block">{optional ? 'Giọng đọc (tuỳ chọn)' : 'Nhà cung cấp giọng đọc'}</label>
-        <div className="grid grid-cols-2 gap-3">
+        <label className="text-sm font-semibold text-foreground mb-2 block">
+          {optional ? 'Giọng đọc (tuỳ chọn)' : 'Nhà cung cấp giọng đọc AI'}
+        </label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {Object.entries(VOICE_PROVIDER_LABELS).map(([code, label]) => (
-            <OptionCard key={code} selected={form.voiceProvider === code} onClick={() => update('voiceProvider', code)} title={label} />
+            <OptionCard
+              key={code}
+              selected={form.voiceProvider === code}
+              onClick={() => update('voiceProvider', code)}
+              title={label}
+            />
           ))}
         </div>
       </div>
       <div>
-        <label className="text-sm font-medium text-slate-300 mb-2 block">Tên giọng (tuỳ chọn)</label>
-        <input value={form.voiceName} onChange={(e) => update('voiceName', e.target.value)} placeholder="VD: Rachel, Adam..."
-          className="w-full px-4 py-2.5 rounded-xl bg-[#0F1117] border border-white/5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50" />
+        <label className="text-sm font-semibold text-foreground mb-2 block">Tên giọng / Voice ID (tuỳ chọn)</label>
+        <input
+          value={form.voiceName}
+          onChange={(e) => update('voiceName', e.target.value)}
+          placeholder="VD: Rachel, Adam, Josh..."
+          className="w-full px-4 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+        />
       </div>
     </div>
   );

@@ -1,6 +1,8 @@
 import React, { useEffect } from 'react';
 import { VideoTimeline, useTimelineStore, formatTimeCode, MOCK_DEMO_CLIPS } from '@/components/timeline';
-import { Film, Sliders } from 'lucide-react';
+import { Film, ArrowLeft } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ThemeToggle } from '@/components/ThemeToggle';
 
 export default function TimelineDemo() {
   const {
@@ -31,32 +33,43 @@ export default function TimelineDemo() {
   return (
     <div className="min-h-screen bg-[#0a0a0d] text-zinc-100 flex flex-col justify-between">
       {/* Top Navbar */}
-      <header className="h-14 px-6 bg-[#121216] border-b border-white/10 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-red-600 to-amber-500 flex items-center justify-center shadow-lg shadow-red-500/20">
-            <Film size={18} className="text-white" />
-          </div>
-          <div>
-            <h1 className="text-sm font-bold tracking-tight text-white flex items-center gap-2">
-              <span>CapCut Timeline Studio</span>
-              <span className="text-[10px] font-mono font-normal bg-red-500/20 text-red-400 border border-red-500/30 px-1.5 py-0.2 rounded">
-                PRO
-              </span>
-            </h1>
-            <p className="text-[11px] text-zinc-400">
-              Interactive Multi-track Video Editing Timeline
-            </p>
+      <header className="h-16 px-6 bg-[#121216] border-b border-white/10 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <Link
+            to="/dashboard"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-xs text-zinc-300 transition-colors"
+          >
+            <ArrowLeft size={14} />
+            <span>Dashboard</span>
+          </Link>
+          <div className="w-[1px] h-5 bg-white/10" />
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-red-600 to-amber-500 flex items-center justify-center shadow-lg shadow-red-500/20">
+              <Film size={18} className="text-white" />
+            </div>
+            <div>
+              <h1 className="text-sm font-bold tracking-tight text-white flex items-center gap-2">
+                <span>CapCut Timeline Studio</span>
+                <span className="text-[10px] font-mono font-normal bg-red-500/20 text-red-400 border border-red-500/30 px-1.5 py-0.2 rounded">
+                  PRO
+                </span>
+              </h1>
+              <p className="text-[11px] text-zinc-400">
+                Interactive Multi-track Video Editing Timeline
+              </p>
+            </div>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-[#181820] border border-white/10 px-3 py-1 rounded-lg text-xs">
+          <div className="hidden sm:flex items-center gap-2 bg-[#181820] border border-white/10 px-3 py-1 rounded-lg text-xs">
             <span className="text-zinc-400">Active Tracks:</span>
             <span className="font-mono font-semibold text-white">{tracks.length}</span>
             <span className="text-zinc-600">•</span>
             <span className="text-zinc-400">Clips:</span>
             <span className="font-mono font-semibold text-white">{clips.length}</span>
           </div>
+          <ThemeToggle variant="quick" className="border-white/10 bg-white/5 text-zinc-200" />
         </div>
       </header>
 
@@ -103,25 +116,24 @@ export default function TimelineDemo() {
             </div>
           </div>
 
-          {/* Selected Clip Inspector Panel */}
+          {/* Clip Inspector Panel */}
           <div className="bg-[#121217] border border-white/10 rounded-xl p-4 flex flex-col justify-between shadow-xl">
             <div>
-              <div className="flex items-center justify-between pb-3 border-b border-white/10 mb-4">
-                <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
-                  <Sliders size={13} className="text-blue-400" />
-                  <span>Clip Inspector</span>
+              <div className="flex items-center justify-between pb-3 border-b border-white/10 mb-3">
+                <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-300">
+                  Clip Inspector
                 </h2>
                 {selectedClip && (
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 uppercase">
+                  <span className="text-[10px] font-mono uppercase bg-blue-500/20 text-blue-400 border border-blue-500/30 px-1.5 py-0.5 rounded">
                     {selectedClip.type}
                   </span>
                 )}
               </div>
 
               {selectedClip ? (
-                <div className="flex flex-col gap-3 text-xs">
+                <div className="space-y-3">
                   <div>
-                    <label className="text-[11px] text-zinc-400 block mb-1">Content Label</label>
+                    <label className="text-[11px] text-zinc-400 block mb-1">Title / Label</label>
                     <input
                       type="text"
                       value={selectedClip.content}

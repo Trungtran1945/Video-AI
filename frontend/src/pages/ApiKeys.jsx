@@ -5,7 +5,7 @@ import PageHeader from '@/components/PageHeader';
 import Loading from '@/components/Loading';
 import EmptyState from '@/components/EmptyState';
 import { motion } from 'framer-motion';
-import { KeyRound, Plus, Trash2, Eye, EyeOff, Zap, BarChart3 } from 'lucide-react';
+import { KeyRound, Plus, Trash2, Eye, EyeOff, Zap, BarChart3, ShieldCheck } from 'lucide-react';
 
 const providerLabels = {
   gemini: 'Gemini', openai: 'OpenAI', anthropic: 'Anthropic', huggingface: 'HuggingFace',
@@ -19,8 +19,8 @@ const categories = ['llm', 'image', 'video', 'voice', 'subtitle', 'platform'];
 const providers = Object.keys(providerLabels);
 
 const TIER_OPTIONS = [
-  { value: 'free', label: 'Free', desc: 'API key miễn phí, bị giới hạn RPM/quota' },
-  { value: 'paid', label: 'Paid', desc: 'API key trả phí, không bị rate limit' },
+  { value: 'free', label: 'Free Tier', desc: 'Giới hạn RPM/quota thấp' },
+  { value: 'paid', label: 'Paid Tier', desc: 'Không bị nghẽn rate limit' },
 ];
 
 export default function ApiKeys() {
@@ -33,9 +33,13 @@ export default function ApiKeys() {
 
   useEffect(() => {
     (async () => {
-      try { setKeys(await apiKeysApi.list() || []); }
-      catch (e) { console.error(e); }
-      finally { setLoading(false); }
+      try {
+        setKeys(await apiKeysApi.list() || []);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
     })();
   }, []);
 
@@ -47,8 +51,8 @@ export default function ApiKeys() {
   };
 
   useEffect(() => {
-    const providers = [...new Set(keys.map(k => k.provider))];
-    providers.forEach(loadQuota);
+    const pList = [...new Set(keys.map(k => k.provider))];
+    pList.forEach(loadQuota);
   }, [keys]);
 
   const handleAdd = async () => {
@@ -61,35 +65,46 @@ export default function ApiKeys() {
       setKeys([created, ...keys]);
       setShowAdd(false);
       setForm({ provider: 'gemini', category: 'llm', api_key_encrypted: '', tier: 'free', priority: 0 });
-    } catch (e) { console.error(e); alert('Không thể thêm khóa: ' + (e.message || '')); }
+    } catch (e) {
+      console.error(e);
+      alert('Không thể thêm khóa: ' + (e.message || ''));
+    }
   };
 
   const handleDelete = async (id) => {
     try {
       await apiKeysApi.remove(id);
       setKeys(keys.filter(k => k.id !== id));
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const toggleActive = async (key) => {
     try {
       const updated = await apiKeysApi.toggle(key.id, !key.is_active);
       setKeys(keys.map(k => k.id === key.id ? { ...k, ...updated } : k));
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const updateTier = async (key, tier) => {
     try {
       const updated = await apiKeysApi.update(key.id, { tier });
       setKeys(keys.map(k => k.id === key.id ? { ...k, ...updated } : k));
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const updatePriority = async (key, priority) => {
     try {
       const updated = await apiKeysApi.update(key.id, { priority: Number(priority) });
       setKeys(keys.map(k => k.id === key.id ? { ...k, ...updated } : k));
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const maskKey = (k) => k ? k.slice(0, 4) + '••••••••' + k.slice(-4) : '—';
@@ -100,119 +115,225 @@ export default function ApiKeys() {
     const pct = Math.min(q.percentUsed || 0, 100);
     const isHigh = pct >= 80;
     return (
-      <div className="flex items-center gap-2 mt-1.5">
-        <BarChart3 className={`w-3 h-3 ${isHigh ? 'text-amber-400' : 'text-slate-500'}`} />
-        <div className="flex-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
-          <div className={`h-full rounded-full transition-all ${isHigh ? 'bg-amber-500' : 'bg-blue-500'}`} style={{ width: `${pct}%` }} />
+      <div className="flex items-center gap-2 mt-2">
+        <BarChart3 className={`w-3.5 h-3.5 ${isHigh ? 'text-amber-500' : 'text-muted-foreground'}`} />
+        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-all ${isHigh ? 'bg-amber-500' : 'bg-primary'}`}
+            style={{ width: `${pct}%` }}
+          />
         </div>
-        <span className="text-[10px] text-slate-500">{q.usedToday}/{q.limitToday}</span>
+        <span className="text-[11px] text-muted-foreground font-medium">{q.usedToday}/{q.limitToday}</span>
       </div>
     );
   };
 
   return (
     <Layout>
-      <div className="p-6 lg:p-8 max-w-3xl mx-auto">
+      <div className="p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
         <PageHeader
           title="Khóa API"
-          subtitle={`${keys.length} khóa đã lưu`}
+          subtitle={`${keys.length} khóa nhà cung cấp được lưu mã hóa an toàn`}
           action={
-            <button onClick={() => setShowAdd(!showAdd)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">
-              <Plus className="w-4 h-4" /> Thêm khóa
+            <button
+              onClick={() => setShowAdd(!showAdd)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition shadow-md shadow-primary/20"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Thêm Khóa Mới</span>
             </button>
           }
         />
 
         {showAdd && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
-            className="rounded-2xl bg-[#161922] border border-blue-500/20 p-5 mb-4 overflow-hidden">
-            <div className="grid grid-cols-2 gap-3 mb-3">
-              <select value={form.provider} onChange={e => setForm(f => ({ ...f, provider: e.target.value }))}
-                className="px-3 py-2 rounded-lg bg-[#0F1117] border border-white/5 text-sm text-slate-200 focus:outline-none focus:border-blue-500/50">
-                {providers.map(p => <option key={p} value={p}>{providerLabels[p]}</option>)}
-              </select>
-              <select value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
-                className="px-3 py-2 rounded-lg bg-[#0F1117] border border-white/5 text-sm text-slate-200 focus:outline-none focus:border-blue-500/50">
-                {categories.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            className="rounded-2xl bg-card border border-primary/30 p-6 shadow-md overflow-hidden"
+          >
+            <div className="flex items-center gap-2 mb-4 text-primary font-semibold text-sm">
+              <ShieldCheck className="w-4 h-4" />
+              <span>Thêm khóa API mới</span>
             </div>
-            <input type="password" value={form.api_key_encrypted} onChange={e => setForm(f => ({ ...f, api_key_encrypted: e.target.value }))}
-              placeholder="Dán khóa API vào đây..."
-              className="w-full px-3 py-2 rounded-lg bg-[#0F1117] border border-white/5 text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-blue-500/50 mb-3" />
-            <div className="grid grid-cols-2 gap-3 mb-3">
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 mb-3.5">
               <div>
-                <label className="block text-xs text-slate-500 mb-1">Tier</label>
-                <select value={form.tier} onChange={e => setForm(f => ({ ...f, tier: e.target.value }))}
-                  className="w-full px-3 py-2 rounded-lg bg-[#0F1117] border border-white/5 text-sm text-slate-200 focus:outline-none focus:border-blue-500/50">
+                <label className="block text-xs font-semibold text-foreground mb-1.5">Nhà cung cấp</label>
+                <select
+                  value={form.provider}
+                  onChange={e => setForm(f => ({ ...f, provider: e.target.value }))}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  {providers.map(p => <option key={p} value={p}>{providerLabels[p]}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-foreground mb-1.5">Phân loại (Category)</label>
+                <select
+                  value={form.category}
+                  onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  {categories.map(c => <option key={c} value={c}>{c.toUpperCase()}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="mb-3.5">
+              <label className="block text-xs font-semibold text-foreground mb-1.5">Giá trị API Key</label>
+              <input
+                type="password"
+                value={form.api_key_encrypted}
+                onChange={e => setForm(f => ({ ...f, api_key_encrypted: e.target.value }))}
+                placeholder="sk-... hoặc dán mã khóa vào đây"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 mb-5">
+              <div>
+                <label className="block text-xs font-semibold text-foreground mb-1.5">Gói tài khoản (Tier)</label>
+                <select
+                  value={form.tier}
+                  onChange={e => setForm(f => ({ ...f, tier: e.target.value }))}
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                >
                   {TIER_OPTIONS.map(t => <option key={t.value} value={t.value}>{t.label} — {t.desc}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-xs text-slate-500 mb-1">Ưu tiên (0 = thấp nhất)</label>
-                <input type="number" min="0" max="100" value={form.priority}
+                <label className="block text-xs font-semibold text-foreground mb-1.5">Ưu tiên luân chuyển (0 = mặc định)</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={form.priority}
                   onChange={e => setForm(f => ({ ...f, priority: e.target.value }))}
-                  className="w-full px-3 py-2 rounded-lg bg-[#0F1117] border border-white/5 text-sm text-slate-200 focus:outline-none focus:border-blue-500/50" />
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                />
               </div>
             </div>
-            <div className="flex gap-2">
-              <button onClick={handleAdd} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">Lưu khóa</button>
-              <button onClick={() => setShowAdd(false)} className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white transition">Hủy</button>
+
+            <div className="flex items-center gap-2.5">
+              <button
+                onClick={handleAdd}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition shadow-sm shadow-primary/25"
+              >
+                Lưu Khóa
+              </button>
+              <button
+                onClick={() => setShowAdd(false)}
+                className="px-4 py-2.5 rounded-xl text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+              >
+                Hủy
+              </button>
             </div>
           </motion.div>
         )}
 
-        {loading ? <Loading /> : keys.length === 0 ? (
-          <EmptyState icon={KeyRound} title="Chưa có khóa API nào" description="Thêm khóa API cho các nhà cung cấp để kích hoạt pipeline AI." />
+        {loading ? (
+          <Loading />
+        ) : keys.length === 0 ? (
+          <EmptyState
+            icon={KeyRound}
+            title="Chưa lưu khóa API nào"
+            description="Thêm khóa API cho các dịch vụ AI như Gemini, OpenAI, ElevenLabs để bắt đầu xử lý kịch bản, video và giọng nói."
+          />
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-3">
             {keys.map((k, i) => (
-              <motion.div key={k.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
-                className="flex items-center gap-4 p-4 rounded-xl bg-[#161922] border border-white/5">
-                <div className="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center shrink-0">
-                  <KeyRound className="w-4 h-4 text-blue-400" />
+              <motion.div
+                key={k.id}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.03 }}
+                className="flex flex-col sm:flex-row sm:items-center gap-4 p-4 sm:p-5 rounded-2xl bg-card border border-border shadow-xs hover:border-primary/30 transition-all"
+              >
+                <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                  <KeyRound className="w-5 h-5" />
                 </div>
+
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-white">{providerLabels[k.provider] || k.provider}</span>
-                    <span className="px-1.5 py-0.5 rounded bg-white/5 text-[10px] text-slate-400 uppercase">{k.label || k.provider}</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-bold text-foreground">{providerLabels[k.provider] || k.provider}</span>
+                    <span className="px-2 py-0.5 rounded-md bg-muted text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                      {k.label || k.provider}
+                    </span>
                     {k.tier === 'free' && (
-                      <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-[10px] text-amber-400 flex items-center gap-0.5">
-                        <Zap className="w-2.5 h-2.5" /> Free
+                      <span className="px-2 py-0.5 rounded-md bg-amber-500/10 text-[10px] font-semibold text-amber-700 dark:text-amber-400 border border-amber-500/20 flex items-center gap-1">
+                        <Zap className="w-2.5 h-2.5" /> Free Tier
                       </span>
                     )}
                     {k.priority > 0 && (
-                      <span className="px-1.5 py-0.5 rounded bg-blue-500/10 text-[10px] text-blue-400">
-                        P{k.priority}
+                      <span className="px-2 py-0.5 rounded-md bg-blue-500/10 text-[10px] font-semibold text-primary border border-blue-500/20">
+                        Priority {k.priority}
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-2 mt-1">
-                    <code className="text-xs text-slate-500 font-mono">
+
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <code className="text-xs text-muted-foreground font-mono bg-muted/40 px-2 py-0.5 rounded border border-border/60">
                       {visibleKeys[k.id] ? (k.keyPreview || '—') : maskKey(k.keyPreview || '')}
                     </code>
-                    <button onClick={() => setVisibleKeys(v => ({ ...v, [k.id]: !v[k.id] }))} className="text-slate-500 hover:text-slate-300">
-                      {visibleKeys[k.id] ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                    <button
+                      type="button"
+                      onClick={() => setVisibleKeys(v => ({ ...v, [k.id]: !v[k.id] }))}
+                      className="text-muted-foreground hover:text-foreground p-1 rounded-md transition-colors"
+                      title={visibleKeys[k.id] ? "Ẩn khóa" : "Hiện khóa"}
+                    >
+                      {visibleKeys[k.id] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                     </button>
                   </div>
                   <QuotaBar provider={k.provider} />
                 </div>
-                <div className="flex flex-col items-end gap-1 shrink-0">
-                  <select value={k.tier || 'free'} onChange={e => updateTier(k, e.target.value)}
-                    className="px-2 py-1 rounded-lg bg-[#0F1117] border border-white/5 text-[11px] text-slate-300 focus:outline-none focus:border-blue-500/50 cursor-pointer">
-                    {TIER_OPTIONS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                  </select>
-                  <input type="number" min="0" max="100" value={k.priority ?? 0}
-                    onChange={e => updatePriority(k, e.target.value)}
-                    className="w-14 px-2 py-1 rounded-lg bg-[#0F1117] border border-white/5 text-[11px] text-slate-300 text-center focus:outline-none focus:border-blue-500/50" />
+
+                <div className="flex items-center gap-3 self-end sm:self-center shrink-0">
+                  <div className="flex flex-col items-end gap-1.5">
+                    <select
+                      value={k.tier || 'free'}
+                      onChange={e => updateTier(k, e.target.value)}
+                      className="px-2.5 py-1 rounded-lg bg-background border border-input text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring cursor-pointer"
+                    >
+                      {TIER_OPTIONS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                    </select>
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={k.priority ?? 0}
+                      onChange={e => updatePriority(k, e.target.value)}
+                      title="Mức ưu tiên"
+                      className="w-16 px-2 py-0.5 rounded-lg bg-background border border-input text-xs text-foreground text-center focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  </div>
+
+                  {/* Toggle active switch */}
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={Boolean(k.is_active)}
+                    onClick={() => toggleActive(k)}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                      k.is_active ? 'bg-emerald-600' : 'bg-muted'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                        k.is_active ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(k.id)}
+                    className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors"
+                    title="Xóa khóa"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
-                <button onClick={() => toggleActive(k)}
-                  className={`relative w-11 h-6 rounded-full transition ${k.is_active ? 'bg-emerald-600' : 'bg-white/10'}`}>
-                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${k.is_active ? 'translate-x-5' : ''}`} />
-                </button>
-                <button onClick={() => handleDelete(k.id)} className="text-slate-500 hover:text-red-400 transition">
-                  <Trash2 className="w-4 h-4" />
-                </button>
               </motion.div>
             ))}
           </div>

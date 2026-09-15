@@ -23,9 +23,14 @@ export default function Analytics() {
           queueApi.list(),
           logsApi.list(100),
         ]);
-        setProjects(p || []); setJobs(j || []); setLogs(l || []);
-      } catch (e) { console.error(e); }
-      finally { setLoading(false); }
+        setProjects(p || []);
+        setJobs(j || []);
+        setLogs(l || []);
+      } catch (e) {
+        console.error(e);
+      } finally {
+        setLoading(false);
+      }
     })();
   }, []);
 
@@ -33,7 +38,6 @@ export default function Analytics() {
 
   const totalProjects = projects.length;
   const completed = projects.filter(p => p.status === 'completed').length;
-  const failed = projects.filter(p => p.status === 'failed').length;
   const successRate = totalProjects > 0 ? Math.round((completed / totalProjects) * 100) : 0;
   const totalTokens = logs.reduce((s, l) => s + ((l.tokens_in || 0) + (l.tokens_out || 0)), 0);
 
@@ -50,7 +54,8 @@ export default function Analytics() {
   // Daily generation (last 7 days)
   const dailyData = [];
   for (let i = 6; i >= 0; i--) {
-    const d = new Date(); d.setDate(d.getDate() - i);
+    const d = new Date();
+    d.setDate(d.getDate() - i);
     const dayStr = d.toDateString();
     const count = projects.filter(p => new Date(p.created_date).toDateString() === dayStr).length;
     dailyData.push({ day: d.toLocaleDateString('vi-VN', { weekday: 'short' }), count });
@@ -59,55 +64,69 @@ export default function Analytics() {
 
   return (
     <Layout>
-      <div className="p-6 lg:p-8 max-w-6xl mx-auto">
-        <PageHeader title="Phân Tích" subtitle="Thống kê sử dụng và hiệu suất" />
+      <div className="p-6 lg:p-8 max-w-6xl mx-auto space-y-6">
+        <PageHeader
+          title="Phân Tích &amp; Hiệu Suất"
+          subtitle="Thống kê lưu lượng sử dụng, tần suất tạo và chi phí nhà cung cấp"
+        />
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard icon={Video} label="Tổng dự án" value={totalProjects} color="blue" delay={0} />
           <StatCard icon={Layers} label="Video hoàn thành" value={completed} color="purple" delay={0.05} />
           <StatCard icon={CheckCircle} label="Tỷ lệ thành công" value={`${successRate}%`} color="green" delay={0.1} />
-          <StatCard icon={TrendingUp} label="Tokens đã dùng" value={totalTokens.toLocaleString()} color="cyan" delay={0.15} />
+          <StatCard icon={TrendingUp} label="Tokens AI đã dùng" value={totalTokens.toLocaleString()} color="cyan" delay={0.15} />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Daily chart */}
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-            className="rounded-2xl bg-[#161922] border border-white/5 p-6">
-            <h3 className="text-sm font-semibold text-white mb-5">Video tạo theo ngày (7 ngày)</h3>
-            <div className="flex items-end justify-between gap-3 h-40">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+          >
+            <h3 className="text-base font-semibold text-foreground mb-1">Video tạo theo ngày (7 ngày qua)</h3>
+            <p className="text-xs text-muted-foreground mb-6">Số lượng video bắt đầu quy trình tạo mỗi ngày</p>
+            <div className="flex items-end justify-between gap-3 h-44 pt-4">
               {dailyData.map((d, i) => (
                 <div key={i} className="flex-1 flex flex-col items-center gap-2">
                   <div className="w-full flex-1 flex items-end">
                     <motion.div
-                      initial={{ height: 0 }} animate={{ height: `${(d.count / maxDaily) * 100}%` }}
-                      transition={{ delay: i * 0.08, duration: 0.4 }}
-                      className="w-full rounded-t-lg bg-gradient-to-t from-blue-600 to-indigo-500 min-h-[2px]"
+                      initial={{ height: 0 }}
+                      animate={{ height: `${(d.count / maxDaily) * 100}%` }}
+                      transition={{ delay: i * 0.06, duration: 0.35 }}
+                      className="w-full rounded-t-lg bg-gradient-to-t from-blue-600 to-indigo-500 min-h-[4px]"
                     />
                   </div>
-                  <div className="text-[10px] text-slate-500">{d.day}</div>
-                  <div className="text-xs font-semibold text-slate-300">{d.count}</div>
+                  <div className="text-[11px] text-muted-foreground font-medium">{d.day}</div>
+                  <div className="text-xs font-bold text-foreground">{d.count}</div>
                 </div>
               ))}
             </div>
           </motion.div>
 
           {/* Provider usage */}
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-            className="rounded-2xl bg-[#161922] border border-white/5 p-6">
-            <h3 className="text-sm font-semibold text-white mb-5">Sử dụng theo nhà cung cấp</h3>
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.08 }}
+            className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+          >
+            <h3 className="text-base font-semibold text-foreground mb-1">Sử dụng theo nhà cung cấp</h3>
+            <p className="text-xs text-muted-foreground mb-6">Tần suất gọi API và chi phí tương ứng</p>
             {topProviders.length === 0 ? (
-              <div className="text-center py-8 text-sm text-slate-500">Chưa có dữ liệu</div>
+              <div className="text-center py-12 text-sm text-muted-foreground">Chưa có dữ liệu nhà cung cấp</div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-4">
                 {topProviders.map(([name, data]) => (
                   <div key={name}>
-                    <div className="flex items-center justify-between text-xs mb-1.5">
-                      <span className="text-slate-300">{name}</span>
-                      <span className="text-slate-500">{data.count} lần • ${data.cost.toFixed(2)}</span>
+                    <div className="flex items-center justify-between text-xs mb-1.5 font-medium">
+                      <span className="text-foreground">{name}</span>
+                      <span className="text-muted-foreground">{data.count} lần • ${data.cost.toFixed(2)}</span>
                     </div>
-                    <div className="w-full h-2 rounded-full bg-white/5 overflow-hidden">
+                    <div className="w-full h-2 rounded-full bg-muted overflow-hidden">
                       <motion.div
-                        initial={{ width: 0 }} animate={{ width: `${(data.count / maxCount) * 100}%` }}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(data.count / maxCount) * 100}%` }}
                         transition={{ duration: 0.5 }}
                         className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500"
                       />
@@ -119,49 +138,84 @@ export default function Analytics() {
           </motion.div>
 
           {/* Status breakdown */}
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}
-            className="rounded-2xl bg-[#161922] border border-white/5 p-6">
-            <h3 className="text-sm font-semibold text-white mb-5">Phân bổ trạng thái dự án</h3>
-            <div className="space-y-3">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.12 }}
+            className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+          >
+            <h3 className="text-base font-semibold text-foreground mb-1">Phân bổ trạng thái dự án</h3>
+            <p className="text-xs text-muted-foreground mb-6">Tỉ lệ hoàn thành, lỗi hoặc đang xử lý</p>
+            <div className="space-y-4">
               {Object.entries(STATUS_LABELS).map(([key, cfg]) => {
                 const count = projects.filter(p => p.status === key).length;
                 if (count === 0) return null;
                 const pct = totalProjects > 0 ? (count / totalProjects) * 100 : 0;
                 return (
                   <div key={key}>
-                    <div className="flex items-center justify-between text-xs mb-1.5">
-                      <span className="text-slate-300">{cfg.label}</span>
-                      <span className="text-slate-500">{count}</span>
+                    <div className="flex items-center justify-between text-xs mb-1.5 font-medium">
+                      <span className="text-foreground">{cfg.label}</span>
+                      <span className="text-muted-foreground">{count} ({Math.round(pct)}%)</span>
                     </div>
-                    <div className="w-full h-2 rounded-full bg-white/5 overflow-hidden">
-                      <div className={`h-full rounded-full ${cfg.color.replace('text-', 'bg-').replace('/15', '')}`} style={{ width: `${pct}%` }} />
+                    <div className="w-full h-2 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-primary transition-all"
+                        style={{ width: `${pct}%` }}
+                      />
                     </div>
                   </div>
                 );
               })}
-              {totalProjects === 0 && <div className="text-center py-8 text-sm text-slate-500">Chưa có dữ liệu</div>}
+              {totalProjects === 0 && (
+                <div className="text-center py-12 text-sm text-muted-foreground">Chưa có dữ liệu trạng thái</div>
+              )}
             </div>
           </motion.div>
 
           {/* Job stats */}
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
-            className="rounded-2xl bg-[#161922] border border-white/5 p-6">
-            <h3 className="text-sm font-semibold text-white mb-5">Thống kê job</h3>
-            <div className="grid grid-cols-2 gap-4">
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.16 }}
+            className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+          >
+            <h3 className="text-base font-semibold text-foreground mb-1">Thống kê tác vụ (Jobs)</h3>
+            <p className="text-xs text-muted-foreground mb-6">Tổng kết hiệu suất thực thi của worker queue</p>
+            <div className="grid grid-cols-2 gap-3.5">
               {[
-                { label: 'Tổng job', value: jobs.length, icon: BarChart3, color: 'text-blue-400' },
-                { label: 'Hoàn thành', value: jobs.filter(j => j.status === 'success' || j.status === 'completed').length, icon: CheckCircle, color: 'text-emerald-400' },
-                { label: 'Thất bại', value: jobs.filter(j => j.status === 'failed').length, icon: XCircle, color: 'text-red-400' },
-                { label: 'Đang chạy', value: jobs.filter(j => j.status === 'running' || j.status === 'pending').length, icon: TrendingUp, color: 'text-orange-400' },
-              ].map(s => (
-                <div key={s.label} className="rounded-xl bg-white/[0.02] border border-white/5 p-4">
-                  <div className="flex items-center gap-2 mb-1">
-                    <s.icon className={`w-4 h-4 ${s.color}`} />
-                    <span className="text-xs text-slate-400">{s.label}</span>
+                { label: 'Tổng tác vụ', value: jobs.length, icon: BarChart3, color: 'text-primary bg-primary/10' },
+                {
+                  label: 'Thành công',
+                  value: jobs.filter(j => j.status === 'success' || j.status === 'completed').length,
+                  icon: CheckCircle,
+                  color: 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10',
+                },
+                {
+                  label: 'Thất bại',
+                  value: jobs.filter(j => j.status === 'failed').length,
+                  icon: XCircle,
+                  color: 'text-rose-600 dark:text-rose-400 bg-rose-500/10',
+                },
+                {
+                  label: 'Đang chạy',
+                  value: jobs.filter(j => j.status === 'running' || j.status === 'pending').length,
+                  icon: TrendingUp,
+                  color: 'text-amber-600 dark:text-amber-400 bg-amber-500/10',
+                },
+              ].map(s => {
+                const Icon = s.icon;
+                return (
+                  <div key={s.label} className="rounded-xl bg-muted/40 border border-border/70 p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${s.color}`}>
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      <span className="text-xs text-muted-foreground font-medium">{s.label}</span>
+                    </div>
+                    <div className="text-xl font-bold text-foreground">{s.value}</div>
                   </div>
-                  <div className="text-xl font-bold text-white">{s.value}</div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </motion.div>
         </div>

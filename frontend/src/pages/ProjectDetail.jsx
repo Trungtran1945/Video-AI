@@ -387,40 +387,40 @@ export default function ProjectDetail() {
   if (isDub) {
     return (
       <Layout>
-        <div className="h-screen flex flex-col bg-[#0F1117]">
+        <div className="h-screen flex flex-col bg-background text-foreground">
           {/* 1. Header */}
-          <div className="shrink-0 px-4 py-3 border-b border-white/5 bg-[#0B0E14]">
-            <Link to="/projects" className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-white mb-2 transition">
+          <div className="shrink-0 px-4 py-3 border-b border-border bg-card">
+            <Link to="/projects" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground mb-2 transition">
               <ArrowLeft className="w-3 h-3" /> Quay lại dự án
             </Link>
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-3 min-w-0">
-                <h1 className="text-lg font-bold text-white truncate">{project.title}</h1>
+                <h1 className="text-lg font-bold text-foreground truncate">{project.title}</h1>
                 <StatusBadge status={project.status} />
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <button onClick={() => setConfirmDelete(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs font-medium transition">
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-destructive/30 text-destructive hover:bg-destructive/10 text-xs font-medium transition">
                   <Trash2 className="w-3.5 h-3.5" /> Xoá
                 </button>
                 {canCancel && (
                   <button onClick={handleCancel}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-orange-500/30 text-orange-400 hover:bg-orange-500/10 text-xs font-medium transition">
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 text-xs font-medium transition">
                     <XCircle className="w-3.5 h-3.5" /> Huỷ
                   </button>
                 )}
                 {canRegenerate && (
                   <button onClick={handleRegenerate} disabled={regenerating}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 text-xs font-medium transition disabled:opacity-50">
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 text-xs font-medium transition disabled:opacity-50">
                     {regenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />} Chạy lại
                   </button>
                 )}
                 {outputUrl && (
                   <>
-                    <a href={outputUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition">
+                    <a href={outputUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold transition">
                       <Play className="w-3.5 h-3.5" /> Xem
                     </a>
-                    <a href={outputUrl} download className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 hover:border-white/20 text-slate-300 text-xs font-medium transition">
+                    <a href={outputUrl} download className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-foreground text-xs font-medium transition">
                       <Download className="w-3.5 h-3.5" /> Tải
                     </a>
                   </>
@@ -428,19 +428,19 @@ export default function ProjectDetail() {
               </div>
             </div>
             {error && (
-              <div className="mt-2 flex items-center gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+              <div className="mt-2 flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {error}
               </div>
             )}
           </div>
 
           {/* 2. Pipeline Progress - Full width near top */}
-          <div className="shrink-0 px-4 py-2 bg-[#161922] border-b border-white/5">
+          <div className="shrink-0 px-4 py-2 bg-card/70 border-b border-border">
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2 shrink-0">
-                <span className="text-[10px] font-semibold text-white">Pipeline</span>
+                <span className="text-[10px] font-semibold text-foreground">Pipeline</span>
                 {isActive && (
-                  <span className="inline-flex items-center gap-1 text-[10px] text-blue-400">
+                  <span className="inline-flex items-center gap-1 text-[10px] text-primary">
                     <Loader2 className="w-2.5 h-2.5 animate-spin" /> {sseAvailable ? 'SSE' : 'Polling'}
                   </span>
                 )}
@@ -510,7 +510,7 @@ export default function ProjectDetail() {
             </div>
 
             {/* Right Panel: Video Preview */}
-            <div className="w-[42%] flex flex-col min-h-0 bg-[#161922]">
+            <div className="w-[42%] flex flex-col min-h-0 bg-card border-l border-border">
               {outputUrl ? (
                 <div className="flex-1 flex flex-col min-h-0 p-3 gap-2">
                   {/* Video Container */}
@@ -558,13 +558,13 @@ export default function ProjectDetail() {
                     </AnimatePresence>
                   </div>
                   {/* Video Info Bar */}
-                  <div className="shrink-0 flex items-center justify-between text-[10px] text-slate-500 px-1">
+                  <div className="shrink-0 flex items-center justify-between text-[10px] text-muted-foreground px-1">
                     <span>{fmtSec(currentTime)} / {fmtSec(duration)}</span>
                     <span>{MODE_LABELS[project.mode] || project.mode}</span>
                   </div>
                 </div>
               ) : (
-                <div className="flex-1 flex items-center justify-center text-sm text-slate-500">
+                <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
                   Chưa có video output
                 </div>
               )}
@@ -590,26 +590,26 @@ export default function ProjectDetail() {
               transcript={transcript}
               project={project}
               outputUrl={outputUrl}
-              className="rounded-none border-x-0 border-b-0 border-t border-white/10"
+              className="rounded-none border-x-0 border-b-0 border-t border-border"
             />
           </div>
 
           <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
-            <AlertDialogContent className="bg-[#161922] border-white/10 text-slate-200">
+            <AlertDialogContent className="bg-card border-border text-foreground">
               <AlertDialogHeader>
-                <AlertDialogTitle className="text-white">Xoá dự án này?</AlertDialogTitle>
-                <AlertDialogDescription>
+                <AlertDialogTitle className="text-foreground">Xoá dự án này?</AlertDialogTitle>
+                <AlertDialogDescription className="text-muted-foreground">
                   Dự án "{project.title}" cùng video nguồn, giọng đọc, phụ đề và video render sẽ bị xoá vĩnh viễn khỏi kho lưu trữ. Hành động này không thể hoàn tác.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
-                <AlertDialogCancel className="bg-transparent border-white/10 text-slate-300 hover:bg-white/5 hover:text-white">
+                <AlertDialogCancel className="border-border text-foreground hover:bg-muted">
                   Huỷ
                 </AlertDialogCancel>
                 <AlertDialogAction
                   onClick={(e) => { e.preventDefault(); handleDelete(); }}
                   disabled={deleting}
-                  className="bg-red-600 hover:bg-red-500 text-white"
+                  className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold"
                 >
                   {deleting ? 'Đang xoá...' : 'Xoá vĩnh viễn'}
                 </AlertDialogAction>
@@ -625,7 +625,7 @@ export default function ProjectDetail() {
   return (
     <Layout>
       <div className="p-6 lg:p-8 max-w-5xl mx-auto">
-        <Link to="/projects" className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-white mb-4 transition">
+        <Link to="/projects" className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-4 transition">
           <ArrowLeft className="w-4 h-4" /> Quay lại dự án
         </Link>
 
@@ -633,37 +633,37 @@ export default function ProjectDetail() {
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
           <div>
             <div className="flex items-center gap-3 mb-2">
-              <h1 className="text-2xl font-bold text-white">{project.title}</h1>
+              <h1 className="text-2xl font-bold text-foreground">{project.title}</h1>
               <StatusBadge status={project.status} />
             </div>
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-muted-foreground">
               {MODE_LABELS[project.mode] || project.mode}
               {!isDub && ` • ${project.target_duration_sec}s`}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button onClick={() => setConfirmDelete(true)}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl border border-red-500/30 text-red-400 hover:bg-red-500/10 text-sm font-semibold transition">
+              className="flex items-center gap-2 px-4 py-2 rounded-xl border border-destructive/30 text-destructive hover:bg-destructive/10 text-sm font-semibold transition">
               <Trash2 className="w-4 h-4" /> Xoá
             </button>
             {canCancel && ( // Group 1: Cancel button
               <button onClick={handleCancel}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-orange-500/30 text-orange-400 hover:bg-orange-500/10 text-sm font-semibold transition">
+                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 text-sm font-semibold transition">
                 <XCircle className="w-4 h-4" /> Huỷ
               </button>
             )}
             {canRegenerate && (
               <button onClick={handleRegenerate} disabled={regenerating}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 text-sm font-semibold transition disabled:opacity-50">
+                className="flex items-center gap-2 px-4 py-2 rounded-xl border border-primary/30 text-primary hover:bg-primary/10 text-sm font-semibold transition disabled:opacity-50">
                 {regenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />} Chạy lại
               </button>
             )}
             {outputUrl && (
               <>
-                <a href={outputUrl} target="_blank" rel="noreferrer" className="flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition">
+                <a href={outputUrl} target="_blank" rel="noreferrer" className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition">
                   <Play className="w-4 h-4" /> Xem video
                 </a>
-                <a href={outputUrl} download className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/10 hover:border-white/20 text-slate-300 text-sm font-semibold transition">
+                <a href={outputUrl} download className="flex items-center gap-2 px-4 py-2 rounded-xl border border-border hover:bg-muted text-foreground text-sm font-semibold transition">
                   <Download className="w-4 h-4" /> Tải về
                 </a>
               </>
@@ -672,14 +672,14 @@ export default function ProjectDetail() {
         </div>
 
         {error && (
-          <div className="mb-6 flex items-center gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+          <div className="mb-6 flex items-center gap-2 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-3">
             <AlertCircle className="w-4 h-4 shrink-0" /> {error}
           </div>
         )}
 
         {/* Output preview */}
         {outputUrl && isVideoOutput && (
-          <div className="rounded-2xl bg-[#161922] border border-white/5 p-4 mb-6">
+          <div className="rounded-2xl bg-card border border-border p-4 mb-6 shadow-sm">
             <video id="output-video" src={outputUrl} controls className="w-full max-h-[420px] rounded-xl bg-black" />
           </div>
         )}
@@ -688,11 +688,11 @@ export default function ProjectDetail() {
         <InfoGrid project={project} isDub={isDub} params={params} />
 
         {/* Pipeline progress */}
-        <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
+        <div className="rounded-2xl bg-card border border-border p-6 mb-6 shadow-sm">
           <div className="flex items-center justify-between mb-5">
-            <h3 className="text-base font-semibold text-white">Tiến trình Pipeline</h3>
+            <h3 className="text-base font-semibold text-foreground">Tiến trình Pipeline</h3>
             {isActive && (
-              <span className="inline-flex items-center gap-1.5 text-xs text-blue-400">
+              <span className="inline-flex items-center gap-1.5 text-xs text-primary font-medium">
                 <Loader2 className="w-3 h-3 animate-spin" />
                 {sseAvailable ? 'Cập nhật real-time (SSE)' : 'Tự động cập nhật'}
               </span>
@@ -780,21 +780,21 @@ export default function ProjectDetail() {
 
         {/* Timeline preview (SUMMARY) */}
         {timeline.length > 0 && (
-          <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
-            <h3 className="text-base font-semibold text-white">Bản dựng (Timeline)</h3>
-            <p className="text-xs text-slate-500 mt-1 mb-4">Xem trước các clip theo thứ tự AI đã dựng — chỉ xem, dùng &quot;Chạy lại&quot; nếu chưa ưng ý.</p>
+          <div className="rounded-2xl bg-card border border-border p-6 mb-6 shadow-sm">
+            <h3 className="text-base font-semibold text-foreground">Bản dựng (Timeline)</h3>
+            <p className="text-xs text-muted-foreground mt-1 mb-4">Xem trước các clip theo thứ tự AI đã dựng — chỉ xem, dùng &quot;Chạy lại&quot; nếu chưa ưng ý.</p>
             <div className="flex gap-2 overflow-x-auto pb-2">
               {timeline.map((clip, i) => (
-                <div key={clip.id || i} className="shrink-0 w-36 rounded-xl border border-white/5 bg-white/[0.02] p-3">
+                <div key={clip.id || i} className="shrink-0 w-36 rounded-xl border border-border/70 bg-muted/30 p-3">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-bold text-slate-500">#{clip.order_index ?? i + 1}</span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 uppercase">{clip.source_type === 'ASSET' ? 'Asset' : 'Scene'}</span>
+                    <span className="text-xs font-bold text-muted-foreground">#{clip.order_index ?? i + 1}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/15 text-primary uppercase font-medium">{clip.source_type === 'ASSET' ? 'Asset' : 'Scene'}</span>
                   </div>
-                  <div className="w-full h-12 rounded-lg bg-gradient-to-br from-blue-500/20 to-indigo-600/20 flex items-center justify-center mb-2">
-                    <Film className="w-4 h-4 text-blue-300" />
+                  <div className="w-full h-12 rounded-lg bg-primary/10 flex items-center justify-center mb-2">
+                    <Film className="w-4 h-4 text-primary" />
                   </div>
-                  <div className="text-xs text-slate-300 tabular-nums">{fmtSec(clip.in_sec)} → {fmtSec(clip.out_sec)}</div>
-                  <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-500">
+                  <div className="text-xs text-foreground font-medium tabular-nums">{fmtSec(clip.in_sec)} → {fmtSec(clip.out_sec)}</div>
+                  <div className="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground">
                     {clip.speed != null && Number(clip.speed) !== 1 && <span>×{clip.speed}</span>}
                     {clip.transition_in && clip.transition_in !== 'none' && (
                       <span className="inline-flex items-center gap-0.5"><Combine className="w-3 h-3" /> {clip.transition_in}</span>
@@ -808,18 +808,18 @@ export default function ProjectDetail() {
 
         {/* Scenes (SUMMARY) */}
         {scenes.length > 0 && (
-          <div className="rounded-2xl bg-[#161922] border border-white/5 p-6">
-            <h3 className="text-base font-semibold text-white mb-4">Cảnh ({scenes.length})</h3>
+          <div className="rounded-2xl bg-card border border-border p-6 shadow-sm">
+            <h3 className="text-base font-semibold text-foreground mb-4">Cảnh ({scenes.length})</h3>
             <div className="space-y-3">
               {scenes.map((item, i) => (
-                <div key={item.id} className="flex gap-4 p-3 rounded-xl bg-white/[0.02] border border-white/5">
-                  <div className="text-2xl font-bold text-slate-600 w-8 text-center">{i + 1}</div>
-                  <div className="w-20 h-20 rounded-lg bg-white/5 flex items-center justify-center shrink-0">
-                    <FileText className="w-5 h-5 text-slate-600" />
+                <div key={item.id} className="flex gap-4 p-3 rounded-xl bg-muted/30 border border-border/70">
+                  <div className="text-2xl font-bold text-muted-foreground w-8 text-center">{i + 1}</div>
+                  <div className="w-20 h-20 rounded-lg bg-muted flex items-center justify-center shrink-0">
+                    <FileText className="w-5 h-5 text-muted-foreground" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm text-slate-300 line-clamp-2">{item.description}</div>
-                    <div className="flex items-center gap-3 mt-2 text-xs text-slate-500">
+                    <div className="text-sm text-foreground line-clamp-2">{item.description}</div>
+                    <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
                       <span>{item.start_sec}s – {item.end_sec}s</span>
                     </div>
                   </div>
@@ -831,21 +831,21 @@ export default function ProjectDetail() {
       </div>
 
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
-        <AlertDialogContent className="bg-[#161922] border-white/10 text-slate-200">
+        <AlertDialogContent className="bg-card border-border text-foreground">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-white">Xoá dự án này?</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogTitle className="text-foreground">Xoá dự án này?</AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-foreground">
               Dự án “{project.title}” cùng video nguồn, giọng đọc, phụ đề và video render sẽ bị xoá vĩnh viễn khỏi kho lưu trữ. Hành động này không thể hoàn tác.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel className="bg-transparent border-white/10 text-slate-300 hover:bg-white/5 hover:text-white">
+            <AlertDialogCancel className="border-border text-foreground hover:bg-muted">
               Huỷ
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={(e) => { e.preventDefault(); handleDelete(); }}
               disabled={deleting}
-              className="bg-red-600 hover:bg-red-500 text-white"
+              className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold"
             >
               {deleting ? 'Đang xoá...' : 'Xoá vĩnh viễn'}
             </AlertDialogAction>
@@ -874,9 +874,9 @@ function InfoGrid({ project, isDub, params }) {
   return (
     <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
       {rows.map(([k, v]) => (
-        <div key={k} className="rounded-xl bg-[#161922] border border-white/5 p-4">
-          <div className="text-xs text-slate-500">{k}</div>
-          <div className="text-sm font-medium text-slate-200 mt-1 truncate" title={String(v)}>{v}</div>
+        <div key={k} className="rounded-xl bg-card border border-border p-4 shadow-sm">
+          <div className="text-xs text-muted-foreground">{k}</div>
+          <div className="text-sm font-semibold text-foreground mt-1 truncate" title={String(v)}>{v}</div>
         </div>
       ))}
     </div>
@@ -922,19 +922,19 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
     return (
       <div className="h-full flex flex-col">
         {/* Header */}
-        <div className="shrink-0 p-3 border-b border-white/5">
+        <div className="shrink-0 p-3 border-b border-border">
           <div className="flex items-center justify-between gap-2 mb-1">
-            <h3 className="text-xs font-semibold text-white">Lời thoại</h3>
-            <span className="text-[10px] text-slate-500">{translatedCount}/{transcript.length}</span>
+            <h3 className="text-xs font-semibold text-foreground">Lời thoại</h3>
+            <span className="text-[10px] text-muted-foreground">{translatedCount}/{transcript.length}</span>
           </div>
           {/* Language Selector */}
           <div className="flex items-center gap-1.5 mb-2">
-            <Languages className="w-3 h-3 text-slate-500 shrink-0" />
+            <Languages className="w-3 h-3 text-muted-foreground shrink-0" />
             <select
               value={targetLanguage}
               onChange={(e) => onLanguageChange?.(e.target.value)}
               disabled={disabled}
-              className="flex-1 bg-[#0F1117] border border-white/10 rounded px-2 py-0.5 text-[10px] text-slate-300 focus:outline-none focus:border-blue-500/50 disabled:opacity-60"
+              className="flex-1 bg-background border border-input rounded px-2 py-0.5 text-[10px] text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
             >
               <option value="vi">Tiếng Việt</option>
               <option value="en">Tiếng Anh</option>
@@ -944,18 +944,18 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
             </select>
           </div>
           {error && (
-            <div className="mb-2 flex items-center gap-1 text-[10px] text-red-400 bg-red-500/10 rounded px-2 py-1">
+            <div className="mb-2 flex items-center gap-1 text-[10px] text-destructive bg-destructive/10 rounded px-2 py-1">
               <AlertCircle className="w-2.5 h-2.5 shrink-0" /> {error}
             </div>
           )}
           <div className="flex gap-1">
             <button onClick={handleSave} disabled={saving || disabled || dirtyCount === 0}
-              className="flex items-center gap-1 px-2 py-1 rounded border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 text-[10px] font-medium transition disabled:opacity-50">
+              className="flex items-center gap-1 px-2 py-1 rounded border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 text-[10px] font-medium transition disabled:opacity-50">
               {saving ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <CheckCircle className="w-2.5 h-2.5" />}
               Lưu{dirtyCount > 0 ? ` (${dirtyCount})` : ''}
             </button>
             <button onClick={handleRedub} disabled={redubbing || disabled}
-              className="flex items-center gap-1 px-2 py-1 rounded border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 text-[10px] font-medium transition disabled:opacity-50">
+              className="flex items-center gap-1 px-2 py-1 rounded border border-primary/30 text-primary hover:bg-primary/10 text-[10px] font-medium transition disabled:opacity-50">
               {redubbing ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <AudioLines className="w-2.5 h-2.5" />}
               Lồng tiếng
             </button>
@@ -981,26 +981,26 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
                   e.dataTransfer.effectAllowed = 'copy';
                 }}
                 className={`p-2 rounded-lg border transition cursor-grab active:cursor-grabbing ${
-                  isDirty ? 'bg-amber-500/5 border-amber-500/20' : 'bg-white/[0.02] border-white/5'
+                  isDirty ? 'bg-amber-500/10 border-amber-500/30' : 'bg-muted/25 border-border/70'
                 }`}
               >
                 <div className="flex items-center justify-between gap-1 mb-1">
                   <button onClick={() => onSeek(seg.startSec)} disabled={!hasVideo}
-                    className="text-[10px] text-slate-500 hover:text-blue-400 transition disabled:cursor-default tabular-nums">
+                    className="text-[10px] text-muted-foreground hover:text-primary transition disabled:cursor-default tabular-nums">
                     {fmtSec(seg.startSec)} → {fmtSec(seg.endSec)}
                   </button>
                   {seg.speaker && (
-                    <span className="text-[8px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-300">{seg.speaker}</span>
+                    <span className="text-[8px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-700 dark:text-violet-300">{seg.speaker}</span>
                   )}
                 </div>
-                <div className="text-[11px] text-slate-400 line-clamp-1 mb-1">{seg.text}</div>
+                <div className="text-[11px] text-muted-foreground line-clamp-1 mb-1">{seg.text}</div>
                 <textarea
                   value={getTranslation(seg)}
                   onChange={(e) => setEdits((p) => ({ ...p, [seg.id]: e.target.value }))}
                   disabled={disabled}
                   rows={1}
                   placeholder={seg.translation ? '' : '...'}
-                  className="w-full resize-none rounded bg-[#0F1117] border border-white/10 px-2 py-1 text-[11px] text-slate-200 leading-snug focus:outline-none focus:border-blue-500/50 disabled:opacity-60"
+                  className="w-full resize-none rounded bg-background border border-input px-2 py-1 text-[11px] text-foreground leading-snug focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
                 />
               </div>
             );
@@ -1013,33 +1013,33 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
   // Full mode (original)
   if (!transcript.length) {
     return (
-      <div className="rounded-2xl bg-[#161922] border border-white/5 p-6 mb-6">
-        <h3 className="text-base font-semibold text-white">Lời thoại song ngữ</h3>
-        <p className="text-sm text-slate-500 mt-2">
-          Chưa có lời thoại nào. Hãy chạy pipeline (hoặc nhấn <span className="text-blue-400">Chạy lại</span>) để AI nhận dạng và dịch video.
+      <div className="rounded-2xl bg-card border border-border p-6 mb-6 shadow-sm">
+        <h3 className="text-base font-semibold text-foreground">Lời thoại song ngữ</h3>
+        <p className="text-sm text-muted-foreground mt-2">
+          Chưa có lời thoại nào. Hãy chạy pipeline (hoặc nhấn <span className="text-primary font-medium">Chạy lại</span>) để AI nhận dạng và dịch video.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="h-full flex flex-col rounded-2xl bg-[#161922] border border-white/5 p-6">
+    <div className="h-full flex flex-col rounded-2xl bg-card border border-border p-6 shadow-sm">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <div>
-          <h3 className="text-base font-semibold text-white">Lời thoại song ngữ (chỉnh sửa được)</h3>
-          <p className="text-xs text-slate-500 mt-1">
+          <h3 className="text-base font-semibold text-foreground">Lời thoại song ngữ (chỉnh sửa được)</h3>
+          <p className="text-xs text-muted-foreground mt-1">
             Gốc ↔ bản dịch{hasVideo ? ' — nhấn vào giờ để nhảy tới đoạn đó trong video' : ''}. Đã dịch {translatedCount}/{transcript.length} câu.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Language Selector */}
           <div className="flex items-center gap-1.5">
-            <Languages className="w-3.5 h-3.5 text-slate-500" />
+            <Languages className="w-3.5 h-3.5 text-muted-foreground" />
             <select
               value={targetLanguage}
               onChange={(e) => onLanguageChange?.(e.target.value)}
               disabled={disabled}
-              className="bg-[#0F1117] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-blue-500/50 disabled:opacity-60"
+              className="bg-background border border-input rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
             >
               <option value="vi">Tiếng Việt</option>
               <option value="en">Tiếng Anh</option>
@@ -1049,12 +1049,12 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
             </select>
           </div>
           <button onClick={handleSave} disabled={saving || disabled || dirtyCount === 0}
-            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10 text-sm font-semibold transition disabled:opacity-50">
+            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 text-sm font-semibold transition disabled:opacity-50">
             {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
             Lưu chỉnh sửa{dirtyCount > 0 ? ` (${dirtyCount})` : ''}
           </button>
           <button onClick={handleRedub} disabled={redubbing || disabled}
-            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 text-sm font-semibold transition disabled:opacity-50">
+            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-primary/30 text-primary hover:bg-primary/10 text-sm font-semibold transition disabled:opacity-50">
             {redubbing ? <Loader2 className="w-4 h-4 animate-spin" /> : <AudioLines className="w-4 h-4" />}
             Chạy lại (lồng tiếng)
           </button>
@@ -1062,7 +1062,7 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
       </div>
 
       {error && (
-        <div className="mb-4 flex items-center gap-2 text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+        <div className="mb-4 flex items-center gap-2 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-3">
           <AlertCircle className="w-4 h-4 shrink-0" /> {error}
         </div>
       )}
@@ -1084,26 +1084,26 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
                 }));
                 e.dataTransfer.effectAllowed = 'copy';
               }}
-              className="p-3 rounded-xl bg-white/[0.02] border border-white/5 cursor-grab active:cursor-grabbing"
+              className="p-3 rounded-xl bg-muted/30 border border-border/70 cursor-grab active:cursor-grabbing"
             >
               <div className="flex items-center justify-between gap-2 mb-1.5">
                 <button onClick={() => onSeek(seg.startSec)} disabled={!hasVideo}
-                  className="flex items-center gap-2 text-[11px] text-slate-500 hover:text-blue-400 transition disabled:hover:text-slate-500 disabled:cursor-default">
+                  className="flex items-center gap-2 text-[11px] text-muted-foreground hover:text-primary transition disabled:hover:text-muted-foreground disabled:cursor-default">
                   <span className="tabular-nums">{fmtSec(seg.startSec)} → {fmtSec(seg.endSec)}</span>
                   {seg.speaker && (
-                    <span className="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300 font-medium">{seg.speaker}</span>
+                    <span className="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-700 dark:text-violet-300 font-medium">{seg.speaker}</span>
                   )}
                 </button>
-                {isDirty && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">đã sửa</span>}
+                {isDirty && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 font-medium">đã sửa</span>}
               </div>
-              <div className="text-sm text-slate-400 line-clamp-1">{seg.text}</div>
+              <div className="text-sm text-muted-foreground line-clamp-1">{seg.text}</div>
               <textarea
                 value={getTranslation(seg)}
                 onChange={(e) => setEdits((p) => ({ ...p, [seg.id]: e.target.value }))}
                 disabled={disabled}
                 rows={2}
                 placeholder={seg.translation ? '' : 'Chưa dịch — bạn có thể nhập bản dịch thủ công'}
-                className="mt-1.5 w-full resize-y rounded-lg bg-[#0F1117] border border-white/10 px-3 py-2 text-sm text-slate-200 leading-snug focus:outline-none focus:border-blue-500/50 disabled:opacity-60"
+                className="mt-1.5 w-full resize-y rounded-lg bg-background border border-input px-3 py-2 text-sm text-foreground leading-snug focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
               />
             </div>
           );
