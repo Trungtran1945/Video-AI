@@ -55,16 +55,16 @@ export default function Playhead({ height, onSeek }) {
 
   return (
     <>
-      {/* Magnetic Snapping Vertical White Guide Line */}
+      {/* Magnetic Snapping Vertical Guide Line */}
       {snappingGuide !== null && (
         <div
           style={{
             left: `${snappingGuide * zoomLevel}px`,
             height: `${height}px`,
           }}
-          className="absolute top-0 w-[1px] bg-white z-40 pointer-events-none shadow-[0_0_8px_#ffffff]"
+          className="absolute top-0 w-[1px] bg-blue-600 dark:bg-white z-40 pointer-events-none shadow-[0_0_8px_rgba(37,99,235,0.4)] dark:shadow-[0_0_8px_#ffffff]"
         >
-          <div className="absolute top-1 left-1 bg-white text-zinc-950 font-mono text-[9px] px-1 py-0.2 rounded font-bold shadow-md">
+          <div className="absolute top-1 left-1 bg-blue-600 dark:bg-white text-white dark:text-zinc-950 font-mono text-[9px] px-1 py-0.2 rounded font-bold shadow-md">
             SNAP
           </div>
         </div>

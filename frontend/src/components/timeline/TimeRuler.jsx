@@ -66,10 +66,10 @@ export default function TimeRuler({ totalDuration, onSeek }) {
       ref={rulerRef}
       onPointerDown={handlePointerDown}
       style={{ width: `${totalWidth}px` }}
-      className="h-9 sticky top-0 z-30 bg-[#141418] border-b border-white/10 select-none cursor-pointer group"
+      className="h-9 sticky top-0 z-30 bg-muted/40 dark:bg-card border-b border-border select-none cursor-pointer group"
     >
       {/* Background subtle hover line */}
-      <div className="absolute inset-0 group-hover:bg-white/[0.02] transition-colors pointer-events-none" />
+      <div className="absolute inset-0 group-hover:bg-foreground/[0.02] transition-colors pointer-events-none" />
 
       {/* Render Major & Minor Ticks */}
       {Array.from({ length: numMajorTicks }).map((_, idx) => {
@@ -94,10 +94,10 @@ export default function TimeRuler({ totalDuration, onSeek }) {
               style={{ left: `${leftPx}px` }}
               className="absolute bottom-0 flex flex-col items-start pointer-events-none"
             >
-              <span className="text-[10px] font-mono text-zinc-400 pl-1 -mt-0.5 leading-none">
+              <span className="text-[10px] font-mono text-muted-foreground pl-1 -mt-0.5 leading-none">
                 {formatRulerTime(timeSec)}
               </span>
-              <div className="w-[1px] h-3 bg-zinc-500 mt-1" />
+              <div className="w-[1px] h-3 bg-muted-foreground/60 dark:bg-zinc-500 mt-1" />
             </div>
 
             {/* Minor Ticks */}
@@ -105,7 +105,7 @@ export default function TimeRuler({ totalDuration, onSeek }) {
               <div
                 key={`minor-${idx}-${mIdx}`}
                 style={{ left: `${mPx}px` }}
-                className="absolute bottom-0 w-[1px] h-1.5 bg-zinc-700 pointer-events-none"
+                className="absolute bottom-0 w-[1px] h-1.5 bg-border dark:bg-zinc-700 pointer-events-none"
               />
             ))}
           </React.Fragment>

@@ -1,53 +1,33 @@
 import { useEffect, useRef } from 'react';
-import * as THREE from 'three';
 import { useTheme } from 'next-themes';
 
 /**
- * Auth3DBackground - Fluid zero-gravity 3D background for Login & Register
- * Login: Crystalline Torus Knot sculpture with luminous glass refraction
- * Register: Multi-ring Orbital Gyroscope with smooth precessing rings
+ * Auth3DBackground - Lag-free, high-performance fluid aurora & luminous glow background
+ * for Login and Register pages.
+ * Zero WebGL overhead, 60fps locked, beautifully responsive.
  */
 export default function Auth3DBackground({ shapeType = 'crystalTorus', className = '' }) {
-  const containerRef = useRef(null);
   const canvasRef = useRef(null);
+  const containerRef = useRef(null);
   const { resolvedTheme } = useTheme();
 
   useEffect(() => {
-    const container = containerRef.current;
     const canvas = canvasRef.current;
-    if (!container || !canvas) return;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
     let animId = null;
     let isVisible = true;
+    let width = 0;
+    let height = 0;
+
     const isDark = resolvedTheme === 'dark';
+    const isLogin = shapeType === 'crystalTorus';
 
-    // 1. Scene, Camera, Renderer
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
-    camera.position.set(0, 0, 6.2);
-
-    const renderer = new THREE.WebGLRenderer({
-      canvas,
-      alpha: true,
-      antialias: true,
-      powerPreference: 'high-performance',
-    });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
-
-    const updateSize = () => {
-      if (!container) return;
-      const width = container.clientWidth || window.innerWidth;
-      const height = container.clientHeight || window.innerHeight;
-      camera.aspect = width / height;
-      camera.position.z = width < 768 ? 7.8 : 6.2;
-      camera.updateProjectionMatrix();
-      renderer.setSize(width, height, false);
-    };
-    updateSize();
-
-    window.addEventListener('resize', updateSize);
-
-    // Mouse parallax with smooth damping
+    // Track mouse
     const mouse = {
       targetX: 0,
       targetY: 0,
@@ -57,196 +37,224 @@ export default function Auth3DBackground({ shapeType = 'crystalTorus', className
 
     const handleMouseMove = (e) => {
       const nx = (e.clientX / window.innerWidth) * 2 - 1;
-      const ny = -(e.clientY / window.innerHeight) * 2 + 1;
-      mouse.targetX = nx * 0.4;
-      mouse.targetY = ny * 0.4;
+      const ny = (e.clientY / window.innerHeight) * 2 - 1;
+      mouse.targetX = nx;
+      mouse.targetY = ny;
     };
 
     window.addEventListener('mousemove', handleMouseMove, { passive: true });
 
-    // 2. Lights
-    const ambientLight = new THREE.AmbientLight(
-      isDark ? 0x1e1b4b : 0xe0e7ff,
-      isDark ? 1.6 : 2.2
-    );
-    scene.add(ambientLight);
+    const handleResize = () => {
+      if (!canvas || !container) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      width = container.clientWidth || window.innerWidth;
+      height = container.clientHeight || window.innerHeight;
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
 
-    const dirLight1 = new THREE.DirectionalLight(
-      shapeType === 'crystalTorus' ? 0x3b82f6 : 0x06b6d4,
-      isDark ? 3.2 : 2.4
-    );
-    dirLight1.position.set(3.5, 4.5, 4.5);
-    scene.add(dirLight1);
+    handleResize();
+    window.addEventListener('resize', handleResize);
 
-    const dirLight2 = new THREE.DirectionalLight(
-      shapeType === 'crystalTorus' ? 0x8b5cf6 : 0xa855f7,
-      isDark ? 2.6 : 1.9
-    );
-    dirLight2.position.set(-4.2, -3.5, 3.2);
-    scene.add(dirLight2);
+    // Glowing Orbs tailored for Login (Deep Indigo & Royal Blue) vs Register (Cyan & Royal Violet)
+    const orbs = isLogin
+      ? [
+          {
+            baseX: 0.35,
+            baseY: 0.40,
+            radiusRatio: 0.42,
+            colorDark: 'rgba(59, 130, 246, 0.26)', // Royal Blue
+            colorLight: 'rgba(59, 130, 246, 0.14)',
+            speedX: 0.0004,
+            speedY: 0.0005,
+            phase: 0,
+          },
+          {
+            baseX: 0.65,
+            baseY: 0.55,
+            radiusRatio: 0.45,
+            colorDark: 'rgba(99, 102, 241, 0.22)', // Indigo
+            colorLight: 'rgba(99, 102, 241, 0.12)',
+            speedX: -0.00035,
+            speedY: 0.0004,
+            phase: Math.PI / 2,
+          },
+          {
+            baseX: 0.50,
+            baseY: 0.68,
+            radiusRatio: 0.38,
+            colorDark: 'rgba(168, 85, 247, 0.18)', // Violet
+            colorLight: 'rgba(168, 85, 247, 0.10)',
+            speedX: 0.0003,
+            speedY: -0.00045,
+            phase: Math.PI,
+          },
+          {
+            baseX: 0.48,
+            baseY: 0.32,
+            radiusRatio: 0.32,
+            colorDark: 'rgba(249, 115, 22, 0.12)', // Warm amber accent
+            colorLight: 'rgba(249, 115, 22, 0.06)',
+            speedX: -0.0003,
+            speedY: -0.0003,
+            phase: Math.PI * 1.5,
+          },
+        ]
+      : [
+          {
+            baseX: 0.32,
+            baseY: 0.45,
+            radiusRatio: 0.44,
+            colorDark: 'rgba(6, 182, 212, 0.24)', // Electric Cyan
+            colorLight: 'rgba(6, 182, 212, 0.13)',
+            speedX: 0.0004,
+            speedY: 0.00045,
+            phase: 0,
+          },
+          {
+            baseX: 0.68,
+            baseY: 0.40,
+            radiusRatio: 0.46,
+            colorDark: 'rgba(168, 85, 247, 0.22)', // Purple
+            colorLight: 'rgba(168, 85, 247, 0.12)',
+            speedX: -0.0004,
+            speedY: 0.00035,
+            phase: Math.PI / 2,
+          },
+          {
+            baseX: 0.50,
+            baseY: 0.62,
+            radiusRatio: 0.40,
+            colorDark: 'rgba(59, 130, 246, 0.18)', // Blue
+            colorLight: 'rgba(59, 130, 246, 0.10)',
+            speedX: 0.0003,
+            speedY: -0.0004,
+            phase: Math.PI,
+          },
+          {
+            baseX: 0.55,
+            baseY: 0.30,
+            radiusRatio: 0.30,
+            colorDark: 'rgba(236, 72, 153, 0.14)', // Magenta accent
+            colorLight: 'rgba(236, 72, 153, 0.07)',
+            speedX: -0.00025,
+            speedY: 0.00035,
+            phase: Math.PI * 1.4,
+          },
+        ];
 
-    const pointLight = new THREE.PointLight(
-      shapeType === 'crystalTorus' ? 0x60a5fa : 0x38bdf8,
-      isDark ? 2.6 : 1.6,
-      14
-    );
-    pointLight.position.set(0, 0, 2);
-    scene.add(pointLight);
-
-    // 3. Meshes Group
-    const masterGroup = new THREE.Group();
-    scene.add(masterGroup);
-
-    const disposableGeometries = [];
-    const disposableMaterials = [];
-
-    // Luminous Crystal Physical Material
-    const bodyMat = new THREE.MeshPhysicalMaterial({
-      color: shapeType === 'crystalTorus' ? (isDark ? 0x4f46e5 : 0x3b82f6) : (isDark ? 0x0284c7 : 0x0ea5e9),
-      emissive: shapeType === 'crystalTorus' ? 0x312e81 : 0x0c4a6e,
-      emissiveIntensity: isDark ? 0.42 : 0.24,
-      roughness: 0.16,
-      metalness: 0.12,
-      clearcoat: 0.85,
-      clearcoatRoughness: 0.08,
-      transmission: 0.58,
-      transparent: true,
-      opacity: isDark ? 0.68 : 0.5,
-    });
-    disposableMaterials.push(bodyMat);
-
-    // Fine wireframe overlay
-    const wireMat = new THREE.MeshBasicMaterial({
-      color: isDark ? 0x93c5fd : 0x3b82f6,
-      wireframe: true,
-      transparent: true,
-      opacity: isDark ? 0.3 : 0.18,
-      blending: THREE.AdditiveBlending,
-    });
-    disposableMaterials.push(wireMat);
-
-    let ring1Mesh = null;
-    let ring2Mesh = null;
-
-    if (shapeType === 'crystalTorus') {
-      const geo = new THREE.TorusKnotGeometry(1.25, 0.38, 128, 32, 2, 3);
-      disposableGeometries.push(geo);
-
-      const mesh = new THREE.Mesh(geo, bodyMat);
-      const wire = new THREE.Mesh(geo, wireMat);
-      wire.scale.setScalar(1.015);
-
-      masterGroup.add(mesh);
-      masterGroup.add(wire);
-    } else {
-      const coreGeo = new THREE.IcosahedronGeometry(0.85, 2);
-      coreGeo.computeVertexNormals();
-      disposableGeometries.push(coreGeo);
-      const coreMesh = new THREE.Mesh(coreGeo, bodyMat);
-      masterGroup.add(coreMesh);
-
-      const ring1Geo = new THREE.TorusGeometry(1.48, 0.05, 16, 72);
-      disposableGeometries.push(ring1Geo);
-      ring1Mesh = new THREE.Mesh(ring1Geo, wireMat);
-      ring1Mesh.rotation.x = Math.PI / 4;
-      masterGroup.add(ring1Mesh);
-
-      const ring2Geo = new THREE.TorusGeometry(1.88, 0.045, 16, 72);
-      disposableGeometries.push(ring2Geo);
-      const ring2Mat = new THREE.MeshBasicMaterial({
-        color: isDark ? 0xc084fc : 0x8b5cf6,
-        wireframe: true,
-        transparent: true,
-        opacity: isDark ? 0.32 : 0.18,
-        blending: THREE.AdditiveBlending,
+    // Floating Stardust Nodes
+    const particleCount = 35;
+    const particles = [];
+    for (let i = 0; i < particleCount; i++) {
+      particles.push({
+        x: Math.random() * (width || 1200),
+        y: Math.random() * (height || 800),
+        vx: (Math.random() - 0.5) * 0.2,
+        vy: -Math.random() * 0.22 - 0.06,
+        radius: Math.random() * 1.3 + 0.6,
+        alpha: Math.random() * 0.5 + 0.2,
+        pulseSpeed: Math.random() * 0.015 + 0.01,
+        pulsePhase: Math.random() * Math.PI * 2,
       });
-      disposableMaterials.push(ring2Mat);
-      ring2Mesh = new THREE.Mesh(ring2Geo, ring2Mat);
-      ring2Mesh.rotation.y = Math.PI / 3;
-      masterGroup.add(ring2Mesh);
     }
-
-    // Stardust
-    const count = 90;
-    const partGeo = new THREE.BufferGeometry();
-    const partPos = new Float32Array(count * 3);
-    for (let i = 0; i < count * 3; i += 3) {
-      partPos[i] = (Math.random() - 0.5) * 6.5;
-      partPos[i + 1] = (Math.random() - 0.5) * 6.5;
-      partPos[i + 2] = (Math.random() - 0.5) * 3.5;
-    }
-    partGeo.setAttribute('position', new THREE.BufferAttribute(partPos, 3));
-    disposableGeometries.push(partGeo);
-
-    const partMat = new THREE.PointsMaterial({
-      color: isDark ? 0x93c5fd : 0x60a5fa,
-      size: 0.045,
-      transparent: true,
-      opacity: isDark ? 0.6 : 0.4,
-      blending: THREE.AdditiveBlending,
-    });
-    disposableMaterials.push(partMat);
-
-    const partSystem = new THREE.Points(partGeo, partMat);
-    scene.add(partSystem);
 
     const observer = new IntersectionObserver(
       ([entry]) => {
         isVisible = entry.isIntersecting;
       },
-      { threshold: 0.1 }
+      { threshold: 0.05 }
     );
     observer.observe(container);
 
-    // 4. Smooth harmonic animation loop
-    const clock = new THREE.Clock();
+    let time = 0;
 
-    const animate = () => {
-      animId = requestAnimationFrame(animate);
+    const render = (timestamp) => {
+      animId = requestAnimationFrame(render);
 
       if (!isVisible) return;
 
-      const delta = clock.getDelta();
-      const t = clock.getElapsedTime();
+      time = timestamp || 0;
 
       // Mouse damping
-      mouse.currentX += (mouse.targetX - mouse.currentX) * 0.04;
-      mouse.currentY += (mouse.targetY - mouse.currentY) * 0.04;
+      mouse.currentX += (mouse.targetX - mouse.currentX) * 0.035;
+      mouse.currentY += (mouse.targetY - mouse.currentY) * 0.035;
 
-      // Harmonic multi-axis floating
-      masterGroup.rotation.x = Math.sin(t * 0.35) * 0.24 + Math.cos(t * 0.22) * 0.12 + mouse.currentY * 0.3;
-      masterGroup.rotation.y = t * 0.18 + Math.sin(t * 0.28) * 0.18 + mouse.currentX * 0.35;
-      masterGroup.rotation.z = Math.cos(t * 0.26) * 0.14;
+      ctx.clearRect(0, 0, width, height);
 
-      masterGroup.position.y = Math.sin(t * 0.55) * 0.18;
-      masterGroup.position.x = Math.cos(t * 0.42) * 0.08;
+      // Render Luminous Orbs
+      orbs.forEach((orb) => {
+        const oscX = Math.sin(time * orb.speedX + orb.phase) * (width * 0.07);
+        const oscY = Math.cos(time * orb.speedY + orb.phase) * (height * 0.08);
+        const ox = orb.baseX * width + oscX + mouse.currentX * 16;
+        const oy = orb.baseY * height + oscY + mouse.currentY * 12;
+        const radius = orb.radiusRatio * width;
 
-      const breathe = 1.0 + Math.sin(t * 0.7) * 0.03;
-      masterGroup.scale.setScalar(breathe);
+        const radGrad = ctx.createRadialGradient(ox, oy, 0, ox, oy, radius);
+        const color = isDark ? orb.colorDark : orb.colorLight;
 
-      if (ring1Mesh && ring2Mesh) {
-        ring1Mesh.rotation.z += delta * 0.45;
-        ring1Mesh.rotation.x += delta * 0.3;
-        ring2Mesh.rotation.y += delta * 0.4;
-        ring2Mesh.rotation.z -= delta * 0.25;
+        radGrad.addColorStop(0, color);
+        radGrad.addColorStop(0.55, color.replace(/[\d.]+\)$/, '0.04)'));
+        radGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+        ctx.fillStyle = radGrad;
+        ctx.beginPath();
+        ctx.arc(ox, oy, radius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Render subtle undulating wave contour
+      ctx.save();
+      ctx.beginPath();
+      const waveY = height * 0.5 + mouse.currentY * 10;
+      const steps = 36;
+      for (let i = 0; i <= steps; i++) {
+        const x = (i / steps) * width;
+        const y =
+          waveY +
+          Math.sin(x * 0.002 + time * 0.0008) * 45 +
+          Math.cos(x * 0.0012 - time * 0.0006) * 25;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
+      ctx.strokeStyle = isDark ? 'rgba(99, 102, 241, 0.18)' : 'rgba(59, 130, 246, 0.12)';
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+      ctx.restore();
 
-      partSystem.rotation.y -= delta * 0.06;
+      // Render particles
+      ctx.save();
+      particles.forEach((p) => {
+        p.x += p.vx;
+        p.y += p.vy;
 
-      renderer.render(scene, camera);
+        if (p.x < 0) p.x = width;
+        if (p.x > width) p.x = 0;
+        if (p.y < 0) p.y = height;
+        if (p.y > height) p.y = 0;
+
+        const pulse = Math.sin(time * p.pulseSpeed + p.pulsePhase);
+        const alpha = Math.max(0.08, p.alpha + pulse * 0.18);
+
+        ctx.fillStyle = isDark
+          ? `rgba(199, 210, 254, ${alpha})`
+          : `rgba(37, 99, 235, ${alpha * 0.8})`;
+
+        ctx.beginPath();
+        ctx.arc(p.x + mouse.currentX * 10, p.y + mouse.currentY * 8, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.restore();
     };
 
-    animate();
+    animId = requestAnimationFrame(render);
 
     return () => {
       if (animId) cancelAnimationFrame(animId);
       observer.disconnect();
-      window.removeEventListener('resize', updateSize);
+      window.removeEventListener('resize', handleResize);
       window.removeEventListener('mousemove', handleMouseMove);
-
-      disposableGeometries.forEach((g) => g.dispose());
-      disposableMaterials.forEach((m) => m.dispose());
-      renderer.dispose();
     };
   }, [shapeType, resolvedTheme]);
 
@@ -257,11 +265,9 @@ export default function Auth3DBackground({ shapeType = 'crystalTorus', className
     >
       <canvas ref={canvasRef} className="w-full h-full block" />
 
-      {/* Atmospheric Vignette & Soft Gradient Glow */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_60%_50%_at_50%_50%,transparent_30%,hsl(var(--background)/0.8)_100%)] pointer-events-none" />
-
-      {/* Subtle tech dot matrix */}
-      <div className="absolute inset-0 bg-[radial-gradient(hsl(var(--primary)/0.12)_1px,transparent_1px)] bg-[size:3.5rem_3.5rem] opacity-40 pointer-events-none" />
+      {/* Atmospheric Vignette & Subtle Perspective Matrix */}
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_60%_50%_at_50%_50%,transparent_35%,hsl(var(--background)/0.8)_100%)] pointer-events-none" />
+      <div className="absolute inset-0 bg-[radial-gradient(hsl(var(--primary)/0.1)_1px,transparent_1px)] bg-[size:3.5rem_3.5rem] opacity-35 pointer-events-none" />
     </div>
   );
 }

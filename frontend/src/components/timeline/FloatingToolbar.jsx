@@ -15,13 +15,13 @@ export default function FloatingToolbar({ clip }) {
       exit={{ opacity: 0, y: 6, scale: 0.95 }}
       transition={{ duration: 0.12 }}
       onPointerDown={(e) => e.stopPropagation()}
-      className="absolute -top-10 left-1/2 -translate-x-1/2 flex items-center gap-1.5 bg-[#18181f]/95 backdrop-blur-md border border-white/20 rounded-md px-2 py-1 shadow-2xl z-50 whitespace-nowrap"
+      className="absolute -top-10 left-1/2 -translate-x-1/2 flex items-center gap-1.5 bg-popover/95 backdrop-blur-md border border-border text-popover-foreground rounded-md px-2 py-1 shadow-xl z-50 whitespace-nowrap"
     >
-      <Clock size={11} className="text-zinc-400" />
-      <span className="text-[10px] font-mono text-zinc-300">
+      <Clock size={11} className="text-muted-foreground" />
+      <span className="text-[10px] font-mono text-foreground">
         {fmtSec(clip.start)} → {fmtSec(clip.start + clip.duration)}
       </span>
-      <span className="text-[10px] text-zinc-500">
+      <span className="text-[10px] text-muted-foreground">
         ({clip.duration.toFixed(1)}s)
       </span>
     </motion.div>

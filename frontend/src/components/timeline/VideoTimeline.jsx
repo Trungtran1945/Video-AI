@@ -222,19 +222,19 @@ export default function VideoTimeline({
 
   return (
     <div
-      className={`flex flex-col bg-[#0f0f11] text-zinc-100 rounded-xl border border-white/10 shadow-2xl overflow-hidden select-none font-sans ${className}`}
+      className={`flex flex-col bg-card text-foreground rounded-xl border border-border shadow-2xl overflow-hidden select-none font-sans ${className}`}
     >
       {/* Timeline Header & Controls */}
-      <div className="h-12 px-4 bg-[#141418] border-b border-white/10 flex items-center justify-between z-30">
+      <div className="h-12 px-4 bg-muted/40 dark:bg-card border-b border-border flex items-center justify-between z-30">
         {/* Left: Timecode + Play Controls */}
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 bg-[#09090c] border border-white/10 px-2.5 py-1 rounded-lg shadow-inner">
+          <div className="flex items-center gap-1.5 bg-background border border-border px-2.5 py-1 rounded-lg shadow-inner">
             <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-            <span className="font-mono text-xs font-semibold tracking-wider text-white">
+            <span className="font-mono text-xs font-semibold tracking-wider text-foreground">
               {formatTimeCode(activeCurrentTime)}
             </span>
-            <span className="text-zinc-500 text-[10px]">/</span>
-            <span className="font-mono text-xs text-zinc-400">
+            <span className="text-muted-foreground text-[10px]">/</span>
+            <span className="font-mono text-xs text-muted-foreground">
               {formatTimeCode(propDuration > 0 ? propDuration : totalDuration)}
             </span>
           </div>
@@ -243,7 +243,7 @@ export default function VideoTimeline({
             type="button"
             onClick={() => handleSeek(0)}
             title="Jump to Start"
-            className="p-1.5 rounded-lg bg-zinc-800/60 hover:bg-zinc-700/60 text-zinc-300 hover:text-white transition-colors"
+            className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors"
           >
             <RotateCcw size={13} />
           </button>
@@ -252,7 +252,7 @@ export default function VideoTimeline({
             type="button"
             onClick={() => handleSeek(Math.max(0, activeCurrentTime - 5))}
             title="Seek Backward 5s"
-            className="p-1.5 rounded-lg bg-zinc-800/60 hover:bg-zinc-700/60 text-zinc-300 hover:text-white transition-colors"
+            className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors"
           >
             <SkipBack size={13} />
           </button>
@@ -264,7 +264,7 @@ export default function VideoTimeline({
             className={`px-3 py-1 rounded-lg flex items-center gap-1 font-medium text-xs transition-all shadow-md active:scale-95 ${
               activeIsPlaying
                 ? 'bg-amber-500 hover:bg-amber-400 text-black font-semibold'
-                : 'bg-white hover:bg-zinc-200 text-zinc-950 font-semibold'
+                : 'bg-primary hover:bg-primary/90 text-primary-foreground font-semibold'
             }`}
           >
             {activeIsPlaying ? <Pause size={12} /> : <Play size={12} className="fill-current" />}
@@ -275,7 +275,7 @@ export default function VideoTimeline({
             type="button"
             onClick={() => handleSeek(Math.min(activeCurrentTime + 5, propDuration || totalDuration))}
             title="Seek Forward 5s"
-            className="p-1.5 rounded-lg bg-zinc-800/60 hover:bg-zinc-700/60 text-zinc-300 hover:text-white transition-colors"
+            className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors"
           >
             <SkipForward size={13} />
           </button>
@@ -289,11 +289,11 @@ export default function VideoTimeline({
             title="Toggle snapping to time anchors"
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
               snappingEnabled
-                ? 'bg-blue-500/15 border-blue-500/40 text-blue-400 shadow-sm'
-                : 'bg-zinc-800/40 border-zinc-700/40 text-zinc-400 hover:text-zinc-200'
+                ? 'bg-blue-500/15 border-blue-500/40 text-blue-600 dark:text-blue-400 shadow-sm'
+                : 'bg-background hover:bg-muted border-border/60 text-muted-foreground hover:text-foreground'
             }`}
           >
-            <Magnet size={12} className={snappingEnabled ? 'text-blue-400' : ''} />
+            <Magnet size={12} className={snappingEnabled ? 'text-blue-600 dark:text-blue-400' : ''} />
             <span>Snapping: {snappingEnabled ? 'ON' : 'OFF'}</span>
           </button>
         </div>
@@ -304,7 +304,7 @@ export default function VideoTimeline({
             type="button"
             onClick={() => setZoomLevel(zoomLevel - 10)}
             title="Zoom Out"
-            className="text-zinc-400 hover:text-white transition-colors"
+            className="text-muted-foreground hover:text-foreground transition-colors"
           >
             <ZoomOut size={14} />
           </button>
@@ -315,7 +315,7 @@ export default function VideoTimeline({
             max={150}
             value={zoomLevel}
             onChange={(e) => setZoomLevel(Number(e.target.value))}
-            className="w-20 h-1.5 bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
+            className="w-20 h-1.5 bg-muted dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-primary"
             title={`Zoom: ${zoomLevel}px/sec`}
           />
 
@@ -323,12 +323,12 @@ export default function VideoTimeline({
             type="button"
             onClick={() => setZoomLevel(zoomLevel + 10)}
             title="Zoom In"
-            className="text-zinc-400 hover:text-white transition-colors"
+            className="text-muted-foreground hover:text-foreground transition-colors"
           >
             <ZoomIn size={14} />
           </button>
 
-          <span className="font-mono text-[10px] text-zinc-400 w-10 text-right">
+          <span className="font-mono text-[10px] text-muted-foreground w-10 text-right">
             {Math.round((zoomLevel / 50) * 100)}%
           </span>
         </div>
@@ -336,14 +336,14 @@ export default function VideoTimeline({
 
       {/* Main Timeline Body */}
       <div
-        className="flex flex-1 overflow-hidden relative bg-[#0c0c0e]"
+        className="flex flex-1 overflow-hidden relative bg-muted/20 dark:bg-[#0c0c0e]"
         style={{ height: `${timelineHeight}px` }}
       >
         <TrackSidebar />
 
         <div
           ref={scrollContainerRef}
-          className="timeline-scroll-container flex-1 overflow-x-auto overflow-y-hidden relative bg-[#0f0f12] cursor-default"
+          className="timeline-scroll-container flex-1 overflow-x-auto overflow-y-hidden relative bg-background dark:bg-[#0f0f12] cursor-default"
           style={{ height: `${totalRulerAndTracksHeight}px` }}
           onClick={handleTimelineBackgroundClick}
         >
@@ -364,10 +364,10 @@ export default function VideoTimeline({
                 return (
                   <div
                     key={track.id}
-                    className="track-row relative h-14 border-b border-white/5 bg-[#121216]/50 hover:bg-[#14141a]/60 transition-colors"
+                    className="track-row relative h-14 border-b border-border/50 bg-card/60 hover:bg-muted/30 dark:bg-[#121216]/50 dark:hover:bg-[#14141a]/60 transition-colors"
                     onClick={handleTimelineBackgroundClick}
                   >
-                    <div className="absolute inset-0 bg-[linear-gradient(to_right,#ffffff03_1px,transparent_1px)] bg-[size:50px_100%] pointer-events-none" />
+                    <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(0,0,0,0.03)_1px,transparent_1px)] dark:bg-[linear-gradient(to_right,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:50px_100%] pointer-events-none" />
 
                     {trackClips.map((clip) => (
                       <TimelineClip
@@ -389,35 +389,35 @@ export default function VideoTimeline({
       {/* Vertical Resize Handle */}
       <div
         onPointerDown={handleResizePointerDown}
-        className={`h-1.5 cursor-ns-resize flex items-center justify-center group/resizet transition-colors ${
-          isResizing ? 'bg-blue-500/30' : 'bg-transparent hover:bg-blue-500/20'
+        className={`h-1.5 cursor-ns-resize flex items-center justify-center group/resizet transition-colors border-t border-border/40 ${
+          isResizing ? 'bg-primary/30' : 'bg-transparent hover:bg-primary/10'
         }`}
         title="Drag to resize timeline"
       >
         <div className={`w-8 h-0.5 rounded-full transition-colors ${
-          isResizing ? 'bg-blue-400' : 'bg-zinc-600 group-hover/resizet:bg-zinc-400'
+          isResizing ? 'bg-primary' : 'bg-muted-foreground/40 group-hover/resizet:bg-muted-foreground'
         }`} />
       </div>
 
       {/* Footer */}
-      <div className="h-7 px-4 bg-[#0a0a0d] border-t border-white/10 flex items-center justify-between text-[10px] text-zinc-500">
+      <div className="h-7 px-4 bg-muted/40 dark:bg-card/90 border-t border-border flex items-center justify-between text-[10px] text-muted-foreground">
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1">
-            <kbd className="px-1 py-0.2 bg-zinc-800 border border-zinc-700 rounded text-[9px] font-mono text-zinc-300">
+            <kbd className="px-1 py-0.2 bg-background border border-border rounded text-[9px] font-mono text-foreground">
               Space
             </kbd>
             <span>Play/Pause</span>
           </span>
 
           <span className="flex items-center gap-1">
-            <kbd className="px-1 py-0.2 bg-zinc-800 border border-zinc-700 rounded text-[9px] font-mono text-zinc-300">
+            <kbd className="px-1 py-0.2 bg-background border border-border rounded text-[9px] font-mono text-foreground">
               ←/→
             </kbd>
             <span>Scrub</span>
           </span>
         </div>
 
-        <div className="flex items-center gap-1.5 text-zinc-500">
+        <div className="flex items-center gap-1.5 text-muted-foreground">
           <span>Subtitle Sync</span>
         </div>
       </div>

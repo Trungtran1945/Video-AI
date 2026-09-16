@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import {
   Clapperboard,
   Languages,
@@ -88,51 +88,70 @@ const features = [
 ];
 
 export default function HorizontalFeatureShowcase({ onStart }) {
-  const containerRef = useRef(null);
   const trackRef = useRef(null);
-  
-  const [activeCardIndex, setActiveCardIndex] = useState(0);
-  const [scrollProgress, setScrollProgress] = useState(0);
-  const [maxScroll, setMaxScroll] = useState(0);
-
-  const targetOffsetRef = useRef(0);
-  const currentOffsetRef = useRef(0);
+  const singleSetRef = useRef(null);
   const animFrameIdRef = useRef(null);
-  const maxScrollRef = useRef(0);
 
-  // Measure track width and compute maxScroll
-  const updateMetrics = useCallback(() => {
-    if (!trackRef.current || !containerRef.current) return;
-    const trackWidth = trackRef.current.scrollWidth;
-    const viewportWidth = window.innerWidth;
-    const padding = 80;
-    const max = Math.max(0, trackWidth - viewportWidth + padding);
-    setMaxScroll(max);
-    maxScrollRef.current = max;
+  const [activeCardIndex, setActiveCardIndex] = useState(0);
+
+  const offsetRef = useRef(0);
+  const targetStepOffsetRef = useRef(0);
+  const isHoveredRef = useRef(false);
+  const singleWidthRef = useRef(0);
+
+  // Measure single set width for seamless infinite loop wrapping
+  useEffect(() => {
+    const updateWidth = () => {
+      if (singleSetRef.current) {
+        singleWidthRef.current = singleSetRef.current.offsetWidth;
+      }
+    };
+
+    updateWidth();
+    window.addEventListener('resize', updateWidth);
+    return () => window.removeEventListener('resize', updateWidth);
   }, []);
 
+  // Continuous auto-sliding loop from right to left
   useEffect(() => {
-    updateMetrics();
-    window.addEventListener('resize', updateMetrics);
-    return () => window.removeEventListener('resize', updateMetrics);
-  }, [updateMetrics]);
+    let lastTime = performance.now();
 
-  // Smooth lerp animation loop for horizontal track translation
-  useEffect(() => {
-    const loop = () => {
-      const diff = targetOffsetRef.current - currentOffsetRef.current;
-      if (Math.abs(diff) > 0.3) {
-        currentOffsetRef.current += diff * 0.12;
-        if (trackRef.current) {
-          trackRef.current.style.transform = `translate3d(${-currentOffsetRef.current}px, 0, 0)`;
-        }
-        if (maxScrollRef.current > 0) {
-          const progress = Math.min(1, Math.max(0, currentOffsetRef.current / maxScrollRef.current));
-          setScrollProgress(progress);
-          const idx = Math.min(features.length - 1, Math.round(progress * (features.length - 1)));
-          setActiveCardIndex(idx);
-        }
+    const loop = (currentTime) => {
+      const delta = (currentTime - lastTime) / 1000;
+      lastTime = currentTime;
+
+      const singleWidth = singleWidthRef.current;
+
+      // Base auto-movement speed: ~50 pixels per second from right to left
+      if (!isHoveredRef.current && singleWidth > 0) {
+        offsetRef.current += 55 * delta;
       }
+
+      // Smooth step override if user clicked next / prev
+      if (Math.abs(targetStepOffsetRef.current) > 0.5) {
+        const stepAmount = targetStepOffsetRef.current * 0.15;
+        offsetRef.current += stepAmount;
+        targetStepOffsetRef.current -= stepAmount;
+      }
+
+      // Seamless infinite wrapping
+      if (singleWidth > 0) {
+        if (offsetRef.current >= singleWidth) {
+          offsetRef.current -= singleWidth;
+        } else if (offsetRef.current < 0) {
+          offsetRef.current += singleWidth;
+        }
+
+        // Active index indicator
+        const cardApproxWidth = singleWidth / features.length;
+        const currentIdx = Math.floor((offsetRef.current % singleWidth) / cardApproxWidth) % features.length;
+        setActiveCardIndex(currentIdx);
+      }
+
+      if (trackRef.current) {
+        trackRef.current.style.transform = `translate3d(${-offsetRef.current}px, 0, 0)`;
+      }
+
       animFrameIdRef.current = requestAnimationFrame(loop);
     };
 
@@ -142,80 +161,43 @@ export default function HorizontalFeatureShowcase({ onStart }) {
     };
   }, []);
 
-  // Strict horizontal scroll locking:
-  // "Nếu đã lăn chuột ngang thì không được lăn dọc, chỉ khi lăn ngang hết rồi thì mới lăn dọc."
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    const handleWheel = (e) => {
-      const max = maxScrollRef.current;
-      if (max <= 0) return;
-
-      const delta = e.deltaY;
-      if (Math.abs(delta) < 2) return;
-
-      const current = targetOffsetRef.current;
-
-      // When rolling wheel down:
-      if (delta > 0) {
-        // If not yet reached the end of horizontal track:
-        if (current < max - 2) {
-          e.preventDefault(); // STOP vertical page scrolling completely!
-          const step = Math.sign(delta) * Math.max(Math.abs(delta) * 1.2, 140);
-          targetOffsetRef.current = Math.min(max, current + step);
-        }
-        // If already at the end of horizontal track: DO NOT preventDefault!
-        // The page continues scrolling vertically down as normal!
-      }
-      // When rolling wheel up:
-      else if (delta < 0) {
-        // If not yet reached the beginning of horizontal track:
-        if (current > 2) {
-          e.preventDefault(); // STOP vertical page scrolling completely!
-          const step = Math.sign(delta) * Math.max(Math.abs(delta) * 1.2, 140);
-          targetOffsetRef.current = Math.max(0, current + step);
-        }
-        // If already at the beginning: DO NOT preventDefault!
-        // The page continues scrolling vertically up as normal!
-      }
-    };
-
-    container.addEventListener('wheel', handleWheel, { passive: false });
-    return () => {
-      container.removeEventListener('wheel', handleWheel);
-    };
-  }, []);
-
-  // Jump to specific card index
-  const scrollToIndex = (index) => {
-    const max = maxScrollRef.current;
-    if (max <= 0) return;
-    const target = (index / (features.length - 1)) * max;
-    targetOffsetRef.current = target;
-    setActiveCardIndex(index);
+  const handleMouseEnter = () => {
+    isHoveredRef.current = true;
   };
 
-  const handlePrev = () => {
-    const nextIdx = Math.max(0, activeCardIndex - 1);
-    scrollToIndex(nextIdx);
+  const handleMouseLeave = () => {
+    isHoveredRef.current = false;
   };
 
   const handleNext = () => {
-    const nextIdx = Math.min(features.length - 1, activeCardIndex + 1);
-    scrollToIndex(nextIdx);
+    // Step forward by 1 card width (~480px)
+    const cardWidth = singleWidthRef.current > 0 ? singleWidthRef.current / features.length : 480;
+    targetStepOffsetRef.current += cardWidth;
+  };
+
+  const handlePrev = () => {
+    // Step backward by 1 card width
+    const cardWidth = singleWidthRef.current > 0 ? singleWidthRef.current / features.length : 480;
+    targetStepOffsetRef.current -= cardWidth;
+  };
+
+  // Jump to specific feature index
+  const jumpToIndex = (index) => {
+    const cardWidth = singleWidthRef.current > 0 ? singleWidthRef.current / features.length : 480;
+    offsetRef.current = index * cardWidth;
+    targetStepOffsetRef.current = 0;
+    setActiveCardIndex(index);
   };
 
   return (
     <section
       id="features"
-      ref={containerRef}
       className="relative py-20 sm:py-24 border-t border-border/60 bg-background/50 overflow-hidden select-none"
     >
       {/* Subtle Ambient Section Glow */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-6xl h-80 bg-gradient-to-r from-blue-500/10 via-indigo-500/10 to-cyan-500/10 blur-3xl pointer-events-none -z-10" />
 
-      {/* Section Header & Navigation */}
+      {/* Section Header */}
       <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 mb-8 sm:mb-10">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-5">
           <div>
@@ -231,34 +213,33 @@ export default function HorizontalFeatureShowcase({ onStart }) {
             </p>
           </div>
 
-          {/* Navigation Controls & Step Badges */}
+          {/* Controls: Prev/Next, and Index Badges */}
           <div className="flex items-center gap-3 shrink-0">
+
             {/* Prev / Next buttons */}
             <div className="flex items-center gap-1.5">
               <button
                 onClick={handlePrev}
-                disabled={activeCardIndex === 0}
-                className="w-9 h-9 rounded-xl border border-border/80 bg-card/80 flex items-center justify-center text-foreground hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-xs"
+                className="w-9 h-9 rounded-xl border border-border/80 bg-card/80 flex items-center justify-center text-foreground hover:bg-accent transition-all shadow-xs"
                 aria-label="Khung trước"
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
               <button
                 onClick={handleNext}
-                disabled={activeCardIndex === features.length - 1}
-                className="w-9 h-9 rounded-xl border border-border/80 bg-card/80 flex items-center justify-center text-foreground hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-xs"
+                className="w-9 h-9 rounded-xl border border-border/80 bg-card/80 flex items-center justify-center text-foreground hover:bg-accent transition-all shadow-xs"
                 aria-label="Khung tiếp theo"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Clickable Index Badges */}
+            {/* Step Badges */}
             <div className="flex items-center gap-1.5 p-1 rounded-xl bg-card/80 border border-border/70 backdrop-blur-md">
               {features.map((f, i) => (
                 <button
                   key={f.num}
-                  onClick={() => scrollToIndex(i)}
+                  onClick={() => jumpToIndex(i)}
                   className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all ${
                     activeCardIndex === i
                       ? 'bg-primary text-primary-foreground shadow-sm shadow-primary/30 scale-105'
@@ -273,106 +254,236 @@ export default function HorizontalFeatureShowcase({ onStart }) {
         </div>
       </div>
 
-      {/* Horizontal Track of Cards */}
-      <div className="w-full relative overflow-visible">
+      {/* Auto-sliding Horizontal Track with Fade Edge Mask */}
+      <div
+        className="w-full relative overflow-hidden"
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      >
+        {/* Subtle Edge Fade Gradients for cinematic entrance/exit */}
+        <div className="absolute left-0 inset-y-0 w-8 sm:w-16 bg-gradient-to-r from-background to-transparent z-20 pointer-events-none" />
+        <div className="absolute right-0 inset-y-0 w-8 sm:w-16 bg-gradient-to-l from-background to-transparent z-20 pointer-events-none" />
+
         <div
           ref={trackRef}
-          className="flex items-stretch gap-6 sm:gap-8 px-4 sm:px-6 lg:px-12 w-max transition-transform duration-75 ease-out will-change-transform"
+          className="flex items-stretch gap-6 sm:gap-8 w-max will-change-transform py-2"
         >
-          {features.map((feature) => {
-            const Icon = feature.icon;
+          {/* Set 1: Measured for wrap-around width */}
+          <div ref={singleSetRef} className="flex items-stretch gap-6 sm:gap-8">
+            {features.map((feature) => {
+              const Icon = feature.icon;
 
-            return (
-              <div
-                key={feature.num}
-                className={`group relative w-[330px] sm:w-[440px] md:w-[480px] lg:w-[520px] rounded-3xl border border-border/80 bg-card/85 dark:bg-card/75 shadow-xl hover:shadow-2xl transition-all duration-300 flex flex-col justify-between overflow-hidden backdrop-blur-xl ${feature.accentBorder}`}
-              >
-                {/* Dedicated 3D Moving Shape in the background of this card */}
-                <Mini3DCardBackground
-                  shapeType={feature.shape}
-                  color={feature.color}
-                  className="opacity-40 dark:opacity-60 group-hover:opacity-85 transition-opacity duration-500"
-                />
-
-                {/* Ambient gradient lighting inside card */}
+              return (
                 <div
-                  className={`absolute inset-0 bg-gradient-to-br ${feature.glowColor} pointer-events-none opacity-50 group-hover:opacity-100 transition-opacity`}
-                />
+                  key={`set1-${feature.num}`}
+                  className={`group relative w-[320px] sm:w-[420px] md:w-[460px] lg:w-[480px] rounded-3xl border border-border/80 bg-card/85 dark:bg-card/75 shadow-xl hover:shadow-2xl transition-all duration-300 flex flex-col justify-between overflow-hidden backdrop-blur-xl ${feature.accentBorder}`}
+                >
+                  <Mini3DCardBackground shapeType={feature.shape} color={feature.color} />
 
-                {/* Subtle Top Card Mesh pattern */}
-                <div className="absolute inset-0 bg-[radial-gradient(hsl(var(--foreground)/0.03)_1px,transparent_1px)] bg-[size:1.5rem_1.5rem] pointer-events-none" />
+                  <div
+                    className={`absolute inset-0 bg-gradient-to-br ${feature.glowColor} pointer-events-none opacity-50 group-hover:opacity-100 transition-opacity`}
+                  />
 
-                {/* Card Content (z-10 for crisp readability) */}
-                <div className="relative z-10 p-6 sm:p-8 flex flex-col justify-between h-full">
-                  {/* Header */}
-                  <div>
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="w-12 h-12 rounded-2xl bg-card border border-border/80 flex items-center justify-center shadow-md shadow-black/5 group-hover:scale-110 transition-transform">
-                        <Icon className="w-6 h-6 text-primary" />
+                  <div className="relative z-10 p-6 sm:p-8 flex flex-col justify-between h-full">
+                    <div>
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="w-12 h-12 rounded-2xl bg-card border border-border/80 flex items-center justify-center shadow-md shadow-black/5 group-hover:scale-110 transition-transform">
+                          <Icon className="w-6 h-6 text-primary" />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border ${feature.tagColor} backdrop-blur-sm`}
+                          >
+                            {feature.badge}
+                          </span>
+                          <span className="font-mono text-base font-extrabold text-muted-foreground/60">
+                            {feature.num}
+                          </span>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span
-                          className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border ${feature.tagColor} backdrop-blur-sm`}
-                        >
-                          {feature.badge}
-                        </span>
-                        <span className="font-mono text-base font-extrabold text-muted-foreground/60">
-                          {feature.num}
-                        </span>
-                      </div>
+
+                      <h3 className="text-xl sm:text-2xl font-bold text-foreground group-hover:text-primary transition-colors leading-tight">
+                        {feature.title}
+                      </h3>
+                      <p className="text-xs sm:text-sm font-medium text-primary/90 mt-1">
+                        {feature.subtitle}
+                      </p>
+                      <p className="text-xs sm:text-sm text-muted-foreground dark:text-slate-300 mt-3 leading-relaxed">
+                        {feature.desc}
+                      </p>
                     </div>
 
-                    <h3 className="text-xl sm:text-2xl font-bold text-foreground group-hover:text-primary transition-colors leading-tight">
-                      {feature.title}
-                    </h3>
-                    <p className="text-xs sm:text-sm font-medium text-primary/90 mt-1">
-                      {feature.subtitle}
-                    </p>
-                    <p className="text-xs sm:text-sm text-muted-foreground dark:text-slate-300 mt-3 leading-relaxed">
-                      {feature.desc}
-                    </p>
-                  </div>
+                    <div className="mt-6 pt-5 border-t border-border/60 space-y-2.5">
+                      {feature.highlights.map((point) => (
+                        <div key={point} className="flex items-center gap-2.5 text-xs text-foreground/90 font-medium">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                          <span>{point}</span>
+                        </div>
+                      ))}
+                    </div>
 
-                  {/* Bullet Highlights */}
-                  <div className="mt-6 pt-5 border-t border-border/60 space-y-2.5">
-                    {feature.highlights.map((point) => (
-                      <div key={point} className="flex items-center gap-2.5 text-xs text-foreground/90 font-medium">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
-                        <span>{point}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Footer Action */}
-                  <div className="mt-6 pt-4 flex items-center justify-between">
-                    <span className="text-[11px] font-mono text-muted-foreground dark:text-slate-400">
-                      3D Interactive Canvas Active
-                    </span>
-                    <button
-                      onClick={onStart}
-                      className="inline-flex items-center gap-1.5 text-xs font-bold text-primary group-hover:underline"
-                    >
-                      <span>Trải nghiệm</span>
-                      <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
-                    </button>
+                    <div className="mt-6 pt-4 flex items-center justify-between">
+                      <span className="text-[11px] font-mono text-muted-foreground dark:text-slate-400">
+                        AI Engine Active
+                      </span>
+                      <button
+                        onClick={onStart}
+                        className="inline-flex items-center gap-1.5 text-xs font-bold text-primary group-hover:underline"
+                      >
+                        <span>Trải nghiệm</span>
+                        <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+              );
+            })}
+          </div>
 
-      {/* Bottom Horizontal Scroll Progress Bar */}
-      <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 mt-8">
-        <div className="w-full h-1.5 rounded-full bg-border/60 overflow-hidden relative">
-          <div
-            style={{
-              width: `${Math.max(15, scrollProgress * 100)}%`,
-              transition: 'width 0.1s ease-out',
-            }}
-            className="h-full bg-gradient-to-r from-blue-500 via-indigo-500 to-cyan-400 rounded-full"
-          />
+          {/* Set 2: Duplicate for seamless infinite loop */}
+          <div className="flex items-stretch gap-6 sm:gap-8">
+            {features.map((feature) => {
+              const Icon = feature.icon;
+
+              return (
+                <div
+                  key={`set2-${feature.num}`}
+                  className={`group relative w-[320px] sm:w-[420px] md:w-[460px] lg:w-[480px] rounded-3xl border border-border/80 bg-card/85 dark:bg-card/75 shadow-xl hover:shadow-2xl transition-all duration-300 flex flex-col justify-between overflow-hidden backdrop-blur-xl ${feature.accentBorder}`}
+                >
+                  <Mini3DCardBackground shapeType={feature.shape} color={feature.color} />
+
+                  <div
+                    className={`absolute inset-0 bg-gradient-to-br ${feature.glowColor} pointer-events-none opacity-50 group-hover:opacity-100 transition-opacity`}
+                  />
+
+                  <div className="relative z-10 p-6 sm:p-8 flex flex-col justify-between h-full">
+                    <div>
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="w-12 h-12 rounded-2xl bg-card border border-border/80 flex items-center justify-center shadow-md shadow-black/5 group-hover:scale-110 transition-transform">
+                          <Icon className="w-6 h-6 text-primary" />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border ${feature.tagColor} backdrop-blur-sm`}
+                          >
+                            {feature.badge}
+                          </span>
+                          <span className="font-mono text-base font-extrabold text-muted-foreground/60">
+                            {feature.num}
+                          </span>
+                        </div>
+                      </div>
+
+                      <h3 className="text-xl sm:text-2xl font-bold text-foreground group-hover:text-primary transition-colors leading-tight">
+                        {feature.title}
+                      </h3>
+                      <p className="text-xs sm:text-sm font-medium text-primary/90 mt-1">
+                        {feature.subtitle}
+                      </p>
+                      <p className="text-xs sm:text-sm text-muted-foreground dark:text-slate-300 mt-3 leading-relaxed">
+                        {feature.desc}
+                      </p>
+                    </div>
+
+                    <div className="mt-6 pt-5 border-t border-border/60 space-y-2.5">
+                      {feature.highlights.map((point) => (
+                        <div key={point} className="flex items-center gap-2.5 text-xs text-foreground/90 font-medium">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                          <span>{point}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-6 pt-4 flex items-center justify-between">
+                      <span className="text-[11px] font-mono text-muted-foreground dark:text-slate-400">
+                        AI Engine Active
+                      </span>
+                      <button
+                        onClick={onStart}
+                        className="inline-flex items-center gap-1.5 text-xs font-bold text-primary group-hover:underline"
+                      >
+                        <span>Trải nghiệm</span>
+                        <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Set 3: Extra duplicate for ultra-wide screen continuity */}
+          <div className="flex items-stretch gap-6 sm:gap-8">
+            {features.map((feature) => {
+              const Icon = feature.icon;
+
+              return (
+                <div
+                  key={`set3-${feature.num}`}
+                  className={`group relative w-[320px] sm:w-[420px] md:w-[460px] lg:w-[480px] rounded-3xl border border-border/80 bg-card/85 dark:bg-card/75 shadow-xl hover:shadow-2xl transition-all duration-300 flex flex-col justify-between overflow-hidden backdrop-blur-xl ${feature.accentBorder}`}
+                >
+                  <Mini3DCardBackground shapeType={feature.shape} color={feature.color} />
+
+                  <div
+                    className={`absolute inset-0 bg-gradient-to-br ${feature.glowColor} pointer-events-none opacity-50 group-hover:opacity-100 transition-opacity`}
+                  />
+
+                  <div className="relative z-10 p-6 sm:p-8 flex flex-col justify-between h-full">
+                    <div>
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="w-12 h-12 rounded-2xl bg-card border border-border/80 flex items-center justify-center shadow-md shadow-black/5 group-hover:scale-110 transition-transform">
+                          <Icon className="w-6 h-6 text-primary" />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border ${feature.tagColor} backdrop-blur-sm`}
+                          >
+                            {feature.badge}
+                          </span>
+                          <span className="font-mono text-base font-extrabold text-muted-foreground/60">
+                            {feature.num}
+                          </span>
+                        </div>
+                      </div>
+
+                      <h3 className="text-xl sm:text-2xl font-bold text-foreground group-hover:text-primary transition-colors leading-tight">
+                        {feature.title}
+                      </h3>
+                      <p className="text-xs sm:text-sm font-medium text-primary/90 mt-1">
+                        {feature.subtitle}
+                      </p>
+                      <p className="text-xs sm:text-sm text-muted-foreground dark:text-slate-300 mt-3 leading-relaxed">
+                        {feature.desc}
+                      </p>
+                    </div>
+
+                    <div className="mt-6 pt-5 border-t border-border/60 space-y-2.5">
+                      {feature.highlights.map((point) => (
+                        <div key={point} className="flex items-center gap-2.5 text-xs text-foreground/90 font-medium">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                          <span>{point}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-6 pt-4 flex items-center justify-between">
+                      <span className="text-[11px] font-mono text-muted-foreground dark:text-slate-400">
+                        AI Engine Active
+                      </span>
+                      <button
+                        onClick={onStart}
+                        className="inline-flex items-center gap-1.5 text-xs font-bold text-primary group-hover:underline"
+                      >
+                        <span>Trải nghiệm</span>
+                        <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
         </div>
       </div>
     </section>

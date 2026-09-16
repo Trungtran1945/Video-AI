@@ -199,10 +199,10 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
         style={{ left: `${leftPx}px`, width: `${widthPx}px` }}
         className="absolute top-1.5 bottom-1.5 rounded select-none z-10"
       >
-        <div className="w-full h-full bg-[#1e1e26] rounded border border-white/10 flex items-center px-2 gap-2 overflow-hidden">
-          <Film size={12} className="text-blue-400 flex-shrink-0" />
-          <span className="text-[10px] font-medium text-zinc-400 truncate">{clip.content}</span>
-          <span className="text-[9px] font-mono text-zinc-500 flex-shrink-0 ml-auto">
+        <div className="w-full h-full bg-secondary/80 dark:bg-[#1e1e26] rounded border border-border dark:border-white/10 flex items-center px-2 gap-2 overflow-hidden">
+          <Film size={12} className="text-blue-600 dark:text-blue-400 flex-shrink-0" />
+          <span className="text-[10px] font-medium text-secondary-foreground dark:text-zinc-300 truncate">{clip.content}</span>
+          <span className="text-[9px] font-mono text-muted-foreground flex-shrink-0 ml-auto">
             {clip.duration.toFixed(1)}s
           </span>
         </div>
@@ -211,12 +211,24 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
   }
 
   // Subtitle track (original or translated)
-  const bgColor = clip.type === 'original' ? 'bg-[#3b2308]' : 'bg-[#063321]';
-  const borderColor = clip.type === 'original' ? 'border-amber-500/30' : 'border-emerald-500/30';
-  const textColor = clip.type === 'original' ? 'text-amber-200' : 'text-emerald-200';
-  const badgeColor = clip.type === 'original' ? 'text-amber-400 bg-amber-950/80 border-amber-500/20' : 'text-emerald-400 bg-emerald-950/80 border-emerald-500/20';
-  const iconBg = clip.type === 'original' ? 'bg-amber-500/20 border-amber-500/40' : 'bg-emerald-500/20 border-emerald-500/40';
-  const iconColor = clip.type === 'original' ? 'text-amber-300' : 'text-emerald-300';
+  const bgColor = clip.type === 'original'
+    ? 'bg-amber-50 dark:bg-[#3b2308]'
+    : 'bg-emerald-50 dark:bg-[#063321]';
+  const borderColor = clip.type === 'original'
+    ? 'border-amber-300 dark:border-amber-500/30'
+    : 'border-emerald-300 dark:border-emerald-500/30';
+  const textColor = clip.type === 'original'
+    ? 'text-amber-900 dark:text-amber-200'
+    : 'text-emerald-900 dark:text-emerald-200';
+  const badgeColor = clip.type === 'original'
+    ? 'text-amber-800 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/80 border-amber-300 dark:border-amber-500/20'
+    : 'text-emerald-800 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/80 border-emerald-300 dark:border-emerald-500/20';
+  const iconBg = clip.type === 'original'
+    ? 'bg-amber-100 dark:bg-amber-500/20 border-amber-300 dark:border-amber-500/40'
+    : 'bg-emerald-100 dark:bg-emerald-500/20 border-emerald-300 dark:border-emerald-500/40';
+  const iconColor = clip.type === 'original'
+    ? 'text-amber-700 dark:text-amber-300'
+    : 'text-emerald-700 dark:text-emerald-300';
 
   return (
     <div
@@ -227,10 +239,10 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
         isEditable ? 'cursor-grab active:cursor-grabbing' : 'cursor-default'
       } ${
         isSelected
-          ? 'ring-2 ring-white border-2 border-white shadow-[0_0_15px_rgba(255,255,255,0.35)] z-20'
+          ? 'ring-2 ring-primary border-2 border-primary shadow-md z-20'
           : isActive
-          ? 'border-2 border-amber-400/90 ring-1 ring-amber-400/40 shadow-[0_0_12px_rgba(251,191,36,0.35)] z-15'
-          : `border ${borderColor} hover:border-white/25 z-10`
+          ? 'border-2 border-amber-500 ring-1 ring-amber-500/40 shadow-sm z-15'
+          : `border ${borderColor} hover:border-primary/50 z-10`
       }`}
     >
       {isSelected && isEditable && !isDraggingClip && !isTrimming && (
@@ -248,7 +260,7 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
             {clip.content ? `"${clip.content}"` : ''}
           </span>
         </div>
-        <span className={`text-[10px] font-mono bg-amber-950/80 px-1.5 py-0.5 rounded border flex-shrink-0 ml-1 ${badgeColor}`}>
+        <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border flex-shrink-0 ml-1 ${badgeColor}`}>
           {clip.duration.toFixed(1)}s
         </span>
       </div>
@@ -256,20 +268,20 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
       {isSelected && isEditable && (
         <div
           onPointerDown={handleLeftTrimPointerDown}
-          className="trim-handle absolute left-0 top-0 bottom-0 w-2.5 bg-white hover:bg-zinc-200 cursor-ew-resize rounded-l flex items-center justify-center shadow-lg transition-colors z-30"
+          className="trim-handle absolute left-0 top-0 bottom-0 w-2.5 bg-card hover:bg-accent border border-border dark:bg-zinc-200 dark:hover:bg-white dark:border-zinc-400 cursor-ew-resize rounded-l flex items-center justify-center shadow-md transition-colors z-30"
           title="Drag to trim start"
         >
-          <GripVertical size={10} className="text-zinc-800" />
+          <GripVertical size={10} className="text-foreground dark:text-zinc-800" />
         </div>
       )}
 
       {isSelected && isEditable && (
         <div
           onPointerDown={handleRightTrimPointerDown}
-          className="trim-handle absolute right-0 top-0 bottom-0 w-2.5 bg-white hover:bg-zinc-200 cursor-ew-resize rounded-r flex items-center justify-center shadow-lg transition-colors z-30"
+          className="trim-handle absolute right-0 top-0 bottom-0 w-2.5 bg-card hover:bg-accent border border-border dark:bg-zinc-200 dark:hover:bg-white dark:border-zinc-400 cursor-ew-resize rounded-r flex items-center justify-center shadow-md transition-colors z-30"
           title="Drag to trim end"
         >
-          <GripVertical size={10} className="text-zinc-800" />
+          <GripVertical size={10} className="text-foreground dark:text-zinc-800" />
         </div>
       )}
     </div>
