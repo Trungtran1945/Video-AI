@@ -1,6 +1,6 @@
 import { Worker } from 'bullmq'
 import nodemailer from 'nodemailer'
-import { connection, createThrottledLogger, isRedisReady } from '../connection.js'
+import { connection, createRedisConnection, createThrottledLogger, isRedisReady } from '../connection.js'
 import { config } from '../../config.js'
 
 /**
@@ -30,6 +30,8 @@ function getTransporter() {
   return transporter
 }
 
+const workerConnection = createRedisConnection()
+
 const worker = new Worker('notifications', async (job) => {
   const { projectId, projectTitle, userEmail, status, mode } = job.data
 
@@ -58,7 +60,7 @@ const worker = new Worker('notifications', async (job) => {
 
   return { sent: true }
 }, {
-  connection,
+  connection: workerConnection,
   concurrency: 2,
 })
 
@@ -66,6 +68,11 @@ const worker = new Worker('notifications', async (job) => {
 connection.on('close', () => { worker.pause().catch(() => {}) })
 connection.on('end', () => { worker.pause().catch(() => {}) })
 connection.on('ready', () => { worker.resume().catch(() => {}) })
+// Same wiring on the worker's dedicated stream (shared signal alone
+// cannot observe a per-worker disconnect).
+workerConnection.on('close', () => { worker.pause().catch(() => {}) })
+workerConnection.on('end', () => { worker.pause().catch(() => {}) })
+workerConnection.on('ready', () => { worker.resume().catch(() => {}) })
 if (!isRedisReady()) worker.pause().catch(() => {})
 
 worker.on('error', (err) => {

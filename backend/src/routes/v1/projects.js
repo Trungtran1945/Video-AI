@@ -10,6 +10,7 @@ import { sendError, ERR } from '../../lib/httpError.js'
 import { config } from '../../config.js'
 import { projectDir, firstRunnableStage } from '../../pipeline/context.js'
 import { TRANSLATION_VERSION, isCacheCompatible, parseProjectParams } from '../../lib/cacheKey.js'
+import { hasHardTranslationError } from '../../pipeline/stages/dubTranslate.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -253,6 +254,41 @@ router.get('/:id', async (req, res) => {
 router.get('/:id/timeline', requireProjectOwner, async (req, res) => {
   const timeline = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [req.params.id])
   res.json(timeline)
+})
+
+// PATCH /api/v1/projects/:id/segments/:segmentId/translation — quarantine sửa tay.
+// Khi dub.translate fail TRANSLATE_NEEDS_REVIEW, details nằm ở job.result;
+// user sửa từng segment unresolved ở đây rồi regenerate từ dub.translate
+// (skip-if-translated giữ lại bản sửa tay). Gate hard phải PASS (422 nếu còn
+// lỗi nặng); soft warnings cho qua như pipeline.
+router.patch('/:id/segments/:segmentId/translation', requireProjectOwner, async (req, res) => {
+  try {
+    const { segmentId } = req.params
+    const translation = String(req.body?.translation ?? '').trim()
+    if (!translation) return sendError(res, 400, ERR.VALIDATION, 'translation is required', { field: 'translation' })
+    const seg = await queryOne(
+      'SELECT * FROM transcript_segments WHERE id = ? AND project_id = ?',
+      [segmentId, req.project.id]
+    )
+    if (!seg) return sendError(res, 404, ERR.VALIDATION, 'Segment not found in this project', { field: 'segmentId' })
+    const params = parseProjectParams(req.project.params)
+    const gate = hasHardTranslationError(seg.text, translation, params.targetLanguage || 'vi')
+    if (gate.hard) {
+      return sendError(res, 422, ERR.VALIDATION, `Bản dịch vẫn lỗi gate: ${(gate.errors || []).join('; ')}`, {
+        field: 'translation',
+        errors: gate.errors || [],
+      })
+    }
+    if ((gate.errors || []).length) {
+      console.warn(`[Projects] manual translation segment #${seg.index_num} soft warnings (allowed): ${gate.errors.join(';')}`)
+    }
+    await updateById('transcript_segments', seg.id, { translation })
+    const updated = await queryOne('SELECT * FROM transcript_segments WHERE id = ?', [seg.id])
+    res.json({ ...updated, warnings: gate.errors || [] })
+  } catch (err) {
+    console.error('Update segment translation error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
 })
 
 // POST /api/v1/projects/:id/cancel — FR-J1: Cancel running pipeline

@@ -26,6 +26,15 @@ function parseRetryAfter(err) {
   return null
 }
 
+// Lỗi validation (TRANSLATE_NEEDS_REVIEW / BLOCK_RENDER) là lỗi dữ liệu, KHÔNG
+// phải transient — fail fast 1 lần, không retry/backoff/park-queued. User sửa
+// tay (PATCH .../segments/:id/translation, xem job.result.unresolvedDetails)
+// rồi Regenerate/Retry (tự resume từ stage lỗi earliest qua firstRunnableStage).
+export function isValidationError(err) {
+  const msg = String(err?.message || '')
+  return msg.startsWith('TRANSLATE_NEEDS_REVIEW:') || msg.startsWith('BLOCK_RENDER:')
+}
+
 async function getNextRetryAt(provider) {
   const limit = await queryOne(
     `SELECT requests_per_minute FROM provider_rate_limits WHERE provider = ? AND tier = 'free' LIMIT 1`,
@@ -362,7 +371,8 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
         console.warn(`[RenderValidation] warning ${w.code}: ${w.message}`)
       }
       if (!validation.valid) {
-        const errorMsg = `BLOCK_RENDER: ${validation.errors.map(e => e.message).join('; ')}`
+        const errorMsg = `BLOCK_RENDER: ${validation.errors.map(e => e.message).join('; ')}` +
+          ` — sửa segment lỗi rồi Regenerate/Retry (tự chạy lại từ stage lỗi earliest; bản dịch sửa tay qua PATCH /projects/:id/segments/:segmentId/translation, chi tiết ở dub.translate job.result.unresolvedDetails)`
         await failJob(job, projectId, errorMsg)
         return false
       }
@@ -387,6 +397,12 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
     eventBus.publish(projectId, { stage: job.type, status: 'success', percent: 100 })
     return true
   } catch (err) {
+    // Validation fail fast trước mọi xử lý retry: lỗi dữ liệu không tự khỏi
+    // theo thời gian, retry cùng input chỉ spam log (từng lặp 5x BLOCK_RENDER).
+    if (isValidationError(err)) {
+      await failJob(job, projectId, err.message)
+      return false
+    }
     if (isRateLimitError(err)) {
       // Rate-limited: retry with scheduled nextRetryAt (docs/11 §4.2)
       const MAX_RATE_LIMIT_RETRIES = 5

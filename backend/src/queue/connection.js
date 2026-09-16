@@ -3,7 +3,7 @@ import { config } from '../config.js'
 
 const endpoint = `${config.redis.host}:${config.redis.port}`
 
-export const connection = new IORedis({
+const redisOptions = {
   host: config.redis.host,
   port: config.redis.port,
   maxRetriesPerRequest: null,
@@ -14,7 +14,25 @@ export const connection = new IORedis({
     const delay = Math.min(times * 500, 30000)
     return delay
   },
-})
+}
+
+export const connection = new IORedis(redisOptions)
+
+/**
+ * Dedicated connection factory (Redis bắt buộc — BullMQ best practice).
+ * Mỗi Queue/Worker phải có instance riêng: share 1 stream cho nhiều
+ * consumer gây tranh chấp blocking connection → "Stream isn't writeable".
+ * Instance này không chạm tới _redisReady signalling (chỉ `connection`
+ * chính làm điều đó).
+ */
+export function createRedisConnection() {
+  return new IORedis(redisOptions)
+}
+
+/** Human-readable endpoint for boot diagnostics (host:port). */
+export function getRedisEndpoint() {
+  return endpoint
+}
 
 let _redisReady = false
 

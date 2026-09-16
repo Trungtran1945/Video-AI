@@ -189,6 +189,7 @@ export async function dubTranslate(ctx) {
     const groups = groupByWindow(segments, getContextWindowSec(project))
     let styleFallback = false
     const unresolved = []
+    const styledAll = new Map() // index_num → styled text (mọi group, cho quarantine details)
     for (let g = 0; g < groups.length; g++) {
       const group = groups[g]
       const groupTranslations = []
@@ -209,6 +210,7 @@ export async function dubTranslate(ctx) {
         llm, restyleSystem, groupTranslations, preset, job, project.id, project.user_id
       )
       if (fallback) styleFallback = true
+      for (const [idx, txt] of restyledGroup) if (!styledAll.has(idx)) styledAll.set(idx, txt)
 
       for (const seg of group) {
         const final = resolveFinalTranslation({
@@ -231,12 +233,22 @@ export async function dubTranslate(ctx) {
       setProgress(45 + Math.round(((g + 1) / groups.length) * 45))
     }
     if (!translations.size) {
+      await persistTranslateReview(job, buildTranslateReviewDetails(segments, unresolved, {
+        gtResults, styledAll, targetLanguage,
+      }))
       throw new Error(
-        `LLM không trả về bản dịch restyle hợp lệ nào` +
-        (unresolved.length ? ` (unresolved: ${unresolved.join(',')})` : '')
+        `TRANSLATE_NEEDS_REVIEW: LLM không trả về bản dịch restyle hợp lệ nào` +
+        (unresolved.length ? ` (unresolved: ${unresolved.join(',')})` : '') +
+        ` — sửa bản dịch thủ công qua PATCH /projects/:id/segments/:segmentId/translation rồi chạy lại từ dub.translate`
       )
     }
     // Invariant: COMPLETED chỉ khi 100% required translations hợp lệ.
+    // Quarantine: còn unresolved → lưu details vào job.result TRƯỚC khi throw
+    // để user sửa tay từng segment (PATCH .../segments/:id/translation) rồi
+    // regenerate từ dub.translate, thay vì retry mù cùng lỗi.
+    await persistTranslateReview(job, buildTranslateReviewDetails(segments, unresolved, {
+      gtResults, styledAll, targetLanguage,
+    }))
     assertTranslateComplete(segments, translations, unresolved)
     // Sinh SRT từ timing gốc + bản dịch (docs/05 FR-T6)
     const styleCues = segments
@@ -292,6 +304,10 @@ export async function dubTranslate(ctx) {
   if (!translations.size) throw new Error('Không có bản dịch hợp lệ nào')
 
   // Invariant: COMPLETED chỉ khi 100% required translations hợp lệ.
+  // Quarantine như nhánh style (xem trên).
+  await persistTranslateReview(job, buildTranslateReviewDetails(segments, noStyleUnresolved, {
+    gtResults, styledAll: null, targetLanguage,
+  }))
   assertTranslateComplete(segments, translations, noStyleUnresolved)
 
   // Sinh SRT từ timing gốc + bản dịch (docs/05 FR-T6)
@@ -312,7 +328,9 @@ export async function dubTranslate(ctx) {
 }
 
 // Invariant: dub.translate COMPLETED chỉ khi mọi transcript segment có text
-// đều có translation hợp lệ. Còn unresolved → throw FAILED, không success giả.
+// đều có translation hợp lệ. Còn unresolved → throw FAILED với mã
+// TRANSLATE_NEEDS_REVIEW (validation, KHÔNG retry backoff — phải sửa tay rồi
+// regenerate), không success giả.
 export function assertTranslateComplete(segments, translations, unresolved) {
   const required = (segments || []).filter((s) => s.text && String(s.text).trim())
   const requiredCount = required.length
@@ -320,9 +338,54 @@ export function assertTranslateComplete(segments, translations, unresolved) {
   const unresolvedList = Array.isArray(unresolved) ? unresolved : []
   if (unresolvedList.length > 0 || translatedCount !== requiredCount) {
     throw new Error(
-      `dub.translate incomplete: ${translatedCount}/${requiredCount} translations` +
-      (unresolvedList.length ? ` (unresolved: ${unresolvedList.join(',')})` : '')
+      `TRANSLATE_NEEDS_REVIEW: dub.translate incomplete: ${translatedCount}/${requiredCount} translations` +
+      (unresolvedList.length ? ` (unresolved: ${unresolvedList.join(',')})` : '') +
+      ` — sửa bản dịch thủ công qua PATCH /projects/:id/segments/:segmentId/translation rồi chạy lại từ dub.translate`
     )
+  }
+}
+
+// Quarantine details cho segment unresolved: đủ để user sửa tay mà không cần
+// chạy lại provider (source + base/styled thử qua + lỗi gate từng bản).
+// Trả về [] khi không có unresolved (caller persist no-op).
+export function buildTranslateReviewDetails(segments, unresolved, { gtResults, styledAll, targetLanguage = 'vi' } = {}) {
+  const list = Array.isArray(unresolved) ? unresolved : []
+  if (!list.length) return []
+  const byIndex = new Map((segments || []).map((s) => [s.index_num, s]))
+  return list.map((idx) => {
+    const seg = byIndex.get(idx) || {}
+    const base = gtResults?.get(idx) ?? null
+    const styled = styledAll?.get(idx) ?? null
+    const baseErrors = base != null
+      ? (validateTranslation(seg.text, base, targetLanguage).errors || [])
+      : ['missing base translation']
+    const styledErrors = styledAll == null ? null : (styled != null
+      ? (validateTranslation(seg.text, styled, targetLanguage).errors || [])
+      : ['missing styled translation'])
+    return {
+      segmentId: seg.id || null,
+      index: idx,
+      source: seg.text || '',
+      base,
+      styled,
+      baseErrors,
+      styledErrors,
+    }
+  })
+}
+
+// Lưu quarantine details vào generation_jobs.result (best-effort, không throw).
+// failJob chỉ giữ error_message 500 ký tự nên details phải persist riêng ở đây,
+// TRƯỚC khi assertTranslateComplete throw.
+export async function persistTranslateReview(job, details) {
+  try {
+    if (!job?.id || !Array.isArray(details) || !details.length) return false
+    await updateById('generation_jobs', job.id, {
+      result: JSON.stringify({ needsReview: true, unresolvedDetails: details }),
+    })
+    return true
+  } catch (_) {
+    return false
   }
 }
 
@@ -599,7 +662,18 @@ export async function translateGroup(llm, system, prompt, job, projectId, opts =
   return collected
 }
 
-const NEG_EN = ['not', 'no', 'never', "n't", 'without', 'none']
+const NEG_EN = [
+  'not', 'no', 'never', "n't", 'without', 'none',
+  // ASR transcripts usually drop apostrophes ("dont", "cant") và dùng từ
+  // phủ định không dấu nháy — thiếu chúng là false-positive hàng loạt
+  // (nguồn STT "I dont ..." bị tính là không phủ định trong khi VI đúng
+  // là "Tôi không ..."). Giữ lowercase match với space-boundary như cũ.
+  'cannot', 'nothing', 'nobody', 'nowhere', 'neither', 'nor',
+  'hardly', 'scarcely', 'barely', 'seldom', 'rarely',
+  'dont', 'cant', 'wont', 'isnt', 'arent', 'wasnt', 'werent',
+  'hasnt', 'havent', 'hadnt', 'doesnt', 'didnt', 'couldnt',
+  'shouldnt', 'wouldnt', 'mustnt', 'neednt',
+]
 const NEG_VI = ['không', 'chưa', 'chẳng', 'đừng', 'không hề', 'chưa từng']
 
 function extractNumbers(s) {
@@ -614,6 +688,24 @@ function hasNegation(s, lang) {
   const t = ` ${String(s || '').toLowerCase()} `
   const lex = lang === 'vi' ? NEG_VI : NEG_EN
   return lex.some((w) => t.includes(w === "n't" ? w : ` ${w} `) || (w === "n't" && t.includes(w)))
+}
+
+// Strip trailing VI question particle trước khi check phủ định.
+// "Có tốt không?", "Bạn ăn chưa?" — chữ không/chưa ở cuối là tiểu từ nghi
+// vấn, KHÔNG phải phủ định. So equality trên câu đã strip thì dạng thêm
+// "không?" hỏi không còn false-positive, nhưng thêm phủ định giữa câu
+// ("Tôi không muốn đi" cho nguồn khẳng định) vẫn bị bắt.
+const VI_TRAILING_QUESTION_PARTICLES = ['không', 'chưa', 'chứ', 'nhỉ', 'hả', 'à', 'ạ', 'ư', 'vậy', 'sao', 'hay', 'nhé', 'nha', 'đâu', 'nào', 'gì', 'ai']
+export function stripViQuestionParticle(s) {
+  let t = String(s || '').trim()
+  for (let i = 0; i < 2; i++) {
+    const noQ = t.replace(/[?？]+\s*$/, '').trim()
+    const low = ` ${noQ.toLowerCase()} `
+    const hit = VI_TRAILING_QUESTION_PARTICLES.some((w) => low.endsWith(` ${w} `))
+    if (!hit) return noQ || t
+    t = noQ.replace(new RegExp(`\\s+[^\\s]+\\s*$`), '').trim()
+  }
+  return t
 }
 
 // CJK negation: 不/没/未/别/莫/无/非/勿 (+ compounds 不用/不能/不是… covered
@@ -686,7 +778,12 @@ export function validateTranslation(src, tgt, targetLang = 'vi') {
   // CJK context-aware question: 吗/呢/? source must map to vi "?" or question
   // word (wide lenient list). 吧/啊 sources excluded via isCjkQuestion.
   if (countCjk(s) > 0 && isCjkQuestion(s) && !hasViQuestion(t)) errors.push('question intent changed')
-  if (hasNegation(s, 'en') !== hasNegation(t, 'vi') && /[a-z]/i.test(s)) {
+  // EN-like negation: so sánh trên bản VI đã strip tiểu từ nghi vấn cuối câu
+  // ("...không?/chưa?") — dạng thêm không/chưa để hỏi không còn false-positive,
+  // nhưng thêm/bớt phủ định giữa câu vẫn bị bắt. Giữ equality (2 chiều) trên
+  // câu đã strip: chỉ nguồn có → dịch mất, hoặc nguồn khẳng định → dịch thêm
+  // phủ định giữa câu, mới là đổi nghĩa thật.
+  if (hasNegation(s, 'en') !== hasNegation(stripViQuestionParticle(t), 'vi') && /[a-z]/i.test(s)) {
     // Only enforce when source is English-like; avoids false positives on other langs
     errors.push('negation changed')
   }

@@ -1,7 +1,7 @@
 import { Worker } from 'bullmq'
 import fs from 'node:fs'
 import path from 'path'
-import { connection, createThrottledLogger, isRedisReady } from '../connection.js'
+import { connection, createRedisConnection, createThrottledLogger, isRedisReady } from '../connection.js'
 import { query, run } from '../../db/query.js'
 import { projectDir, resolveStorageKey } from '../../pipeline/context.js'
 import { config } from '../../config.js'
@@ -15,6 +15,8 @@ const logWorkerError = createThrottledLogger(30000)
  * Xóa file trong storage/tmp/{projectId}, giữ lại Output.
  * Projects CANCELLED: dọn ngay lập tức (trong cancelProjectUseCase).
  */
+const workerConnection = createRedisConnection()
+
 const worker = new Worker('cleanup', async (job) => {
   const retentionDays = config.projectRetentionDays
   const cutoffDate = new Date()
@@ -95,7 +97,7 @@ const worker = new Worker('cleanup', async (job) => {
 
   return { cleaned }
 }, {
-  connection,
+  connection: workerConnection,
   concurrency: 1,
   limiter: { max: 1, duration: 300000 }, // Max 1 job per 5 minutes
 })
@@ -104,6 +106,9 @@ const worker = new Worker('cleanup', async (job) => {
 connection.on('close', () => { worker.pause().catch(() => {}) })
 connection.on('end', () => { worker.pause().catch(() => {}) })
 connection.on('ready', () => { worker.resume().catch(() => {}) })
+workerConnection.on('close', () => { worker.pause().catch(() => {}) })
+workerConnection.on('end', () => { worker.pause().catch(() => {}) })
+workerConnection.on('ready', () => { worker.resume().catch(() => {}) })
 if (!isRedisReady()) worker.pause().catch(() => {})
 
 worker.on('error', (err) => {

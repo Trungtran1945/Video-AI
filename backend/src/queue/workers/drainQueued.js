@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq'
-import { connection, createThrottledLogger, isRedisReady } from '../connection.js'
+import { connection, createRedisConnection, createThrottledLogger, isRedisReady } from '../connection.js'
 import { query, queryOne, run } from '../../db/query.js'
 import { runPipeline } from '../../pipeline/runner.js'
 import { config } from '../../config.js'
@@ -14,6 +14,8 @@ const logWorkerError = createThrottledLogger(30000)
  * cũ nhất khi user đó có slot RUNNING trống.
  * Đồng thời dọn các project stuck 'running' quá lâu (backend crash mid-pipeline).
  */
+const workerConnection = createRedisConnection()
+
 const worker = new Worker('drain-queued', async (job) => {
   const maxConcurrent = config.maxConcurrentProjectsPerUser
 
@@ -90,7 +92,7 @@ const worker = new Worker('drain-queued', async (job) => {
 
   return { drained, recovered }
 }, {
-  connection,
+  connection: workerConnection,
   concurrency: 1,
   limiter: { max: 10, duration: 60000 }, // Max 10 jobs per minute
 })
@@ -99,6 +101,9 @@ const worker = new Worker('drain-queued', async (job) => {
 connection.on('close', () => { worker.pause().catch(() => {}) })
 connection.on('end', () => { worker.pause().catch(() => {}) })
 connection.on('ready', () => { worker.resume().catch(() => {}) })
+workerConnection.on('close', () => { worker.pause().catch(() => {}) })
+workerConnection.on('end', () => { worker.pause().catch(() => {}) })
+workerConnection.on('ready', () => { worker.resume().catch(() => {}) })
 if (!isRedisReady()) worker.pause().catch(() => {})
 
 worker.on('error', (err) => {

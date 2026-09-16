@@ -4,7 +4,7 @@
 // stylePreset, ocrMode, translationVersion.
 // Bump TRANSLATION_VERSION mỗi khi đổi logic dub.translate (gate,
 // prompt restyle, Google Translate fallback...) để cache cũ không reuse nhầm.
-export const TRANSLATION_VERSION = 2
+export const TRANSLATION_VERSION = 3
 
 const normHash = (v) => String(v ?? '').toLowerCase().trim()
 const normLang = (v, fallback) => String(v ?? fallback).toLowerCase().trim()

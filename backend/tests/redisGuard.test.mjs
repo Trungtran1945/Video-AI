@@ -75,5 +75,20 @@ const drainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'wor
 assert(!drainSrc.includes('updated_date'), 'drainQueued.js does not reference missing updated_date column')
 assert(drainSrc.includes('created_date < ?'), 'drainQueued.js stale cutoff uses created_date')
 
+// 8. Redis bắt buộc: mỗi Queue/Worker dùng dedicated connection (không share
+// 1 stream cho nhiều consumer — nguyên nhân "Stream isn't writeable" lan cả 3 workers).
+const connSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'connection.js'), 'utf8')
+assert(connSrc.includes('export function createRedisConnection'), 'connection.js exports createRedisConnection factory')
+for (const f of ['notifyQueue.js', 'cleanupQueue.js', 'projectQueue.js']) {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', f), 'utf8')
+  assert(src.includes('createRedisConnection()'), `${f} uses dedicated connection`)
+}
+for (const f of ['drainQueued.js', 'cleanupWorker.js', 'notifyWorker.js']) {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'workers', f), 'utf8')
+  assert(src.includes('createRedisConnection()'), `${f} worker uses dedicated connection`)
+}
+const serverSrc2 = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8')
+assert(serverSrc2.includes('getRedisEndpoint'), 'server.js reports Redis endpoint in boot diagnostics')
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

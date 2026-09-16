@@ -140,9 +140,14 @@ async function start() {
   }
 
   try {
-    const { connection, waitForRedis } = await import('./src/queue/connection.js')
+    const { connection, waitForRedis, getRedisEndpoint } = await import('./src/queue/connection.js')
     if (await waitForRedis(3000)) {
       await bootQueueWorkers()
+    } else if (config.nodeEnv === 'production') {
+      // Redis bắt buộc ở production: fail fast với diagnostic rõ ràng thay vì
+      // chạy mù rồi spam "Stream isn't writeable" ở mọi worker.
+      console.error(`[Queue] FATAL: Redis unavailable at ${getRedisEndpoint()} — workers (notifications, cleanup, job draining) require Redis. Start it (docker compose up redis) or set REDIS_HOST/REDIS_PORT in backend/.env`)
+      process.exit(1)
     } else {
       console.warn('[Queue] Redis unavailable — notifications, cleanup, and job draining are disabled (workers will start when Redis is ready)')
       connection.once('ready', () => {

@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
+    "check:redis": "node scripts/check-redis.mjs",
     "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
