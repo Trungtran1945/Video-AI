@@ -121,12 +121,18 @@ async function start() {
     try {
       const cleanupMod = await import('./src/queue/workers/cleanupWorker.js')
       cleanupWorker = cleanupMod.default
-      // Schedule cleanup to run every hour (Redis is ready here by construction)
+      // Schedule cleanup to run every hour (Redis is ready here by construction;
+      // re-check anyway — never throw from boot because of scheduling).
       const { cleanupQueue } = await import('./src/queue/cleanupQueue.js')
-      await cleanupQueue.add('sweep', {}, {
-        repeat: { every: 60 * 60 * 1000 }, // every hour
-        removeOnComplete: true,
-      })
+      const { isRedisReady } = await import('./src/queue/connection.js')
+      if (!isRedisReady()) {
+        console.warn('[Queue] Redis unavailable — cleanup sweep scheduling skipped')
+      } else {
+        await cleanupQueue.add('sweep', {}, {
+          repeat: { every: 60 * 60 * 1000 }, // every hour
+          removeOnComplete: true,
+        })
+      }
       console.log('[Queue] Cleanup worker started (every hour)')
     } catch (e) {
       console.warn('[Queue] Cleanup worker/cron failed to start:', e.message)

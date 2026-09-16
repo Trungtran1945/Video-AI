@@ -73,14 +73,15 @@ async function makeProject({ segs, enableDubbing = true }) {
   await run('DELETE FROM provider_cache')
 }
 
-// 8. Render blocked when translation missing
+// 8. Missing translation with dubbing=false -> partial render (Policy A:
+// SUBTITLE_SKIPPED warning, valid=true). BLOCK only when dubbing=true.
 {
   const { project } = await makeProject({
     enableDubbing: false,
     segs: [{ id: 'r1', start: 0, end: 1.5, text: 'hello', translation: null }],
   })
   const v = await validateForRender(project.id)
-  assert(v.valid === false && v.errors.some((e) => e.code === 'UNTRANSLATED_SEGMENTS'), 'render blocked: missing translation')
+  assert(v.valid === true && v.errors.length === 0 && v.warnings.some((e) => e.code === 'SUBTITLE_SKIPPED'), 'subtitle-only missing translation -> partial valid + SUBTITLE_SKIPPED')
 }
 
 // 9. Render blocked when TTS missing and dubbing on

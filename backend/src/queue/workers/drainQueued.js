@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq'
-import { connection, createThrottledLogger } from '../connection.js'
+import { connection, createThrottledLogger, isRedisReady } from '../connection.js'
 import { query, queryOne, run } from '../../db/query.js'
 import { runPipeline } from '../../pipeline/runner.js'
 import { config } from '../../config.js'
@@ -19,8 +19,10 @@ const worker = new Worker('drain-queued', async (job) => {
 
   // ── 1. Recover stuck projects (running too long → failed) ──
   const staleCutoff = new Date(Date.now() - STALE_RUNNING_MINUTES * 60 * 1000).toISOString()
+  // NOTE: projects has no per-update timestamp column (see schema.js), so
+  // created_date is used as the stale-cutoff proxy. Do not add another column.
   const staleProjects = await query(
-    `SELECT id, title, user_id FROM projects WHERE status = 'running' AND updated_date < ?`,
+    `SELECT id, title, user_id FROM projects WHERE status = 'running' AND created_date < ?`,
     [staleCutoff]
   )
 
@@ -92,6 +94,12 @@ const worker = new Worker('drain-queued', async (job) => {
   concurrency: 1,
   limiter: { max: 10, duration: 60000 }, // Max 10 jobs per minute
 })
+
+// Pause (never close) while Redis is down so no job is lost; resume on ready.
+connection.on('close', () => { worker.pause().catch(() => {}) })
+connection.on('end', () => { worker.pause().catch(() => {}) })
+connection.on('ready', () => { worker.resume().catch(() => {}) })
+if (!isRedisReady()) worker.pause().catch(() => {})
 
 worker.on('error', (err) => {
   logWorkerError(`[DrainQueued] Worker error: ${err.message}`)

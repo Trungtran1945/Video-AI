@@ -267,7 +267,8 @@ export async function dubTranslate(ctx) {
         if (seg.text && seg.text.trim()) noStyleUnresolved.push(seg.index_num)
         continue
       }
-      if (!validateTranslation(seg.text, gtText, targetLanguage).ok) {
+      const gate = hasHardTranslationError(seg.text, gtText, targetLanguage)
+      if (gate.hard) {
         const fixed = repairLlm ? await repairTranslationWithLlm(repairLlm, {
           source: seg.text, badTranslation: gtText,
           prev: segments[si - 1]?.text || '', next: segments[si + 1]?.text || '',
@@ -279,6 +280,8 @@ export async function dubTranslate(ctx) {
           console.warn(`[dubTranslate] Block segment #${seg.index_num}: semantic gate failed [${errs}]`)
           noStyleUnresolved.push(seg.index_num); continue
         }
+      } else if (gate.errors?.length) {
+        console.warn(`[dubTranslate] segment #${seg.index_num} soft warnings (allowed): ${(gate.errors || []).join(';')}`)
       }
       await updateById('transcript_segments', seg.id, { translation: gtText })
       translations.set(seg.id, gtText)
@@ -384,7 +387,7 @@ export async function translateMissingWithLlm(llm, missingSegments, { system, ta
       let txt = collected.get(seg.index_num)
       if (txt) txt = String(txt).trim()
       // Từ chối JSON artifact lọt qua gate yếu (không phải bản dịch thật).
-      if (txt && !/[{}[\]]/.test(txt) && validateTranslation(seg.text, txt, targetLanguage).ok) {
+      if (txt && !/[{}[\]]/.test(txt) && !hasHardTranslationError(seg.text, txt, targetLanguage).hard) {
         out.set(seg.index_num, txt)
         continue
       }
@@ -394,7 +397,7 @@ export async function translateMissingWithLlm(llm, missingSegments, { system, ta
           source: seg.text, badTranslation: txt, prev: '', next: '',
           targetLanguage, system,
         }, { job, projectId, userId }).catch(() => null)
-        if (fixed && !/[{}[\]]/.test(fixed) && validateTranslation(seg.text, fixed, targetLanguage).ok) {
+        if (fixed && !/[{}[\]]/.test(fixed) && !hasHardTranslationError(seg.text, fixed, targetLanguage).hard) {
           out.set(seg.index_num, fixed)
         } else {
           const errs = (validateTranslation(seg.text, txt, targetLanguage).errors || []).join(';')
@@ -414,10 +417,10 @@ export async function translateMissingWithLlm(llm, missingSegments, { system, ta
 // styled hợp lệ → dùng styled; ngược lại → dùng base; cả hai lỗi → null
 // (segment unresolved — stage FAILED, KHÔNG success giả, KHÔNG bịa bản dịch).
 export function resolveFinalTranslation({ source, base, styled, targetLanguage = 'vi' }) {
-  if (styled && validateTranslation(source, styled, targetLanguage).ok) {
+  if (styled && !hasHardTranslationError(source, styled, targetLanguage).hard) {
     return { text: styled, via: 'styled' }
   }
-  if (base && validateTranslation(source, base, targetLanguage).ok) {
+  if (base && !hasHardTranslationError(source, base, targetLanguage).hard) {
     return { text: base, via: 'base' }
   }
   return null
@@ -708,6 +711,26 @@ export function validateTranslation(src, tgt, targetLang = 'vi') {
   const maxRatio = countCjk(s) > 0 ? 8 : 3
   if (ratio < 0.3 || ratio > maxRatio) errors.push('length implausible (hallucination?)')
   return { ok: errors.length === 0, errors }
+}
+
+const HARD_PREFIXES = ['number mismatch', 'length implausible']
+const HARD_EXACT = new Set(['empty source', 'empty translation', 'untranslated copy', 'wrong target language'])
+export function classifyTranslationErrors(errors) {
+  const hard = [], warnings = []
+  for (const e of errors || []) {
+    const s = String(e || '')
+    if (HARD_EXACT.has(s) || HARD_PREFIXES.some((p) => s.startsWith(p)) || /[{}[\]]/.test(s)) hard.push(s)
+    else warnings.push(s)
+  }
+  return { hard, warnings }
+}
+export function hasHardTranslationError(src, tgt, targetLang = 'vi') {
+  const t = String(tgt || '')
+  if (/[{}[\]]/.test(t)) return { hard: true, errors: ['translation artifact'], warnings: [] }
+  const v = validateTranslation(src, tgt, targetLang)
+  if (v.ok) return { hard: false, errors: [], warnings: [] }
+  const { hard, warnings } = classifyTranslationErrors(v.errors)
+  return { hard: hard.length > 0, errors: v.errors, warnings }
 }
 
 export async function repairTranslationWithLlm(llm, { source, badTranslation, prev, next, targetLanguage, system }, { job, projectId, userId }) {

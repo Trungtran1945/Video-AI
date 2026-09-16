@@ -1,6 +1,6 @@
 import { Worker } from 'bullmq'
 import nodemailer from 'nodemailer'
-import { connection, createThrottledLogger } from '../connection.js'
+import { connection, createThrottledLogger, isRedisReady } from '../connection.js'
 import { config } from '../../config.js'
 
 /**
@@ -61,6 +61,12 @@ const worker = new Worker('notifications', async (job) => {
   connection,
   concurrency: 2,
 })
+
+// Pause (never close) while Redis is down so no job is lost; resume on ready.
+connection.on('close', () => { worker.pause().catch(() => {}) })
+connection.on('end', () => { worker.pause().catch(() => {}) })
+connection.on('ready', () => { worker.resume().catch(() => {}) })
+if (!isRedisReady()) worker.pause().catch(() => {})
 
 worker.on('error', (err) => {
   logWorkerError(`[Notify] Worker error: ${err.message}`)

@@ -358,6 +358,9 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
     // BLOCK_RENDER validation trước khi render (transflow doc 15 §5.0)
     if (job.type === 'dub.render') {
       const validation = await validateForRender(projectId)
+      for (const w of validation.warnings || []) {
+        console.warn(`[RenderValidation] warning ${w.code}: ${w.message}`)
+      }
       if (!validation.valid) {
         const errorMsg = `BLOCK_RENDER: ${validation.errors.map(e => e.message).join('; ')}`
         await failJob(job, projectId, errorMsg)

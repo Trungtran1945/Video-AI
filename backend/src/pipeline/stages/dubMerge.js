@@ -2,9 +2,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { query } from '../../db/query.js'
 import { logProviderCall } from '../../providers/tracked.js'
-import { validateTranslation } from './dubTranslate.js'
+import { hasHardTranslationError } from './dubTranslate.js'
 import { validateNoOverlap } from '../forcedAlignService.js'
 import { projectDir } from '../context.js'
+
+function truncate80(s) {
+  return String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, 80)
+}
 
 function parseParams(raw) {
   try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
@@ -12,13 +16,15 @@ function parseParams(raw) {
 
 /**
  * Validate before render (transflow doc 15 §5.0 — BLOCK_RENDER pattern).
- * Kiểm tra tất cả điều kiện cần thiết TRƯỚC khi kích hoạt Stage RENDER.
+ * Policy A: required = segments có text non-empty (khớp assertTranslateComplete).
+ * Segment text rỗng = OCR noise → loại khỏi yêu cầu translation.
  *
  * @param {string} projectId
- * @returns {{valid:boolean, errors:Array<{code:string, message:string, segmentId?:string}>}}
+ * @returns {{valid:boolean, errors:Array, warnings:Array}}
  */
 export async function validateForRender(projectId) {
   const errors = []
+  const warnings = []
 
   // Kiểm tra 1: Có transcript segments không
   const segments = await query(
@@ -27,20 +33,47 @@ export async function validateForRender(projectId) {
   )
   if (!segments.length) {
     errors.push({ code: 'NO_SEGMENTS', message: 'Không có transcript segments' })
-    return { valid: false, errors }
+    return { valid: false, errors, warnings }
   }
 
-  // Kiểm tra 2: Có translation không
-  const untranslated = segments.filter(s => !s.translation || s.translation.trim() === '')
+  const project = await query(
+    'SELECT params FROM projects WHERE id = ?',
+    [projectId]
+  ).then(rows => rows[0])
+  const params = parseParams(project?.params)
+  const targetLanguage = params.targetLanguage || 'vi'
+  const sourceLanguage = params.sourceLanguage || 'unknown'
+  const enableDubbing = !!params.enableDubbing
+
+  const isRequired = (s) => s.text && String(s.text).trim() !== ''
+  const hasTranslation = (s) => s.translation && String(s.translation).trim() !== ''
+  const required = segments.filter(isRequired)
+
+  // Kiểm tra 2: UNTRANSLATED trên required (policy A)
+  const untranslated = required.filter((s) => !hasTranslation(s))
   if (untranslated.length > 0) {
-    errors.push({
-      code: 'UNTRANSLATED_SEGMENTS',
-      message: `${untranslated.length} segment chưa có translation`,
-      segmentIds: untranslated.map(s => s.id),
-    })
+    const idxList = untranslated.map((s) => `segment #${s.index_num}`).join(', ')
+    if (enableDubbing) {
+      errors.push({
+        code: 'UNTRANSLATED_SEGMENTS',
+        message: `${untranslated.length} segment chưa có translation: ${idxList}`,
+        segmentIds: untranslated.map(s => s.id),
+        details: untranslated.map((s) => ({ id: s.id, index: s.index_num, errors: ['missing translation'], sourceLanguage, targetLanguage })),
+      })
+    } else {
+      warnings.push({
+        code: 'SUBTITLE_SKIPPED',
+        message: `${untranslated.length} segment chưa có translation (render partial, bỏ qua subtitle): ${idxList}`,
+        segmentIds: untranslated.map(s => s.id),
+        details: untranslated.map((s) => ({ id: s.id, index: s.index_num, errors: ['missing translation'], sourceLanguage, targetLanguage })),
+      })
+      for (const s of untranslated) {
+        console.warn(`[RenderValidation] segment #${s.index_num} warning: errors=missing translation sourceLanguage=${sourceLanguage} targetLanguage=${targetLanguage} src="${truncate80(s.text)}" tgt="${truncate80(s.translation)}"`)
+      }
+    }
   }
 
-  // Kiểm tra 3: Duration validation (>0 và <=300s)
+  // Kiểm tra 3: Duration validation (>0 và <=300s) — scope toàn bộ segments như cũ
   const invalidDuration = segments.filter(s => {
     const dur = (Number(s.end_sec) || 0) - (Number(s.start_sec) || 0)
     return dur <= 0 || dur > 300
@@ -53,7 +86,7 @@ export async function validateForRender(projectId) {
     })
   }
 
-  // Kiểm tra 4: timing hợp lệ + thứ tự + không overlap + không dup text
+  // Kiểm tra 4: timing hợp lệ + thứ tự + không overlap + không dup text — scope toàn bộ như cũ
   const sorted = [...segments].sort((a, b) => (Number(a.start_sec) || 0) - (Number(b.start_sec) || 0))
   const badTiming = sorted.filter(s => !(Number(s.end_sec) > Number(s.start_sec)) || Number(s.start_sec) < 0)
   if (badTiming.length > 0) {
@@ -70,23 +103,50 @@ export async function validateForRender(projectId) {
     errors.push({ code: 'DUPLICATE_SUBTITLE', message: `${dupText.length} subtitle trùng lặp liên tiếp`, segmentIds: dupText.map(s => s.id) })
   }
 
-  // Kiểm tra 5: semantic translation gate (non-empty đã check ở #2)
-  const project = await query(
-    'SELECT params FROM projects WHERE id = ?',
-    [projectId]
-  ).then(rows => rows[0])
-  const params = parseParams(project?.params)
-  const targetLanguage = params.targetLanguage || 'vi'
-  const semanticBad = segments.filter(s => s.translation && s.translation.trim() && !validateTranslation(s.text, s.translation, targetLanguage).ok)
-  if (semanticBad.length > 0) {
-    errors.push({ code: 'SEMANTIC_MISMATCH', message: `${semanticBad.length} bản dịch fail semantic gate (số/phủ định/thực thể/ngôn ngữ)`, segmentIds: semanticBad.map(s => s.id) })
+  // Kiểm tra 5: semantic gate per-segment via hasHardTranslationError (Task 1)
+  const semanticHard = []
+  const semanticSoft = []
+  const semanticHardDetails = []
+  const semanticSoftDetails = []
+  for (const s of required) {
+    if (!hasTranslation(s)) continue
+    const r = hasHardTranslationError(s.text, s.translation, targetLanguage)
+    if (r.hard) {
+      semanticHard.push(s)
+      semanticHardDetails.push({ id: s.id, index: s.index_num, errors: r.errors, sourceLanguage, targetLanguage })
+      console.log(`[RenderValidation] segment #${s.index_num} BLOCK: errors=${r.errors.join('|')} sourceLanguage=${sourceLanguage} targetLanguage=${targetLanguage} src="${truncate80(s.text)}" tgt="${truncate80(s.translation)}"`)
+    } else if (r.errors.length > 0) {
+      semanticSoft.push(s)
+      semanticSoftDetails.push({ id: s.id, index: s.index_num, errors: r.errors, sourceLanguage, targetLanguage })
+      console.warn(`[RenderValidation] segment #${s.index_num} warning: errors=${r.errors.join('|')} sourceLanguage=${sourceLanguage} targetLanguage=${targetLanguage} src="${truncate80(s.text)}" tgt="${truncate80(s.translation)}"`)
+    }
+  }
+  if (semanticHard.length > 0) {
+    errors.push({
+      code: 'SEMANTIC_BLOCK',
+      message: `${semanticHard.length} bản dịch lỗi nặng (hard): ${semanticHard.map((s) => {
+        const d = semanticHardDetails.find((x) => x.id === s.id)
+        return `segment #${s.index_num} [${(d?.errors || []).join('|')}]`
+      }).join('; ')}`,
+      segmentIds: semanticHard.map(s => s.id),
+      details: semanticHardDetails,
+    })
+  }
+  if (semanticSoft.length > 0) {
+    warnings.push({
+      code: 'SEMANTIC_WARNING',
+      message: `${semanticSoft.length} bản dịch cảnh báo (soft, cho qua): ${semanticSoft.map((s) => `segment #${s.index_num}`).join(', ')}`,
+      segmentIds: semanticSoft.map(s => s.id),
+      details: semanticSoftDetails,
+    })
   }
 
   // Kiểm tra 6: Nếu enableDubbing, kiểm tra TTS audio 1:1 + file + duration + mapping
+  // Strict trên required CÓ translation (policy A).
   if (project) {
     if (params.enableDubbing) {
-      const required = segments.filter(s => s.translation && s.translation.trim())
-      const noTtsAudio = required.filter(s => !s.tts_audio_id)
+      const ttsTargets = required.filter(hasTranslation)
+      const noTtsAudio = ttsTargets.filter(s => !s.tts_audio_id)
       if (noTtsAudio.length > 0) {
         errors.push({
           code: 'MISSING_TTS_AUDIO',
@@ -96,7 +156,7 @@ export async function validateForRender(projectId) {
       }
       const seen = new Map()
       const dupAudio = []
-      for (const s of required) {
+      for (const s of ttsTargets) {
         if (!s.tts_audio_id) continue
         if (seen.has(s.tts_audio_id)) dupAudio.push(s.id)
         else seen.set(s.tts_audio_id, s.id)
@@ -109,7 +169,7 @@ export async function validateForRender(projectId) {
         const audios = await query('SELECT id, duration_sec FROM audios WHERE project_id = ?', [projectId])
         const byId = new Map(audios.map((a) => [String(a.id), a]))
         const badFiles = []
-        for (const s of required) {
+        for (const s of ttsTargets) {
           if (!s.tts_audio_id) continue
           const a = byId.get(String(s.tts_audio_id))
           const slot = Number(s.end_sec) - Number(s.start_sec)
@@ -123,7 +183,7 @@ export async function validateForRender(projectId) {
         const segDir = path.join(projectDir(projectId), 'audio_segments')
         if (fs.existsSync(segDir)) {
           const files = new Set(fs.readdirSync(segDir))
-          const missingFiles = required.filter((s) => {
+          const missingFiles = ttsTargets.filter((s) => {
             if (!s.tts_audio_id) return false
             const key = String(s.id).replace(/[^A-Za-z0-9_-]/g, '_')
             return ![...files].some((f) => f.startsWith('seg_fit_') && f.endsWith('.wav') && f.includes(key))
@@ -134,13 +194,13 @@ export async function validateForRender(projectId) {
         }
       } catch (_) {}
       // Timeline placement không overlap (dựa trên transcript timing)
-      const tl = required.map((s) => ({ segmentId: s.id, startAtSec: Number(s.start_sec), endAtSec: Number(s.end_sec) }))
+      const tl = ttsTargets.map((s) => ({ segmentId: s.id, startAtSec: Number(s.start_sec), endAtSec: Number(s.end_sec) }))
       const nov = validateNoOverlap(tl)
       if (!nov.ok) errors.push({ code: 'TIMELINE_OVERLAP', message: nov.errors.join('; ') })
     }
   }
 
-  return { valid: errors.length === 0, errors }
+  return { valid: errors.length === 0, errors, warnings }
 }
 
 /**

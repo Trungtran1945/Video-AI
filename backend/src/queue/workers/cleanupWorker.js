@@ -1,7 +1,7 @@
 import { Worker } from 'bullmq'
 import fs from 'node:fs'
 import path from 'path'
-import { connection, createThrottledLogger } from '../connection.js'
+import { connection, createThrottledLogger, isRedisReady } from '../connection.js'
 import { query, run } from '../../db/query.js'
 import { projectDir, resolveStorageKey } from '../../pipeline/context.js'
 import { config } from '../../config.js'
@@ -99,6 +99,12 @@ const worker = new Worker('cleanup', async (job) => {
   concurrency: 1,
   limiter: { max: 1, duration: 300000 }, // Max 1 job per 5 minutes
 })
+
+// Pause (never close) while Redis is down so no job is lost; resume on ready.
+connection.on('close', () => { worker.pause().catch(() => {}) })
+connection.on('end', () => { worker.pause().catch(() => {}) })
+connection.on('ready', () => { worker.resume().catch(() => {}) })
+if (!isRedisReady()) worker.pause().catch(() => {})
 
 worker.on('error', (err) => {
   logWorkerError(`[Cleanup] Worker error: ${err.message}`)

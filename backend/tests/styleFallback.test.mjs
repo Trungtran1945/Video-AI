@@ -95,7 +95,7 @@ async function makeProject({ sources, presetSlug }) {
     [`sp${n}`, presetSlug, `Preset ${n}`, 'ấm áp, thân thiện'])
   await run('INSERT INTO projects (id, user_id, mode, title, params) VALUES (?, ?, ?, ?, ?)',
     [projectId, userId, 'TRANSLATE_DUB', `T${n}`,
-      JSON.stringify({ stylePreset: presetSlug, targetLanguage: 'vi', sourceLanguage: 'en', tier: 'free' })])
+      JSON.stringify({ stylePreset: presetSlug, targetLanguage: 'vi', sourceLanguage: 'en', tier: 'free', enableDubbing: true })])
   for (let i = 0; i < sources.length; i++) {
     await run(
       'INSERT INTO transcript_segments (id, project_id, index_num, start_sec, end_sec, text) VALUES (?, ?, ?, ?, ?, ?)',

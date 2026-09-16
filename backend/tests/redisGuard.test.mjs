@@ -50,5 +50,30 @@ for (const f of ['drainQueued.js', 'cleanupWorker.js', 'notifyWorker.js']) {
   assert(src.includes('createThrottledLogger'), `${f} uses throttled error logging`)
 }
 
+// 5. Workers pause/resume on connection state (no lost jobs, no close).
+for (const f of ['drainQueued.js', 'cleanupWorker.js', 'notifyWorker.js']) {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'workers', f), 'utf8')
+  assert(src.includes('isRedisReady'), `${f} imports isRedisReady`)
+  assert(src.includes("connection.on('close'") && src.includes('worker.pause()'), `${f} pauses on close`)
+  assert(src.includes("connection.on('end'") && src.includes('worker.pause()'), `${f} pauses on end`)
+  assert(src.includes("connection.on('ready'") && src.includes('worker.resume()'), `${f} resumes on ready`)
+  assert(src.includes('if (!isRedisReady()) worker.pause()'), `${f} pauses at boot when Redis down`)
+  assert(!src.includes('worker.close()'), `${f} never closes worker on disconnect`)
+}
+
+// 6. Queue .add call sites skip (never throw) when Redis is down.
+const cancelSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'usecases', 'cancelProjectUseCase.js'), 'utf8')
+assert(cancelSrc.includes('isRedisReady()'), 'cancelProjectUseCase guards notifyQueue.add with isRedisReady')
+const runnerSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'pipeline', 'runner.js'), 'utf8')
+assert(runnerSrc.includes('isRedisReady()'), 'runner.js guards notifyQueue.add with isRedisReady')
+const serverSrc = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8')
+assert(serverSrc.includes('isRedisReady()'), 'server.js guards cleanupQueue.add with isRedisReady')
+
+// 7. DrainQueued stale-recovery query must reference a real projects column
+// (schema has created_date, NOT updated_date — "no such column" otherwise).
+const drainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'workers', 'drainQueued.js'), 'utf8')
+assert(!drainSrc.includes('updated_date'), 'drainQueued.js does not reference missing updated_date column')
+assert(drainSrc.includes('created_date < ?'), 'drainQueued.js stale cutoff uses created_date')
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)
