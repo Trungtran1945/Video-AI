@@ -33,28 +33,31 @@ export default function Login() {
   return (
     <AuthLayout
       icon={LogIn}
-      title="Welcome back"
-      subtitle="Log in to your account"
+      title="Chào mừng trở lại"
+      subtitle="Đăng nhập vào tài khoản AI Shorts Factory của bạn"
+      shapeType="crystalTorus"
       footer={
         <>
-          Don't have an account?{" "}
-          <Link to="/register" className="text-primary font-medium hover:underline">
-            Create one
+          Chưa có tài khoản?{" "}
+          <Link to="/register" className="text-primary font-bold hover:underline transition-colors">
+            Đăng ký ngay
           </Link>
         </>
       }
     >
       {error && (
-        <div className="mb-4 p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
+        <div className="mb-4 p-3.5 rounded-xl bg-destructive/15 border border-destructive/30 text-destructive text-xs sm:text-sm font-medium">
           {error}
         </div>
       )}
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="email">Email</Label>
+          <Label htmlFor="email" className="text-foreground font-semibold text-xs sm:text-sm">
+            Email
+          </Label>
           <div className="relative">
-            <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
+            <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
             <Input
               id="email"
               type="email"
@@ -63,20 +66,22 @@ export default function Login() {
               placeholder="you@example.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="pl-10 h-12"
+              className="pl-10 h-11 sm:h-12 bg-background/70 border-border/80 text-foreground placeholder:text-muted-foreground/70 focus:border-primary text-sm"
               required
             />
           </div>
         </div>
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <Label htmlFor="password">Password</Label>
-            <Link to="/forgot-password" className="text-xs text-primary hover:underline">
-              Forgot password?
+            <Label htmlFor="password" className="text-foreground font-semibold text-xs sm:text-sm">
+              Mật khẩu
+            </Label>
+            <Link to="/forgot-password" className="text-xs text-primary font-medium hover:underline">
+              Quên mật khẩu?
             </Link>
           </div>
           <div className="relative">
-            <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
+            <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
             <Input
               id="password"
               type={showPassword ? "text" : "password"}
@@ -84,27 +89,31 @@ export default function Login() {
               placeholder="••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="pl-10 pr-10 h-12"
+              className="pl-10 pr-10 h-11 sm:h-12 bg-background/70 border-border/80 text-foreground placeholder:text-muted-foreground/70 focus:border-primary text-sm"
               required
             />
             <button
               type="button"
               onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition-colors"
               aria-label={showPassword ? "Hide password" : "Show password"}
             >
               {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
         </div>
-        <Button type="submit" className="w-full h-12 font-medium" disabled={loading}>
+        <Button
+          type="submit"
+          className="w-full h-11 sm:h-12 font-bold text-sm sm:text-base rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 transition-all mt-2"
+          disabled={loading}
+        >
           {loading ? (
             <>
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              Logging in...
+              Đang đăng nhập...
             </>
           ) : (
-            "Log in"
+            "Đăng nhập"
           )}
         </Button>
       </form>

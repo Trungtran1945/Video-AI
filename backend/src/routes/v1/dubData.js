@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { query, run } from '../../db/query.js'
+import { query, queryOne, run } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { sendError, ERR } from '../../lib/httpError.js'
@@ -154,9 +154,16 @@ router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
        FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC`,
       [req.project.id]
     )
+    // PUT không trigger TTS/render — chỉ đánh dấu output hiện tại đã stale
+    // để frontend hiển thị "cần redub".
+    const latestOutput = await queryOne(
+      `SELECT * FROM outputs WHERE project_id = ? ORDER BY created_date DESC LIMIT 1`,
+      [req.project.id]
+    )
     res.json({
       updated,
       adjustedSegments,
+      outputStale: !!latestOutput,
       segments: rows.map((r) => ({
         ...r,
         index: r.index_num,

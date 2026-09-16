@@ -150,6 +150,9 @@ export async function dubTtsAlign(ctx) {
         }
         if (finalDur <= 0) throw new Error(`audio rỗng sau fit (segment ${seg.index_num})`)
 
+        // Manual translation trong DB là source of truth (manual > generated):
+        // bản rút gọn (shorten) chỉ dùng in-memory cho TTS synthesis, KHÔNG
+        // overwrite DB. Redub dùng lại translation hiện tại, không mất sửa tay.
         fitted.push({
           segmentId: seg.id,
           indexNum: seg.index_num,
@@ -158,7 +161,6 @@ export async function dubTtsAlign(ctx) {
           action: fit.action,
           tempo: fit.tempo,
         })
-        await updateById('transcript_segments', seg.id, { translation })
         successCount++
         done = true
       } catch (err) {

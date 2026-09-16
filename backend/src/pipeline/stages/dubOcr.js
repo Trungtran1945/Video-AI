@@ -25,6 +25,7 @@ export async function dubOcr(ctx) {
     return { segmentCount: existing[0].cnt, skipped: true, reason: 'cached' }
   }
 
+  // Pass through user-selected sourceLanguage verbatim (incl. 'auto'); mapping happens in mapLanguage.
   const params = parseParams(project.params)
   const sourceLanguage = params.sourceLanguage || 'auto'
   const durationSec = ingest.durationSec || (await probe(src)).durationSec || 0
@@ -145,47 +146,170 @@ export function aggregateBoxes(allBoxes, durationSec, fps = 2, opts = {}) {
   const minConf = OCR_MIN_CONF()
   const dur = Number(durationSec) || 0
 
-  allBoxes.sort((a, b) => a.timestamp - b.timestamp || (a.y || 0) - (b.y || 0))
+  // Filter: drop empty text, conf < 0.3 (keep dim CJK for track building).
+  const filtered = allBoxes.filter((b) => {
+    if (!normalizeText(b?.text)) return false
+    const conf = Number(b?.confidence) || 0
+    if (conf < 0.3) return false
+    if (!Number.isFinite(Number(b?.timestamp))) return false
+    return true
+  })
+  if (!filtered.length) return []
+  filtered.sort((a, b) => a.timestamp - b.timestamp || (a.y || 0) - (b.y || 0))
 
-  const groups = []
-  let cur = [allBoxes[0]]
-  for (let i = 1; i < allBoxes.length; i++) {
-    const prev = allBoxes[i - 1]
-    const currBox = allBoxes[i]
-    const dt = currBox.timestamp - prev.timestamp
-    if (dt <= 1.2 && textSim(currBox.text, prev.text) >= TEXT_SIM_THRESHOLD && bboxCompatible(currBox, prev, frameH)) {
-      cur.push(currBox)
+  // Group boxes into frames: same frame if within ±frameStep/2 of frame anchor.
+  const frames = []
+  for (const b of filtered) {
+    const last = frames[frames.length - 1]
+    if (!last || Math.abs(Number(b.timestamp) - last.anchor) > frameStep / 2 + 1e-9) {
+      frames.push({ anchor: Number(b.timestamp), t: Number(b.timestamp), boxes: [b] })
     } else {
-      groups.push(cur)
-      cur = [currBox]
+      last.boxes.push(b)
     }
   }
-  groups.push(cur)
+  for (const f of frames) {
+    const ts = f.boxes.map((b) => Number(b.timestamp))
+    f.t = ts.reduce((s, v) => s + v, 0) / ts.length
+  }
 
-  const prelim = []
-  for (const g of groups) {
-    const timestamps = g.map(b => b.timestamp)
-    const span = Math.max(...timestamps) - Math.min(...timestamps)
-    const avgConf = g.reduce((s, b) => s + (Number(b.confidence) || 0), 0) / g.length
-    // Quality gate: persistence + agreement + confidence (reject isolated noisy frames)
-    if (g.length < 2 && avgConf < minConf) continue
-    if (span < 0.4 && g.length < 2) continue
-    if (avgConf < 0.3) continue
-    const counts = {}
-    for (const b of g) {
-      const key = normalizeText(b.text)
-      counts[key] = (counts[key] || 0) + 1
+  const horizRatio = (a, b) => {
+    const ax0 = Number(a?.x) || 0, ax1 = ax0 + (Number(a?.width) || 0)
+    const bx0 = Number(b?.x) || 0, bx1 = bx0 + (Number(b?.width) || 0)
+    const overlap = Math.max(0, Math.min(ax1, bx1) - Math.max(ax0, bx0))
+    const minW = Math.max(1, Math.min(ax1 - ax0, bx1 - bx0))
+    return overlap / minW
+  }
+  const vertRatio = (a, b) => {
+    const ah = Number(a?.height), bh = Number(b?.height)
+    if (!Number.isFinite(ah) || !Number.isFinite(bh) || ah <= 0 || bh <= 0) return 1
+    const ay = Number(a?.y) || 0, by = Number(b?.y) || 0
+    const overlap = Math.max(0, Math.min(ay + ah, by + bh) - Math.max(ay, by))
+    const minH = Math.max(1, Math.min(ah, bh))
+    return overlap / minH
+  }
+  // Track-based aggregation.
+  const tracks = []
+  for (const frame of frames) {
+    // Cluster frame boxes by y: gap > frameH*0.05 starts a new line.
+    const sorted = [...frame.boxes].sort((a, b) => (a.y || 0) - (b.y || 0))
+    const clusters = []
+    let cur = [sorted[0]]
+    for (let i = 1; i < sorted.length; i++) {
+      const gap = (sorted[i].y || 0) - (sorted[i - 1].y || 0)
+      if (gap > frameH * 0.05) {
+        clusters.push(cur)
+        cur = [sorted[i]]
+      } else {
+        cur.push(sorted[i])
+      }
     }
-    const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || ''
-    const rep = g.find(b => normalizeText(b.text) === best)?.text || best
+    clusters.push(cur)
+
+    // One line-box per y-cluster (merge fragments via union + join).
+    const lineBoxes = clusters.map((cl) => {
+      if (cl.length === 1) return { ...cl[0], timestamp: frame.t }
+      const conf = cl.reduce((s, b) => s + (Number(b.confidence) || 0), 0) / cl.length
+      const x0 = Math.min(...cl.map((b) => Number(b.x) || 0))
+      const y0 = Math.min(...cl.map((b) => Number(b.y) || 0))
+      const x1 = Math.max(...cl.map((b) => (Number(b.x) || 0) + (Number(b.width) || 0)))
+      const y1 = Math.max(...cl.map((b) => (Number(b.y) || 0) + (Number(b.height) || 0)))
+      return {
+        text: cl.map((b) => String(b.text || '').trim()).filter(Boolean).join(' '),
+        confidence: conf,
+        timestamp: frame.t,
+        x: x0, y: y0, width: Math.max(1, x1 - x0), height: Math.max(1, y1 - y0),
+      }
+    }).sort((a, b) => (a.y || 0) - (b.y || 0))
+
+    const matched = new Set()
+    for (const lb of lineBoxes) {
+      const conf = Number(lb.confidence) || 0
+      let bestIdx = -1
+      let bestScore = -Infinity
+      for (let ti = 0; ti < tracks.length; ti++) {
+        if (matched.has(ti)) continue
+        const tr = tracks[ti]
+        const dt = Number(lb.timestamp) - tr.lastSeen
+        if (dt < -1e-9 || dt > 1.5 + 1e-9) continue
+        if (!bboxCompatible(lb, tr.bbox, frameH)) continue
+        if (vertRatio(lb, tr.bbox) <= 0.2) continue
+        let sim = 0
+        for (const e of tr.textCandidates.values()) {
+          sim = Math.max(sim, textSim(lb.text, e.text))
+        }
+        if (sim < 0.6) continue
+        const bboxScore = (Math.min(1, horizRatio(lb, tr.bbox)) + Math.min(1, vertRatio(lb, tr.bbox))) / 2
+        const temporalScore = 1 - Math.max(0, dt) / 1.5
+        const score = sim * 2 + bboxScore + temporalScore * 0.5
+        if (score > bestScore) {
+          bestScore = score
+          bestIdx = ti
+        }
+      }
+      const key = normalizeText(lb.text)
+      if (bestIdx >= 0) {
+        const tr = tracks[bestIdx]
+        const n = tr.frameCount + 1
+        const nx = Number(lb.x), ny = Number(lb.y), nw = Number(lb.width), nh = Number(lb.height)
+        if (Number.isFinite(nx)) tr.bbox.x = (tr.bbox.x * tr.frameCount + nx) / n
+        if (Number.isFinite(ny)) tr.bbox.y = (tr.bbox.y * tr.frameCount + ny) / n
+        if (Number.isFinite(nw)) tr.bbox.width = (tr.bbox.width * tr.frameCount + nw) / n
+        if (Number.isFinite(nh)) tr.bbox.height = (tr.bbox.height * tr.frameCount + nh) / n
+        tr.lastSeen = Number(lb.timestamp)
+        tr.confSum += conf
+        tr.frameCount = n
+        const e = tr.textCandidates.get(key)
+        if (e) {
+          e.count += 1
+          e.confSum += conf
+        } else {
+          tr.textCandidates.set(key, { text: String(lb.text), count: 1, confSum: conf })
+        }
+        matched.add(bestIdx)
+      } else {
+        tracks.push({
+          firstSeen: Number(lb.timestamp),
+          lastSeen: Number(lb.timestamp),
+          bbox: {
+            x: Number(lb.x) || 0,
+            y: Number(lb.y) || 0,
+            width: Number(lb.width) || 0,
+            height: Number(lb.height) || 0,
+          },
+          textCandidates: new Map([[key, { text: String(lb.text), count: 1, confSum: conf }]]),
+          confSum: conf,
+          frameCount: 1,
+        })
+        matched.add(tracks.length - 1)
+      }
+    }
+  }
+
+  // Emit: persistence + confidence gate, representative text by count*avgConf.
+  const prelim = []
+  for (const tr of tracks) {
+    const avgConf = tr.confSum / Math.max(1, tr.frameCount)
+    const span = tr.lastSeen - tr.firstSeen
+    if (!(tr.frameCount >= 2 || avgConf >= minConf)) continue
+    if (span < 0.4) continue
+    let best = null
+    for (const e of tr.textCandidates.values()) {
+      const score = e.count * (e.confSum / e.count)
+      if (!best || score > best.score || (score === best.score && e.count > best.count)) {
+        best = { score, count: e.count, text: e.text }
+      }
+    }
+    const rep = String(best?.text || '').trim()
+    if (!rep) continue
     prelim.push({
-      text: String(rep || '').trim(),
-      startSec: Math.max(0, Math.min(...timestamps)),
-      endSec: Math.min(dur || Infinity, Math.max(...timestamps) + frameStep),
+      text: rep,
+      startSec: Math.max(0, tr.firstSeen),
+      endSec: Math.min(dur || Infinity, tr.lastSeen + frameStep),
       confidence: avgConf,
-      count: g.length,
+      count: tr.frameCount,
     })
   }
+  prelim.sort((a, b) => a.startSec - b.startSec)
 
   // Merge near-duplicates, enforce ordering/bounds, drop unusable slots
   const merged = []

@@ -1,10 +1,17 @@
 import os from 'node:os'
 import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createWorker } from 'tesseract.js'
 
 const execFileAsync = promisify(execFile)
+
+// Thư mục chứa *.traineddata cục bộ (backend/eng.traineddata, chi_sim.traineddata, chi_tra.traineddata).
+// tesseract.js v6 KHÔNG dùng TESSDATA_PREFIX (biến đó chỉ native tesseract binary dùng).
+// Node worker đọc cache local trước: `${cachePath}/${lang}.traineddata`, miss → tải từ CDN jsdelivr.
+const TESSDATA_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
 // Language mapping from project sourceLanguage to Tesseract traineddata codes
 const LANG_MAP = {
@@ -19,7 +26,8 @@ const LANG_MAP = {
   es: 'spa',
 }
 
-function mapLanguage(sourceLanguage) {
+export function mapLanguage(sourceLanguage) {
+  // auto dùng detection/fallback eng — KHÔNG silent zh->eng: chỉ map đúng code user chọn.
   if (!sourceLanguage || sourceLanguage === 'auto') return ['eng']
   const code = sourceLanguage.trim()
   if (code.includes('+')) {
@@ -36,34 +44,72 @@ const PSM = Number.isFinite(Number(process.env.OCR_PSM)) ? Number(process.env.OC
 // Số worker song song (pool) — giới hạn bởi CPU để tránh quá tải.
 const POOL = Math.max(1, Number(process.env.OCR_CONCURRENCY) || Math.min(os.cpus().length || 1, 4))
 
-let workersPromise = null
-let currentLang = null
-let rr = 0
+// Worker pool riêng theo ngôn ngữ: đổi lang không terminate pool khác.
+const pools = new Map()
 
-async function getWorkers(langKey) {
-  const langStr = Array.isArray(langKey) ? langKey.join('+') : (langKey || 'eng')
-  if (workersPromise && currentLang === langStr) {
-    return workersPromise
-  }
-  if (workersPromise) {
-    const old = await workersPromise
-    await Promise.all(old.map(w => w.terminate().catch(() => {})))
-  }
-  currentLang = langStr
-  workersPromise = (async () => {
+function createPool(langStr) {
+  return (async () => {
     const ws = []
     try {
-      for (let i = 0; i < POOL; i++) ws.push(await createWorker(langStr))
+      // cachePath=TESSDATA_DIR: ưu tiên *.traineddata local (backend/), miss → CDN jsdelivr.
+      for (let i = 0; i < POOL; i++) ws.push(await createWorker(langStr, undefined, { cachePath: TESSDATA_DIR }))
     } catch (err) {
-      const msg = `Failed to create Tesseract worker for language "${langStr}". `
-        + `Ensure the traineddata file is downloaded. `
+      pools.delete(langStr)
+      const msg = `Missing traineddata "${langStr}" (sourceLanguage map → "${langStr}"). `
+        + `Tải ${langStr}.traineddata vào ${TESSDATA_DIR} hoặc backend/. `
+        + `Xem https://github.com/tesseract-ocr/tessdata_best. `
         + `Original error: ${err.message}`
       throw new Error(msg)
     }
     return ws
   })()
-  return workersPromise
 }
+
+function poolFor(langStr) {
+  let p = pools.get(langStr)
+  if (!p) {
+    p = { promise: createPool(langStr), rr: 0 }
+    pools.set(langStr, p)
+  }
+  return p
+}
+
+export async function getWorkers(langKey) {
+  const langStr = Array.isArray(langKey) ? langKey.join('+') : (langKey || 'eng')
+  return poolFor(langStr).promise
+}
+
+export async function closePools() {
+  const entries = [...pools.values()]
+  pools.clear()
+  for (const p of entries) {
+    try {
+      const ws = await p.promise
+      await Promise.all((ws || []).map((w) => {
+        try { return w.terminate() } catch { return null }
+      }))
+    } catch {}
+  }
+}
+
+export async function _clearPoolsForTest() {
+  await closePools()
+}
+
+process.on('exit', () => {
+  try {
+    for (const p of pools.values()) {
+      p.promise.then((ws) => {
+        for (const w of ws || []) {
+          try {
+            const r = w.terminate()
+            if (r && typeof r.catch === 'function') r.catch(() => {})
+          } catch {}
+        }
+      }).catch(() => {})
+    }
+  } catch {}
+})
 
 async function cropSubtitleROI(imagePath, width, height, bottomRatio = 0.4) {
   const cropHeight = Math.round(height * bottomRatio)
@@ -128,8 +174,9 @@ export class TesseractOcr {
     const h = Number(height) || 720
 
     const langCodes = mapLanguage(sourceLanguage)
+    const langStr = langCodes.join('+')
     const workers = await getWorkers(langCodes)
-    const worker = workers[rr++ % workers.length]
+    const worker = workers[poolFor(langStr).rr++ % workers.length]
 
     let croppedPath = imagePath
     let preprocessedPath = imagePath

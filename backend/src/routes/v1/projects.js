@@ -9,6 +9,7 @@ import { cancelProjectUseCase } from '../../usecases/cancelProjectUseCase.js'
 import { sendError, ERR } from '../../lib/httpError.js'
 import { config } from '../../config.js'
 import { projectDir, firstRunnableStage } from '../../pipeline/context.js'
+import { TRANSLATION_VERSION, isCacheCompatible, parseProjectParams } from '../../lib/cacheKey.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -80,6 +81,7 @@ router.post('/', async (req, res) => {
       params.voiceId = b.voiceId || params.voiceId || null
 
       params.outputFormat = ['mp4', 'mkv'].includes(b.outputFormat) ? b.outputFormat : 'mp4'
+      params.translationVersion = TRANSLATION_VERSION
     }
 
     // Calculate expires_at based on retention policy
@@ -106,43 +108,82 @@ router.post('/', async (req, res) => {
       video_hash: b.videoHash || null,
     })
 
-    // Kick off the real pipeline asynchronously (only if not queued)
-    if (status === 'pending') {
-      runPipeline(project.id).catch((e) => console.error('[Pipeline] start failed', e))
-    }
-
-    // Duplicate detection: check for existing project with same video hash + same target language
+    // Cache lookup (Task 1 fix): SAU insert, TRƯỚC runPipeline.
+    // Query completed TRANSLATE_DUB cùng user + video_hash, lọc bằng
+    // isCacheCompatible trong JS (so nhiều JSON field + version).
     let cachedProjectId = null
+    let transcriptOnlySourceId = null
     if (b.videoHash && mode === 'TRANSLATE_DUB') {
-      const targetLang = params.targetLanguage || 'vi'
-      const cached = await queryOne(
-        `SELECT id FROM projects
+      const candidates = await query(
+        `SELECT id, params FROM projects
          WHERE user_id = ? AND video_hash = ? AND mode = 'TRANSLATE_DUB'
          AND status = 'completed' AND id != ?
-         AND JSON_EXTRACT(params, '$.targetLanguage') = ?
-         ORDER BY created_date DESC LIMIT 1`,
-        [req.user.id, b.videoHash, project.id, targetLang]
+         ORDER BY created_date DESC LIMIT 10`,
+        [req.user.id, b.videoHash, project.id]
       )
-      if (cached) cachedProjectId = cached.id
+      const newIdentity = {
+        videoHash: b.videoHash,
+        sourceLanguage: params.sourceLanguage || 'auto',
+        targetLanguage: params.targetLanguage || 'vi',
+        stylePreset: params.stylePreset,
+        ocrMode: params.ocrMode,
+        translationVersion: TRANSLATION_VERSION,
+      }
+      for (const c of candidates) {
+        const cachedParams = { ...parseProjectParams(c.params), videoHash: b.videoHash }
+        if (isCacheCompatible(newIdentity, cachedParams)) {
+          cachedProjectId = c.id
+          break
+        }
+      }
+      if (!cachedProjectId) {
+        // Transcript-only reuse: cùng video + sourceLanguage + ocrMode
+        // (không phụ thuộc style/target/version) → copy text/timing với
+        // translation=NULL để dub.translate chạy lại.
+        const normLang = (v, d) => String(v ?? d).toLowerCase().trim()
+        for (const c of candidates) {
+          const cp = parseProjectParams(c.params)
+          const sameSource = normLang(cp.sourceLanguage, 'auto') === normLang(params.sourceLanguage, 'auto')
+          const sameOcr = Boolean(cp.ocrMode) === Boolean(params.ocrMode)
+          if (sameSource && sameOcr) {
+            transcriptOnlySourceId = c.id
+            break
+          }
+        }
+      }
     }
 
-    // Copy transcript segments from cached project
-    if (cachedProjectId) {
-      // Copy transcript segments (including translations)
-      const transcriptSegments = await query('SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC', [cachedProjectId])
-      for (const s of transcriptSegments) {
-        await insert('transcript_segments', {
-          id: uuidv4(),
-          project_id: project.id,
-          index_num: s.index_num,
-          start_sec: s.start_sec,
-          end_sec: s.end_sec,
-          text: s.text,
-          speaker: s.speaker,
-          language: s.language,
-          translation: s.translation,
-        })
+    // Copy transcript segments — check COUNT==0 trước insert để không duplicate.
+    // cachedProjectId → copy kèm translation; transcript-only → translation=NULL.
+    const copySourceId = cachedProjectId || transcriptOnlySourceId
+    if (copySourceId) {
+      const existingCount = await queryOne(
+        'SELECT COUNT(*) as cnt FROM transcript_segments WHERE project_id = ?',
+        [project.id]
+      )
+      if ((existingCount?.cnt || 0) === 0) {
+        const transcriptSegments = await query('SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC', [copySourceId])
+        for (const s of transcriptSegments) {
+          await insert('transcript_segments', {
+            id: uuidv4(),
+            project_id: project.id,
+            index_num: s.index_num,
+            start_sec: s.start_sec,
+            end_sec: s.end_sec,
+            text: s.text,
+            speaker: s.speaker,
+            language: s.language,
+            translation: cachedProjectId ? s.translation : null,
+          })
+        }
       }
+    }
+
+    // Kick off the real pipeline asynchronously — LUÔN CUỐI CÙNG, sau khi
+    // copy cache xong (tránh race: stage skip-if-exists đọc nhầm bảng rỗng
+    // hoặc ghi đè song song với copy).
+    if (status === 'pending') {
+      runPipeline(project.id).catch((e) => console.error('[Pipeline] start failed', e))
     }
 
     res.status(202).json({ ...project, params, cachedProjectId })

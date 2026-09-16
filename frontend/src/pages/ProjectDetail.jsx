@@ -71,6 +71,7 @@ export default function ProjectDetail() {
   const [savingTranscript, setSavingTranscript] = useState(false);
   const [transcriptError, setTranscriptError] = useState('');
   const [redubbing, setRedubbing] = useState(false);
+  const [outputStale, setOutputStale] = useState(false);
   const [loading, setLoading] = useState(true);
   const [regenerating, setRegenerating] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -84,6 +85,7 @@ export default function ProjectDetail() {
   const [duration, setDuration] = useState(0);
   const [targetLanguage, setTargetLanguage] = useState('vi');
   const videoRef = useRef(null);
+  const lastOutputIdRef = useRef(null);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -94,7 +96,7 @@ export default function ProjectDetail() {
   const { events: sseEvents, sseAvailable } = useJobEvents(id, !!project && ACTIVE_STATUSES.includes(project?.status));
 
   const isDub = project?.mode === 'TRANSLATE_DUB' || project?.mode === 'translate_dub';
-  const outputUrl = project?.output?.storage_key ? `/storage/${project.output.storage_key}` : null;
+  const outputUrl = project?.output?.storage_key ? `/storage/${project.output.storage_key}?v=${project.output.id}` : null;
   const isVideoOutput = /\.(mp4|webm|mov|m4v|mkv)$/i.test(project?.output?.storage_key || '');
 
   // Playback control functions
@@ -204,9 +206,44 @@ export default function ProjectDetail() {
     return () => cancelAnimationFrame(rafId);
   }, [isPlaying, outputUrl, setStoreCurrentTime]);
 
+  // Reload video element when output changes (e.g. after redub) while
+  // preserving playback position when still valid.
+  const prevOutputUrlRef = useRef(outputUrl);
+  useEffect(() => {
+    const prev = prevOutputUrlRef.current;
+    prevOutputUrlRef.current = outputUrl;
+    if (!prev || !outputUrl || prev === outputUrl) return;
+    const video = videoRef.current || document.getElementById('output-video');
+    if (!video) return;
+    const savedTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    const wasPaused = video.paused;
+    video.load();
+    const restore = () => {
+      try {
+        const dur = video.duration;
+        if (Number.isFinite(savedTime) && savedTime > 0 && (!Number.isFinite(dur) || savedTime < dur)) {
+          video.currentTime = savedTime;
+        }
+      } catch {
+        /* ignore seek errors */
+      }
+      if (!wasPaused) {
+        video.play().catch(() => {});
+      }
+    };
+    video.addEventListener('loadedmetadata', restore, { once: true });
+    return () => video.removeEventListener('loadedmetadata', restore);
+  }, [outputUrl]);
+
   const load = useCallback(async () => {
     try {
       const p = await projectsApi.get(id);
+      const prevOutputId = lastOutputIdRef.current;
+      const nextOutputId = p?.output?.id;
+      if (p?.status === 'completed' && nextOutputId && prevOutputId && nextOutputId !== prevOutputId) {
+        setOutputStale(false);
+      }
+      if (nextOutputId) lastOutputIdRef.current = nextOutputId;
       setProject(p);
       setJobs(p.jobs || []);
       setScenes(p.mode === 'SUMMARY' ? (p.scenes || []) : []);
@@ -310,7 +347,7 @@ export default function ProjectDetail() {
   };
 
   const handleSaveTranscript = async (edits) => {
-    if (savingTranscript) return;
+    if (savingTranscript) return null;
     setSavingTranscript(true);
     setTranscriptError('');
     try {
@@ -318,9 +355,12 @@ export default function ProjectDetail() {
       if (Array.isArray(res.segments)) {
         setTranscript(res.segments.map(normSegment));
       }
+      if (res?.outputStale === true) setOutputStale(true);
       toast({ title: 'Đã lưu chỉnh sửa', description: `${res.updated || edits.length} câu đã cập nhật.` });
+      return res;
     } catch (e) {
       setTranscriptError('Chưa lưu được: ' + (e?.response?.data?.message || e.message));
+      return null;
     } finally {
       setSavingTranscript(false);
     }
@@ -332,6 +372,7 @@ export default function ProjectDetail() {
     setTranscriptError('');
     try {
       await projectsApi.redub(id);
+      setOutputStale(false);
       toast({ title: 'Đang lồng tiếng lại', description: 'Video sẽ được cập nhật sau khi hoàn tất.' });
       await load();
     } catch (e) {
@@ -494,6 +535,11 @@ export default function ProjectDetail() {
           <div className="flex-1 flex min-h-0">
             {/* Left Panel: Transcript Editor (dominant) */}
             <div className="w-[58%] flex flex-col min-h-0 border-r border-white/5">
+              {outputStale && !isActive && (
+                <div className="shrink-0 mx-3 mt-3 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" /> Video hiện tại chưa phản ánh bản chỉnh sửa — nhấn Lồng tiếng lại để cập nhật.
+                </div>
+              )}
               <TranscriptEditor
                 transcript={transcript}
                 onSeek={handleSeek}
@@ -897,7 +943,21 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
 
   const handleSave = async () => {
     const payload = changedPayload();
-    if (payload.length) await onSave(payload);
+    if (!payload.length) return;
+    const result = await onSave(payload);
+    if (result === null) return;
+    const savedIds = new Set(payload.map((p) => p.id));
+    setEdits((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      savedIds.forEach((id) => {
+        if (id in next) {
+          delete next[id];
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
   };
 
   const handleRedub = async () => {

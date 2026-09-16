@@ -6,6 +6,12 @@ import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
 import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js'
 import { projectDir, extractJsonBlock, round2 } from '../context.js'
+import { TRANSLATION_VERSION } from '../../lib/cacheKey.js'
+
+// Single source of truth cho cache version (đồng bộ với POST /projects
+// isCacheCompatible). Bump TRANSLATION_VERSION trong lib/cacheKey.js khi
+// đổi logic dịch để cache cũ không reuse nhầm.
+export { TRANSLATION_VERSION }
 
 // Wider context window for free tier = fewer LLM calls (docs/11 §3.1)
 function getContextWindowSec(project) {
@@ -31,7 +37,11 @@ export async function dubTranslate(ctx) {
   )
   if (!segments.length) throw new Error('Không có transcript để dịch — stage dub.stt chưa chạy hoặc rỗng')
 
-  // Skip translation if all segments already have translations (video hash cache — copied from duplicate project)
+  // Skip translation if all segments already have translations.
+  // Task 1: cache identity đã validate ở POST /projects (isCacheCompatible:
+  // videoHash + source/target + stylePreset + ocrMode + translationVersion)
+  // nên tới đây reuse translation là an toàn. Transcript-only reuse
+  // (style khác) copy translation=NULL nên không skip mà dịch lại.
   const untranslated = segments.filter((s) => s.text && !s.translation)
   if (untranslated.length === 0 && segments.length > 0) {
     // Build SRT from existing translations
@@ -56,6 +66,10 @@ export async function dubTranslate(ctx) {
     : null
 
   const targetLanguage = params.targetLanguage || 'vi'
+  // sourceLanguage passed VERBATIM to provider (never coerced here).
+  // 'auto' only when user chose auto (or unset). 'zh' stays 'zh' at this
+  // layer — GoogleTranslate.normalizeTranslateLang maps zh->zh-CN;
+  // 'zh-TW' stays 'zh-TW'. Normalization lives in the provider, not here.
   const sourceLanguage = params.sourceLanguage || 'auto'
   const hasStyle = !!preset?.system_prompt
 
@@ -97,6 +111,8 @@ export async function dubTranslate(ctx) {
     let lastCls = null
     for (let attempt = 0; attempt <= 2; attempt++) {
       try {
+        // sourceLanguage verbatim: 'zh' normalized to 'zh-CN' inside provider,
+        // 'zh-TW' kept as-is, 'auto' sends no source param (auto-detect).
         translated = await gt.provider.translate(text, sourceLanguage, targetLanguage)
         break
       } catch (err) {
@@ -597,6 +613,48 @@ function hasNegation(s, lang) {
   return lex.some((w) => t.includes(w === "n't" ? w : ` ${w} `) || (w === "n't" && t.includes(w)))
 }
 
+// CJK negation: 不/没/未/别/莫/无/非/勿 (+ compounds 不用/不能/不是… covered
+// by single-char match). Single regex is enough; these chars are almost
+// always negative in zh.
+export function hasNegationZh(s) {
+  return /[不没未别莫无非勿]/.test(String(s || ''))
+}
+
+// Punctuation-tolerant vi negation (trailing "không?"/"chưa." must count —
+// legacy hasNegation misses them due to space-boundary check; kept as-is
+// for en gate, this robust variant is used for the CJK gate only).
+export function hasNegationVi(s) {
+  const t = ` ${String(s || '').toLowerCase().replace(/[?？!.,;:…~～"“”'‘’()—–-]/g, ' ')} `.replace(/\s+/g, ' ')
+  return NEG_VI.some((w) => t.includes(` ${w.toLowerCase()} `))
+}
+
+// True CJK interrogative: trailing ?/？, or question particles 吗/呢 (+ optional
+// closing punctuation). 吧/啊/么/嘛 EXCLUDED on purpose: they are modal /
+// suggestive (live GT renders 强调吧/容易啊 as vi statements without "?"),
+// treating them as questions over-rejects and breaks cjkValidate pairs.
+export function isCjkQuestion(s) {
+  const t = String(s || '').trim()
+  if (!t) return false
+  if (/[?？]\s*$/.test(t)) return true
+  if (/[吗呢]\s*[。！？!?.…~～]*\s*$/.test(t)) return true
+  return false
+}
+
+const VI_QUESTION_TOKENS = ['ai', 'gì', 'nào', 'sao', 'không', 'nhỉ', 'hả', 'chứ', 'vậy', 'hay', 'bao', 'mấy', 'đâu', 'chưa', 'nhé', 'nha', 'à', 'ạ', 'ư']
+
+// Lenient vi-question check: "?" counts, else any standalone question word
+// (unicode-letter boundaries so "là" doesn't match "à", "hai" doesn't match
+// "ai"). Wide list on purpose — missing both is a strong changed-intent signal.
+function hasViQuestion(t) {
+  const s = String(t || '')
+  if (/[?？]/.test(s)) return true
+  const low = s.toLowerCase()
+  return VI_QUESTION_TOKENS.some((tok) => {
+    const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return new RegExp(`(^|[^\\p{L}])${esc}([^\\p{L}]|$)`, 'iu').test(low)
+  })
+}
+
 function looksVietnamese(s) {
   return /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(String(s || ''))
 }
@@ -622,8 +680,17 @@ export function validateTranslation(src, tgt, targetLang = 'vi') {
   // CJK ASR transcripts carry no reliable punctuation (questions end with
   // particles like 吗/呢/吧, not "?") while vi correctly adds "?" — skip check.
   if (countCjk(s) === 0 && sQ !== tQ) errors.push('question intent changed')
+  // CJK context-aware question: 吗/呢/? source must map to vi "?" or question
+  // word (wide lenient list). 吧/啊 sources excluded via isCjkQuestion.
+  if (countCjk(s) > 0 && isCjkQuestion(s) && !hasViQuestion(t)) errors.push('question intent changed')
   if (hasNegation(s, 'en') !== hasNegation(t, 'vi') && /[a-z]/i.test(s)) {
     // Only enforce when source is English-like; avoids false positives on other langs
+    errors.push('negation changed')
+  }
+  // CJK negation, one-sided: source 不/没/… present → vi must keep negation.
+  // One-sided (not equality) so vi question-final "…không?" never false-positives
+  // on negation-free sources. Enforced only for CJK→vi.
+  if (countCjk(s) > 0 && targetLang === 'vi' && hasNegationZh(s) && !hasNegationVi(t)) {
     errors.push('negation changed')
   }
   const se = extractEntities(s)

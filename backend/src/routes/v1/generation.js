@@ -27,13 +27,22 @@ router.post('/:id/translate-dub/start', requireProjectOwner, async (req, res) =>
 
 // POST /api/v1/projects/:id/translate-dub/redub
 // Chạy lại chỉ phần lồng tiếng + render (dub.ttsAlign → dub.render) dùng bản dịch
-// ĐÃ CHỈNH SỬA trong transcript_segments. Không dịch lại, không mất chỉnh sửa.
+// ĐÃ CHỈNH SỬA trong transcript_segments. Không chạy dub.translate, không mất chỉnh sửa.
 router.post('/:id/translate-dub/redub', requireProjectOwner, async (req, res) => {
   if (String(req.project.mode).toUpperCase().replace('-', '_') !== 'TRANSLATE_DUB') {
     return sendError(res, 400, ERR.VALIDATION, 'Not a TRANSLATE_DUB project', { field: 'mode' })
   }
   if (isPipelineRunning(req.project.id)) {
     return sendError(res, 409, 'PIPELINE_RUNNING', 'Pipeline đang chạy, hãy đợi hoàn tất rồi mới chạy lại')
+  }
+  // Guard: cần ít nhất 1 segment có translation mới redub được.
+  // Redub dùng translation hiện tại trong DB, không chạy lại dub.translate.
+  const translated = await queryOne(
+    `SELECT COUNT(*) as c FROM transcript_segments WHERE project_id = ? AND translation IS NOT NULL AND translation != ''`,
+    [req.project.id]
+  )
+  if (!translated || !translated.c) {
+    return sendError(res, 400, ERR.VALIDATION, 'Không có bản dịch nào để lồng tiếng', { field: 'translation' })
   }
   runPipeline(req.project.id, 'dub.ttsAlign').catch(() => {})
   res.json({ message: 'Re-dub started', status: 'running' })

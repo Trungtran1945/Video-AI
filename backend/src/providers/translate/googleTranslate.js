@@ -30,6 +30,21 @@ function configError(scriptUrl, detail) {
   return err
 }
 
+// Normalize source lang for Google endpoint: 'zh' (generic) must map to
+// 'zh-CN' (simplified) or the backend may misdetect; 'zh-CN'/'zh-TW' kept
+// verbatim; 'auto'/empty means "don't send source param" (auto-detect).
+export function normalizeTranslateLang(lang) {
+  if (lang == null) return lang
+  const raw = String(lang).trim()
+  if (!raw) return raw
+  if (raw.toLowerCase() === 'auto') return 'auto'
+  const low = raw.toLowerCase()
+  if (low === 'zh') return 'zh-CN'
+  if (low === 'zh-cn') return 'zh-CN'
+  if (low === 'zh-tw') return 'zh-TW'
+  return raw
+}
+
 export class GoogleTranslate {
   constructor(scriptUrl) {
     this.id = 'google_translate'
@@ -49,7 +64,8 @@ export class GoogleTranslate {
       throw err
     }
     const p = { text: text.trim(), target: targetLang }
-    if (sourceLang && sourceLang !== 'auto') p.source = sourceLang
+    const normSource = normalizeTranslateLang(sourceLang)
+    if (sourceLang && normSource && normSource !== 'auto') p.source = normSource
     const params = new URLSearchParams(p)
     const url = `${this.scriptUrl}?${params}`
 
