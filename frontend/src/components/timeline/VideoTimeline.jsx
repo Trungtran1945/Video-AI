@@ -8,6 +8,8 @@ import {
   Magnet,
   SkipBack,
   SkipForward,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { useTimelineStore } from './timelineStore';
 import { formatTimeCode } from './timelineUtils';
@@ -35,6 +37,8 @@ export default function VideoTimeline({
   project = null,
   outputUrl = null,
   className = '',
+  minimized: propMinimized,
+  onToggleMinimize: propOnToggleMinimize,
 }) {
   const {
     currentTime: storeCurrentTime,
@@ -64,6 +68,31 @@ export default function VideoTimeline({
   });
   const [isResizing, setIsResizing] = useState(false);
   const resizeStartRef = useRef({ y: 0, height: 0 });
+
+  // Minimized state (persisted in localStorage)
+  const [internalMinimized, setInternalMinimized] = useState(() => {
+    try {
+      return localStorage.getItem('timeline-minimized') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const isMinimized = propMinimized !== undefined ? propMinimized : internalMinimized;
+
+  const toggleMinimize = useCallback(() => {
+    if (propOnToggleMinimize) {
+      propOnToggleMinimize(!isMinimized);
+    } else {
+      setInternalMinimized((prev) => {
+        const next = !prev;
+        try {
+          localStorage.setItem('timeline-minimized', String(next));
+        } catch {}
+        return next;
+      });
+    }
+  }, [propOnToggleMinimize, isMinimized]);
 
   const handleResizePointerDown = useCallback((e) => {
     e.preventDefault();
@@ -225,7 +254,11 @@ export default function VideoTimeline({
       className={`flex flex-col bg-card text-foreground rounded-xl border border-border shadow-2xl overflow-hidden select-none font-sans ${className}`}
     >
       {/* Timeline Header & Controls */}
-      <div className="h-12 px-4 bg-muted/40 dark:bg-card border-b border-border flex items-center justify-between z-30">
+      <div
+        className={`px-4 bg-muted/40 dark:bg-card flex items-center justify-between z-30 transition-all ${
+          isMinimized ? 'h-10' : 'h-12 border-b border-border'
+        }`}
+      >
         {/* Left: Timecode + Play Controls */}
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1.5 bg-background border border-border px-2.5 py-1 rounded-lg shadow-inner">
@@ -281,146 +314,181 @@ export default function VideoTimeline({
           </button>
         </div>
 
-        {/* Center: Snapping Toggle */}
+        {/* Center: Snapping Toggle (only shown when expanded) */}
+        {!isMinimized && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleSnapping}
+              title="Toggle snapping to time anchors"
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
+                snappingEnabled
+                  ? 'bg-blue-500/15 border-blue-500/40 text-blue-600 dark:text-blue-400 shadow-sm'
+                  : 'bg-background hover:bg-muted border-border/60 text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <Magnet size={12} className={snappingEnabled ? 'text-blue-600 dark:text-blue-400' : ''} />
+              <span>Snapping: {snappingEnabled ? 'ON' : 'OFF'}</span>
+            </button>
+          </div>
+        )}
+
+        {/* Right: Zoom + Minimize Button (expanded) OR Expand Button (minimized) */}
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={toggleSnapping}
-            title="Toggle snapping to time anchors"
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
-              snappingEnabled
-                ? 'bg-blue-500/15 border-blue-500/40 text-blue-600 dark:text-blue-400 shadow-sm'
-                : 'bg-background hover:bg-muted border-border/60 text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            <Magnet size={12} className={snappingEnabled ? 'text-blue-600 dark:text-blue-400' : ''} />
-            <span>Snapping: {snappingEnabled ? 'ON' : 'OFF'}</span>
-          </button>
-        </div>
+          {!isMinimized ? (
+            <>
+              <button
+                type="button"
+                onClick={() => setZoomLevel(zoomLevel - 10)}
+                title="Zoom Out"
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <ZoomOut size={14} />
+              </button>
 
-        {/* Right: Zoom */}
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setZoomLevel(zoomLevel - 10)}
-            title="Zoom Out"
-            className="text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <ZoomOut size={14} />
-          </button>
+              <input
+                type="range"
+                min={20}
+                max={150}
+                value={zoomLevel}
+                onChange={(e) => setZoomLevel(Number(e.target.value))}
+                className="w-20 h-1.5 bg-muted dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-primary"
+                title={`Zoom: ${zoomLevel}px/sec`}
+              />
 
-          <input
-            type="range"
-            min={20}
-            max={150}
-            value={zoomLevel}
-            onChange={(e) => setZoomLevel(Number(e.target.value))}
-            className="w-20 h-1.5 bg-muted dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-primary"
-            title={`Zoom: ${zoomLevel}px/sec`}
-          />
+              <button
+                type="button"
+                onClick={() => setZoomLevel(zoomLevel + 10)}
+                title="Zoom In"
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <ZoomIn size={14} />
+              </button>
 
-          <button
-            type="button"
-            onClick={() => setZoomLevel(zoomLevel + 10)}
-            title="Zoom In"
-            className="text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <ZoomIn size={14} />
-          </button>
+              <span className="font-mono text-[10px] text-muted-foreground w-10 text-right">
+                {Math.round((zoomLevel / 50) * 100)}%
+              </span>
 
-          <span className="font-mono text-[10px] text-muted-foreground w-10 text-right">
-            {Math.round((zoomLevel / 50) * 100)}%
-          </span>
+              <div className="h-4 w-px bg-border/80 mx-1" />
+
+              <button
+                type="button"
+                onClick={toggleMinimize}
+                title="Thu gọn Timeline (ẩn track dựng)"
+                className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors flex items-center gap-1 text-xs"
+              >
+                <ChevronDown size={14} />
+                <span className="text-[11px] font-medium hidden sm:inline">Thu gọn</span>
+              </button>
+            </>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-muted-foreground hidden sm:inline">Bản dựng đang thu gọn</span>
+              <button
+                type="button"
+                onClick={toggleMinimize}
+                title="Mở rộng Timeline"
+                className="px-2.5 py-1 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 transition-colors flex items-center gap-1.5 text-xs font-medium"
+              >
+                <ChevronUp size={14} />
+                <span>Mở rộng Timeline</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Main Timeline Body */}
-      <div
-        className="flex flex-1 overflow-hidden relative bg-muted/20 dark:bg-[#0c0c0e]"
-        style={{ height: `${timelineHeight}px` }}
-      >
-        <TrackSidebar />
-
-        <div
-          ref={scrollContainerRef}
-          className="timeline-scroll-container flex-1 overflow-x-auto overflow-y-hidden relative bg-background dark:bg-[#0f0f12] cursor-default"
-          style={{ height: `${totalRulerAndTracksHeight}px` }}
-          onClick={handleTimelineBackgroundClick}
-        >
+      {!isMinimized && (
+        <>
+          {/* Main Timeline Body */}
           <div
-            className="tracks-canvas relative"
-            style={{
-              width: `${totalContentWidth}px`,
-              height: `${totalRulerAndTracksHeight}px`,
-            }}
+            className="flex flex-1 overflow-hidden relative bg-muted/20 dark:bg-[#0c0c0e]"
+            style={{ height: `${timelineHeight}px` }}
           >
-            <TimeRuler totalDuration={totalDuration} onSeek={handleSeek} />
-            <Playhead height={totalRulerAndTracksHeight} onSeek={handleSeek} />
+            <TrackSidebar />
 
-            <div className="relative flex flex-col">
-              {tracks.map((track) => {
-                const trackClips = clips.filter((c) => c.trackId === track.id);
+            <div
+              ref={scrollContainerRef}
+              className="timeline-scroll-container flex-1 overflow-x-auto overflow-y-hidden relative bg-background dark:bg-[#0f0f12] cursor-default"
+              style={{ height: `${totalRulerAndTracksHeight}px` }}
+              onClick={handleTimelineBackgroundClick}
+            >
+              <div
+                className="tracks-canvas relative"
+                style={{
+                  width: `${totalContentWidth}px`,
+                  height: `${totalRulerAndTracksHeight}px`,
+                }}
+              >
+                <TimeRuler totalDuration={totalDuration} onSeek={handleSeek} />
+                <Playhead height={totalRulerAndTracksHeight} onSeek={handleSeek} />
 
-                return (
-                  <div
-                    key={track.id}
-                    className="track-row relative h-14 border-b border-border/50 bg-card/60 hover:bg-muted/30 dark:bg-[#121216]/50 dark:hover:bg-[#14141a]/60 transition-colors"
-                    onClick={handleTimelineBackgroundClick}
-                  >
-                    <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(0,0,0,0.03)_1px,transparent_1px)] dark:bg-[linear-gradient(to_right,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:50px_100%] pointer-events-none" />
+                <div className="relative flex flex-col">
+                  {tracks.map((track) => {
+                    const trackClips = clips.filter((c) => c.trackId === track.id);
 
-                    {trackClips.map((clip) => (
-                      <TimelineClip
-                        key={clip.id}
-                        clip={clip}
-                        isTrackLocked={track.isLocked}
-                        onSegmentClick={onSegmentClick}
-                        isActive={clip.segmentId === activeSegmentId || clip.id === activeSegmentId}
-                      />
-                    ))}
-                  </div>
-                );
-              })}
+                    return (
+                      <div
+                        key={track.id}
+                        className="track-row relative h-14 border-b border-border/50 bg-card/60 hover:bg-muted/30 dark:bg-[#121216]/50 dark:hover:bg-[#14141a]/60 transition-colors"
+                        onClick={handleTimelineBackgroundClick}
+                      >
+                        <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(0,0,0,0.03)_1px,transparent_1px)] dark:bg-[linear-gradient(to_right,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:50px_100%] pointer-events-none" />
+
+                        {trackClips.map((clip) => (
+                          <TimelineClip
+                            key={clip.id}
+                            clip={clip}
+                            isTrackLocked={track.isLocked}
+                            onSegmentClick={onSegmentClick}
+                            isActive={clip.segmentId === activeSegmentId || clip.id === activeSegmentId}
+                          />
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
 
-      {/* Vertical Resize Handle */}
-      <div
-        onPointerDown={handleResizePointerDown}
-        className={`h-1.5 cursor-ns-resize flex items-center justify-center group/resizet transition-colors border-t border-border/40 ${
-          isResizing ? 'bg-primary/30' : 'bg-transparent hover:bg-primary/10'
-        }`}
-        title="Drag to resize timeline"
-      >
-        <div className={`w-8 h-0.5 rounded-full transition-colors ${
-          isResizing ? 'bg-primary' : 'bg-muted-foreground/40 group-hover/resizet:bg-muted-foreground'
-        }`} />
-      </div>
+          {/* Vertical Resize Handle */}
+          <div
+            onPointerDown={handleResizePointerDown}
+            className={`h-1.5 cursor-ns-resize flex items-center justify-center group/resizet transition-colors border-t border-border/40 ${
+              isResizing ? 'bg-primary/30' : 'bg-transparent hover:bg-primary/10'
+            }`}
+            title="Drag to resize timeline"
+          >
+            <div className={`w-8 h-0.5 rounded-full transition-colors ${
+              isResizing ? 'bg-primary' : 'bg-muted-foreground/40 group-hover/resizet:bg-muted-foreground'
+            }`} />
+          </div>
 
-      {/* Footer */}
-      <div className="h-7 px-4 bg-muted/40 dark:bg-card/90 border-t border-border flex items-center justify-between text-[10px] text-muted-foreground">
-        <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1">
-            <kbd className="px-1 py-0.2 bg-background border border-border rounded text-[9px] font-mono text-foreground">
-              Space
-            </kbd>
-            <span>Play/Pause</span>
-          </span>
+          {/* Footer */}
+          <div className="h-7 px-4 bg-muted/40 dark:bg-card/90 border-t border-border flex items-center justify-between text-[10px] text-muted-foreground">
+            <div className="flex items-center gap-3">
+              <span className="flex items-center gap-1">
+                <kbd className="px-1 py-0.2 bg-background border border-border rounded text-[9px] font-mono text-foreground">
+                  Space
+                </kbd>
+                <span>Play/Pause</span>
+              </span>
 
-          <span className="flex items-center gap-1">
-            <kbd className="px-1 py-0.2 bg-background border border-border rounded text-[9px] font-mono text-foreground">
-              ←/→
-            </kbd>
-            <span>Scrub</span>
-          </span>
-        </div>
+              <span className="flex items-center gap-1">
+                <kbd className="px-1 py-0.2 bg-background border border-border rounded text-[9px] font-mono text-foreground">
+                  ←/→
+                </kbd>
+                <span>Scrub</span>
+              </span>
+            </div>
 
-        <div className="flex items-center gap-1.5 text-muted-foreground">
-          <span>Subtitle Sync</span>
-        </div>
-      </div>
+            <div className="flex items-center gap-1.5 text-muted-foreground">
+              <span>Subtitle Sync</span>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

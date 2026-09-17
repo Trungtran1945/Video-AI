@@ -67,12 +67,12 @@ const worker = new Worker('notifications', async (job) => {
 // Pause (never close) while Redis is down so no job is lost; resume on ready.
 connection.on('close', () => { worker.pause().catch(() => {}) })
 connection.on('end', () => { worker.pause().catch(() => {}) })
-connection.on('ready', () => { worker.resume().catch(() => {}) })
+connection.on('ready', () => { worker.resume() })
 // Same wiring on the worker's dedicated stream (shared signal alone
 // cannot observe a per-worker disconnect).
 workerConnection.on('close', () => { worker.pause().catch(() => {}) })
 workerConnection.on('end', () => { worker.pause().catch(() => {}) })
-workerConnection.on('ready', () => { worker.resume().catch(() => {}) })
+workerConnection.on('ready', () => { worker.resume() })
 if (!isRedisReady()) worker.pause().catch(() => {})
 
 worker.on('error', (err) => {
