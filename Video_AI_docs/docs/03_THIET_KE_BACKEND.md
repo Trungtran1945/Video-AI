@@ -61,9 +61,17 @@ Use-case gọi `resolveTts(settings.voiceProvider)` → **không biết** implem
 
 - `CreateProjectUseCase` — validate, lưu Project, enqueue stage đầu.
 - `SummaryPipeline` — điều phối các stage SUMMARY (gọi provider qua interface).
-- `TranslateDubPipeline` — điều phối các stage TRANSLATE_DUB; đặc biệt **enqueue `dub.stt` và
-  `dub.ocr` song song**, chỉ sang `dub.translate` khi cả hai xong (BullMQ `Promise.all` trên 2 job,
-  hoặc job tổng hợp `dub.merge` chờ kết quả).
+- `TranslateDubPipeline` [CURRENT] — chạy sequential theo `STAGES.TRANSLATE_DUB`
+  (`backend/src/pipeline/runner.js:111-129`):
+  `[dub.ingest, dub.stt, dub.merge, dub.translate, dub.ttsAlign, dub.render]`.
+  Nhánh OR `params.ocrMode ? dub.ocr : dub.stt → dub.merge` chỉ tồn tại trong
+  `startDubSequential` (`runner.js:70-108`); `dub.ocr` đã cài đặt trong
+  `stages/dubOcr.js` (sample `OCR_FPS||2`, cap `OCR_CAP||900`,
+  `OCR_MIN_CONF||0.55`) nhưng unreachable vì không có trong `STAGES.TRANSLATE_DUB` +
+  `firstRunnableStage` + `regenerate`. Nhánh parallel `dub.stt ‖ dub.ocr` hiện là
+  dead code (single-type path luôn) + FFmpeg serialize mọi call
+  (`media/ffmpeg.js:126-136`, build Windows crash exit -22 khi 2 tiến trình ghi
+  file đồng thời). Giữ parallel + FlowProducer là [TARGET] (xem `01` §5.1).
 - `AlignService` — thuật toán đồng bộ giọng ↔ cảnh của SUMMARY (xem `05`).
 - `ForcedAlignService` — ép khớp thời lượng TTS vào slot timestamp gốc của TRANSLATE_DUB
   (tempo stretching / chèn lặng / yêu cầu rút gọn câu).
@@ -88,9 +96,13 @@ Use-case gọi `resolveTts(settings.voiceProvider)` → **không biết** implem
   (độ mờ: blur radius + độ đục lớp phủ), gộp hardsub tĩnh (`isStatic` → 1 record cho toàn video),
   và tính vị trí phụ đề mới ưu tiên trùng/nằm ngay trên vùng đã mask (point 2, xem `01` §3.2).
 - `RenderService` — gọi `packages/media` sinh video.
-- `CancelProjectUseCase` — huỷ job `PENDING`/`RUNNING` của 1 project (BullMQ `job.remove()` +
-  cờ `cancelled` cho worker đang chạy), đặt `Project.status = FAILED`, `cancelledAt = now()`,
-  dọn file tạm liên quan (xem `01` §5.2).
+- `CancelProjectUseCase` [CURRENT] — huỷ job `pending`/`running` của 1 project
+  (`backend/src/usecases/cancelProjectUseCase.js`): đặt `projects.status = 'cancelled'`
+  (không `failed`), `generation_jobs` liên quan → `'cancelled'`, abort pipeline đang
+  chạy, dọn file tạm, notify best-effort qua `notifyQueue` (bỏ qua khi Redis down).
+  Idempotent: project đã `completed`/`failed`/`cancelled` → trả trạng thái hiện tại.
+  [TARGET] BullMQ `job.remove()` + cờ `cancelled` cho worker (xem `01` §5.2) là thiết
+  kế tương lai.
 - **Giới hạn concurrency (NFR-12)**: `CreateProjectUseCase` kiểm tra
   `count(Project where userId=X and status='RUNNING') < MAX_CONCURRENT_PROJECTS` (mặc định 2,
   cấu hình qua env `MAX_CONCURRENT_PROJECTS_PER_USER`) trước khi enqueue stage đầu; vượt ngưỡng →
@@ -117,10 +129,13 @@ export async function startSummary(req: Req, res: Res) {
 export async function startTranslateDub(req: Req, res: Res) {
   const uc = container.resolve(CreateProjectUseCase);
   const project = await uc.execute({ ...req.body, mode: 'TRANSLATE_DUB', userId: req.user.id });
-  await Promise.all([enqueueDubStt(project.id), enqueueDubOcr(project.id)]); // song song
+  await Promise.all([enqueueDubStt(project.id), enqueueDubOcr(project.id)]); // song song [TARGET]
   res.status(202).json(project);
 }
 ```
+// [TARGET] — ví dụ trên (enqueue song song 2 job) là thiết kế tương lai. [CURRENT]:
+// `POST /projects` insert project rồi `runPipeline(project.id)` sequential, không
+// BullMQ per-stage (`backend/src/routes/v1/projects.js:186-190`).
 
 ---
 
@@ -220,8 +235,18 @@ Giá trị `status='rate_limited'` giúp `QuotaGuardService` và trang `Logs`/`A
 ## 7. Xử lý lỗi & idempotency
 
 - Lỗi tập trung tại `error.ts` → format chuẩn `{ error: { code, message } }`.
-- Mỗi job BullMQ có `jobId = `${projectId}:${stage}`` → không chạy trùng.
+  [CURRENT]: `backend/src/lib/httpError.js:sendError` trả `{ message, code, error: { code, message } }`
+  (top-level `message`/`code` giữ song song cho frontend hiện tại).
+- Mỗi job BullMQ có `jobId = `${projectId}:${stage}`` → không chạy trùng. [TARGET]
 - Khi worker crash, BullMQ retry; `GenerationJob` lưu `attempts` & `error`.
+  [CURRENT]: retry/backoff theo `RETRY_POLICY` trong `runner.js:314-319`
+  (`dub.ttsAlign` 3 lần 10s/30s/60s, `dub.render` 2 lần 30s/120s, `dub.stt` 3 lần
+  10s/30s/60s, `dub.translate` 3 lần 5s/15s/30s); rate-limit park `queued` + `retry`
+  với `next_retry_at` (tối đa 5 lần).
+- [CURRENT] Validation `TRANSLATE_NEEDS_REVIEW` / `BLOCK_RENDER` là lỗi dữ liệu →
+  fail-fast 1 lần, không retry/backoff/park (`isValidationError`, `runner.js:29-36, 400-405`).
+  User sửa tay (`PATCH /projects/:id/segments/:segmentId/translation`) rồi Regenerate/Retry
+  (resume từ stage lỗi earliest qua `firstRunnableStage`).
 - **Riêng lỗi rate-limit/quota** (xem `11` §4.2): job không dùng backoff cố định như lỗi thường —
   `nextRetryAt` được tính theo `Retry-After` của provider hoặc chu kỳ reset RPM/RPD đã biết trước,
   và số lần retry cho phép cao hơn (mặc định 5) vì bản chất là chờ tài nguyên hồi phục, không phải

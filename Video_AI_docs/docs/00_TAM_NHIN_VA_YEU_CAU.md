@@ -29,9 +29,9 @@ Hệ thống phục vụ hai nhóm use-case:
 ### 2.1. Trong phạm vi
 
 - Hai mode: `SUMMARY` (review phim) và `TRANSLATE_DUB` (dịch thuật & lồng tiếng).
-- Upload phim (SUMMARY) / video cần Việt hoá ≤ 500MB (TRANSLATE_DUB) qua dashboard,
+- Upload phim (SUMMARY) / video cần Việt hoá ≤ 2GB (TRANSLATE_DUB) qua dashboard,
   dùng **resumable upload** (chunk 5–10MB, kiểu TUS) chống rớt mạng. **Hạn chế dung lượng**:
-  file vượt quá 500MB bị reject ngay từ API, không enqueue vào queue để tránh lãng phí tài nguyên worker.
+  file vượt quá 2GB bị reject ngay từ API, không enqueue vào queue để tránh lãng phí tài nguyên worker.
 - **Media Consent versioned**: User phải consent Terms mới nhất TRƯỚC khi tạo MediaJob.
   Nếu Terms version thay đổi → cần re-consent. Asset cũ đã consent vẫn dùng được cho Jobs đang chạy.
 - Pipeline AI tự động: SUMMARY — transcribe, scene-detect, script review, align, TTS, subtitle,

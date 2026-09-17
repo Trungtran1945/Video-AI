@@ -7,7 +7,7 @@ dễ bảo trì (theo yêu cầu Clean Architecture, SOLID, không code trùng l
 
 ## 1. Quy tắc chung
 
-- **Ngôn ngữ**: TypeScript strict ở mọi package.
+- **Ngôn ngữ**: TypeScript strict ở mọi package. [TARGET/FUTURE — CURRENT là JS thuần, xem §2].
 - **Không hardcode secret**: luôn qua env / `MASTER_KEY`.
 - **Không placeholder/TODO**: mọi code merge phải chạy được.
 - **Không duplicate**: dùng lại service/component/hook có sẵn; nếu lặp >2 chỗ → đưa vào `shared` hoặc `core`.
@@ -15,26 +15,37 @@ dễ bảo trì (theo yêu cầu Clean Architecture, SOLID, không code trùng l
 
 ---
 
-## 2. Code Quality
+## 2. Code Quality [CURRENT]
 
-| Công cụ | Mục đích |
-| --- | --- |
-| ESLint | style, unused, hooks |
-| Prettier | format nhất quán |
-| TypeScript `--strict` | type safety |
-| Husky + lint-staged | chạy lint/prettier trước commit |
-| Commitlint | chuẩn hoá commit (`feat:`, `fix:`, `docs:`, `refactor:`) |
-| Vitest / Jest | unit & integration test |
+> [CURRENT] Không pnpm workspace, không Vitest/Jest, không Husky/lint-staged/Commitlint/Prettier
+> trong code. Test runner duy nhất là `node:test` (node bản địa).
 
-Cấu hình mẫu:
+| Công cụ | Mục đích | CURRENT |
+| --- | --- | --- |
+| ESLint | style, unused, hooks | `frontend: npm run lint` (backend không có script lint) |
+| TypeScript (qua jsconfig) | typecheck nhẹ cho JS | `frontend: npm run typecheck` = `tsc -p ./jsconfig.json` |
+| `node:test` | unit & integration test | backend `npm test` = `node scripts/run-tests.mjs` (~36 file `tests/*.test.mjs`); `timeline.test.js` của frontend cũng là `node:test` (frontend không có script `test`) |
+
+Cấu hình mẫu [CURRENT]:
 ```jsonc
-// package.json (root)
+// backend/package.json
 {
   "scripts": {
-    "lint": "pnpm -r lint",
-    "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test",
-    "prepare": "husky install"
+    "dev": "node server.js",
+    "start": "node server.js",
+    "check:redis": "node scripts/check-redis.mjs",
+    "test": "node scripts/run-tests.mjs"   // chạy tuần tự mọi tests/*.test.mjs, fail-fast
+  }
+}
+// frontend/package.json
+{
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint . --quiet",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc -p ./jsconfig.json",
+    "preview": "vite preview"              // chú ý: không có script "test"
   }
 }
 ```
@@ -44,8 +55,11 @@ Cấu hình mẫu:
 ## 3. Quy trình đóng góp (Contribution)
 
 1. Fork / tạo branch `feature/<tên>` hoặc `fix/<tên>`.
-2. Viết code + test (unit cho service, integration cho API/pipeline).
-3. Chạy `pnpm lint && pnpm typecheck && pnpm test` — phải xanh.
+2. Viết code + test (unit cho service, integration cho API/pipeline — `node:test`, backend đặt
+   trong `backend/tests/*.test.mjs` để `scripts/run-tests.mjs` nhặt tự động).
+3. Chạy `cd frontend && npm run lint && npm run typecheck && npm run build`, rồi
+   `cd ../backend && npm test` — phải xanh. (Chú ý: frontend không có script `test`, CI cũng
+   không chạy test — xem `08` §4; không dùng `pnpm -r` / Vitest / Jest.)
 4. Commit theo Commitlint; push & tạo PR.
 5. PR cần ≥1 review (ADMIN duyệt nếu chạm core).
 6. CI pass → merge vào `main` → auto deploy staging.
@@ -74,17 +88,17 @@ packages/<name>/
 - **Provider**: mock HTTP, assert gọi đúng & map kết quả; test lỗi → `ProviderLog` status error.
 - **AlignService** (SUMMARY): test invariant `sum(clip.duration*speed) ≈ D` với nhiều kịch bản (thiếu cảnh, thừa cảnh).
 - **ForcedAlignService** (TRANSLATE_DUB): fixture TTS dài/ngắn hơn slot → assert lệch < 5% slot,
-  không segment nào chồng nhau, atempo không vượt [0.9–1.15].
+  không segment nào chồng nhau, atempo không vượt [0.8–1.2] (`forcedAlignService.js:14-15`).
 - **OcrRegion merge**: boxes liên tiếp IoU > 0.7 → assert gộp đúng `[startSec, endSec]`; box hiện
   < 0.5s bị lọc.
 - **TranslateService**: cùng input, khác StylePreset → assert đúng systemPrompt được inject và
   output khớp JSON schema `{segments:[{index, translation}]}`.
-- **API**: test controller qua supertest + mock use-case.
+- **API**: test controller qua `node:test` + mock use-case. [CURRENT — không supertest, xem §2].
 - **E2E pipeline dùng video 30s**: mặc định chạy với `DEFAULT_PROVIDER_MODE=mock` trong CI (xem
   `11` §6) để tách biệt hoàn toàn khỏi rate limit của provider thật — CI **luôn xanh** bất kể free
   tier bên ngoài có bị giới hạn hay không.
 - **CancelProjectUseCase**: assert job `PENDING` bị remove khỏi BullMQ, job `RUNNING` nhận tín hiệu
-  `AbortSignal`, file tạm bị xoá, `Project.status = FAILED` với `cancelledAt` được set.
+  `AbortSignal`, file tạm bị xoá, `Project.status = cancelled` (không `failed`) với `cancelledAt` được set.
 - **Overlap Detection (UpdateSegmentTimingSchema)**: fixture 3 segment liên tiếp — assert đè lên
   N-1 bị từ chối (`VAL_002`), đè lên N+1 chưa chỉnh tay thì tự đẩy đúng offset, đè lên N+1 đã
   `isTimeManuallyAdjusted=true` thì bị từ chối.

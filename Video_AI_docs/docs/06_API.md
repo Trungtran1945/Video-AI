@@ -1,19 +1,26 @@
 # 06 — REST API
 
-Tất cả endpoint (trừ `/auth`, `/docs`) yêu cầu `Authorization: Bearer <accessToken>`.
-Response chuẩn: `{ data }` hoặc lỗi `{ error: { code, message } }`.
-Base URL: `/api/v1`.
+> [CURRENT] — Base URL: `/api/v1`. Mọi endpoint (trừ `/auth/register`, `/auth/login`,
+> `/auth/refresh`, `/auth/forgot-password`, `/auth/reset-password`) yêu cầu
+> `Authorization: Bearer <accessToken>` (SSE dùng `?token=` — xem §2.2).
+> Response thành công trả object/array trực tiếp (không bọc `{ data }`).
+> Statuses lowercase: project `pending`/`queued`/`running`/`completed`/`failed`/`cancelled`;
+> job `pending`/`running`/`success`/`failed`/`retry`/`cancelled`.
+> Lỗi: `{ message, code, error: { code, message } }` (`backend/src/lib/httpError.js`).
 
 ---
 
 ## 1. Auth
 
-| Method | Path | Mô tả |
-| --- | --- | --- |
-| POST | `/auth/register` | `{ email, password }` → `{ user, accessToken, refreshToken }` |
-| POST | `/auth/login` | `{ email, password }` → tokens |
-| POST | `/auth/refresh` | `{ refreshToken }` → tokens mới (rotate) |
-| POST | `/auth/logout` | thu hồi refresh |
+| Method | Path | Auth | Mô tả |
+| --- | --- | --- | --- |
+| POST | `/auth/register` | không | `{ email, password, name? }` → `{ accessToken, refreshToken, user }` |
+| POST | `/auth/login` | không | `{ email, password }` → tokens |
+| POST | `/auth/refresh` | không (body `refreshToken`) | rotate → tokens mới |
+| POST | `/auth/logout` | AUTH | thu hồi refresh |
+| GET | `/auth/me` | AUTH | user hiện tại (EXTRA: đã cài đặt, chưa document trước đây) |
+| POST | `/auth/forgot-password` | không | `{ email }` → message chung (EXTRA: đã cài đặt, chưa document trước đây) |
+| POST | `/auth/reset-password` | không | `{ token, newPassword }` (EXTRA: đã cài đặt, chưa document trước đây) |
 
 ---
 
@@ -47,24 +54,38 @@ Base URL: `/api/v1`.
   "copyrightAcknowledged": true          // bắt buộc = true, xem `00` §5 và `03` §5
 }
 ```
-→ `202 Accepted` + `Project` (status `PENDING`, hoặc `QUEUED` nếu user đã đạt giới hạn concurrency —
+→ `202 Accepted` + `Project` (status `pending`, hoặc `queued` nếu user đã đạt giới hạn concurrency —
 xem `03` §3 NFR-12).
 
-### POST `/projects/:id/cancel` — huỷ pipeline đang chạy
-Không cần body. Huỷ mọi job `PENDING`/`RUNNING` của project, dọn file tạm liên quan.
-→ `200 OK` + `Project` (status `FAILED`, `cancelledAt` được set). Idempotent: gọi lại trên project
-đã kết thúc trả về trạng thái hiện tại, không lỗi.
+### POST `/projects/:id/cancel` — huỷ pipeline đang chạy [CURRENT]
+Không cần body. Huỷ mọi job `pending`/`running` của project, dọn file tạm liên quan.
+→ `200 OK` + `Project` (status `cancelled` — không `FAILED`, `cancelled_at` được set).
+Idempotent: gọi lại trên project đã kết thúc (`completed`/`failed`/`cancelled`) trả về
+trạng thái hiện tại, không lỗi.
 
-### POST `/projects/:id/translate-dub/confirm-preview` — xác nhận sau bước xem trước (TRANSLATE_DUB)
+### POST `/projects/:id/translate-dub/confirm-preview` — xác nhận sau bước xem trước (TRANSLATE_DUB) [CURRENT]
 Chạy sau khi `dub.translate` xong, trước khi enqueue `dub.ttsAlign`/`dub.render` (FR-J2 — xem `04` §4).
-Body tuỳ chọn `{ regions: [...] }` để cập nhật mask lần cuối (tương đương PUT mask-regions gộp bước).
 → `202 Accepted`, enqueue render.
+> Intended AUTH+OWNER. Lưu ý code: `confirmPreview.js` hiện chỉ gắn `requireProjectOwner`
+> mà thiếu `authMiddleware` (mọi router còn lại đều `router.use(authMiddleware)`) —
+> `req.user` sẽ undefined nếu gọi trực tiếp; docs ghi theo intended (sẽ bổ sung auth, không đổi contract).
+> [PARTIAL] BE CURRENT nhưng FE orphan — `ProjectDetail` chưa gọi (chỉ có wrapper `api/projects.js:21`); xem `04` §4.
 
-### GET `/projects` — danh sách (phân trang, filter `?mode=`)
-### GET `/projects/:id` — chi tiết (kèm stages, timeline/transcript, output)
-### GET `/projects/:id/timeline` — `TimelineClip[]` (SUMMARY)
-### GET `/projects/:id/transcript` — `TranscriptSegment[]` + bản dịch (TRANSLATE_DUB)
-### GET/PUT `/projects/:id/mask-regions` — `OcrRegion[]`; PUT nhận region user chỉnh trên Canvas (`source='MANUAL'`)
+### GET `/projects` — danh sách (phân trang, filter `?mode=`) [CURRENT: trả array trực tiếp]
+### GET `/projects/:id` — chi tiết (kèm stages, timeline/transcript, output) [CURRENT: trả object trực tiếp]
+### GET `/projects/:id/timeline` — `TimelineClip[]` (SUMMARY) [CURRENT: array trực tiếp]
+### GET `/projects/:id/transcript` — `TranscriptSegment[]` + bản dịch (TRANSLATE_DUB) [CURRENT: array trực tiếp]
+### PUT `/projects/:id/transcript` — lưu bản dịch/timing user chỉnh [CURRENT, EXTRA: đã cài đặt
+(`dubData.js:53-179`), chưa document trước đây; body `{ segments: [{ id, translation?, startSec?, endSec? }] }`,
+overlap → 400 `VAL_002`, trả `{ updated, adjustedSegments, outputStale, segments }`]
+### PATCH `/projects/:id/segments/:segmentId/translation` — sửa tay 1 segment khi
+`dub.translate` fail `TRANSLATE_NEEDS_REVIEW` [CURRENT, EXTRA: `projects.js:264-292`; gate hard → 422,
+soft warnings cho qua; giữ bản sửa khi regenerate]
+### POST `/projects/:id/translate-dub/redub` — chạy lại chỉ `dub.ttsAlign → dub.render` dùng bản dịch
+hiện tại [CURRENT, EXTRA: `generation.js:31-49`; guard cần ≥1 segment có translation; 409 nếu pipeline đang chạy]
+### DELETE `/projects/:id` — xoá project + file [CURRENT, EXTRA: `projects.js:329-362`; 409 nếu pipeline đang chạy]
+### GET/PUT `/projects/:id/mask-regions` — [NOT IMPLEMENTED: không route nào cài đặt] —
+`OcrRegion[]`; PUT nhận region user chỉnh trên Canvas (`source='MANUAL'`)
 
 Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 
@@ -87,45 +108,49 @@ Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 
 ---
 
-## 2.1. Upload resumable (dùng chung cho mọi file lớn)
+## 2.1. Upload resumable (dùng chung cho mọi file lớn) [CURRENT]
 
-| Method | Path | Mô tả |
-| --- | --- | --- |
-| POST | `/uploads/init` | `{ filename, size, mime }` → `{ uploadId, chunkSize }` (chunk 5–10MB) |
-| PUT | `/uploads/:uploadId/chunk?offset=N` | đẩy 1 chunk tại offset; idempotent theo offset |
-| HEAD | `/uploads/:uploadId` | trả offset đã nhận — client resume sau rớt mạng |
-| POST | `/uploads/:uploadId/complete` | ghép chunk → trả `storageKey` dùng cho POST /projects |
+| Method | Path | Auth | Mô tả |
+| --- | --- | --- | --- |
+| POST | `/uploads/init` | AUTH | `{ filename, size, mime }` (size > 2GB → 413) → `{ uploadId, chunkSize }` (chunk 8MB cố định) |
+| PUT | `/uploads/:id/chunk?offset=N` | AUTH | body `application/octet-stream` (limit 16MB); idempotent theo offset; lệch → 409 `OFFSET_MISMATCH` (+ `expectedOffset`); xong → 204 + header `Upload-Offset` |
+| HEAD | `/uploads/:id` | AUTH | header `Upload-Offset` — client resume sau rớt mạng |
+| POST | `/uploads/:id/complete` | AUTH | ghép chunk → `{ storageKey, url, filename, size, videoHash }` (sha256) |
+| POST | `/upload/` | AUTH | legacy multipart single file cho tệp nhỏ (limit 4GB) → `{ key, url, filename, size, mimetype }` (EXTRA: đã cài đặt, chưa document trước đây) |
 
 ---
 
-## 2.2. Real-time progress (SSE)
+## 2.2. Real-time progress (SSE) [CURRENT]
 
-| Method | Path | Mô tả |
-| --- | --- | --- |
-| GET | `/projects/:id/events` | stream `text/event-stream`: `{ stage, status, percent }` từng job; worker publish qua Redis pub/sub |
+| Method | Path | Auth | Mô tả |
+| --- | --- | --- | --- |
+| GET | `/projects/:id/events` | `?token=<accessToken>` (EventSource không gửi được Authorization header; `sseAuthMiddleware`) + OWNER | stream `text/event-stream` qua `eventBus`: `retry: 3000`, heartbeat `: ping` mỗi 15s, event `progress` `{ stage, status, percent }` (stage `__project__` là tiến độ tổng), event `done` + đóng stream khi project `success`/`failed` |
 
 ---
 
 ## 3. Generation (theo mode)
 
-| Method | Path | Mô tả |
-| --- | --- | --- |
-| POST | `/projects/:id/summary/start` | bắt đầu pipeline SUMMARY |
-| POST | `/projects/:id/translate-dub/start` | bắt đầu pipeline TRANSLATE_DUB (enqueue dub.stt ‖ dub.ocr song song) |
-| GET | `/style-presets` | danh mục 13 phong cách dịch (slug, name, description) |
-| GET | `/projects/:id/jobs` | trạng thái từng stage (`GenerationJob`) |
-| POST | `/projects/:id/jobs/:type/retry` | retry thủ công 1 stage |
-| GET | `/projects/:id/media-stages` | trạng thái từng stage của MediaJob (`MediaJobStage[]`) |
-| POST | `/projects/:id/media-stages/:stage/retry` | retry thủ công 1 stage cụ thể |
+| Method | Path | Auth | Mô tả |
+| --- | --- | --- | --- |
+| POST | `/projects/:id/summary/start` | AUTH+OWNER | bắt đầu pipeline SUMMARY [CURRENT] |
+| POST | `/projects/:id/translate-dub/start` | AUTH+OWNER | bắt đầu pipeline TRANSLATE_DUB [CURRENT: chạy sequential `runPipeline`, không enqueue song song] |
+| GET | `/style-presets` | AUTH | danh mục phong cách dịch (slug, name, description) [CURRENT] |
+| GET | `/projects/:id/jobs` | AUTH+OWNER | trạng thái từng stage (`GenerationJob[]`, array trực tiếp) [CURRENT] |
+| POST | `/projects/:id/jobs/:type/retry` | AUTH+OWNER | retry thủ công 1 stage failed (resume từ stage lỗi earliest qua `firstRunnableStage`; quota cooldown → 429 `RETRY_WAITING`) [CURRENT] |
+| GET | `/projects/:id/media-stages` | — | [NOT IMPLEMENTED: không route nào cài đặt] |
+| POST | `/projects/:id/media-stages/:stage/retry` | — | [NOT IMPLEMENTED: không route nào cài đặt] |
 
 ---
 
 ## 3.1. Media Consent (TRANSLATE_DUB)
 
-| Method | Path | Mô tả |
-| --- | --- | --- |
-| GET | `/projects/:id/media-consent` | kiểm tra consent status (đã consent chưa? Terms version?) |
-| POST | `/projects/:id/media-consent` | `{ termsVersion }` → consent Terms mới nhất; nếu Terms version thay đổi → cần re-consent trước khi tạo MediaJob |
+| Method | Path | Auth | Mô tả |
+| --- | --- | --- | --- |
+| GET | `/projects/:id/media-consent` | — | [NOT IMPLEMENTED: không route nào cài đặt] |
+| POST | `/projects/:id/media-consent` | — | [NOT IMPLEMENTED: không route nào cài đặt] |
+
+> [NOT IMPLEMENTED] — Toàn bộ §3.1 + quy tắc consent/re-consent dưới đây là thiết kế tương lai,
+> giữ nguyên không xoá.
 
 **Quy tắc**:
 - User PHẢI consent Terms mới nhất TRƯỚC khi tạo MediaJob.
@@ -136,75 +161,73 @@ Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 
 ## 4. Outputs & Upload
 
-| Method | Path | Mô tả |
-| --- | --- | --- |
-| GET | `/outputs` | thư viện video (`?projectId=`) |
-| GET | `/outputs/:id` | chi tiết + URL download (signed) |
-| POST | `/outputs/:id/youtube` | `{ privacy }` → enqueue upload YouTube (OAuth user) |
-| GET | `/outputs/:id/youtube` | trạng thái upload |
+| Method | Path | Auth | Mô tả |
+| --- | --- | --- | --- |
+| GET | `/outputs` | AUTH | thư viện video (`?projectId=`; array trực tiếp, mỗi row kèm `url`) [CURRENT] |
+| GET | `/outputs/:id` | AUTH (+owner/admin) | chi tiết + URL download (signed) [CURRENT: object trực tiếp] |
+| POST | `/outputs/:id/youtube` | AUTH+OWNER | `{ privacy }` → stub hàng đợi `youtube_uploads` `pending` (upload thật chưa gắn; idempotent) [CURRENT] |
+| GET | `/outputs/:id/youtube` | AUTH+OWNER | trạng thái upload (row mới nhất hoặc `{ status: 'none' }`) [CURRENT] |
 
 ---
 
 ## 5. Queue & Analytics
 
-| Method | Path | Mô tả |
-| --- | --- | --- |
-| GET | `/queue` | job đang chạy/thất bại (toàn hệ với ADMIN) |
-| GET | `/analytics` | `{ videos, minutesTranslated, byProvider, byDay }` |
-| GET | `/providers` | danh sách provider + health status |
-| GET | `/providers/:provider/quota` | `{ usedToday, limitToday, usedThisMinute, limitThisMinute, percentUsed }` theo user hiện tại — dùng cho banner cảnh báo quota trên UI (`11` §4.1) |
+| Method | Path | Auth | Mô tả |
+| --- | --- | --- | --- |
+| GET | `/queue` | AUTH | 200 job gần nhất của user (toàn hệ nếu ADMIN) [CURRENT: array trực tiếp] |
+| GET | `/analytics` | AUTH | `{ videos, totalProjects, completed, byMode, minutesTranslated, byProvider, byDay, jobStats }` [CURRENT: object trực tiếp] |
+| GET | `/providers` | AUTH | provider theo nhóm `{ llm, asr, tts, vision, video }` + health 30d + `hasKey` [CURRENT] |
+| GET | `/providers/:provider/quota` | AUTH | quota user hiện tại — dùng cho banner cảnh báo quota trên UI (`11` §4.1) [CURRENT] |
 
 ---
 
 ## 6. Settings / Keys / Logs (USER & ADMIN)
 
-| Method | Path | Mô tả |
-| --- | --- | --- |
-| GET/PUT | `/settings` | cấu hình user |
-| GET/POST | `/api-keys` | quản lý API key (trả về đã mã hoá ẩn); `POST` chấp nhận nhiều key cùng `provider` với `label`/`priority` khác nhau để round-robin (`11` §5) |
-| DELETE | `/api-keys/:id` | thu hồi |
-| GET | `/logs` | `ProviderLog` (project của user / toàn hệ nếu ADMIN) |
-| GET/PUT | `/admin/users` | quản lý user (ADMIN) |
-| GET | `/admin/providers` | cấu hình provider global (ADMIN) |
+| Method | Path | Auth | Mô tả |
+| --- | --- | --- | --- |
+| GET/PUT | `/settings` | AUTH | cấu hình user (object trực tiếp) [CURRENT] |
+| GET/POST | `/api-keys` | AUTH | quản lý API key (trả về đã mã hoá ẩn, kèm `keyPreview`); `POST` chấp nhận nhiều key cùng `provider` với `label`/`priority` khác nhau để round-robin (`11` §5) [CURRENT] |
+| PUT | `/api-keys/:id` | AUTH | toggle `isActive` / sửa `label`/`tier`/`priority` (EXTRA: đã cài đặt, chưa document trước đây) [CURRENT] |
+| DELETE | `/api-keys/:id` | AUTH | thu hồi [CURRENT] |
+| GET | `/logs` | AUTH | `ProviderLog` (project của user / toàn hệ nếu ADMIN; array trực tiếp; `status 'ok'→'success'`, `type` map theo taxonomy frontend, gốc giữ ở `rawType`) [CURRENT] |
+| GET/PUT | `/admin/users` | AUTH+ADMIN | quản lý user [CURRENT] |
+| GET | `/admin/providers` | AUTH+ADMIN | stub `{ global: true, note }` — key per-user qua `/api-keys` [CURRENT] |
 
 ---
 
-## 7. Ví dụ response `/projects/:id` (TRANSLATE_DUB)
+## 7. Ví dụ response `/projects/:id` (TRANSLATE_DUB) [CURRENT: object trực tiếp, statuses lowercase]
 
 ```json
 {
-  "data": {
-    "id": "p_2",
-    "mode": "TRANSLATE_DUB",
-    "status": "RUNNING",
-    "params": {
-      "sourceLanguage": "auto", "targetLanguage": "vi",
-      "stylePreset": "bat-trend", "enableDubbing": true,
-      "maskMethod": "fill"
-    },
-    "jobs": [
-      { "type": "dub.ingest", "status": "SUCCESS" },
-      { "type": "dub.stt", "status": "SUCCESS" },
-      { "type": "dub.ocr", "status": "SUCCESS" },
-      { "type": "dub.translate", "status": "RUNNING", "percent": 62 }
-    ],
-    "transcriptPreview": [
-      { "index": 0, "startSec": 0.4, "endSec": 3.1,
-        "text": "おはよう", "translation": "Chào buổi sáng nha mấy bạ", "speaker": "SPK_1" }
-    ],
-    "ocrRegions": [
-      { "id": "r_1", "startSec": 0.4, "endSec": 3.1,
-        "ratioX": 0.0625, "ratioY": 0.9074, "ratioW": 0.4375, "ratioH": 0.0833,
-        "maskStrength": 0.6, "isStatic": false, "source": "AUTO" }
-    ],
-    "output": null
-  }
+  "id": "p_2",
+  "mode": "TRANSLATE_DUB",
+  "status": "running",
+  "params": {
+    "sourceLanguage": "auto", "targetLanguage": "vi",
+    "stylePreset": "bat-trend", "enableDubbing": true,
+    "maskMethod": "fill"
+  },
+  "jobs": [
+    { "type": "dub.ingest", "status": "success" },
+    { "type": "dub.stt", "status": "success" },
+    { "type": "dub.translate", "status": "running", "progress": 62 }
+  ],
+  "transcriptPreview": [
+    { "index": 0, "startSec": 0.4, "endSec": 3.1,
+      "text": "おはよう", "translation": "Chào buổi sáng nha mấy bạ", "speaker": "SPK_1" }
+  ],
+  "ocrRegions": [
+    { "id": "r_1", "startSec": 0.4, "endSec": 3.1,
+      "ratioX": 0.0625, "ratioY": 0.9074, "ratioW": 0.4375, "ratioH": 0.0833,
+      "maskStrength": 0.6, "isStatic": false, "source": "AUTO" }
+  ],
+  "output": null
 }
 ```
 
 ---
 
-## 8. Mã lỗi chuẩn
+## 8. Mã lỗi chuẩn [CURRENT: `{ message, code, error: { code, message } }`]
 
 | Code | Ý nghĩa |
 | --- | --- |
@@ -215,15 +238,18 @@ Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 | `PROV_001` | provider lỗi (xem ProviderLog) |
 | `JOB_001` | job thất bại không thể retry |
 | `VAL_002` | chỉnh thời gian segment gây chồng lấn không thể tự động giải quyết (xem `03` §3 Overlap Detection) |
-| `LIMIT_001` | user đã đạt giới hạn số project chạy đồng thời (`MAX_CONCURRENT_PROJECTS_PER_USER`); project được tạo với status `QUEUED` |
+| `LIMIT_001` | user đã đạt giới hạn số project chạy đồng thời (`MAX_CONCURRENT_PROJECTS_PER_USER`); project được tạo với status `queued` |
 | `COPYRIGHT_001` | thiếu xác nhận `copyrightAcknowledged` khi tạo project |
-| `PROV_002` | tất cả API key của provider đã cạn quota (429/quota-exceeded); job chuyển `RETRY` với lịch chờ, xem `11` §4.2 |
-| `MEDIA_001` | file upload vượt quá dung lượng cho phép (500MB mặc định) |
-| `MEDIA_002` | chưa consent Terms mới nhất trước khi tạo MediaJob |
-| `MEDIA_003` | MediaJob stage thất bại (xem `error` trong `MediaJobStage`) |
-| `MEDIA_004` | TTS voice chưa cấu hình khi enableDubbing = true |
-| `MEDIA_005` | Dịch quá dài/short so với slot (>20% lệch) — BUSINESS_RULE_VIOLATION |
-| `MEDIA_006` | Audio dub source of truth không đồng bộ (`tts_audio_ref` vs `dub_track_asset_id`) — cần refresh/re-process |
+| `PROV_002` | tất cả API key của provider đã cạn quota (429/quota-exceeded); job chuyển `retry` với lịch chờ, xem `11` §4.2 |
+| `RETRY_WAITING` | stage đang chờ quota hồi phục (`retry` + `next_retry_at` chưa tới) — [CURRENT, EXTRA] |
+| `OFFSET_MISMATCH` | chunk offset lệch — resume từ `expectedOffset` — [CURRENT, EXTRA] |
+| `PIPELINE_RUNNING` | pipeline đang chạy, không xoá/redub được — [CURRENT, EXTRA] |
+| `MEDIA_001` | [TARGET/FUTURE: không cài đặt — upload CURRENT giới hạn 2GB resumable / 4GB legacy, không mã này] |
+| `MEDIA_002` | [NOT IMPLEMENTED: media-consent chưa cài đặt] |
+| `MEDIA_003` | [TARGET/FUTURE: MediaJobStage chưa cài đặt] |
+| `MEDIA_004` | [TARGET/FUTURE: TTS voice check CURRENT chỉ warn-log khi tạo project, không chặn] |
+| `MEDIA_005` | [TARGET/FUTURE: lệch slot xử lý ở `ttsAlign`/render validation, không mã này] |
+| `MEDIA_006` | [TARGET/FUTURE: `tts_audio_ref` vs `dub_track_asset_id` chưa cài đặt] |
 
 ---
 

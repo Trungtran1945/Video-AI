@@ -11,6 +11,19 @@ request/ngày (RPD) và tổng token/ký tự/tháng.
 TTS/LLM) — nếu không kiểm soát, một phim 2–3h dễ dàng sinh ra **hàng trăm cuộc gọi** trong vài phút
 và chắc chắn dính lỗi `429 Too Many Requests` hoặc cạn quota tháng giữa chừng.
 
+# Current Implementation (CURRENT)
+
+- [CURRENT] `RateLimiter` TokenBucket + SlidingWindow + daily cap theo `(userId, provider, apiKeyId)`, in-memory per-process (`backend/src/lib/rateLimiter.js:30-122,166-172`): `acquire()` chờ theo RPM, throw `RateLimitExhaustedError` khi chạm RPD, `markRateLimited()` freeze bucket 10s.
+- [CURRENT] Gemini per-key sliding-window (`backend/src/providers/rateLimit.js:18-51`, `GEMINI_RPM` mặc định 10) + `generateContent` dùng đúng độ trễ `Retry-After` / `retry in Xs` kết hợp backoff 1s→30s, cap 60s (`backend/src/providers/geminiClient.js:106-116`), budget `GEMINI_MAX_RETRIES` mặc định 5.
+- [CURRENT] `ProviderCache` SHA-256 `(provider + type + model + normalized input)` + TTL 90 ngày (`backend/src/lib/callProvider.js:37-86,127-156`); [PARTIAL] bỏ qua config `providerCacheEnabled`/`providerCacheTtlDays` (`backend/src/config.js:46-47`).
+- [CURRENT] Fallback theo segment: OCR thiếu key → Tesseract local (`backend/src/providers/registry.js:160-164`), EdgeTTS lỗi → Google TTS (`backend/src/providers/tts/edgeTts.js:42-50`), GT lỗi → LLM direct + restyle có fallback (`backend/src/pipeline/stages/dubTranslate.js:153-212`), loudnorm lỗi → copy audio thô (`backend/src/pipeline/stages/dubIngest.js:34-38`), NVENC lỗi → libx264 (`backend/src/media/mediaService.js:491-503`).
+- [CURRENT] 429 park: `next_retry_at = now + 60s` (`backend/src/pipeline/runner.js:38-45`), MAX 5 lần (`runner.js:408-414`), project về `queued` chờ resume (`runner.js:277-280`).
+- [PARTIAL] `callProvider` hardcode `rpm: 10` (`backend/src/lib/callProvider.js:139-143`), bỏ qua bảng `provider_rate_limits` và `providerRateLimitSafetyMargin` (`backend/src/config.js:45`).
+- [PARTIAL] `backend/src/services/quotaGuardService.js` (chữ `q` thường) chỉ được wired tới `GET /providers/:provider/quota` (`backend/src/routes/v1/providers.js:83-91`); không pre-check pipeline, không injection `quota_risk` vào job.
+- [NOT IMPLEMENTED] Round-robin đa key + cooldown: `resolveApiKey` chỉ lấy key đầu giải mã được (`backend/src/providers/registry.js:115-131`), không round-robin/cooldown; `selectBestApiKey` check per-key không hiệu quả (đếm `rate_limited` chung provider + snapshot chung user/provider) và là dead code (không caller).
+
+> Mọi nội dung phía dưới không gắn nhãn [CURRENT]/[PARTIAL] là thiết kế tương lai [TARGET/FUTURE]; đường dẫn `packages/*` + Prisma là [TARGET], CURRENT là `backend/src/**/*.js` + SQLite (`backend/src/db/schema.js`).
+
 ---
 
 ## 1. Nguyên tắc thiết kế
@@ -26,9 +39,9 @@ và chắc chắn dính lỗi `429 Too Many Requests` hoặc cạn quota tháng 
 
 ---
 
-## 2. Rate Limiter theo Provider (packages/ai, packages/providers/*)
+## 2. Rate Limiter theo Provider (packages/ai, packages/providers/*) [TARGET — CURRENT là `backend/src/lib/rateLimiter.js` + `backend/src/providers/rateLimit.js`, không `packages/*`]
 
-### 2.1. Cấu hình giới hạn đã biết (seed cứng + override qua DB)
+### 2.1. Cấu hình giới hạn đã biết (seed cứng + override qua DB) [PARTIAL]
 
 Mỗi provider có **profile giới hạn** lưu ở bảng `ProviderRateLimit` (mới), seed sẵn giá trị an toàn
 cho các gói **free tier phổ biến**, user có thể override khi nhập API key riêng (biết rõ gói mình dùng):
@@ -50,6 +63,8 @@ model ProviderRateLimit {
 Giá trị seed mặc định (tham khảo, **cấu hình được qua Admin/Settings**, không hardcode trong code
 business logic — đúng NFR-3 Extensible):
 
+> [PARTIAL] — Seed `provider_rate_limits` đã có (`backend/src/db/schema.js:351-362`: gemini free 10/250/1...). [NOT IMPLEMENTED] override per-user qua DB + `providerRateLimitSafetyMargin` (`backend/src/config.js:45`) chưa được `callProvider` đọc (hardcode `rpm: 10` ở `callProvider.js:139-143`).
+
 | Provider | Tier | RPM | RPD | Concurrency |
 | --- | --- | --- | --- | --- |
 | gemini | free | 10 | 250 | 1 |
@@ -61,7 +76,9 @@ business logic — đúng NFR-3 Extensible):
 > Các giá trị này **thấp hơn thực tế công bố của nhà cung cấp một chút** (an toàn margin ~20%) vì
 > free tier hay thay đổi và không có SLA — mục tiêu là **không bao giờ chạm ngưỡng cứng**.
 
-### 2.2. TokenBucket / Sliding Window Limiter
+### 2.2. TokenBucket / Sliding Window Limiter [CURRENT]
+
+> [CURRENT] — `backend/src/lib/rateLimiter.js:30-122` (TokenBucket + SlidingWindow + daily) per `(userId, provider, apiKeyId)` in-memory; Gemini dùng thêm per-key window riêng (`backend/src/providers/rateLimit.js:18-51`). Câu `packages/ai` + `RateLimitedClient` là [TARGET].
 
 `packages/ai` và mỗi `packages/providers/*` bọc lời gọi provider qua 1 lớp `RateLimitedClient`
 dùng thuật toán **Token Bucket** (cho phép burst nhỏ trong giới hạn) kết hợp **Sliding Window**
@@ -92,7 +109,9 @@ export interface RateLimiter {
   (retry cũng sẽ lại bị chặn) mà chuyển `GenerationJob.status = RETRY` với `nextRetryAt` = đầu ngày
   tiếp theo (múi giờ UTC reset của provider), đồng thời gửi cảnh báo (xem §4).
 
-### 2.3. Vị trí áp dụng trong pipeline
+### 2.3. Vị trí áp dụng trong pipeline [PARTIAL]
+
+> [PARTIAL] — `callProvider` hiện tại check cache → `getRateLimiter(..., { rpm: 10 })` hardcode → `acquire()` → chạy `fn()` → log + `storeCache` (`backend/src/lib/callProvider.js:130-176`); không đọc DB/config safetyMargin, không có lớp `rateLimited()` bọc trước `tracked()` như mẫu `callProvider(meta, limiter, fn)` dưới đây ([TARGET]).
 
 Toàn bộ lời gọi ra ngoài của `AIProvider`, `AsrProvider`, `TtsProvider`, `OcrProvider`,
 `VisionProvider` đều đi qua `tracked()` (đã có ở `03` §6) — **bổ sung thêm** một lớp bọc
@@ -133,7 +152,9 @@ Rate limit chỉ là lớp phòng thủ cuối; cách hiệu quả nhất với 
 | `translate` (LLM, TRANSLATE_DUB) | Đã gộp theo context window ~10 câu | Giữ nguyên, nhưng **tăng kích thước context window** khi dùng free tier LLM có giới hạn RPM thấp (đổi lấy ít request hơn, chấp nhận prompt dài hơn) — cấu hình `translateContextWindowSec` theo provider tier |
 | `ocr` (TRANSLATE_DUB) | Frame sampling 1–2 fps → 1 cuộc gọi OCR/frame | Với `OcrProvider` dạng local (Tesseract/PaddleOCR self-host) thì không tính quota; với `OcrProvider` cloud (Gemini Vision OCR) → **giảm fps xuống 0.5–1fps khi phát hiện provider là free tier** (cấu hình `ocrSampleFpsByTier`) |
 
-### 3.2. Cache theo nội dung (Content-hash Cache)
+### 3.2. Cache theo nội dung (Content-hash Cache) [PARTIAL]
+
+> [PARTIAL] — [CURRENT] SHA-256 + `expires_date` theo TTL truyền vào (mặc định 90 ngày) đã cài (`backend/src/lib/callProvider.js:37-86,127-156`, bảng `provider_cache` ở `backend/src/db/schema.js:256-266`). [NOT IMPLEMENTED] tôn trọng `PROVIDER_CACHE_ENABLED`/`PROVIDER_CACHE_TTL_DAYS` (`backend/src/config.js:46-47`): code chưa đọc 2 cờ này. Model Prisma dưới đây là [TARGET].
 
 Bảng mới `ProviderCache`:
 
@@ -172,9 +193,11 @@ model ProviderCache {
 
 ---
 
-## 4. Theo dõi hạn mức & cảnh báo trước khi cạn (Budget Guard)
+## 4. Theo dõi hạn mức & cảnh báo trước khi cạn (Budget Guard) [PARTIAL]
 
-### 4.1. Theo dõi mức dùng
+### 4.1. Theo dõi mức dùng [PARTIAL]
+
+> [PARTIAL] — File truth là `backend/src/services/quotaGuardService.js` (chữ `q` thường, không phải `QuotaGuardService`/`quota-guard.service.ts`). [CURRENT] duy nhất: `getQuotaSnapshot` được `GET /providers/:provider/quota` gọi (`backend/src/routes/v1/providers.js:83-91`). [NOT IMPLEMENTED] pre-check trước enqueue + injection `quota_risk` vào `GenerationJob.result` + SSE/email như mô tả dưới đây.
 
 Mở rộng `ProviderLog` (đã có ở `02`) — không đổi schema, chỉ thêm truy vấn tổng hợp real-time:
 
@@ -200,7 +223,9 @@ export interface QuotaSnapshot {
      Notification (email nhẹ, không phải lỗi) — để user **biết trước** thay vì bị FAILED bất ngờ
      giữa chừng sau 20 phút chờ.
 
-### 4.2. Khi thực sự cạn quota giữa chừng (429 hoặc lỗi quota-exceeded)
+### 4.2. Khi thực sự cạn quota giữa chừng (429 hoặc lỗi quota-exceeded) [CURRENT]
+
+> [CURRENT] — 429/quota park đúng như mô tả nhưng bằng code khác: `isRateLimitError` → `status='rate_limited'` + `markRateLimited()` (`callProvider.js:159-175`), `runner.js:406-436` set `status='retry'` + `next_retry_at` (ưu tiên `Retry-After` parse được, else `now + 60s` ở `getNextRetryAt`), MAX 5 rồi `PROV_002`, project park `queued` (`runner.js:277-280`). Gemini backoff theo `Retry-After`/`retry in Xs` ở `geminiClient.js:106-116`. Không có `RateLimitExhaustedError → nextRetryAt đầu ngày` như câu cũ.
 
 - `RateLimitExhaustedError` (từ §2.2) hoặc lỗi provider trả `429`/`insufficient_quota` được phân
   loại riêng trong `tracked()`: `ProviderLog.status = 'rate_limited'` (giá trị mới, không phải
@@ -238,7 +263,9 @@ model ApiKey {
 }
 ```
 
-### 5.2. Chiến lược Round-Robin + Failover trong DI Registry
+### 5.2. Chiến lược Round-Robin + Failover trong DI Registry [NOT IMPLEMENTED]
+
+> [NOT IMPLEMENTED] — `getProvider` chỉ resolve single-key đầu giải mã được, không round-robin/cooldown (`backend/src/providers/registry.js:115-171`); không có `resolveWithKeys`. `selectBestApiKey` tồn tại nhưng là dead code (không caller), logic per-key không hiệu quả (bỏ qua `apiKeyId` khi đếm `rate_limited` + snapshot chung user/provider ở `quotaGuardService.js:109-122`). `POST /api-keys` cho phép nhiều key cùng provider (`06` §5) nhưng pipeline chưa xoay vòng.
 
 `container.resolve('tts', 'elevenlabs')` (xem `03` §2) mở rộng thành `container.resolveWithKeys(...)`:
 
@@ -326,7 +353,9 @@ sequenceDiagram
 
 ---
 
-## 8. Cấu hình vận hành liên quan (bổ sung `.env`, xem `08` §3)
+## 8. Cấu hình vận hành liên quan (bổ sung `.env`, xem `08` §3) [PARTIAL]
+
+> [PARTIAL] — 4 key dưới đã có trong `backend/src/config.js:43-48` (`quotaWarningThreshold`, `providerRateLimitSafetyMargin`, `providerCacheEnabled`, `providerCacheTtlDays`, `defaultProviderMode`). [NOT IMPLEMENTED] `callProvider` chưa đọc `providerRateLimitSafetyMargin`/`providerCacheEnabled`/`providerCacheTtlDays` (xem §2.1/§3.2).
 
 ```env
 # Rate limiting / Free-tier resilience (xem 11_RATE_LIMIT_VA_FREE_TIER.md)

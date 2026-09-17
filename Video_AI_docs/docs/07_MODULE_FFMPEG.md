@@ -1,11 +1,27 @@
-# 07 — Module FFmpeg (packages/media)
+# 07 — Module FFmpeg (packages/media) [PARTIAL — CURRENT là `backend/src/media/ffmpeg.js` + `backend/src/media/mediaService.js` JS, không `packages/media` TS]
 
 Gói `media` đóng gói mọi thao tác FFmpeg thành hàm TypeScript an toàn, dùng chung bởi cả 2 mode.
 Mục tiêu: backend không gọi lệnh ffmpeg thô, mà qua interface `MediaService`.
 
+# Current Implementation (CURRENT)
+
+- [CURRENT] `resolveBin`: `FFMPEG_PATH`→PATH→`C:\ffmpeg\bin`→bare name (`backend/src/media/ffmpeg.js:13-52`).
+- [CURRENT] `enqueue()` serialize mọi ffmpeg/ffprobe vì build Windows crash exit -22 khi 2 tiến trình ghi file đồng thời (`backend/src/media/ffmpeg.js:123-136`).
+- [CURRENT] NVENC `p4`/`cq23` else libx264 `veryfast`/`crf20` chỉ ở `burnSubtitlesStyled` qua `encodeArgs()`; các helper khác hardcode x264; `muxStream` dùng `-c:v copy` (`backend/src/media/mediaService.js:366-375,450-503`).
+- [CURRENT] Timeout stage 15/30m (`backend/src/pipeline/runner.js:321-327`) + `BURN 20m` + `DUB_TRACK 15m` (`backend/src/pipeline/stages/dubRender.js:20-21`); `SIGTERM`→`SIGKILL` 5s trong `runBin` (`backend/src/media/ffmpeg.js:54-91`).
+- [CURRENT] ASS `\pos` từ `ocr_regions` ratios (`original`/`top`/`bottom`/`custom`) qua `loadSubtitleRegions`/`buildAss` (`backend/src/pipeline/stages/dubRender.js:199-279`).
+- [CURRENT] Fallback loudnorm→raw (`dubIngest.js:34-38`).
+- [NOT IMPLEMENTED] `maskRegions()` (`blur`/`fill`/`delogo`/`inpaint`) + `maskStrength`/`between(t)`: không hàm nào trong `mediaService.js`; DB `ocr_regions` đã có `mask_strength`/`is_static` (`backend/src/db/schema.js:286-300`) nhưng chưa có consumer.
+- [PARTIAL] `signal` + `CANCELLED_BY_USER` + cleanup partial: `runBin`/`ffmpeg()` hỗ trợ `signal` (`ffmpeg.js:54-81,133-135`) nhưng `mediaService.js` hầu hết không nhận `signal`; abort hiện chỉ ở biên stage (`if (signal?.aborted) throw new Error('Cancelled')`, vd `dubRender.js:30`, `dubIngest.js:16`), error là `'Cancelled'` chung, không mã `CANCELLED_BY_USER`, không xoá output dở dang tập trung.
+- [NOT IMPLEMENTED] Inpaint FFmpeg-native: cần external provider (Vision/inpainting), ffmpeg chỉ composite.
+
+> Mọi khối TS `export interface MediaService` + chữ ký có `signal`/`maskRegions` phía dưới là [TARGET]; chỉ các đoạn gắn [CURRENT]/[PARTIAL]/[NOT IMPLEMENTED] mới phản ánh code main.
+
 ---
 
-## 1. API chính
+## 1. API chính [TARGET]
+
+> [TARGET] — Khối interface dưới là thiết kế (TS `packages/media`). [CURRENT] là các hàm JS rời trong `backend/src/media/mediaService.js` (`probe`, `extractAudio`, `burnSubtitlesStyled`, `buildDubTrack`, `muxStream`...). [NOT IMPLEMENTED] `maskRegions`; [PARTIAL] `signal` (xem `# Current Implementation`).
 
 ```ts
 export interface MediaService {
@@ -86,7 +102,9 @@ Hai pass chuẩn EBU R128: đo rồi áp
 `-af loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json`. Audio đầu vào chuẩn LUFS giúp STT
 và TTS mixing ổn định hơn.
 
-### 2.13. maskRegions (TRANSLATE_DUB) ★
+### 2.13. maskRegions (TRANSLATE_DUB) ★ [NOT IMPLEMENTED]
+
+> [NOT IMPLEMENTED] — Không có `maskRegions()` trong `backend/src/media/mediaService.js` (grep toàn `backend/src/media` rỗng). Bảng `ocr_regions` đã có `mask_strength`/`is_static` + ratios (`backend/src/db/schema.js:286-300`) nhưng chưa có consumer; `between(t)`/`boxblur`/`drawbox`/`delogo` dưới đây là [TARGET].
 Che vùng hardsub theo từng `OcrRegion { startSec, endSec, ratioX, ratioY, ratioW, ratioH, maskStrength, isStatic? }`;
 pixel được tính `x = round(ratioX * vw)`, ... từ `videoDims`, chỉ bật filter trong khoảng thời gian đó:
 
@@ -104,13 +122,19 @@ AI inpainting (`method='inpaint'`) không chạy bằng ffmpeg: VisionProvider s
 ffmpeg chỉ composite lại vào timeline gốc. ⚠️ `inpaint` là **tùy chọn nâng cao (premium)** — gọi thêm
 Vision/Inpainting Provider, render lâu hơn và tốn chi phí API; `blur`/`fill` là mặc định nhanh nhẹ.
 
-### 2.14. burnSubtitlesStyled (TRANSLATE_DUB)
+> [NOT IMPLEMENTED] — `inpaint` KHÔNG phải FFmpeg-native, cần external provider; hiện chưa có pipeline nào cài đặt (xem `# Current Implementation`).
+
+### 2.14. burnSubtitlesStyled (TRANSLATE_DUB) [CURRENT]
+
+> [CURRENT] — `burnSubtitlesStyled` dùng `encodeArgs()` (NVENC `p4`/`cq23` else x264 `veryfast`/`crf20`) + ASS `\pos` từ ratios (`backend/src/media/mediaService.js:366-375`, `dubRender.js:231-279`).
 Burn file **ASS** (không phải SRT) vì cần `\pos` định vị theo vùng mask: mặc định đè lên vị trí bbox
 cũ (tính từ `ratioX/Y/W/H` × `videoDims`), hoặc theo `subPosition` (`original`/`top`/`bottom`/`custom`)
 user chọn (xem `01` §3.2) + font/outline:
 `-vf "ass=subs.ass"` — giữ nguyên timing `[startSec, endSec]` của TranscriptSegment.
 
-### 2.15. mixDubAudio & muxStream (TRANSLATE_DUB)
+### 2.15. mixDubAudio & muxStream (TRANSLATE_DUB) [CURRENT]
+
+> [CURRENT] — `muxStream` là `-c:v copy` (không re-encode, không NVENC) + `-c:a aac 192k` (`mediaService.js:450-462`); `buildDubTrack` amix + ducking ×0.25 + `loudnorm` (`mediaService.js:391-447`). Câu "Mux cuối: `-c:v h264_nvenc -preset p4`..." dưới đây là [TARGET] (chỉ đúng cho `burnSubtitlesStyled`/`encodeVideo`).
 
 - **Audio dub timing handling** (xem `05_THIET_KE_PIPELINE_CHI_TIET.md` §B.5 chi tiết):
   - **Timing lệch lớn (>20%)**: MediaJob → `FAILED`, thông báo user cần rerun.
@@ -157,7 +181,9 @@ Sau khi render xong, kiểm tra output:
 - File trung gian lưu `storage/tmp`, dọn sau khi xuất hoặc theo retention policy (`Project.expiresAt`,
   xem `08` §6 và `02` §5).
 
-### 3.1. Huỷ tiến trình FFmpeg giữa chừng (Cancel)
+### 3.1. Huỷ tiến trình FFmpeg giữa chừng (Cancel) [PARTIAL]
+
+> [PARTIAL] — `runBin`/`ffmpeg()` đã hỗ trợ `signal` + `SIGTERM`→`SIGKILL` 5s + `timeout` (`backend/src/media/ffmpeg.js:54-91,133-135`). Nhưng `mediaService.js` hầu hết không nhận `signal` (chỉ `burnSubtitlesStyled`/`buildDubTrack` nhận `timeout`); abort hiện chỉ ở biên stage (`signal?.aborted → throw 'Cancelled'`), không mã `CANCELLED_BY_USER`, không cleanup partial tập trung. Chữ ký `signal?` + `CANCELLED_BY_USER` dưới đây là [TARGET].
 
 Mọi hàm `MediaService` chạy lâu (render, concat, mask, burn-in) nhận thêm tham số tuỳ chọn
 `signal?: AbortSignal`:

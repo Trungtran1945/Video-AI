@@ -139,6 +139,11 @@ tuỳ chọn (13 StylePreset) và **(tuỳ chọn)** lồng tiếng AI, giữ ng
 
 ## B.0. Tổng quan stage
 
+> [CURRENT] — `STAGES.TRANSLATE_DUB` trong `backend/src/pipeline/runner.js:122-129`:
+> `[dub.ingest, dub.stt, dub.merge, dub.translate, dub.ttsAlign, dub.render]`, chạy
+> sequential (single-type path luôn). [TARGET] parallel + FlowProducer giữ nguyên
+> theo `01` §5.1.
+
 | Stage | Thực thi bởi | Đầu ra chính |
 | --- | --- | --- |
 | ingest | media | demux audio/video, chuẩn hoá LUFS, metadata |
@@ -148,19 +153,29 @@ tuỳ chọn (13 StylePreset) và **(tuỳ chọn)** lồng tiếng AI, giữ ng
 | ttsAlign ★ | TtsProvider + ForcedAlignService (core) | audio dub khớp slot thời gian (tuỳ chọn) |
 | render | media | burn-in sub mới → mix → mux |
 
+> [CURRENT] Nhánh OR `params.ocrMode ? dub.ocr : dub.stt → dub.merge`
+> (`runner.js:70-108`). `dub.ocr` đã cài đặt trong `stages/dubOcr.js` (sample
+> `OCR_FPS||2`, cap `OCR_CAP||900`, `OCR_MIN_CONF||0.55`) nhưng unreachable vì không
+> có trong `STAGES.TRANSLATE_DUB` + `firstRunnableStage` + `regenerate`. Nhánh
+> parallel `dub.stt ‖ dub.ocr` hiện là dead code + FFmpeg serialize mọi call
+> (`media/ffmpeg.js:126-136`, build Windows crash exit -22 khi 2 tiến trình ghi file
+> đồng thời).
+
 Stage `translate` chỉ chạy khi `merge` hoàn thành: kiểm tra transcript, translation, duration và language config.
 
 ## B.1. Stage: ingest & tiền xử lý
 
-- **Upload resumable**: client chia file (≤ 2GB) thành chunk 5–10MB upload song song (giao thức
-  kiểu TUS). Mất mạng ở 99% → resume từ offset đã nhận, không tải lại từ đầu (xem `06_API.md`).
+- **Upload resumable** [CURRENT]: client chia file (≤ 2GB) thành chunk 8MB cố định
+  (`CHUNK_SIZE`, `backend/src/routes/v1/upload.js:43-44`) upload tuần tự
+  (`PUT /uploads/:id/chunk?offset=N`, limit 16MB; lệch offset → 409 `OFFSET_MISMATCH`;
+  `HEAD /uploads/:id` trả `Upload-Offset` để resume). Legacy `POST /upload/` multipart
+  cho tệp nhỏ (limit 4GB, `upload.js:27`). Mất mạng ở 99% → resume từ offset đã nhận,
+  không tải lại từ đầu (xem `06_API.md`).
 - **Hạn chế URL**:
   - **Chỉ chấp nhận `minio://` (nội bộ)** — KHÔNG chấp nhận HTTP/HTTPS URL từ internet vì:
     • Hầu hết video platform (YouTube, Bilibili...) chặn direct link → download timeout/fail
     • Không có fallback mechanism → phải upload file vật lý
     • User đọc docs sẽ thất vọng khi link không hoạt động
-  - **Hạn chế dung lượng file upload**: Tối đa **500MB** (configurable qua `MEDIA_MAX_UPLOAD_SIZE_MB`).
-    File vượt quá sẽ bị reject ngay từ API, KHÔNG enqueue vào queue để tránh lãng phí tài nguyên worker.
 - **Demux FFmpeg**: tách audio stream (WAV/FLAC 16kHz mono cho ASR) và video stream.
 - **Audio normalization LUFS** (`loudnorm`, mục tiêu −16 LUFS):
   - Chạy 2-pass: Pass 1 phân tích, Pass 2 áp dụng normalization → âm lượng đều, STT chính xác hơn.
@@ -285,12 +300,17 @@ cho mỗi TranscriptSegment seg (đã có translation):
 
 ## B.5. Stage: render — Burn-in sub mới — ✅ ĐÃ CẢI THIỆN
 
-- **BLOCK_RENDER validation** (transflow doc 15 §5.0): Kiểm tra TRƯỚC khi kích hoạt render:
+- **BLOCK_RENDER validation** [CURRENT] (transflow doc 15 §5.0,
+  `runner.js:367-379` + `stages/dubMerge.js:validateForRender`): Kiểm tra TRƯỚC khi kích hoạt render:
   - Có transcript segments không
   - Tất cả segments đã có translation
   - Duration hợp lệ (>0 và <=300s)
   - Nếu enableDubbing: tất cả segments có translation phải có TTS audio
-  - Nếu validation fail → FAILED ngay, không gọi FFmpeg
+  - Nếu validation fail → FAILED ngay, không gọi FFmpeg; lỗi `TRANSLATE_NEEDS_REVIEW` /
+    `BLOCK_RENDER` là lỗi dữ liệu → fail-fast, không retry/backoff (`isValidationError`,
+    `runner.js:29-36, 400-405`). User sửa tay
+    (`PATCH /projects/:id/segments/:segmentId/translation`) rồi Regenerate/Retry
+    (resume từ stage lỗi earliest qua `firstRunnableStage`).
 - **Burn-in phụ đề mới**: file ASS có vị trí mặc định đáy khung hình →
   `media.burnSubtitlesStyled`.
 - **Audio mixing** (xem `07_MODULE_FFMPEG.md` chi tiết):
@@ -309,11 +329,13 @@ cho mỗi TranscriptSegment seg (đã có translation):
   - Kiểm tra output không bị corrupt (FFmpeg probe).
   - Kiểm tra duration output ±2s so với duration gốc.
   - Nếu render fail → retry theo policy (2 lần, backoff 30s→120s), sau đó `FAILED`.
-- **Retry policy** (transflow doc 15 §7):
+- **Retry policy** [CURRENT] (transflow doc 15 §7, `runner.js:314-319`):
   - `dub.render`: max 2 retries, backoff 30s → 120s
   - `dub.ttsAlign`: max 3 retries, backoff 10s → 30s → 60s
   - `dub.stt`: max 3 retries, backoff 10s → 30s → 60s
   - `dub.translate`: max 3 retries, backoff 5s → 15s → 30s
+  - Rate-limit/quota: tối đa 5 lần, `next_retry_at` theo `Retry-After` hoặc chu kỳ reset,
+    project park `queued` chờ resume (xem `11` §4.2).
 - **Subtitle presentation options** (user chọn trước render):
   - `target_font`: Font-family từ danh sách có sẵn (Arial, Noto Sans CJK, v.v.).
   - `target_font_size`: Font size (16–48px), mặc định 22px.
@@ -347,13 +369,18 @@ cho mỗi TranscriptSegment seg (đã có translation):
 | Burn-in sub mới thay vì mask hardsub | Đơn giản hóa pipeline, giảm thời gian render, không cần OCR |
 | Bản dịch gom theo context window | dịch trọn mạch câu, tránh lệch ngữ cảnh giữa các segment |
 | TTS + forced align tách khỏi translate | retry TTS không phải dịch lại; invariant đo được (< 5%) |
-| Rút gọn câu trước khi tăng tốc quá mức | atempo giới hạn [0.9–1.15], giọng dub tự nhiên |
+| Rút gọn câu trước khi tăng tốc quá mức | atempo giới hạn [0.8–1.2] (`forcedAlignService.js:14-15`), giọng dub tự nhiên |
 
 ---
 
 # E. Retry Policy & Stage State Machine
 
 ## E.1. Stage State Machine (Áp dụng cho cả hai mode)
+
+> [TARGET] — Vocabulary `PENDING`/`PROCESSING`/`COMPLETED`/`STALE`/`SKIPPED` dưới đây là
+> thiết kế tương lai. [CURRENT]: `generation_jobs.status` + `projects.status` dùng enum
+> lowercase `pending`/`queued`/`running`/`completed`/`failed`/`cancelled` và job
+> `success`/`retry` (xem `01` §8.4, `runner.js`, `cancelProjectUseCase.js`).
 
 Mỗi Stage trong MediaJob đi qua các trạng thái:
 
@@ -378,6 +405,9 @@ PENDING → PROCESSING → COMPLETED
 các Stage `TRANSLATE`/`TTS` (nếu đã COMPLETED trước đó) → chuyển `STALE`, yêu cầu rerun.
 
 ## E.2. Retry Policy
+
+> [CURRENT] theo stage xem §B.5 (`runner.js:314-319`); bảng nhóm chung dưới đây là
+> [TARGET] tham khảo, giữ nguyên không xoá.
 
 | Stage Group | Max Retry | Delay | Retryable Errors |
 | --- | --- | --- | --- |
@@ -404,6 +434,13 @@ các Stage `TRANSLATE`/`TTS` (nếu đã COMPLETED trước đó) → chuyển `
 - Nếu `outputRef` khác → coi như rerun mới, xử lý bình thường.
 
 ## E.4. Cancellation (Graceful)
+
+> [CURRENT] — `POST /projects/:id/cancel` → `cancelProjectUseCase`: project + job
+> `pending`/`running` → `'cancelled'` (lowercase, không `FAILED`), abort pipeline
+> (`AbortController`), dọn `storage/tmp/{projectId}`, notify best-effort. Idempotent:
+> project đã `completed`/`failed`/`cancelled` → trả trạng thái hiện tại.
+> [TARGET] `CANCEL_REQUESTED` + `MediaJobStage` dưới đây là thiết kế tương lai
+> (NOT IMPLEMENTED — không có bảng MediaJobStage trong `backend/src/db/schema.js`).
 
 - User gửi `CANCEL_REQUESTED` → MediaJob chuyển `CANCEL_REQUESTED`.
 - Nếu Stage hiện tại đang `PROCESSING` → đợi provider hoàn tất (hoặc timeout 60s) rồi chuyển `CANCELLED`.

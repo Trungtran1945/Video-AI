@@ -1,5 +1,16 @@
 # 01 — Kiến trúc tổng thể
 
+# Current Implementation (CURRENT)
+
+- layout `backend/`+`frontend/` phẳng JS ESM (không apps/packages)
+- DB sql.js/SQLite file backend/data.db + schema backend/src/db/schema.js
+- pipeline backend/src/pipeline/runner.js sequential (SUMMARY 8 stages, TRANSLATE_DUB 6 stages [dub.ingest,dub.stt,dub.merge,dub.translate,dub.ttsAlign,dub.render]), không BullMQ per-stage
+- queue BullMQ+Redis chỉ cho projectQueue/notifyQueue/cleanupQueue
+
+# Target Architecture (FUTURE — NOT IMPLEMENTED)
+
+> Mọi nội dung phía dưới là thiết kế tương lai (giữ nguyên, không xóa); chỉ các đoạn gắn nhãn CURRENT/PARTIAL mới phản ánh code hiện tại trên branch main.
+
 > **Lưu ý Triển khai:** Tài liệu này mô tả thiết kế target (monorepo với `apps/` + `packages/`).
 > Triển khai hiện tại dùng cấu trúc phẳng `backend/` + `frontend/` với JavaScript (không TypeScript).
 > Xem `docs/superpowers/plans/` cho chi tiết gap giữa thiết kế và triển khai.
@@ -9,7 +20,7 @@ mô hình Provider Pattern, hàng đợi và các sơ đồ trình tự.
 
 ---
 
-## 1. Cấu trúc Monorepo (pnpm workspaces)
+## 1. Cấu trúc Monorepo (pnpm workspaces) [TARGET/FUTURE]
 
 ```
 AI-Shorts-Factory/
@@ -41,7 +52,7 @@ Lớp trên không được import implementation cụ thể của lớp dưới
 
 ---
 
-## 2. Tầng kiến trúc (Clean Architecture)
+## 2. Tầng kiến trúc (Clean Architecture) [TARGET/FUTURE]
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -103,7 +114,9 @@ Video nước ngoài
 
 ---
 
-## 4. Provider Pattern
+## 4. Provider Pattern [TARGET/FUTURE]
+
+> [TARGET/FUTURE] — Interface TypeScript trong `packages/` là thiết kế tương lai. CURRENT: provider JS trong `backend/src/providers/` (xem `11_RATE_LIMIT_VA_FREE_TIER.md` cho RateLimiter + ProviderCache hiện tại).
 
 Mọi dịch vụ ngoài được trừu tượng hoá qua interface. Ví dụ `TtsProvider`:
 
@@ -144,7 +157,10 @@ Tương tự: `AIProvider` (LLM), `AsrProvider` (transcribe + word timestamps + 
 
 ---
 
-## 5. Hàng đợi (BullMQ + Redis)
+## 5. Hàng đợi (BullMQ + Redis) [TARGET/FUTURE]
+
+> [TARGET/FUTURE] — Job per-stage + worker song song mỗi stage là thiết kế tương lai.
+> CURRENT: pipeline chạy sequential trong `backend/src/pipeline/runner.js`; BullMQ + Redis chỉ dùng cho 3 queue `projects`/`notifications`/`cleanup` (`backend/src/queue/projectQueue.js`, `notifyQueue.js`, `cleanupQueue.js`).
 
 Mỗi stage là 1 loại job. Worker tiêu thụ song song, retry tự động.
 
@@ -180,7 +196,7 @@ API ──enqueue──▶ Redis/BullMQ ──▶ Worker (per stage)
 Mỗi job **idempotent**: key theo `(projectId, stage)`. Thất bại → tự động retry; hết retry → đánh dấu
 `GenerationJob.status = FAILED` và thông báo user.
 
-### 5.1. Cơ chế barrier `dub.stt` → `dub.merge` → `dub.translate`
+### 5.1. Cơ chế barrier `dub.stt` → `dub.merge` → `dub.translate` [TARGET/FUTURE]
 
 BullMQ không có "chờ 2 job cha" built-in một cách an toàn nếu chỉ dùng `Promise.all` phía API (rủi ro
 mất trạng thái nếu API restart giữa chừng). Thiết kế dùng **BullMQ Flow Producer**:
@@ -202,7 +218,7 @@ FlowProducer.add({
 - Nếu job con `FAILED` sau hết retry, `dub.merge` không chạy → `Project.status = FAILED`,
   hiển thị đúng job nào lỗi để user retry thủ công (`POST /projects/:id/jobs/:type/retry`).
 
-### 5.2. Huỷ (Cancel) và thông báo hoàn thành
+### 5.2. Huỷ (Cancel) và thông báo hoàn thành [PARTIAL]
 
 - **Cancel**: `POST /projects/:id/cancel` → API gọi `job.remove()` cho mọi job `PENDING` của project
   trong BullMQ và gửi tín hiệu dừng cho job `RUNNING` (worker kiểm tra cờ `cancelled` định kỳ giữa các
@@ -247,7 +263,9 @@ sequenceDiagram
   A-->>W: notify hoàn thành
 ```
 
-### 6.1. Sơ đồ trình tự — TRANSLATE_DUB
+### 6.1. Sơ đồ trình tự — TRANSLATE_DUB [PARTIAL]
+
+> [PARTIAL] — Luồng stage đúng với `STAGES.TRANSLATE_DUB` trong `backend/src/pipeline/runner.js:111-154`; riêng `FlowProducer: dub.merge cha ← [dub.stt] con` là [TARGET/FUTURE] (CURRENT chạy sequential, không BullMQ Flow).
 
 ```mermaid
 sequenceDiagram
@@ -283,7 +301,9 @@ sequenceDiagram
 
 ---
 
-## 7. Storage Abstraction
+## 7. Storage Abstraction [TARGET/FUTURE]
+
+> [TARGET/FUTURE] — `packages/storage` + `S3Storage` là thiết kế tương lai. CURRENT: lưu file local qua `backend/src/pipeline/context.js` (`projectDir`/`resolveStorageKey`).
 
 `packages/storage` định nghĩa `StorageProvider` (`put`, `get`, `delete`, `signedUrl`).
 MVP cài đặt `LocalStorage` (ghi vào `storage/`), production cài đặt `S3Storage`.
@@ -330,9 +350,13 @@ Mọi asset (phim nguồn, scene, audio, video, subtitle, output) lưu qua abstr
 **Quyết định**: Dùng **SSE** cho progress pipeline (vì chỉ cần server push 1 chiều).
 Khi SSE mất kết nối → frontend tự poll lại `/projects/:id/status` sau 5s.
 
-### 8.4. Stage State Machine
+### 8.4. Stage State Machine [TARGET/FUTURE]
 
-Mỗi Stage trong MediaJob đi qua các trạng thái:
+> [TARGET/FUTURE] — State machine `MediaJob`/`MediaJobStage` với `STALE`/`SKIPPED`/`CANCEL_REQUESTED` là thiết kế tương lai, NOT IMPLEMENTED trong code hiện tại (không có bảng MediaJobStage trong `backend/src/db/schema.js`).
+>
+> CURRENT: `generation_jobs.status` + `projects.status` dùng enum lowercase: pending/queued/running/completed/failed/cancelled (xem `backend/src/pipeline/runner.js`, `backend/src/usecases/cancelProjectUseCase.js`).
+
+Mỗi Stage trong MediaJob [TARGET/FUTURE] đi qua các trạng thái:
 
 ```
 PENDING → PROCESSING → COMPLETED
@@ -348,9 +372,9 @@ PENDING → PROCESSING → COMPLETED
 | `PROCESSING` | Đang chạy (provider call, FFmpeg, v.v.) |
 | `COMPLETED` | Thành công, output đã lưu DB |
 | `FAILED` | Lỗi — có thể retry nếu chưa vượt max retry |
-| `STALE` | Đã completed nhưng dependency upstream thay đổi → cần rerun |
-| `SKIPPED` | Bỏ qua (vd: user tắt dubbing → Stage TTS được skip) |
-| `CANCEL_REQUESTED` | User yêu cầu huỷ — đang chờ graceful shutdown |
+| `STALE` [TARGET/FUTURE] | Đã completed nhưng dependency upstream thay đổi → cần rerun |
+| `SKIPPED` [TARGET/FUTURE] | Bỏ qua (vd: user tắt dubbing → Stage TTS được skip) |
+| `CANCEL_REQUESTED` [TARGET/FUTURE] | User yêu cầu huỷ — đang chờ graceful shutdown |
 | `CANCELLED` | Đã huỷ hoàn toàn |
 
 **Quy tắc STALE**: Khi user thay đổi `sourceLanguage` sau khi STT đã COMPLETED → Stage STT được rerun;
@@ -368,12 +392,12 @@ các Stage `TRANSLATE`/`TTS` (nếu đã COMPLETED trước đó) → chuyển `
 | Burn-in sub mới thay vì mask hardsub | Đơn giản hóa pipeline, giảm thời gian render, không cần OCR |
 | StylePreset lưu DB (không hardcode) | Thêm/sửa phong cách dịch không phải deploy lại code |
 | Job idempotent + DB mirror | Quan sát & tiếp tục từ stage lỗi |
-| Monorepo pnpm | Chia sẻ type/Zod giữa web & api, build nhất quán |
-| BullMQ Flow Producer cho `dub.merge` | Barrier an toàn qua restart, thay vì `Promise.all` phía API (dễ mất trạng thái) |
+| [TARGET/FUTURE] Monorepo pnpm | Chia sẻ type/Zod giữa web & api, build nhất quán |
+| [TARGET/FUTURE] BullMQ Flow Producer cho `dub.merge` | Barrier an toàn qua restart, thay vì `Promise.all` phía API (dễ mất trạng thái) |
 | Job huỷ được (cancel) | Tránh lãng phí tài nguyên GPU/CPU khi user đổi ý giữa pipeline dài |
 | Thông báo qua email/push, không chỉ SSE | Pipeline SUMMARY có thể chạy 20–30 phút, user không nhất thiết giữ tab mở |
 | Rate Limiter + Cache bọc mọi provider thật | Free-tier API key (Gemini/OpenAI/ElevenLabs...) có RPM/RPD rất thấp; không throttle chủ động sẽ vỡ pipeline liên tục khi test nhiều lần (`11`) |
 | SSE thay vì WebSocket cho progress | Pipeline chỉ cần server push 1 chiều; SSE đơn giản hơn, không cần quản lý connection state |
 | Idempotent callback từ Worker | Tránh xử lý lại khi worker gửi duplicate callback (do network timeout) |
 | Graceful cancellation | Stage `PENDING` → `CANCELLED` ngay; Stage `PROCESSING` → đợi provider hoặc timeout 60s |
-| Media Consent versioned | Khi Terms version thay đổi → cần re-consent; asset cũ vẫn dùng được cho Jobs đang chạy |
+| [NOT IMPLEMENTED] Media Consent versioned | Khi Terms version thay đổi → cần re-consent; asset cũ vẫn dùng được cho Jobs đang chạy |

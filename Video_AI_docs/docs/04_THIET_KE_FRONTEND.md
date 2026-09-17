@@ -12,7 +12,9 @@ thẻ bo góc, accent xanh, animation mượt (Framer Motion), responsive & mobi
 
 - **TanStack Query** — fetch/cache API, polling tiến trình queue.
 - **React Router** — routing trang.
-- **React Hook Form + Zod** — form & validate (schema chia sẻ từ `packages/shared`).
+- **React Hook Form + Zod** [TARGET/FUTURE] — form & validate (schema chia sẻ từ `packages/shared`).
+  [CURRENT] Wizard `CreateProject` dùng local state (`useState`), không RHF/Zod theo từng bước
+  (RHF chỉ tồn tại trong `components/ui/form.jsx` của shadcn, wizard không dùng).
 - **shadcn/ui** — component tái dùng (Button, Card, Dialog, Tabs, Table...).
 - **Framer Motion** — transition trang & widget.
 - **State** — TanStack Query (server) + Context nhẹ (auth/user). Không dùng Redux nặng.
@@ -52,6 +54,13 @@ apps/web/
 │   └── lib/                    # utils, constants, theme
 ```
 
+> [CURRENT] Triển khai hiện tại: `frontend/` (React `^18.2.0` JS/JSX, không React 19 + TS),
+> typecheck qua `tsc -p ./jsconfig.json` (`frontend/package.json:10-11`, không `tsconfig.json`).
+> Routes (`frontend/src/App.jsx:58-78`): public `/`, `/login`, `/register`, `/forgot-password`,
+> `/reset-password`, `/timeline` (demo); protected `/dashboard`, `/projects`, `/projects/new`,
+> `/projects/:id`, `/queue`, `/outputs`, `/analytics`, `/settings`, `/settings/providers`,
+> `/settings/api-keys`, `/logs`, `/admin`.
+
 ---
 
 ## 3. Trang chính
@@ -59,10 +68,10 @@ apps/web/
 | Trang | Mô tả |
 | --- | --- |
 | Landing | Giới thiệu 2 mode, CTA đăng ký |
-| Login / Register | Auth (RHF + Zod) |
+| Login / Register | Auth ([TARGET/FUTURE] RHF + Zod; CURRENT: form thường, không RHF trong `pages/`) |
 | Dashboard | Widget: video đã sinh, queue, storage, provider status, lịch sử |
 | Projects | Danh sách project (filter theo mode), trạng thái |
-| ProjectDetail | Xem pipeline stage, **TimelinePreview** (clip + player), output |
+| ProjectDetail | [CURRENT] Pipeline stage (SSE `useJobEvents` + fallback polling), transcript song ngữ chỉnh sửa được + banner `outputStale`, nút Huỷ / Chạy lại / Lồng tiếng lại, `VideoTimeline` ở cuối, output (SUMMARY: preview read-only, xem §5.4) |
 | CreateProject | **Wizard** (dưới) |
 | Queue | Bảng job đang chạy/thất bại, retry thủ công |
 | Outputs | Thư viện video, download, đẩy YouTube |
@@ -77,40 +86,58 @@ apps/web/
 
 Wizard 2 mode khác nhau:
 
-### Mode `SUMMARY` (Review phim)
+### Mode `SUMMARY` (Review phim) [CURRENT — `frontend/src/pages/CreateProject.jsx`]
+
+Wizard local state (`useState`, không RHF/Zod), 6 bước:
+
 1. **Chọn mode** = SUMMARY.
-2. **Upload phim** (2–3h), chọn ngôn ngữ.
-3. **Độ dài** (20–30 phút).
-4. **Phong cách / Giọng review** (tone: nghiêm túc, hài hước...; cho phép spoil?).
-5. **Giọng đọc** (chọn voice provider + giọng).
-6. **Xác nhận bản quyền** (checkbox bắt buộc): "Tôi xác nhận có quyền sử dụng/tái sản xuất nội dung
-   phim đã tải lên" — không tick thì nút Generate bị disable (xem `00` §5, `03` §5).
-7. Nếu provider đang chọn ở `tier=free` và phim > 60 phút, hiển thị cảnh báo mềm khuyến nghị test
-   với clip ngắn trước (xem `11` §3.3) — không chặn, chỉ nhắc.
-8. **Generate** → gọi `POST /projects` + start.
+2. **Phim**: upload phim (2–3h).
+3. **Ngôn ngữ**: chọn `language`.
+4. **Độ dài**: `targetDurationSec` (20/25/30 phút).
+5. **Phong cách**: `style` + `tone` + `spoilerAllowed`.
+6. **Giọng đọc**: `voiceProvider` + `voiceName` (tuỳ chọn).
+7. **Tạo video**: checkbox bản quyền bắt buộc (`copyrightAcknowledged`, không tick thì nút
+   "Bắt đầu tạo" bị disable — xem `00` §5, `03` §5) + `FreeTierWarning` (SUMMARY > 60 phút) +
+   tên dự án (tuỳ chọn) → `POST /projects` payload
+   `{mode, title, language, style, targetDurationSec, sourceVideoKey, videoHash,
+   copyrightAcknowledged, params: {tone, spoilerAllowed, voiceProvider, voiceName}}`.
 
-### Mode `TRANSLATE_DUB` (Dịch thuật & Lồng tiếng)
-1. **Chọn mode** = TRANSLATE_DUB.
-2. **Upload video** (≤ 2GB) — resumable, hiện % chunk đã nhận; rớt mạng resume không mất.
-3. **Ngôn ngữ**: nguồn (auto-detect hoặc chọn) → đích (mặc định tiếng Việt).
-4. **Phong cách dịch**: chọn 1 trong 13 StylePreset (card có mô tả + ví dụ văn phong).
-5. **Lồng tiếng AI** (toggle): bật → chọn voice provider + giọng; tắt → chỉ thay phụ đề.
-6. **Nâng cao** (tuỳ chọn): method che chữ `blur`/`fill`/`inpaint` (inpaint là premium, xem `00`/`03`),
-   vị trí phụ đề mới (`Giữ nguyên` / `Top` / `Bottom` / `Custom`), và `maskStrength` mặc định.
-7. **Xác nhận bản quyền** (checkbox bắt buộc, tương tự SUMMARY).
-8. Nếu provider đang chọn ở `tier=free` và video > 20 phút, hiển thị cảnh báo mềm tương tự SUMMARY.
-9. **Generate** → start pipeline; theo dõi tiến trình realtime bằng SSE.
+### Mode `TRANSLATE_DUB` (Dịch thuật & Lồng tiếng) [CURRENT — `frontend/src/pages/CreateProject.jsx`]
 
-Sau khi stage `dub.translate` (và `dub.ocr` nếu cần chỉnh mask) hoàn tất, wizard cho phép
-**"Xem trước & Xác nhận"** (FR-J2) — hiển thị transcript đã dịch + preview mask trên vài khung hình
-mẫu — trước khi user bấm **"Render bản cuối"** để enqueue `dub.ttsAlign`/`dub.render`. Điều này tránh
-render lãng phí (tốn NVENC + thời gian) nếu bản dịch hoặc vùng che chưa đúng ý.
+Wizard local state (`useState`, không RHF/Zod), 5 bước:
 
-Wizard dùng `useWizard` (state machine đơn giản) + RHF mỗi bước; validate bằng Zod trước khi next.
+1. **Video**: upload video (tối đa 2GB) — resumable, hiện % chunk đã nhận; rớt mạng resume không mất.
+2. **Ngôn ngữ**: nguồn (`sourceLanguage`, `auto` hoặc chọn) → đích (`targetLanguage`, mặc định `vi`);
+   toggle **OCR phụ đề cứng** (`ocrMode`; bật OCR thì nguồn không được để `auto`).
+3. **Biên dịch**: chọn 1 trong 13 StylePreset (`stylePreset`, card có mô tả; load qua
+   `GET /style-presets`, fallback hằng số local khi API lỗi).
+4. **Lồng tiếng AI** (toggle `enableDubbing`): bật → chọn `voiceProvider` + `voiceName` (tuỳ chọn);
+   tắt → giữ audio gốc, chỉ thay phụ đề. `subPosition` cố định `'original'`.
+5. **Tạo video**: checkbox bản quyền bắt buộc (tương tự SUMMARY) + `FreeTierWarning`
+   (TRANSLATE_DUB > 20 phút) + tên dự án (tuỳ chọn) → `POST /projects` payload
+   `{mode: 'TRANSLATE_DUB', title, sourceLanguage, targetLanguage, stylePreset, enableDubbing,
+   subPosition: 'original', sourceVideoKey, videoHash, ocrMode, copyrightAcknowledged,
+   params: {voiceProvider?, voiceName?, subPosition}}` — [CURRENT] không có `maskMethod` /
+   `voiceId` / `maskStrength` trong payload.
+
+> [NOT IMPLEMENTED] Bước "Nâng cao" (chọn `maskMethod` `blur`/`fill`/`inpaint`, vị trí phụ đề
+> `Top`/`Bottom`/`Custom`, thanh kéo `maskStrength`) chưa có trong wizard hiện tại.
+
+> [NOT IMPLEMENTED] Bước **"Xem trước & Xác nhận"** (FR-J2): API orphan — wrapper FE
+> `confirmPreview` (`frontend/src/api/projects.js:21`,
+> `POST /projects/:id/translate-dub/confirm-preview`) có nhưng `ProjectDetail` không gọi;
+> không có nút "Render bản cuối" enqueue riêng `dub.ttsAlign`/`dub.render`.
+
+Wizard dùng local state machine đơn giản (`step` + `useState` mỗi bước); [TARGET/FUTURE] `useWizard` +
+RHF mỗi bước + validate Zod trước khi next.
 
 ---
 
-## 4.1. SubRegionEditor (riêng TRANSLATE_DUB)
+## 4.1. SubRegionEditor (riêng TRANSLATE_DUB) [NOT IMPLEMENTED]
+
+> [NOT IMPLEMENTED] Không có editor Canvas khoanh vùng hardsub trong code hiện tại
+> (`ProjectDetail` TRANSLATE_DUB không render overlay mask; không có thanh kéo `maskStrength`,
+> tick `isStatic`, nút Merge Regions hay gợi ý vị trí phụ đề). Toàn bộ mục này là [TARGET/FUTURE].
 
 Sau khi stage `dub.ocr` xong, `ProjectDetail` hiển thị các OcrRegion tự động phát hiện đè lên
 khung hình preview:
@@ -132,14 +159,23 @@ khung hình preview:
 - "Dùng mặc định AI" nếu không muốn chỉnh tay; PUT `/projects/:id/mask-regions` trước khi render.
 - Không phải editor timeline — chỉ chỉnh vùng chữ, giữ nguyên nguyên tắc tự động hoàn toàn.
 
-## 4.2. Tiến trình real-time (SSE)
+## 4.2. Tiến trình real-time (SSE) [CURRENT — `useJobEvents` + `ProjectDetail`]
 
-- Hook `useJobEvents(projectId)` mở **EventSource** tới `GET /projects/:id/events`
-  (fallback polling TanStack Query nếu SSE lỗi).
-- Mỗi event `{ stage, status, percent }` cập nhật stepper pipeline + progress bar không cần F5:
-  ingest → stt ‖ ocr (hiện 2 nhánh song song) → translate → ttsAlign? → render.
-- Nút **"Huỷ"** ở header gọi `POST /projects/:id/cancel`; SSE nhận event `{ stage, status:'CANCELLED' }`
-  và dừng stepper, hiển thị trạng thái đã huỷ (FR-J1).
+- Hook `useJobEvents(projectId)` (`frontend/src/hooks/useJobEvents.js`) mở **EventSource** tới
+  `GET /projects/:id/events`. Mỗi event `{ stage, status, percent }` cập nhật stepper pipeline +
+  progress bar không cần F5. Nếu SSE lỗi (backend chưa hỗ trợ/không parse được) → `sseAvailable=false`
+  và caller **fallback polling** `GET /projects/:id/jobs` mỗi 3s (`POLL_INTERVAL_MS`), chỉ poll khi
+  project còn active và SSE không khả dụng.
+- Stages [CURRENT]: SUMMARY 8 stage (`summary.transcribe → … → summary.render`); TRANSLATE_DUB
+  (`dub.ingest → dub.stt → dub.translate → dub.ttsAlign? → dub.render`, `ttsAlign` chỉ khi bật
+  dubbing). [TARGET/FUTURE] Nhánh OCR song song (`dub.ocr`) chưa có trong code.
+- Nút **"Huỷ"** ở header (`canCancel` khi status `running`/`queued`/`pending`) gọi
+  `POST /projects/:id/cancel` (FR-J1); sau huỷ reload project, status `cancelled` (không `failed`).
+- Nút **"Chạy lại"** (`completed`/`failed`) gọi `POST /projects/:id/regenerate`; nút
+  **"Lồng tiếng lại"** gọi `POST /projects/:id/translate-dub/redub` (dùng bản dịch đã sửa tay).
+- Sửa transcript (`PUT /projects/:id/transcript`, chỉ gửi segment đã đổi) trả `outputStale=true`
+  → banner vàng "Video hiện tại chưa phản ánh bản chỉnh sửa — nhấn Lồng tiếng lại để cập nhật";
+  banner tắt sau khi redub xong có output mới.
 - Vì pipeline có thể chạy 20–30 phút (SUMMARY), dashboard hiển thị banner nhắc user có thể đóng tab —
   hệ thống sẽ gửi email/thông báo khi xong (FR-J3), không bắt buộc giữ SSE mở.
 - Khi `GenerationJob.result.warnings` chứa cảnh báo `quota_risk` (xem `11` §4.1), stepper hiển thị
@@ -153,88 +189,85 @@ khung hình preview:
 
 Mục tiêu: **tất cả nội dung vừa trong 1 khung màn hình duy nhất**, không cần scroll trang.
 
-### 5.1. Bố cục 2 Panel (Split-Panel Layout)
+### 5.1. Bố cục 2 Panel (Split-Panel Layout) [CURRENT]
+
+> [CURRENT] TRANSLATE_DUB: panel trái (58%) là **Transcript Editor**, panel phải (42%) là
+> **Video Preview** — không có `SubRegionEditor`/mask controls trong code. Sơ đồ target cũ
+> (Video + SubRegionEditor trái, Pipeline + Transcript phải) là [TARGET/FUTURE].
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ Breadcrumb: ← Quay lại dự án                                    │
 ├─────────────────────────────────────────────────────────────────┤
-│ Header: [Title] [Status] [Huỷ] [Xoá] [Chạy lại] [Xem video] [Tải]│
+│ Header: [Title] [Status] [Huỷ] [Xoá] [Chạy lại] [Xem] [Tải]      │
 ├─────────────────────────────────────────────────────────────────┤
-│ InfoBar (compact 1 dòng): Mode | Lang | Style | Dubbing | Mask │
+│ Pipeline Progress (full-width, compact badges + progress bar)   │
 ├───────────────────────────────────────┬─────────────────────────┤
 │                                       │                         │
-│   VIDEO PLAYER + SubRegionEditor      │  Pipeline Progress      │
-│   (chiếm ~65% chiều rộng)             │  (compact, horizontal)  │
+│   TRANSCRIPT EDITOR (song ngữ,        │  VIDEO PREVIEW          │
+│   chiếm ~58% chiều rộng)              │  (~42%)                 │
 │                                       │                         │
-│   - Video player lớn                   ├─────────────────────────┤
-│   - Overlay mask regions              │                         │
-│   - Mask controls (toolbar)           │  TRANSCRIPT EDITOR      │
-│                                       │  (scrollable panel)     │
+│   - Danh sách segment gốc ↔ dịch      │  - Video output         │
+│   - Sửa translation (textarea)        │  - Play/pause overlay   │
+│   - Lưu / Lồng tiếng lại              │  - Info bar (time/mode) │
+│   - Banner outputStale                │                         │
 │                                       │                         │
 ├───────────────────────────────────────┴─────────────────────────┤
-│  VIDEOTIMELINE (multi-track editor, full-width)                  │
-│  [◀][▶/❚❚][►] [Snapping:ON][Gắn liền:ON] [+V][+A][+T] [zoom]    │
-│  TrackSidebar | Video track  ▓▓▓▓▓▓ | Audio track  ▓▓▓▓ | Text   │
+│  VIDEOTIMELINE (subtitle-sync review, full-width, xem §5.2)      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 5.2. VideoTimeline — Video Editing Timeline (Multi-Track, kiểu CapCut)
+### 5.2. VideoTimeline — Subtitle-Sync Review Timeline [CURRENT]
 
-Thanh timeline full-width ở bottom của `ProjectDetail` (TRANSLATE_DUB) là một **editor đa-track
-tương tác** (`frontend/src/components/timeline/`), không phải thanh preview read-only. User thao tác
-trực tiếp để rà soát/điều chỉnh bố cục clip trước khi tinh chỉnh transcript.
+Thanh timeline full-width ở bottom của `ProjectDetail` (TRANSLATE_DUB) là timeline rà soát
+đồng bộ phụ đề (`frontend/src/components/timeline/`) — [NOT IMPLEMENTED] không phải full video
+editor (không Split/Speed/Volume/Delete clip, không thêm/xoá/lock/mute track trong code).
 
-**Kiến trúc component:**
+**Kiến trúc component [CURRENT]:**
 
 | Component | Vai trò |
 | --- | --- |
 | `VideoTimeline` | Container chính: header controls, thân timeline cuộn ngang, footer, resize handle |
-| `TrackSidebar` | Sidebar trái cố định (72px): lock/mute/delete từng track |
-| `TimeRuler` | Thước thời gian sticky, tick lớn/nhỏ thay đổi theo zoom, click/scrub để seek |
+| `TrackSidebar` | Sidebar trái cố định (hiển thị track; chưa có lock/mute/delete) |
+| `TimeRuler` | Thước thời gian sticky, tick thay đổi theo zoom, click/scrub để seek |
 | `Playhead` | Đường playhead đỏ + handle kéo, guide line trắng "SNAP" khi magnetic snapping |
-| `TimelineClip` | Một clip trên track: render theo type, drag-to-move, trim trái/phải, waveform |
-| `FloatingToolbar` | Toolbar nổi trên clip đang chọn: Split, Speed, Volume, Delete |
+| `TimelineClip` | Một clip trên track: render theo type, drag-to-move, trim trái/phải |
+| `FloatingToolbar` | [CURRENT] Chỉ hiển thị time range của clip đang chọn (không có nút thao tác) |
 | `timelineStore` | Zustand store: state + actions (dưới) |
-| `timelineUtils` | Hàm thuần: format timecode, magnetic snap, handle snap, generate waveform |
+| `timelineUtils` | Hàm thuần: format timecode, magnetic snap, handle snap (trim) |
 
-**State & actions (`useTimelineStore` — Zustand):**
+**State & actions (`useTimelineStore` — Zustand) [CURRENT]:**
 
-- **Core:** `currentTime` (giây), `zoomLevel` (px/giây, mặc định 50), `tracks[]`, `clips[]`,
-  `selectedClipId`.
-- **Playback & snapping:** `isPlaying`, `snappingGuide`, `snappingEnabled` (mặc định true),
-  `autoSnapEdges` (mặc định true).
-- **Actions:** `setCurrentTime`, `setZoomLevel` (clamp 15–200), `setSelectedClipId`,
-  `toggleSnapping`, `toggleAutoSnapEdges`, `togglePlayPause`, `setClips`, `setTracks`,
-  `initTimeline`, `updateClip`, `deleteClip`, `splitClip`, `addTrack`, `toggleTrackLock`,
-  `toggleTrackMute`, `deleteTrack`, `snapEdgesForTrack`.
+- **Core:** `currentTime` (giây), `zoomLevel` (px/giây, mặc định 50, clamp 15–200), `tracks[]`,
+  `clips[]`, `selectedClipId`.
+- **Playback & snapping:** `isPlaying`, `snappingGuide`, `snappingEnabled` (mặc định true).
+- **Actions:** `setCurrentTime`, `setZoomLevel`, `setSelectedClipId`, `setSnappingGuide`,
+  `setSnappingEnabled`, `toggleSnapping`, `togglePlayPause`, `setIsPlaying`, `setClips`,
+  `setTracks`, `initTimeline`, `updateClip`, `deleteClip`.
+- [TARGET/FUTURE] `splitClip`, `addTrack`, `toggleTrackLock/Mute`, `deleteTrack`,
+  `autoSnapEdges`, `snapEdgesForTrack` chưa có trong store.
 
-**3 track mặc định:** Video · Lồng tiếng (Audio) · Phụ đề (Text). Header cho phép **add thêm**
-track Video / Audio / Text (thứ tự động đếm `#2, #3…`); sidebar có thể lock (chống chỉnh), mute
-và delete track.
+**3 track mặc định [CURRENT] (`timelineStore.js:4-26`):** `video` (Video, locked) ·
+`original` (Gốc, locked) · `translated` (Dịch) — không phải Video · Audio · Text.
 
-**Sinh dữ liệu từ transcript & video thật (zero mock):**
+**Sinh dữ liệu từ transcript & video thật (zero mock) [CURRENT]:**
 - Khi `ProjectDetail` truyền `outputUrl`/`duration`, một clip **video track** đại diện toàn bộ
   output (`clip-video-main`, 0 → duration).
-- Khi truyền `transcript[]`, mỗi segment (có `startSec`/`endSec` từ STT) trở thành **một clip text**
-  trên track Phụ đề (`sub-<id>`, kèm `segmentId` + `speaker`).
-- User có thể **drag-drop một dòng segment** từ Transcript panel vào một track bất kỳ để tạo clip
-  (data transfer `application/x-transcript-segment`) — tạo các clip phụ đề/cảnh thủ công.
+- Khi truyền `transcript[]`, mỗi segment trở thành **2 clip read-only** (timing từ transcript):
+  một trên track Original + một trên track Translated (`segmentId` + `speaker`).
+- [PARTIAL] Kéo một dòng segment từ Transcript panel đặt `dataTransfer`
+  `application/x-transcript-segment` (drag source có), nhưng chưa có drop target nào trong
+  `VideoTimeline` tiêu thụ để tạo clip — thả vào timeline hiện không tạo clip mới.
 
-**Các thao tác clip:**
+**Các thao tác clip [CURRENT]:**
 
 - **Drag-to-move:** kéo clip dọc track; khi `snappingEnabled` bật, dùng `getMagneticSnap` chụp về
-  các điểm snap (0, playhead, start/end các clip khác) trong ngưỡng **10px**; kéo xong chạy
-  `snapEdgesForTrack` — các clip liền kề cùng mà + `autoSnapEdges` sẽ tự khít không để hở.
-- **Trim:** kéo handle trái/phải (`getHandleSnap` — snap tương tự); cận dưới độ dài clip **0.25s**;
-  clip đang chọn có viền trắng highlight, toolbar nổi hiện phía trên.
-- **Split:** nút `S` hoặc toolbar; chia clip tại playhead thành 2 (clip phải đổi tên thêm `(Part 2)`);
-  chỉ split khi playhead nằm **trong** clip (> 0.1s cách mép), nếu không hiện cảnh báo vàng.
-- **Delete:** phím `Delete`/`Backspace` hoặc toolbar.
-- **Speed / Volume:** toolbar xoay vòng speed (`0.5x–1x–1.25x–1.5x–2x`), mute/unmute clip.
+  các điểm snap trong ngưỡng **10px**.
+- **Trim:** kéo handle trái/phải (`getHandleSnap` — snap tương tự).
+- [TARGET/FUTURE] Split tại playhead, toolbar Speed/Volume/Delete, phím `S`/`Delete`.
 
-**Zoom:** slider 20–150 px/s + nút ±, hiển thị `%` so với mặc định 50px/s; ruler đổi mật độ tick
-theo zoom (10/5/2/1s major). Zoom tối đa 150 (UI sidebar) / 200 (store clamp).
+**Zoom [CURRENT]:** nút ± (`setZoomLevel` ±10), hiển thị `%` so với mặc định 50px/s; ruler đổi mật
+độ tick theo zoom.
 
 **Playback & đồng bộ player:**
 - `ProjectDetail` dùng chế độ **controlled**: truyền `currentTime`/`isPlaying` từ player; khi video
@@ -244,41 +277,33 @@ theo zoom (10/5/2/1s major). Zoom tối đa 150 (UI sidebar) / 200 (store clamp)
 - Click clip có `segmentId` → gọi `onSegmentClick` (seek transcript); `activeSegmentId` highlight
   clip đang phát bằng viền vàng.
 
-**Keyboard Shortcuts:** `Space` Play/Pause · `S` Split · `Delete`/`Backspace` Delete selected ·
-`←/→` scrub playhead (0.1s, `Shift` + 1s).
+**Keyboard Shortcuts [CURRENT]:** `Space` Play/Pause · `←/→` scrub playhead.
+[TARGET/FUTURE] `S` Split, `Delete`/`Backspace` Delete selected.
 
-**Khác:** chia lại chiều cao timeline bằng thanh kéo ngang phía dưới (`h-1.5`), lưu vào `localStorage`
-(`timeline-height`, clamp 120–600); grid lane phụ (50px) theo zoom; footer hiển thị gợi ý phím tắt.
+**Khác [CURRENT]:** chia lại chiều cao timeline bằng thanh kéo ngang phía dưới, lưu vào `localStorage`
+(`timeline-height`, clamp 120–400); footer hiển thị gợi ý phím tắt.
 
-### 5.3. TranscriptView + SubRegionEditor
+### 5.3. TranscriptView [CURRENT — `ProjectDetail.jsx:932+`]
 
-**Panel Trái (Video + Mask):**
-- Video player lớn, chiếm không gian tối đa
-- SubRegionEditor overlay trên video (compact mode)
-- Toolbar mask (Thêm/Gộp/Xoá vùng) compact
-- Region controls hiển thị khi chọn region
+> [NOT IMPLEMENTED] Không có `SubRegionEditor` overlay, input sửa `startSec`/`endSec` từng segment,
+> badge `isTimeManuallyAdjusted`, nút "Reset to AI", hay cảnh báo CPS/overlap trong code. Toàn bộ các
+> ý dưới đây ngoài danh sách CURRENT là [TARGET/FUTURE].
 
-**Panel Phải (Pipeline + Transcript):**
-- Pipeline Progress: Hiển thị compact dạng badges/horizontal stepper
-**TRANSLATE_DUB — Hybrid Subtitle Editor:**
+**TRANSLATE_DUB — Subtitle Editor [CURRENT]:**
 
 **Danh sách song ngữ:**
-- Hiển thị text gốc ↔ translation, kèm badge speaker
-- Highlight segment đang active (tương ứng với thời gian video hiện tại)
+- Hiển thị text gốc ↔ translation (textarea sửa được), kèm badge speaker, timestamp `startSec → endSec`.
+- Highlight segment đang active (tương ứng với thời gian video hiện tại); đếm đã dịch `x/y câu`.
 
-**Điều chỉnh thời gian (Timing Control):**
-- Mỗi segment có input số cho phép nhập chính xác `startSec` và `endSec` (định dạng `HH:MM:SS.mmm`)
-- Badge hiển thị nếu segment đã được chỉnh sửa thủ công (`isTimeManuallyAdjusted`)
-- Nút "Reset to AI" để hoàn nguyên thời gian tự động
-
-**Cảnh báo trực quan (Visual Warnings):**
-- Nếu `CPS > 25` ký tự/giây: hiển thị icon cảnh báo màu vàng với tooltip "Reading too fast"
-- Nếu `CPS > 35` ký tự/giây: hiển thị icon màu đỏ với tooltip "Unreadable speed"
-- Nếu 2 segment bị chồng lấn thời gian: hiển thị viền đỏ cả 2 segment
+**Lưu & lồng tiếng lại:**
+- Nút "Lưu chỉnh sửa" gửi `PUT /projects/:id/transcript` chỉ với segment đã đổi → banner
+  `outputStale` khi output cũ; nút "Lồng tiếng lại" (`POST …/translate-dub/redub`) render lại
+  từ bản dịch đã sửa. Vô hiệu hoá khi pipeline đang chạy.
 
 **Đồng bộ Player:**
-- Click vào segment → player seek đến `startSec` và highlight segment đó
-- Kéo thanh timeline → segment đang hiển thị được auto-select
+- Click timestamp segment → player seek đến `startSec`; kéo playhead video → auto-select segment.
+- Chọn ngôn ngữ đích (`vi`/`en`/`ja`/`ko`/`zh`) hiển thị phía trên editor.
+- Kéo segment đặt `application/x-transcript-segment` (xem §5.2 — drop chưa được tiêu thụ).
 
 ### 5.4. TimelinePreview (SUMMARY Mode — read-only)
 
@@ -303,8 +328,12 @@ một thanh preview **chỉ xem** (khác bản chất, không dùng chung `Video
 
 ## 7. Giao tiếp API & type-safety
 
+> [TARGET/FUTURE] Type `z.infer` đồng bộ web & api qua `packages/shared` chưa có. [CURRENT] FE gọi
+> REST qua axios client (`frontend/src/api/client.js` + các module `projects`/`upload`/`auth`/
+> `outputs`/`extra.js`), không có schema/type chia sẻ — payload wizard ghi tay theo §4.
+
 ```ts
-// apps/web/src/api/projects.ts
+// [TARGET] apps/web/src/api/projects.ts
 export const createSummary = (body: CreateSummaryInput) =>
   client.post<Project>('/projects', body).then(r => r.data);
 ```
@@ -319,10 +348,10 @@ Input type sinh từ Zod schema (`z.infer`) → **web & api đồng bộ kiểu*
 | TanStack Query thay Redux | ít boilerplate, cache & polling sẵn |
 | Wizard state riêng | tách biệt mode, dễ mở rộng |
 | TimelinePreview read-only (SUMMARY) | đúng yêu cầu tự động; vẫn cho Regenerate |
-| `VideoTimeline` multi-track editor (TRANSLATE_DUB) | Phù hợp bản chất "vừa dịch vừa dựng" — user cần rà soát/điều chỉnh bố cục clip song song với chỉnh transcript; store Zustand gọn, zero mock, đồng bộ player qua RAF |
-| Schema share từ packages/shared | type-safety đầu-cuối |
+| `VideoTimeline` subtitle-sync review (TRANSLATE_DUB) | User rà soát transcript ↔ clip song song; store Zustand gọn, zero mock, đồng bộ player qua RAF (không phải full editor — Split/track-ops là TARGET) |
+| Schema share từ packages/shared | [TARGET/FUTURE] type-safety đầu-cuối; CURRENT payload ghi tay, không schema chia sẻ |
 | Checkbox bản quyền bắt buộc trong wizard | Ép user xác nhận trước khi hệ thống xử lý nội dung có thể có bản quyền (NFR-14) |
-| Bước "Xem trước & Xác nhận" trước render cuối (TRANSLATE_DUB) | Tránh lãng phí NVENC/thời gian nếu bản dịch/mask sai từ đầu (FR-J2) |
+| Bước "Xem trước & Xác nhận" trước render cuối (TRANSLATE_DUB) | [NOT IMPLEMENTED] API orphan — FE wrapper có, `ProjectDetail` không gọi (FR-J2) |
 | Nút Huỷ pipeline + thông báo ngoài SSE | UX tốt hơn cho pipeline dài, tránh phải giữ tab mở (FR-J1, FR-J3) |
 | Cảnh báo quota (`quota_risk`) hiển thị riêng biệt với lỗi thật | Free-tier user cần biết pipeline chậm vì giới hạn ngoài, không phải hệ thống lỗi (`11` §4) |
 | ApiKeys page hỗ trợ nhiều key/1 provider | Cho phép user tự tăng thông lượng hiệu dụng khi chỉ có các key miễn phí (`11` §5) |

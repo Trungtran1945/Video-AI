@@ -1,8 +1,23 @@
 # 02 — Thiết kế cơ sở dữ liệu
 
+# Current Implementation (CURRENT)
+
+> Nguồn đối chiếu (source of truth, branch main): `backend/src/db/schema.js` (toàn file, 382 dòng).
+
+CURRENT có đúng 21 tables (verbatim): users, reset_tokens, settings, projects, assets, generation_jobs, scenes, script_segments, timeline_clips, audios, subtitles, outputs, youtube_uploads, api_keys, provider_logs, provider_rate_limits, provider_cache, transcript_segments, ocr_regions, style_presets, upload_sessions.
+
+- Không FK constraints (manual cleanup): các `CREATE TABLE` không khai báo `FOREIGN KEY`; quan hệ dọn tay trong code (vd: xóa project đặt `provider_logs.project_id = NULL`). `PRAGMA foreign_keys = ON` trong `backend/src/db.js` nhưng schema không định nghĩa FK nào.
+- Lowercase enums: `status`/`role` lưu lowercase (`pending`, `queued`, `running`, `completed`, `failed`, `cancelled`, `user`, `admin`...), không dùng enum UPPERCASE của Prisma (SQLite không có native enum).
+- projects.status='completed' ngoài enum cũ: pipeline đánh `'completed'` khi xong (`backend/src/pipeline/runner.js`); enum `JobStatus` Prisma ở §2 [TARGET/FUTURE] không có giá trị này.
+- settings ~15 cột (voice_provider='edge_tts', default_style='cinematic', không maskMethod): defaults `voice_provider='edge_tts'`, `default_style='cinematic'`; không có cột `maskMethod` (mask method chỉ nằm trong `projects.params` JSON của TRANSLATE_DUB).
+- transcript_segments thiếu ttsAudioRef/startMs/endMs + wpm_warning TEXT: CURRENT chỉ có `tts_audio_id` (+ `subtitle_id`), `wpm_warning TEXT`, `is_time_manually_adjusted`; không có `ttsAudioRef`/`startMs`/`endMs` như model Prisma §2.
+- extras reset_tokens + upload_sessions: `reset_tokens` (flow quên mật khẩu) và `upload_sessions` (upload resumable TUS-style, `docs/06` §2.1) là bảng mở rộng, không có trong schema Prisma gốc §2.
+- Prisma MediaConsent/MediaJob/MediaJobStage là NOT IMPLEMENTED (không table trong schema.js); CURRENT equivalents là generation_jobs(type,step) + transcript_segments/ocr_regions: tracking stage dùng `generation_jobs` (`type` = tên stage, `step`, `status`, `progress` + index `(project_id, type)`), dữ liệu dub dùng `transcript_segments`/`ocr_regions`.
+- Mapping snake↔camel (DB ↔ API/frontend): project_id↔projectId, start_sec↔startSec, tts_audio_id↔ttsAudioId, storage_key↔storageKey.
+
 > **Lưu ý Triển khai:** Thiết kế target dùng Prisma ORM.
 > Triển khai hiện tại dùng sql.js với raw SQL trực tiếp (`backend/src/db/schema.js`).
-> Schema SQL mirror 1-1 các model Prisma, nhưng enum giá trị lowercase (không có native enum trong SQLite).
+> Schema SQL mirror các model Prisma [PARTIAL] — lệch đã biết xem `# Current Implementation`: thêm `reset_tokens`/`upload_sessions`, thiếu `MediaConsent`/`MediaJob`/`MediaJobStage`; enum giá trị lowercase (không có native enum trong SQLite).
 
 Hệ thống dùng **Prisma ORM**. MVP: **SQLite**; production: **PostgreSQL** (chỉ đổi `provider` trong
 `datasource`, schema không đổi). Tất cả thời gian lưu dạng `Float` (giây) hoặc `DateTime`.
@@ -34,9 +49,13 @@ Project 1──* ProviderLog
 GenerationJob 1──* ProviderLog
 ```
 
+> [NOT IMPLEMENTED] — `MediaConsent`, `MediaJob`, `MediaJobStage` trong sơ đồ trên chưa có table trong `backend/src/db/schema.js`; equivalents CURRENT là `generation_jobs(type,step)` + `transcript_segments`/`ocr_regions` (xem `# Current Implementation`).
+
 ---
 
-## 2. Schema Prisma (trích)
+## 2. Schema Prisma (trích) [TARGET/FUTURE]
+
+> [TARGET/FUTURE] — Toàn bộ schema Prisma dưới đây là thiết kế tương lai, NOT IMPLEMENTED (không Prisma trong code; CURRENT là raw SQL trong `backend/src/db/schema.js` — xem `# Current Implementation` ở đầu file). Lệch đã biết: `Settings` CURRENT ~15 cột (`default_style='cinematic'`, `voice_provider='edge_tts'`, không `maskMethod`); `TranscriptSegment` [PARTIAL] (thiếu `ttsAudioRef`/`startMs`/`endMs`, `wpm_warning TEXT`); `MediaConsent`/`MediaJob`/`MediaJobStage` [NOT IMPLEMENTED].
 
 ```prisma
 // packages/database/prisma/schema.prisma
@@ -211,7 +230,7 @@ model TimelineClip {    // chỉ SUMMARY
   project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }
 
-model TranscriptSegment {  // TRANSLATE_DUB: 1 câu/đoạn thoại do STT nhận dạng
+model TranscriptSegment {  // TRANSLATE_DUB: 1 câu/đoạn thoại do STT nhận dạng — [PARTIAL] CURRENT thiếu ttsAudioRef/startMs/endMs, wpm_warning TEXT (xem # Current Implementation)
   id          String   @id @default(uuid())
   projectId   String
   index       Int
@@ -320,9 +339,10 @@ model ProviderLog {      // quan sát mọi cuộc gọi AI
   job        GenerationJob? @relation(fields: [jobId], references: [id])
 }
 
-// ========== MEDIA PIPELINE ENTITIES ==========
+// ========== MEDIA PIPELINE ENTITIES [NOT IMPLEMENTED] ==========
+// [NOT IMPLEMENTED] — không table trong backend/src/db/schema.js; equivalents CURRENT: generation_jobs(type,step) + transcript_segments/ocr_regions.
 
-model MediaConsent {
+model MediaConsent {  // [NOT IMPLEMENTED]
   id           String   @id @default(uuid())
   projectId    String
   userId       String
@@ -333,7 +353,7 @@ model MediaConsent {
   @@unique([projectId, userId])
 }
 
-model MediaJob {
+model MediaJob {  // [NOT IMPLEMENTED]
   id               String    @id @default(uuid())
   projectId        String
   sourceLanguage   String?   // ngôn ngữ nguồn (auto-detect hoặc user override)
@@ -350,7 +370,7 @@ model MediaJob {
   stages           MediaJobStage[]
 }
 
-model MediaJobStage {
+model MediaJobStage {  // [NOT IMPLEMENTED]
   id           String    @id @default(uuid())
   mediaJobId   String
   stage        String    // 'EXTRACT_AUDIO' | 'STT' | 'OCR' | 'TRANSLATE' | 'TTS' | 'RENDER'
@@ -386,7 +406,9 @@ model MediaJobStage {
 
 ---
 
-## 4. Migration & seed
+## 4. Migration & seed [TARGET/FUTURE]
+
+> [TARGET/FUTURE] — Lệnh Prisma dưới đây chưa áp dụng được. CURRENT: schema khởi tạo từ `backend/src/db/schema.js` (`initSchema()`), seed từ `backend/src/db/seed.js` (admin + settings + style presets + provider_rate_limits).
 
 ```bash
 pnpm --filter @asf/database prisma migrate dev --name init
@@ -419,17 +441,17 @@ pnpm --filter @asf/database prisma db seed   # user admin mặc định, setting
 | `ProviderRateLimit` bảng riêng, không hardcode | RPM/RPD của free tier hay thay đổi theo nhà cung cấp; admin/user override được mà không deploy lại (`11` §2.1) |
 | `ProviderCache` theo `inputHash` | Test lặp lại pipeline nhiều lần (nhu cầu thực tế khi dùng free key) không tốn quota cho nội dung đã xử lý (`11` §3.2) |
 | `ProviderLog.status='rate_limited'` | Tách bạch "hết quota tạm thời" khỏi "lỗi hệ thống" trong Analytics/Admin |
-| `MediaConsent` versioned theo Terms | Khi Terms version thay đổi → cần re-consent; asset cũ vẫn dùng được cho Jobs đang chạy |
-| `MediaJob` + `MediaJobStage` tách riêng | MediaJob chứa config (language, voice, style), MediaJobStage chứa progress từng stage — tách bách để rerun stage độc lập |
-| `MediaJobStage.status` hỗ trợ `STALE` | Khi dependency upstream thay đổi → stage cần rerun, không phải FAILED |
-| `TranscriptSegment.ttsAudioRef` ưu tiên hơn `ttsAudioId` | Source of truth cho audio đã dub — `ttsAudioId` deprecated để tránh confusion |
-| `TranscriptSegment.startMs/endMs` bổ sung | Millisecond precision cho forced alignment,避免浮点数精度问题 |
+| [NOT IMPLEMENTED] `MediaConsent` versioned theo Terms | Khi Terms version thay đổi → cần re-consent; asset cũ vẫn dùng được cho Jobs đang chạy |
+| [NOT IMPLEMENTED] `MediaJob` + `MediaJobStage` tách riêng | MediaJob chứa config (language, voice, style), MediaJobStage chứa progress từng stage — tách bách để rerun stage độc lập |
+| [TARGET/FUTURE] `MediaJobStage.status` hỗ trợ `STALE` | Khi dependency upstream thay đổi → stage cần rerun, không phải FAILED |
+| [TARGET/FUTURE] `TranscriptSegment.ttsAudioRef` ưu tiên hơn `ttsAudioId` | Source of truth cho audio đã dub — `ttsAudioId` deprecated để tránh confusion |
+| [TARGET/FUTURE] `TranscriptSegment.startMs/endMs` bổ sung | Millisecond precision cho forced alignment,避免浮点数精度问题 |
 
 ---
 
-## 6. Ghi chú triển khai MVP (sql.js)
+## 6. Ghi chú triển khai MVP (sql.js) (CURRENT)
 
-Backend MVP chạy bằng sql.js (SQLite) thay vì Prisma; schema SQL mirror 1-1 các model trên
+Backend MVP chạy bằng sql.js (SQLite) thay vì Prisma; schema SQL mirror [PARTIAL] các model trên
 (`backend/src/db/schema.js`). Các lệch có chủ đích, cần giữ nhất quán khi nâng cấp lên Postgres:
 
 | Lệch | Chi tiết | Lý do |
