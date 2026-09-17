@@ -1,0 +1,41 @@
+# Autonomy policy for the Video_AI autopilot loop.
+# Deterministic gate: autopilot.ps1 refuses to auto-execute tasks whose
+# category appears under requireHumanApproval, and refuses unconditionally
+# anything under neverAutoExecute.
+autonomy:
+  targetTasks: 10
+  maxAttemptsPerTask: 2
+
+autoExecute:
+  - bug
+  - test
+  - regression
+  - lint
+  - type-error
+  - small-refactor
+  - documentation
+  - small-performance-fix
+  - small-ux-fix
+
+autoExecuteWithExtraVerification:
+  - security-fix
+  - database-query-optimization
+  - worker-change
+  - ffmpeg-pipeline-change
+
+requireHumanApproval:
+  - authentication-architecture
+  - authorization-architecture
+  - destructive-database-migration
+  - payment
+  - production-deployment
+  - infrastructure-destruction
+  - secret-rotation
+  - major-architecture-change
+
+neverAutoExecute:
+  - destructive-file-operation
+  - git-reset-hard
+  - git-clean
+  - git-push
+  - git-merge

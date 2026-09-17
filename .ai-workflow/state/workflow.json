@@ -1,0 +1,36 @@
+{
+  "artifacts": {
+    "changes": ".ai-workflow/handoff/02-changes.md",
+    "debug": ".ai-workflow/handoff/04-debug.md",
+    "plan": ".ai-workflow/handoff/01-plan.md",
+    "request": ".ai-workflow/handoff/00-request.md",
+    "review": ".ai-workflow/handoff/05-review.md",
+    "tests": ".ai-workflow/handoff/03-test-results.md"
+  },
+  "blockedReason": null,
+  "currentStage": null,
+  "iteration": 0,
+  "lastResult": null,
+  "maxIterations": 2,
+  "project": "Video_AI",
+  "request": null,
+  "root": "D:\\E\\Video_AI",
+  "runtime": {
+    "coder": "antigravity",
+    "debugger": "antigravity",
+    "planner": "antigravity",
+    "reviewer": "antigravity",
+    "tester": "antigravity"
+  },
+  "stages": {
+    "coder": "pending",
+    "debugger": "pending",
+    "planner": "pending",
+    "reviewer": "pending",
+    "tester": "pending"
+  },
+  "startedAt": null,
+  "status": "IDLE",
+  "updatedAt": null,
+  "workflowVersion": "1.0.0"
+}

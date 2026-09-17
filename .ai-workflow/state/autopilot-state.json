@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "status": "IDLE",
+  "targetTasks": 10,
+  "completedTasks": 0,
+  "failedTasks": 0,
+  "skippedTasks": 0,
+  "currentTask": null,
+  "currentSession": null,
+  "startedAt": null,
+  "updatedAt": null,
+  "lastCompletedTask": null,
+  "lastError": null,
+  "tasks": []
+}
