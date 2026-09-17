@@ -177,7 +177,7 @@ plus `git-baseline-status.txt` when the tree was dirty at start.
 
 1. **Discover** (agent `discovery`, fresh headless session): scans source
    (never `node_modules/dist/.git/storage/logs`), writes
-   `autopilot/discovery/latest-scan.md` (+ history copy) and one file per
+   `autopilot/latest-scan.md` (+ history copy in `discovery/history/`) and one file per
    finding in `autopilot/backlog/pending/TASK-NNN-slug.md`.
 2. **Deduplicate + rank** (deterministic PowerShell, same policy as
    `prompts/prioritizer.md`): critical → high → medium → low, then

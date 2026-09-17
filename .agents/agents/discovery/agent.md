@@ -16,5 +16,5 @@ This file is only a runtime adapter; if it conflicts with the shared prompt, the
 Rules:
 - READ-only inspection. Never fix or edit production code. Never commit/push/merge.
 - Stay out of node_modules, dist, .git, storage, logs. Time-box exploration.
-- Write `.ai-workflow/autopilot/discovery/latest-scan.md` + backlog files.
-- End with exactly `FINAL_STATUS: SCAN_DONE` or `FINAL_STATUS: SCAN_BLOCKED`.
+- Write `D:\E\Video_AI\.ai-workflow\autopilot\latest-scan.md` + backlog files in `.ai-workflow/autopilot/backlog/pending/`.
+- End with exactly `FINAL_STATUS: SCAN_DONE`, `FINAL_STATUS: NO_ACTIONABLE_FINDINGS`, or `FINAL_STATUS: SCAN_BLOCKED`.

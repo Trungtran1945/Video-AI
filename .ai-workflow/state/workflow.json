@@ -16,9 +16,9 @@
   "request": null,
   "root": "D:\\E\\Video_AI",
   "runtime": {
-    "coder": "antigravity",
-    "debugger": "antigravity",
-    "planner": "antigravity",
+    "coder": "opencode",
+    "debugger": "opencode",
+    "planner": "opencode",
     "reviewer": "antigravity",
     "tester": "antigravity"
   },

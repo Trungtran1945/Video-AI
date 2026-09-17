@@ -58,6 +58,7 @@ $ReportsDir = Join-Path $AutoDir "reports"
 $PolicyFile = Join-Path $AutoDir "policies\autonomy-policy.yaml"
 $SessionsDir = Join-Path $WorkflowDir "sessions"
 $AutoStateFile = Join-Path $StateDir "autopilot-state.json"
+$WorkflowFile = Join-Path $StateDir "workflow.json"
 $StopFile = Join-Path $StateDir "autopilot.stop"
 
 $Global:AutoLogDir = $null
@@ -120,9 +121,22 @@ function Reset-AutoState {
   return $s
 }
 
+function Resolve-Cli([string]$Name) {
+  $all = @(Get-Command -All $Name -ErrorAction SilentlyContinue | ForEach-Object { $_.Source } | Select-Object -Unique)
+  if (-not $all -or $all.Count -eq 0) { return $null }
+  $exe = $all | Where-Object { $_ -match '\.exe$' } | Select-Object -First 1
+  if ($exe) { return @{ Exe = $exe; Prefix = @() } }
+  $ps1 = $all | Where-Object { $_ -match '\.ps1$' } | Select-Object -First 1
+  if ($ps1) { return @{ Exe = "powershell"; Prefix = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ps1) } }
+  $cmd = $all | Where-Object { $_ -match '\.(cmd|bat)$' } | Select-Object -First 1
+  if ($cmd) { return @{ Exe = "cmd"; Prefix = @("/c", $cmd) } }
+  return @{ Exe = $all[0]; Prefix = @() }
+}
+
 function Resolve-Agy {
-  $c = Get-Command -All "agy" -ErrorAction SilentlyContinue | ForEach-Object { $_.Source } | Select-Object -Unique | Where-Object { $_ -match '\.exe$' } | Select-Object -First 1
-  return $c
+  $cli = Resolve-Cli "agy"
+  if ($cli) { return $cli.Exe }
+  return $null
 }
 
 function Parse-FinalStatus([string]$Text) {
@@ -145,8 +159,13 @@ function Unwrap-AgyJson([string]$Text) {
 function Build-NativeArguments([string[]]$ArgList) {
   $parts = @()
   foreach ($a in $ArgList) {
-    if ($a -match '[\s"]') { $parts += ('"{0}"' -f ($a -replace '"', '\"')) }
-    else { $parts += $a }
+    if ($a -match '[\s"]') {
+      $escaped = $a -replace '(\\+)"', '$1$1\"' -replace '"', '\"'
+      $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+      $parts += ('"{0}"' -f $escaped)
+    } else {
+      $parts += $a
+    }
   }
   return ($parts -join " ")
 }
@@ -158,11 +177,12 @@ function Invoke-AgyAgent([string]$Agent, [string]$Message, [int]$TimeoutMinutes,
   if ($SkipPermissions) { $argList += "--dangerously-skip-permissions" }
   if ($Effort) { $argList += @("--effort", $Effort) }
   $argList += @("--agent", $Agent)
+  $argStr = Build-NativeArguments $argList
   Add-Content -LiteralPath $LogFile -Value ("=== AGENT {0} at {1} ===" -f $Agent, (Get-Date -Format "o"))
-  Add-Content -LiteralPath $LogFile -Value ("CMD: {0} {1}" -f $agy, (Build-NativeArguments $argList))
+  Add-Content -LiteralPath $LogFile -Value ("CMD: {0} {1}" -f $agy, $argStr)
   $outF = [System.IO.Path]::GetTempFileName()
   $errF = [System.IO.Path]::GetTempFileName()
-  $p = Start-Process -FilePath $agy -ArgumentList $argList -RedirectStandardOutput $outF -RedirectStandardError $errF -PassThru -NoNewWindow
+  $p = Start-Process -FilePath $agy -ArgumentList $argStr -WorkingDirectory $ProjectRoot -RedirectStandardOutput $outF -RedirectStandardError $errF -PassThru -NoNewWindow
   $timeoutMs = $TimeoutMinutes * 60 * 1000
   $exited = $p.WaitForExit($timeoutMs)
   if (-not $exited) {
@@ -175,7 +195,7 @@ function Invoke-AgyAgent([string]$Agent, [string]$Message, [int]$TimeoutMinutes,
     $partial = Redact-Secrets $partial
     Add-Content -LiteralPath $LogFile -Value "STAGE_TIMEOUT"
     if ($partial.Trim().Length -gt 0) { Add-Content -LiteralPath $LogFile -Value ("PARTIAL OUTPUT:`n" + $partial) }
-    return @{ Status = "STAGE_TIMEOUT"; ConversationId = $null; Output = $partial }
+    return @{ Status = "STAGE_TIMEOUT"; ConversationId = $null; Output = $partial; ExitCode = -1 }
   }
   $p.WaitForExit()
   $stdout = ""; $stderr = ""
@@ -186,7 +206,7 @@ function Invoke-AgyAgent([string]$Agent, [string]$Message, [int]$TimeoutMinutes,
   Add-Content -LiteralPath $LogFile -Value $combined
   Add-Content -LiteralPath $LogFile -Value ("EXIT: {0}" -f $p.ExitCode)
   if ($combined -match 'no output produced|soft-deny|denied_actions') {
-    return @{ Status = "PERMISSION_DENIED"; ConversationId = $null; Output = $combined }
+    return @{ Status = "PERMISSION_DENIED"; ConversationId = $null; Output = $combined; ExitCode = $p.ExitCode }
   }
   $conv = $null
   $m = [regex]::Match($combined, '"conversation_id"\s*:\s*"([^"]+)"')
@@ -308,16 +328,47 @@ function Invoke-ScanPhase([switch]$FullDetail) {
   $st.status = "SCANNING"; Save-AutoState $st
   Write-AutoLog "PHASE 0-2: discovery scan (fresh agy session, 15 min timeout)."
   $scanLog = Join-Path $Global:AutoLogDir "discovery.log"
-  $msg = "Follow .ai-workflow/prompts/discovery.md exactly (it is the source of truth). Project root: $ProjectRoot. Write .ai-workflow/autopilot/discovery/latest-scan.md and one backlog file per recommended task in .ai-workflow/autopilot/backlog/pending/. End with the FINAL_STATUS line."
+
+  $canonicalScanFile = Join-Path $AutoDir "latest-scan.md"
+  $legacyScanFile = Join-Path $DiscoveryDir "latest-scan.md"
+
+  # Clean stale scan files before running
+  if (Test-Path -LiteralPath $canonicalScanFile) { Remove-Item -LiteralPath $canonicalScanFile -Force }
+  if (Test-Path -LiteralPath $legacyScanFile) { Remove-Item -LiteralPath $legacyScanFile -Force }
+
+  Write-AutoLog "[Discovery] Starting fresh Antigravity session..."
+  Write-AutoLog ("[Discovery] Project root: {0}" -f $ProjectRoot)
+  Write-AutoLog "[Discovery] Agent: discovery"
+  Write-AutoLog ("[Discovery] Output directory: {0}" -f $AutoDir)
+
+  $msg = ("Follow .ai-workflow/prompts/discovery.md exactly (it is the source of truth). Project root: {0}. Write canonical scan file to {1} and backlog task files in {2}. End with FINAL_STATUS: SCAN_DONE." -f $ProjectRoot, $canonicalScanFile, $PendingDir)
   $r = Invoke-AgyAgent "discovery" $msg 15 "medium" $scanLog
-  if ($r.Status -eq "STAGE_TIMEOUT") { throw "Discovery timeout after 15 min." }
-  if ($r.Status -eq "PERMISSION_DENIED") { throw "Discovery soft-denied (see discovery.log). Add the named allow-rule to ~/.gemini/antigravity-cli/settings.json permissions.allow." }
-  $scanFile = Join-Path $DiscoveryDir "latest-scan.md"
-  if (-not (Test-Path -LiteralPath $scanFile) -and ($r.Output -match '(?ms)(# Autonomous Project Scan.*)')) {
-    $scanText = $matches[1].Trim()
-    Set-Content -LiteralPath $scanFile -Value $scanText -Encoding UTF8
-    Write-AutoLog "Extracted latest-scan.md from discovery agent output."
+
+  Write-AutoLog ("[Discovery] Process exit code: {0}" -f $r.ExitCode)
+
+  if ($r.Status -eq "STAGE_TIMEOUT") {
+    Write-AutoLog "[Discovery] Final status: FAILED (TIMEOUT)"
+    throw "Discovery timeout after 15 min."
   }
+  if ($r.Status -eq "PERMISSION_DENIED") {
+    Write-AutoLog "[Discovery] Final status: FAILED (PERMISSION_DENIED)"
+    throw "Discovery soft-denied (see discovery.log). Add the named allow-rule to ~/.gemini/antigravity-cli/settings.json permissions.allow."
+  }
+
+  # If agent wrote to legacy location, move to canonical location
+  if (-not (Test-Path -LiteralPath $canonicalScanFile) -and (Test-Path -LiteralPath $legacyScanFile)) {
+    Move-Item -LiteralPath $legacyScanFile -Destination $canonicalScanFile -Force
+    Write-AutoLog "[Discovery] Moved scan file from discovery/ to canonical location."
+  }
+
+  # If file not written to disk, attempt extraction from output
+  if (-not (Test-Path -LiteralPath $canonicalScanFile) -and ($r.Output -match '(?ms)(# Autonomous Project Scan.*)')) {
+    $scanText = $matches[1].Trim()
+    Set-Content -LiteralPath $canonicalScanFile -Value $scanText -Encoding UTF8
+    Write-AutoLog "[Discovery] Extracted latest-scan.md from discovery agent output."
+  }
+
+  # Extract backlog tasks if not written to disk directly
   $pendingCount = @(Get-ChildItem -LiteralPath $PendingDir -Filter "*.md" -ErrorAction SilentlyContinue).Count
   if ($pendingCount -eq 0 -and ($r.Output -match '(?ms)# TASK-\d+')) {
     $taskMatches = [regex]::Matches($r.Output, '(?ms)(# (TASK-\d+)\s*\r?\n.*?)(?=\n# TASK-\d+|\z)')
@@ -328,17 +379,57 @@ function Invoke-ScanPhase([switch]$FullDetail) {
       $slug = if ($tTitle) { ($tTitle.ToLower() -replace '[^a-z0-9]+', '-').Trim('-') } else { "task" }
       $destFile = Join-Path $PendingDir ("{0}-{1}.md" -f $tid, $slug)
       Set-Content -LiteralPath $destFile -Value $block -Encoding UTF8
-      Write-AutoLog ("Extracted backlog item from discovery output: {0}" -f (Split-Path $destFile -Leaf))
+      Write-AutoLog ("[Discovery] Extracted backlog item from discovery output: {0}" -f (Split-Path $destFile -Leaf))
     }
   }
-  if (-not (Test-Path -LiteralPath $scanFile)) { throw "Discovery did not produce latest-scan.md with SCAN_DONE." }
-  $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-  Copy-Item -LiteralPath $scanFile -Destination (Join-Path $DiscoveryHistory ("{0}-scan.md" -f $stamp)) -Force
+
+  $scanExists = Test-Path -LiteralPath $canonicalScanFile
+  $scanContent = if ($scanExists) { Get-Content -LiteralPath $canonicalScanFile -Raw } else { "" }
+  $hasScanDone = ($r.Status -eq "SCAN_DONE" -or $scanContent -match 'FINAL_STATUS:\s*SCAN_DONE' -or $scanContent -match '(?i)SCAN_DONE')
+  $isNoFindings = ($r.Status -eq "NO_ACTIONABLE_FINDINGS" -or $scanContent -match 'NO_ACTIONABLE_FINDINGS')
+
   $dups = Remove-DuplicateBacklog
   $count = @(Get-ChildItem -LiteralPath $PendingDir -Filter "*.md" -ErrorAction SilentlyContinue).Count
+
+  Write-AutoLog ("[Discovery] latest-scan.md exists: {0}" -f $scanExists)
+  Write-AutoLog ("[Discovery] SCAN_DONE marker: {0}" -f $hasScanDone)
+  Write-AutoLog ("[Discovery] Backlog tasks discovered: {0}" -f $count)
+
+  $finalStatus = if ($hasScanDone) { "SCAN_DONE" } elseif ($isNoFindings) { "NO_ACTIONABLE_FINDINGS" } else { "FAILED" }
+  Write-AutoLog ("[Discovery] Final status: {0}" -f $finalStatus)
+
+  if (-not $scanExists) {
+    $errDetail = if ($r.Output) { "`nLast output snippet: " + ($r.Output.Substring(0, [Math]::Min(300, $r.Output.Length))) } else { "" }
+    throw ("Discovery did not produce latest-scan.md (ExitCode: {0}).{1}" -f $r.ExitCode, $errDetail)
+  }
+
+  if (-not $hasScanDone -and -not $isNoFindings) {
+    throw ("Discovery latest-scan.md did not contain SCAN_DONE (Status: {0})." -f $r.Status)
+  }
+
+  # Ensure latest-scan.md has FINAL_STATUS: SCAN_DONE line if missing
+  if ($hasScanDone -and ($scanContent -notmatch 'FINAL_STATUS:\s*SCAN_DONE')) {
+    Add-Content -LiteralPath $canonicalScanFile -Value "`n## Final Status`nFINAL_STATUS: SCAN_DONE" -Encoding UTF8
+  }
+
+  # Archive scan history
+  $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+  New-Item -ItemType Directory -Force -Path $DiscoveryHistory | Out-Null
+  Copy-Item -LiteralPath $canonicalScanFile -Destination (Join-Path $DiscoveryHistory ("{0}-scan.md" -f $stamp)) -Force
+
+  if ($isNoFindings -and $count -eq 0) {
+    Write-AutoLog "Discovery completed: NO_ACTIONABLE_FINDINGS. Codebase has no pending tasks."
+    $st2 = Get-AutoState
+    Set-JsonProp $st2 "tasksSinceFullScan" 0
+    Save-AutoState $st2
+    return 0
+  }
+
   Write-AutoLog ("Scan done. Pending backlog: {0} (duplicates removed: {1})." -f $count, $dups)
   $st2 = Get-AutoState
   Set-JsonProp $st2 "tasksSinceFullScan" 0
+  if ($st2.status -eq "SCANNING") { $st2.status = "IDLE" }
+  $st2.lastError = $null
   Save-AutoState $st2
   return $count
 }
@@ -383,9 +474,10 @@ function Invoke-RunTask($Task, [int]$MaxAttempts) {
   if ([string]::IsNullOrWhiteSpace($title)) { $title = $taskId }
   $pipeArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $RunPipeline, "-Request", $title, "-MaxRetries", "$MaxAttempts")
   if ($SkipPermissions) { $pipeArgs += "-SkipPermissions" }
+  $pipeArgStr = Build-NativeArguments $pipeArgs
   $outF = [System.IO.Path]::GetTempFileName()
   $errF = [System.IO.Path]::GetTempFileName()
-  $cp = Start-Process -FilePath "powershell" -ArgumentList $pipeArgs -RedirectStandardOutput $outF -RedirectStandardError $errF -PassThru -NoNewWindow
+  $cp = Start-Process -FilePath "powershell" -ArgumentList $pipeArgStr -WorkingDirectory $ProjectRoot -RedirectStandardOutput $outF -RedirectStandardError $errF -PassThru -NoNewWindow
   $cp.WaitForExit()
   $childOut = ""
   if (Test-Path -LiteralPath $outF) { $childOut += (Get-Content -LiteralPath $outF -Raw) }
@@ -574,35 +666,86 @@ function Show-AutoValidation {
   $checks = @()
   $checks += @{ Name = "autopilot.ps1 exists"; Pass = (Test-Path -LiteralPath (Join-Path $WorkflowDir "autopilot.ps1")) }
   $checks += @{ Name = "run-pipeline.ps1 exists"; Pass = (Test-Path -LiteralPath $RunPipeline) }
-  $checks += @{ Name = "autopilot dirs exist"; Pass = ((Test-Path -LiteralPath $PendingDir) -and (Test-Path -LiteralPath $SessionsDir) -and (Test-Path -LiteralPath $ReportsDir)) }
+
+  $ocCli = Resolve-Cli "opencode"
+  $agyCli = Resolve-Cli "agy"
+  $checks += @{ Name = "OpenCode CLI available"; Pass = ($ocCli -ne $null) }
+  $checks += @{ Name = "Antigravity CLI available"; Pass = ($agyCli -ne $null) }
+
+  $roles = @("discovery", "prioritizer", "planner", "coder", "tester", "debugger", "reviewer")
+  $promptsOk = $true
+  $opencodeAgentsOk = $true
+  $antigravityAgentsOk = $true
+  foreach ($r in $roles) {
+    if (-not (Test-Path -LiteralPath (Join-Path $PromptsDir ("{0}.md" -f $r)))) { $promptsOk = $false }
+    if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot (".opencode\agents\{0}.md" -f $r)))) { $opencodeAgentsOk = $false }
+    if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot (".agents\agents\{0}\agent.md" -f $r)))) { $antigravityAgentsOk = $false }
+  }
+  $checks += @{ Name = "Shared prompts exist (7 roles)"; Pass = $promptsOk }
+  $checks += @{ Name = "OpenCode agent adapters exist (7 roles)"; Pass = $opencodeAgentsOk }
+  $checks += @{ Name = "Antigravity agent adapters exist (7 roles)"; Pass = $antigravityAgentsOk }
+
+  $wfOk = $false
+  try {
+    $wf = Read-JsonFile $WorkflowFile
+    $wfOk = ($wf.runtime.planner -eq "opencode" -and
+             $wf.runtime.coder -eq "opencode" -and
+             $wf.runtime.tester -eq "antigravity" -and
+             $wf.runtime.debugger -eq "opencode" -and
+             $wf.runtime.reviewer -eq "antigravity")
+  } catch {}
+  $checks += @{ Name = "Runtime mapping (planner=opencode, coder=opencode, tester=antigravity, debugger=opencode, reviewer=antigravity)"; Pass = $wfOk }
+
+  $ocModelOk = $false
+  $ocCfg = Join-Path $ProjectRoot ".opencode\opencode.json"
+  if (Test-Path -LiteralPath $ocCfg) {
+    try {
+      $ocJson = Read-JsonFile $ocCfg
+      $ocModelOk = ($ocJson.model -eq "opencode/muse-spark-1.3-contributor-free")
+    } catch {}
+  }
+  $checks += @{ Name = "OpenCode model (opencode/muse-spark-1.3-contributor-free)"; Pass = $ocModelOk }
+
+  $artifactPathsOk = ((Test-Path -LiteralPath $AutoDir) -and
+                      (Test-Path -LiteralPath $HandoffDir) -and
+                      (Test-Path -LiteralPath $StateDir))
+  $checks += @{ Name = "Artifact directories exist (autopilot, handoff, state)"; Pass = $artifactPathsOk }
+
+  $backlogDirsOk = ((Test-Path -LiteralPath $PendingDir) -and
+                    (Test-Path -LiteralPath $ActiveDir) -and
+                    (Test-Path -LiteralPath $CompletedDir) -and
+                    (Test-Path -LiteralPath $FailedDir) -and
+                    (Test-Path -LiteralPath $RejectedDir))
+  $checks += @{ Name = "Backlog directories exist (pending, active, completed, failed, rejected)"; Pass = $backlogDirsOk }
+
   $jsonOk = $true
   try { [void](Read-JsonFile $AutoStateFile) } catch { $jsonOk = $false }
   $checks += @{ Name = "autopilot-state.json valid"; Pass = $jsonOk }
-  $checks += @{ Name = "autonomy-policy.yaml present"; Pass = (Test-Path -LiteralPath $PolicyFile) }
+
   $policyOk = $false
   if (Test-Path -LiteralPath $PolicyFile) {
     $pc = Get-Content -LiteralPath $PolicyFile -Raw
     $policyOk = ($pc -match "targetTasks" -and $pc -match "requireHumanApproval" -and $pc -match "neverAutoExecute")
   }
-  $checks += @{ Name = "policy has approval gates"; Pass = $policyOk }
-  $agentFiles = @(
-    ".ai-workflow\prompts\discovery.md", ".ai-workflow\prompts\prioritizer.md",
-    ".opencode\agents\discovery.md", ".opencode\agents\prioritizer.md",
-    ".agents\agents\discovery\agent.md", ".agents\agents\prioritizer\agent.md"
-  )
-  $aOk = $true
-  foreach ($rel in $agentFiles) { if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot $rel))) { $aOk = $false } }
-  $checks += @{ Name = "discovery+prioritizer agents exist (6)"; Pass = $aOk }
-  $checks += @{ Name = "agy available"; Pass = ((Get-Command "agy" -ErrorAction SilentlyContinue) -ne $null) }
+  $checks += @{ Name = "autonomy-policy.yaml has approval gates"; Pass = $policyOk }
+
   $contUses = (Select-String -LiteralPath (Join-Path $WorkflowDir "autopilot.ps1") -Pattern "--continue" -SimpleMatch -ErrorAction SilentlyContinue | Where-Object { ($_.Line -notmatch '(?i)no .*--continue') -and ($_.Line -notmatch 'Select-String') } | Measure-Object).Count
-  $checks += @{ Name = "per-task session isolation (no --continue in loop)"; Pass = ($contUses -eq 0) }
+  $checks += @{ Name = "Fresh session isolation (no --continue in loop)"; Pass = ($contUses -eq 0) }
+
+  $tasksClampOk = (Select-String -LiteralPath (Join-Path $WorkflowDir "autopilot.ps1") -Pattern "Tasks -gt 10" -SimpleMatch -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0
+  $checks += @{ Name = "10-task limit enforced (clamped to max 10)"; Pass = $tasksClampOk }
+
+  $gitOk = ((Get-Command "git" -ErrorAction SilentlyContinue) -ne $null)
+  $gitBad = (Select-String -LiteralPath (Join-Path $WorkflowDir "autopilot.ps1") -Pattern "git commit", "git push", "git merge", "git reset --hard", "git clean" -SimpleMatch -ErrorAction SilentlyContinue | Where-Object { $_.Line -notmatch '(?i)never|forbidden|prohibited|Select-String|#|\$lines' } | Measure-Object).Count
+  $checks += @{ Name = "Git safety (git CLI available, no forbidden mutations in loop)"; Pass = ($gitOk -and $gitBad -eq 0) }
+
   $allPass = $true
   foreach ($c in $checks) {
     $tag = "FAIL"
     if ($c.Pass) { $tag = "PASS" } else { $allPass = $false }
     Write-Host ("[{0}] {1}" -f $tag, $c.Name)
   }
-  if (-not $allPass) { Write-Host "AUTOPILOT VALIDATION FAILED" }
+  if (-not $allPass) { Write-Host "AUTOPILOT VALIDATION FAILED" } else { Write-Host "AUTOPILOT VALIDATION PASSED" }
   return $allPass
 }
 
@@ -642,7 +785,19 @@ if ($DryRun) {
   $pend = @(Get-BacklogTasks $PendingDir)
   Write-Host ""
   Write-Host ("Target: {0} tasks | Pending backlog: {1}" -f $Tasks, $pend.Count)
-  Write-Host "Loop: SCAN -> DEDUP -> RANK -> TASK(fresh run-pipeline.ps1, no --continue) -> SNAPSHOT(sessions/) -> NEXT, until target or stop."
+  Write-Host ""
+  Write-Host "Stage Resolution Pipeline:"
+  Write-Host "  Discovery (Antigravity) -> .ai-workflow/autopilot/latest-scan.md"
+  Write-Host "  -> Backlog (.ai-workflow/autopilot/backlog/pending/TASK-NNN.md)"
+  Write-Host "  -> Task selection (Select-NextTask by priority + type ranking)"
+  Write-Host "  -> Planner (OpenCode: opencode/muse-spark-1.3-contributor-free) -> 01-plan.md"
+  Write-Host "  -> Coder (OpenCode: opencode/muse-spark-1.3-contributor-free) -> 02-changes.md"
+  Write-Host "  -> Tester (Antigravity) -> 03-test-results.md"
+  Write-Host "  -> [Debugger (OpenCode) -> Coder -> Retest] (max 2 retries on failure)"
+  Write-Host "  -> Reviewer (Antigravity) -> 05-review.md"
+  Write-Host "  -> Completion gate (IMPLEMENTED + TEST_PASS + APPROVED -> completed)"
+  Write-Host "  -> Stop after 10 completed tasks"
+  Write-Host ""
   if (-not $ok) { exit 1 }
   return
 }
@@ -744,6 +899,15 @@ while ($true) {
   $task = Select-NextTask
   if (-not $task) {
     $stB = Get-AutoState
+    $pendLeft = @(Get-ChildItem -LiteralPath $PendingDir -Filter "*.md" -ErrorAction SilentlyContinue).Count
+    if ($pendLeft -eq 0) {
+      $stB.status = "COMPLETE"
+      Save-AutoState $stB
+      Write-AutoLog "AUTOPILOT_COMPLETE: No pending tasks left in backlog."
+      Write-FinalReport
+      Show-AutoStatus
+      return
+    }
     $stB.status = "BLOCKED"
     $stB.lastError = "No safe auto-executable task left in backlog."
     Save-AutoState $stB

@@ -7,7 +7,7 @@ You inspect. You NEVER fix, edit, or write production code.
 ## Permissions
 - READ, GLOB, GREP only, plus read-only BASH for inspection (`git status/diff/log`,
   `node --version`, directory listing). No builds, no tests, no mutations.
-- NEVER write/edit/delete anything outside `.ai-workflow/autopilot/discovery/`
+- NEVER write/edit/delete anything outside `.ai-workflow/autopilot/`
   and `.ai-workflow/autopilot/backlog/pending/`. NEVER commit/push/merge.
 - NEVER log secrets. NEVER use `--dangerously-skip-permissions`.
 
@@ -38,7 +38,7 @@ You inspect. You NEVER fix, edit, or write production code.
     retry affordances, validation, progress indicators (never unrelated inventions).
 
 ## Outputs (write these files)
-1. `.ai-workflow/autopilot/discovery/latest-scan.md`:
+1. `D:\E\Video_AI\.ai-workflow\autopilot\latest-scan.md` (canonical path):
 ```markdown
 # Autonomous Project Scan
 
@@ -71,8 +71,11 @@ You inspect. You NEVER fix, edit, or write production code.
 ## Recommended Tasks
 1. <TASK-ID short title>
 2. ...
+
+## Final Status
+FINAL_STATUS: SCAN_DONE
 ```
-2. One file per recommended task in `.ai-workflow/autopilot/backlog/pending/`,
+2. One file per recommended task in `D:\E\Video_AI\.ai-workflow\autopilot\backlog\pending\`,
    named `TASK-<NNN>-<slug>.md` (NNN = next free number after scanning all four
    backlog dirs + `state/autopilot-state.json`), each:
 ```markdown
@@ -115,9 +118,9 @@ performance, meaningful refactor, UX reliability). NEVER pad the backlog with
 renames, comment edits, or formatting-only tasks.
 
 ## Success conditions
-- `latest-scan.md` + at least 1 backlog file exist (or a written justification
-  that the codebase is clean, which still counts as a completed scan).
-- End your response with exactly: `FINAL_STATUS: SCAN_DONE`
+- `latest-scan.md` at `D:\E\Video_AI\.ai-workflow\autopilot\latest-scan.md` exists and contains `FINAL_STATUS: SCAN_DONE` (or `FINAL_STATUS: NO_ACTIONABLE_FINDINGS`).
+- At least 1 backlog file in `D:\E\Video_AI\.ai-workflow\autopilot\backlog\pending\` exists (or a written justification in `latest-scan.md` with `FINAL_STATUS: NO_ACTIONABLE_FINDINGS`).
+- End your response with exactly: `FINAL_STATUS: SCAN_DONE` (or `FINAL_STATUS: NO_ACTIONABLE_FINDINGS`).
 - On failure (cannot inspect): `FINAL_STATUS: SCAN_BLOCKED` + reason.
 
 ## Headless execution (critical)

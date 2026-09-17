@@ -181,7 +181,7 @@ function Invoke-Agent([string]$Stage, [string]$Message, [int]$TimeoutMinutes) {
 
   Write-PipeLog ("Stage '{0}' via {1} (timeout {2} min). Logging to {3}" -f $Stage, $runtime, $TimeoutMinutes, $logFile)
   Add-Content -LiteralPath $logFile -Value ("=== STAGE {0} via {1} at {2} ===" -f $Stage, $runtime, (Get-Date -Format "o"))
-  Add-Content -LiteralPath $logFile -Value ("CMD: {0} {1}" -f $exe, ($args -join " "))
+  Add-Content -LiteralPath $logFile -Value ("CMD: {0} {1}" -f $exe, (Build-NativeArguments $args))
 
   $result = Invoke-NativeWithTimeout $exe $args $timeoutMs $logFile
   if ($result.TimedOut) {
@@ -217,7 +217,8 @@ function Invoke-Agent([string]$Stage, [string]$Message, [int]$TimeoutMinutes) {
 function Invoke-NativeWithTimeout([string]$Exe, [string[]]$ArgList, [int]$TimeoutMs, [string]$LogFile) {
   $outF = [System.IO.Path]::GetTempFileName()
   $errF = [System.IO.Path]::GetTempFileName()
-  $p = Start-Process -FilePath $Exe -ArgumentList $ArgList -RedirectStandardOutput $outF -RedirectStandardError $errF -PassThru -NoNewWindow
+  $argStr = Build-NativeArguments $ArgList
+  $p = Start-Process -FilePath $Exe -ArgumentList $argStr -WorkingDirectory $ProjectRoot -RedirectStandardOutput $outF -RedirectStandardError $errF -PassThru -NoNewWindow
   $exited = $p.WaitForExit($TimeoutMs)
   if (-not $exited) {
     try { $p.Kill() } catch {}
@@ -249,7 +250,8 @@ function Build-NativeArguments([string[]]$ArgList) {
   $parts = @()
   foreach ($a in $ArgList) {
     if ($a -match '[\s"]') {
-      $escaped = $a -replace '"', '\"'
+      $escaped = $a -replace '(\\+)"', '$1$1\"' -replace '"', '\"'
+      $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
       $parts += ('"{0}"' -f $escaped)
     } else {
       $parts += $a

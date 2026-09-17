@@ -1,15 +1,18 @@
 {
-  "version": "2.0.0",
-  "status": "IDLE",
-  "targetTasks": 10,
-  "completedTasks": 0,
-  "failedTasks": 0,
-  "skippedTasks": 0,
-  "currentTask": null,
-  "currentSession": null,
-  "startedAt": null,
-  "updatedAt": null,
-  "lastCompletedTask": null,
-  "lastError": null,
-  "tasks": []
+    "version":  "2.0.0",
+    "status":  "IDLE",
+    "targetTasks":  10,
+    "completedTasks":  0,
+    "failedTasks":  0,
+    "skippedTasks":  0,
+    "currentTask":  null,
+    "currentSession":  null,
+    "startedAt":  "2026-09-17T15:46:24.7681188Z",
+    "updatedAt":  "2026-09-17T16:02:20.0000000Z",
+    "lastCompletedTask":  null,
+    "lastError":  null,
+    "tasks":  [
+
+              ],
+    "tasksSinceFullScan":  0
 }
