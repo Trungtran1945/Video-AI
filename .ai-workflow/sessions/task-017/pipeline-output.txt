@@ -1,0 +1,22 @@
+﻿[2026-09-18 08:24:32] Pipeline started. Request: Restrict provider logs query to prevent cross-user log exposure
+[2026-09-18 08:24:32] WARNING: Working tree contains existing changes. Recording baseline, will not reset.
+[2026-09-18 08:24:32] Stage 'planner' via opencode (timeout 15 min). Logging to D:\E\Video_AI\.ai-workflow\logs\20260918-082432\planner.log
+[2026-09-18 08:24:37] Stage 'planner' CLI exit code  (continuing to status parse; artifact is source of truth).
+[2026-09-18 08:24:37] Stage 'planner': no FINAL_STATUS found in output; checking artifact...
+[2026-09-18 08:24:37] PIPELINE BLOCKED: Planner did not produce 01-plan.md with PLAN_READY.
+
+Project:   Video_AI
+Pipeline:  OpenCode + Antigravity
+Status:    BLOCKED
+Stage:     planner
+Iteration: 0 / 2
+
+planner:   failed
+coder:     pending
+tester:    pending
+debugger:  pending
+reviewer:  pending
+Blocked:   Planner did not produce 01-plan.md with PLAN_READY.
+
+
+

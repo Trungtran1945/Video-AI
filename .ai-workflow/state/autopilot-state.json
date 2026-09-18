@@ -1,18 +1,83 @@
-{
+﻿{
     "version":  "2.0.0",
-    "status":  "IDLE",
+    "status":  "BLOCKED",
     "targetTasks":  10,
     "completedTasks":  0,
-    "failedTasks":  0,
+    "failedTasks":  3,
     "skippedTasks":  0,
     "currentTask":  null,
     "currentSession":  null,
-    "startedAt":  "2026-09-17T15:46:24.7681188Z",
-    "updatedAt":  "2026-09-17T16:02:20.0000000Z",
+    "startedAt":  "2026-09-18T02:50:43.4445528Z",
+    "updatedAt":  "2026-09-18T03:09:17.9109111Z",
     "lastCompletedTask":  null,
-    "lastError":  null,
+    "lastError":  "Discovery did not produce latest-scan.md (ExitCode: ).\nLast output snippet: {\"conversation_id\":\"b7cc765e-5a13-4a57-b913-fab95f287da1\",\"status\":\"ERROR\",\"response\":\"\",\"error\":\"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h50m40s.\",\"duration_seconds\":543.0602552,\"num_turns\":1,\"usage\":{\"input_tokens\":591153,\"output_tokens\":15973",
     "tasks":  [
-
+                  {
+                      "taskId":  "TASK-040",
+                      "title":  "Prevent runPipeline from overwriting cancelled status with failed on abort",
+                      "type":  "bug",
+                      "priority":  "high",
+                      "status":  "failed",
+                      "runtime":  {
+                                      "planner":  "opencode",
+                                      "coder":  "opencode",
+                                      "tester":  "antigravity",
+                                      "debugger":  "opencode",
+                                      "reviewer":  "antigravity"
+                                  },
+                      "session":  {
+                                      "opencode":  null,
+                                      "antigravity":  ""
+                                  },
+                      "attempts":  2,
+                      "maxAttempts":  2,
+                      "createdAt":  "2026-09-18T02:57:21.0001706Z",
+                      "completedAt":  "2026-09-18T02:57:30.6417447Z"
+                  },
+                  {
+                      "taskId":  "TASK-041",
+                      "title":  "Fix tmp directory path in cancelProjectUseCase to clean up temp files instead of project dir",
+                      "type":  "bug",
+                      "priority":  "high",
+                      "status":  "failed",
+                      "runtime":  {
+                                      "planner":  "opencode",
+                                      "coder":  "opencode",
+                                      "tester":  "antigravity",
+                                      "debugger":  "opencode",
+                                      "reviewer":  "antigravity"
+                                  },
+                      "session":  {
+                                      "opencode":  null,
+                                      "antigravity":  ""
+                                  },
+                      "attempts":  2,
+                      "maxAttempts":  2,
+                      "createdAt":  "2026-09-18T02:57:30.7033498Z",
+                      "completedAt":  "2026-09-18T02:57:36.6194351Z"
+                  },
+                  {
+                      "taskId":  "TASK-042",
+                      "title":  "Ensure uploads directory exists before renaming in upload complete",
+                      "type":  "bug",
+                      "priority":  "medium",
+                      "status":  "failed",
+                      "runtime":  {
+                                      "planner":  "opencode",
+                                      "coder":  "opencode",
+                                      "tester":  "antigravity",
+                                      "debugger":  "opencode",
+                                      "reviewer":  "antigravity"
+                                  },
+                      "session":  {
+                                      "opencode":  null,
+                                      "antigravity":  ""
+                                  },
+                      "attempts":  2,
+                      "maxAttempts":  2,
+                      "createdAt":  "2026-09-18T02:57:36.6664703Z",
+                      "completedAt":  "2026-09-18T02:57:42.0057310Z"
+                  }
               ],
-    "tasksSinceFullScan":  0
+    "tasksSinceFullScan":  3
 }

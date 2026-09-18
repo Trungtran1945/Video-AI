@@ -1,0 +1,22 @@
+﻿[2026-09-18 08:04:12] Pipeline started. Request: Fix cleanupWorker project status query and retention calculation
+[2026-09-18 08:04:13] WARNING: Working tree contains existing changes. Recording baseline, will not reset.
+[2026-09-18 08:04:13] Stage 'planner' via opencode (timeout 15 min). Logging to D:\E\Video_AI\.ai-workflow\logs\20260918-080412\planner.log
+[2026-09-18 08:04:19] Stage 'planner' CLI exit code  (continuing to status parse; artifact is source of truth).
+[2026-09-18 08:04:19] Stage 'planner': no FINAL_STATUS found in output; checking artifact...
+[2026-09-18 08:04:19] PIPELINE BLOCKED: Planner did not produce 01-plan.md with PLAN_READY.
+
+Project:   Video_AI
+Pipeline:  OpenCode + Antigravity
+Status:    BLOCKED
+Stage:     planner
+Iteration: 0 / 2
+
+planner:   failed
+coder:     pending
+tester:    pending
+debugger:  pending
+reviewer:  pending
+Blocked:   Planner did not produce 01-plan.md with PLAN_READY.
+
+
+

@@ -1,0 +1,22 @@
+﻿[2026-09-18 08:46:07] Pipeline started. Request: Persist OCR bounding boxes into ocr_regions in dubOcr to restore subtitle mask positioning in dubRender
+[2026-09-18 08:46:07] WARNING: Working tree contains existing changes. Recording baseline, will not reset.
+[2026-09-18 08:46:07] Stage 'planner' via opencode (timeout 15 min). Logging to D:\E\Video_AI\.ai-workflow\logs\20260918-084606\planner.log
+[2026-09-18 08:46:15] Stage 'planner' CLI exit code  (continuing to status parse; artifact is source of truth).
+[2026-09-18 08:46:15] Stage 'planner': no FINAL_STATUS found in output; checking artifact...
+[2026-09-18 08:46:15] PIPELINE BLOCKED: Planner did not produce 01-plan.md with PLAN_READY.
+
+Project:   Video_AI
+Pipeline:  OpenCode + Antigravity
+Status:    BLOCKED
+Stage:     planner
+Iteration: 0 / 2
+
+planner:   failed
+coder:     pending
+tester:    pending
+debugger:  pending
+reviewer:  pending
+Blocked:   Planner did not produce 01-plan.md with PLAN_READY.
+
+
+

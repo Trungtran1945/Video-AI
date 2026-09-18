@@ -1,0 +1,12 @@
+﻿{
+    "taskId":  "TASK-020",
+    "sessionId":  "05f3cc9c",
+    "runId":  "05f3cc9c",
+    "opencodeSession":  null,
+    "antigravityConversations":  [
+
+                                 ],
+    "startedAt":  "2026-09-18T01:32:08.0555960Z",
+    "completedAt":  "2026-09-18T01:32:16.9476677Z",
+    "status":  "failed"
+}
