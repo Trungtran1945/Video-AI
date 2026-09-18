@@ -9,7 +9,10 @@ import { probe } from '../../media/ffmpeg.js'
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4'
 const WSS_BASE_URL =
   `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1`
-const CHROMIUM_FULL_VERSION = '143.0.3650.75'
+// Cho phép bump version Chromium qua env khi Microsoft xoay vòng handshake
+// (Sec-MS-GEC-Version phải khớp major trong User-Agent). Mặc định giữ nguyên
+// để không đổi hành vi khi chưa cần.
+const CHROMIUM_FULL_VERSION = process.env.EDGE_TTS_CHROMIUM_VERSION || '143.0.3650.75'
 const CHROMIUM_MAJOR_VERSION = CHROMIUM_FULL_VERSION.split('.')[0]
 const SEC_MS_GEC_VERSION = `1-${CHROMIUM_FULL_VERSION}`
 const OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3'
@@ -138,6 +141,10 @@ async function synthesizeOnce(text, voice, speed) {
 
     const chunks = []
     let finished = false
+    // Giữ message text cuối của server để chẩn đoán khi handshake bị từ chối
+    // (không chứa secret — chỉ Path/status do server trả về, cắt 200 ký tự).
+    let lastServerText = ''
+    const serverHint = () => (lastServerText ? ` server="${lastServerText.slice(0, 200)}"` : '')
     const timer = setTimeout(() => {
       finish(new Error('Edge TTS timeout: không nhận được âm thanh sau 30s'))
     }, REQUEST_TIMEOUT_MS)
@@ -160,7 +167,13 @@ async function synthesizeOnce(text, voice, speed) {
     ws.on('message', (data, isBinary) => {
       if (!isBinary) {
         const msg = data.toString()
-        if (msg.includes('Path:turn.end')) finish(null)
+        if (msg.length < 2000) lastServerText = msg.replace(/\s+/g, ' ').trim()
+        if (msg.includes('Path:turn.end')) {
+          // turn.end mà chưa có byte audio nào = handshake bị từ chối hoặc
+          // voice không hợp lệ — báo lỗi rõ thay vì resolve buffer rỗng.
+          if (chunks.length) finish(null)
+          else finish(new Error(`Edge TTS kết thúc lượt mà không có audio.${serverHint()}`))
+        }
         return
       }
       // Binary: 2 byte đầu (big-endian) là độ dài header, phần sau là dữ liệu audio
@@ -173,10 +186,14 @@ async function synthesizeOnce(text, voice, speed) {
     })
 
     ws.on('error', (err) => finish(err))
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
       if (!finished) {
         if (chunks.length) finish(null)
-        else finish(new Error('Edge TTS đóng kết nối trước khi trả âm thanh'))
+        else {
+          const reasonText = String(reason || '').replace(/\s+/g, ' ').trim().slice(0, 160)
+          const suffix = reasonText ? ` reason="${reasonText}"` : ''
+          finish(new Error(`Edge TTS đóng kết nối trước khi trả âm thanh (code=${code}${suffix}).${serverHint()}`))
+        }
       }
     })
   })

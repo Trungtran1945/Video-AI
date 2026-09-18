@@ -58,7 +58,7 @@ import dubStt from './stages/dubStt.js'
 import dubOcr from './stages/dubOcr.js'
 
 import dubMerge from './stages/dubMerge.js'
-import { validateForRender } from './stages/dubMerge.js'
+import { validateForRender, dedupeTranscriptSegments } from './stages/dubMerge.js'
 import dubTranslate from './stages/dubTranslate.js'
 import dubTtsAlign from './stages/dubTtsAlign.js'
 import dubRender from './stages/dubRender.js'
@@ -366,12 +366,24 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
 
     // BLOCK_RENDER validation trước khi render (transflow doc 15 §5.0)
     if (job.type === 'dub.render') {
+      // Auto-merge câu STT lặp nguyên văn trước khi validate để gỡ BLOCK
+      // DUPLICATE_SUBTITLE cho project đang kẹt (dub.merge đã success nên
+      // Regenerate từ dub.render sẽ không chạy lại stage đó). Best-effort.
+      try {
+        await dedupeTranscriptSegments(projectId)
+      } catch (e) {
+        console.warn(`[RenderValidation] auto-merge bỏ qua: ${String(e?.message || e).slice(0, 160)}`)
+      }
       const validation = await validateForRender(projectId)
       for (const w of validation.warnings || []) {
         console.warn(`[RenderValidation] warning ${w.code}: ${w.message}`)
       }
       if (!validation.valid) {
-        const errorMsg = `BLOCK_RENDER: ${validation.errors.map(e => e.message).join('; ')}` +
+        const hasDupSubtitle = (validation.errors || []).some((e) => e.code === 'DUPLICATE_SUBTITLE')
+        const dupHint = hasDupSubtitle
+          ? ' (đã tự gộp các câu STT lặp nguyên văn; các câu còn lại khác nhau dấu câu/chữ — kiểm tra transcript, sửa timing/text rồi Regenerate)'
+          : ''
+        const errorMsg = `BLOCK_RENDER: ${validation.errors.map(e => e.message).join('; ')}${dupHint}` +
           ` — sửa segment lỗi rồi Regenerate/Retry (tự chạy lại từ stage lỗi earliest; bản dịch sửa tay qua PATCH /projects/:id/segments/:segmentId/translation, chi tiết ở dub.translate job.result.unresolvedDetails)`
         await failJob(job, projectId, errorMsg)
         return false

@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { query } from '../../db/query.js'
+import { query, run } from '../../db/query.js'
 import { logProviderCall } from '../../providers/tracked.js'
 import { hasHardTranslationError } from './dubTranslate.js'
 import { validateNoOverlap } from '../forcedAlignService.js'
@@ -12,6 +12,78 @@ function truncate80(s) {
 
 function parseParams(raw) {
   try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
+}
+
+// Chuẩn hoá text để phát hiện câu lặp của STT. Giữ nguyên tắc của validator
+// (trim chính xác, phân biệt hoa/thường và dấu câu) — chỉ gộp câu lặp
+// nguyên văn, KHÔNG gộp paraphrase ("Cold water bottle." vs "...?").
+function normalizeDupText(s) {
+  return String(s ?? '').trim()
+}
+
+// Tìm các nhóm segment liên tiếp trùng text nguyên văn (đã sort theo start_sec).
+// Điều kiện khớp hệt validator DUPLICATE_SUBTITLE: text trim bằng nhau và
+// gap = start - prev_end < 1.0s. Trả về mảng các nhóm (mỗi nhóm >= 2 segment).
+export function findDuplicateGroups(sortedSegments) {
+  const groups = []
+  let cur = []
+  for (const s of sortedSegments || []) {
+    const prev = cur.length ? cur[cur.length - 1] : null
+    const t = normalizeDupText(s.text)
+    if (
+      prev &&
+      t &&
+      t === normalizeDupText(prev.text) &&
+      Math.abs(Number(s.start_sec) - Number(prev.end_sec)) < 1.0
+    ) {
+      cur.push(s)
+    } else {
+      if (cur.length >= 2) groups.push(cur)
+      cur = [s]
+    }
+  }
+  if (cur.length >= 2) groups.push(cur)
+  return groups
+}
+
+// Tự gộp các segment STT lặp nguyên văn liên tiếp trong DB.
+// Keeper = segment đầu nhóm (giữ start_sec + translation của nó); end_sec nới
+// tới end xa nhất trong nhóm để giữ phủ timeline. Nếu keeper chưa có
+// translation mà bản trùng có, copy bản dịch đầu tiên còn dùng được để tránh
+// lỗi UNTRANSLATED sau gộp. Xoá các bản trùng, giữ nguyên index_num của keeper
+// (không đánh lại số — nhiều nơi ORDER BY index_num, gap là hợp lệ).
+// Idempotent: chạy lại khi không còn trùng thì no-op.
+// @returns {{mergedGroups:number, removedCount:number, removedIds:Array}}
+export async function dedupeTranscriptSegments(projectId) {
+  const rows = await query(
+    'SELECT id, start_sec, end_sec, text, translation FROM transcript_segments WHERE project_id = ? ORDER BY start_sec ASC',
+    [projectId]
+  )
+  const groups = findDuplicateGroups(rows)
+  let removedCount = 0
+  const removedIds = []
+  for (const g of groups) {
+    const keeper = g[0]
+    const newEnd = Math.max(...g.map((s) => Number(s.end_sec) || 0))
+    let newTranslation = keeper.translation
+    if (!newTranslation || !String(newTranslation).trim()) {
+      const donor = g.find((s) => s.translation && String(s.translation).trim())
+      if (donor) newTranslation = donor.translation
+    }
+    await run(
+      'UPDATE transcript_segments SET end_sec = ?, translation = ? WHERE id = ?',
+      [newEnd, newTranslation || null, keeper.id]
+    )
+    for (const dup of g.slice(1)) {
+      await run('DELETE FROM transcript_segments WHERE id = ?', [dup.id])
+      removedIds.push(dup.id)
+      removedCount++
+    }
+  }
+  if (removedCount > 0) {
+    console.log(`[dubMerge] auto-merge ${removedCount} segment STT lặp nguyên văn (${groups.length} nhóm) cho project ${projectId}`)
+  }
+  return { mergedGroups: groups.length, removedCount, removedIds }
 }
 
 /**
@@ -257,6 +329,16 @@ export default async function dubMerge({ project, job, setProgress }) {
     throw new Error('Thiếu sourceLanguage hoặc targetLanguage trong project params')
   }
 
+  // Auto-merge câu STT lặp nguyên văn (ASR hallucination) trước khi dịch —
+  // best-effort, không throw: còn sót sẽ bị validateForRender chặn ở dub.render.
+  let deduped = 0
+  try {
+    const r = await dedupeTranscriptSegments(projectId)
+    deduped = r.removedCount
+  } catch (e) {
+    console.warn(`[dubMerge] auto-merge bỏ qua: ${String(e?.message || e).slice(0, 160)}`)
+  }
+
   setProgress(90)
 
   await logProviderCall({
@@ -273,6 +355,7 @@ export default async function dubMerge({ project, job, setProgress }) {
   return {
     transcriptSegments: transcriptSegments.length,
     emptyTextSegments: emptyTextSegments.length,
+    deduped,
     sourceLanguage: params.sourceLanguage,
     targetLanguage: params.targetLanguage,
   }
