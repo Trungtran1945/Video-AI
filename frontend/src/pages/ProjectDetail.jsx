@@ -4,6 +4,7 @@ import { projectsApi } from '@/api/projects';
 import Layout from '@/components/Layout';
 import Loading from '@/components/Loading';
 import { VideoTimeline } from '@/components/timeline';
+import MaskEditor from '@/components/MaskEditor';
 import { useTimelineStore } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock } from 'lucide-react';
@@ -98,6 +99,8 @@ export default function ProjectDetail() {
   const isDub = project?.mode === 'TRANSLATE_DUB' || project?.mode === 'translate_dub';
   const outputUrl = project?.output?.storage_key ? `/storage/${project.output.storage_key}?v=${project.output.id}` : null;
   const isVideoOutput = /\.(mp4|webm|mov|m4v|mkv)$/i.test(project?.output?.storage_key || '');
+  // Preview che chữ dùng video NGUỒN để thấy hardsub gốc (output đã blur + sub dịch).
+  const sourceUrl = project?.source_video_key ? `/storage/${project.source_video_key}` : outputUrl;
 
   // Playback control functions
   const handlePlayPause = useCallback(() => {
@@ -556,7 +559,7 @@ export default function ProjectDetail() {
             </div>
 
             {/* Right Panel: Video Preview */}
-            <div className="w-[42%] flex flex-col min-h-0 bg-card border-l border-border">
+            <div className="w-[42%] flex flex-col min-h-0 bg-card border-l border-border overflow-y-auto">
               {outputUrl ? (
                 <div className="flex-1 flex flex-col min-h-0 p-3 gap-2">
                   {/* Video Container */}
@@ -612,6 +615,12 @@ export default function ProjectDetail() {
               ) : (
                 <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
                   Chưa có video output
+                </div>
+              )}
+              {/* Manual Mask Editor: che/làm mờ hardsub gốc trên video nguồn */}
+              {isDub && (
+                <div className="shrink-0 border-t border-border p-3">
+                  <MaskEditor projectId={id} sourceUrl={sourceUrl} disabled={isActive} />
                 </div>
               )}
             </div>

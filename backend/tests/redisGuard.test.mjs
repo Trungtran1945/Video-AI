@@ -62,12 +62,18 @@ for (const f of ['drainQueued.js', 'cleanupWorker.js', 'notifyWorker.js']) {
 }
 
 // 6. Queue .add call sites skip (never throw) when Redis is down.
+// Isolated via safeAdd* (checks MAIN + DEDICATED readiness, converts
+// "Stream isn't writeable" into a skip) — never a raw .add that can fail
+// the video pipeline.
 const cancelSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'usecases', 'cancelProjectUseCase.js'), 'utf8')
-assert(cancelSrc.includes('isRedisReady()'), 'cancelProjectUseCase guards notifyQueue.add with isRedisReady')
+assert(cancelSrc.includes('safeAddNotify'), 'cancelProjectUseCase isolates notify via safeAddNotify')
+assert(!cancelSrc.includes('notifyQueue.add'), 'cancelProjectUseCase never calls raw notifyQueue.add')
 const runnerSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'pipeline', 'runner.js'), 'utf8')
-assert(runnerSrc.includes('isRedisReady()'), 'runner.js guards notifyQueue.add with isRedisReady')
+assert(runnerSrc.includes('safeAddNotify'), 'runner.js isolates notify via safeAddNotify')
+assert(!runnerSrc.includes('notifyQueue.add'), 'runner.js never calls raw notifyQueue.add')
 const serverSrc = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8')
-assert(serverSrc.includes('isRedisReady()'), 'server.js guards cleanupQueue.add with isRedisReady')
+assert(serverSrc.includes('safeAddCleanup'), 'server.js isolates cleanup scheduling via safeAddCleanup')
+assert(!serverSrc.includes('cleanupQueue.add'), 'server.js never calls raw cleanupQueue.add')
 
 // 7. DrainQueued stale-recovery query must reference a real projects column
 // (schema has created_date, NOT updated_date — "no such column" otherwise).

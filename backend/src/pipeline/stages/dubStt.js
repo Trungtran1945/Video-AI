@@ -92,6 +92,7 @@ export async function dubStt(ctx) {
         text: String(s.text || '').trim(),
         speaker: s.speaker ?? null,
         language: res.language || languageHint || null,
+        source: 'asr',
       })
     }
     setProgress(15 + Math.round(((i + 1) / chunks.length) * 82))

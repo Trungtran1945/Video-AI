@@ -146,6 +146,10 @@ router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
         `UPDATE transcript_segments SET translation = ?, start_sec = ?, end_sec = ?, is_time_manually_adjusted = ? WHERE id = ? AND project_id = ?`,
         [translation, newStart, newEnd, hasTimingChange ? 1 : seg.is_time_manually_adjusted, id, req.project.id]
       )
+      // Sửa tay bản dịch → audio TTS cũ (nếu có) đã stale, đánh dấu tổng hợp lại.
+      if (translation !== null) {
+        await run(`UPDATE transcript_segments SET tts_audio_id = NULL WHERE id = ?`, [id])
+      }
       updated++
     }
 

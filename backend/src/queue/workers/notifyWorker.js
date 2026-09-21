@@ -1,6 +1,6 @@
 import { Worker } from 'bullmq'
 import nodemailer from 'nodemailer'
-import { connection, createRedisConnection, createThrottledLogger, isRedisReady } from '../connection.js'
+import { connection, createRedisConnection, createThrottledLogger, isRedisReady, isConnectionReady, waitForConnection, attachDedicatedLogging } from '../connection.js'
 import { config } from '../../config.js'
 
 /**
@@ -30,9 +30,7 @@ function getTransporter() {
   return transporter
 }
 
-const workerConnection = createRedisConnection()
-
-const worker = new Worker('notifications', async (job) => {
+async function processNotify(job) {
   const { projectId, projectTitle, userEmail, status, mode } = job.data
 
   const transport = getTransporter()
@@ -59,32 +57,52 @@ const worker = new Worker('notifications', async (job) => {
   })
 
   return { sent: true }
-}, {
-  connection: workerConnection,
-  concurrency: 2,
-})
+}
 
-// Pause (never close) while Redis is down so no job is lost; resume on ready.
-connection.on('close', () => { worker.pause().catch(() => {}) })
-connection.on('end', () => { worker.pause().catch(() => {}) })
-connection.on('ready', () => { worker.resume() })
-// Same wiring on the worker's dedicated stream (shared signal alone
-// cannot observe a per-worker disconnect).
-workerConnection.on('close', () => { worker.pause().catch(() => {}) })
-workerConnection.on('end', () => { worker.pause().catch(() => {}) })
-workerConnection.on('ready', () => { worker.resume() })
-if (!isRedisReady()) worker.pause().catch(() => {})
+/**
+ * Safe Worker factory — dedicated connection created → error listener
+ * attached immediately → wait for dedicated READY → create Worker.
+ * Never issues Redis commands before the stream is writable.
+ */
+export async function startNotifyWorker(opts = {}) {
+  const workerConnection = opts.connection || createRedisConnection()
+  attachDedicatedLogging(workerConnection, 'Notify')
+  const waitMs = opts.waitTimeoutMs ?? 5000
+  const dedicatedReady = await waitForConnection(workerConnection, waitMs)
+  if (!dedicatedReady) {
+    console.warn('[Notify] Dedicated Redis connection not ready — worker starts paused')
+  }
 
-worker.on('error', (err) => {
-  logWorkerError(`[Notify] Worker error: ${err.message}`)
-})
+  const worker = new Worker('notifications', processNotify, {
+    connection: workerConnection,
+    concurrency: 2,
+  })
 
-worker.on('failed', (job, err) => {
-  console.error('[Notify] Job failed:', err.message)
-})
+  // Pause (never close) while Redis is down so no job is lost; resume on ready.
+  connection.on('close', () => { worker.pause().catch(() => {}) })
+  connection.on('end', () => { worker.pause().catch(() => {}) })
+  connection.on('ready', () => { worker.resume() })
+  // Same wiring on the worker's dedicated stream (shared signal alone
+  // cannot observe a per-worker disconnect).
+  workerConnection.on('close', () => { worker.pause().catch(() => {}) })
+  workerConnection.on('end', () => { worker.pause().catch(() => {}) })
+  workerConnection.on('ready', () => { worker.resume() })
+  if (!isRedisReady()) worker.pause().catch(() => {})
+  if (!isConnectionReady(workerConnection)) worker.pause().catch(() => {})
 
-worker.on('completed', (job, result) => {
-  console.log(`[Notify] Email sent for project ${job.data.projectId}: ${result.sent}`)
-})
+  worker.on('error', (err) => {
+    logWorkerError(`[Notify] Worker error: ${err.message}`)
+  })
 
-export default worker
+  worker.on('failed', (job, err) => {
+    console.error('[Notify] Job failed:', err.message)
+  })
+
+  worker.on('completed', (job, result) => {
+    console.log(`[Notify] Email sent for project ${job.data.projectId}: ${result.sent}`)
+  })
+
+  return worker
+}
+
+export default startNotifyWorker

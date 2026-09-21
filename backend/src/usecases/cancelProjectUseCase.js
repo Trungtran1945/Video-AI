@@ -3,11 +3,7 @@ import { projectDir } from '../pipeline/context.js'
 import fs from 'node:fs'
 import path from 'path'
 import { abortPipeline } from '../pipeline/runner.js'
-import { notifyQueue } from '../queue/notifyQueue.js'
-import { isRedisReady } from '../queue/connection.js'
-
-// Warn-once: cancelling must never fail because notifications are down.
-let warnedRedisDown = false
+import { safeAddNotify } from '../queue/notifyQueue.js'
 
 /**
  * CancelProjectUseCase — FR-J1
@@ -49,24 +45,17 @@ export async function cancelProjectUseCase(projectId) {
     }
   } catch (_) {}
 
-  // Send notification on cancel (skip when Redis is down — never fail cancel)
+  // Send notification on cancel (isolated — never fail cancel when Redis is down)
   try {
-    if (!isRedisReady()) {
-      if (!warnedRedisDown) {
-        warnedRedisDown = true
-        console.warn('[CancelProject] Redis unavailable — cancel notification skipped')
-      }
-    } else {
-      const user = await queryOne('SELECT email FROM users WHERE id = ?', [project.user_id])
-      if (user?.email) {
-        await notifyQueue.add('projectDone', {
-          projectId,
-          projectTitle: project.title,
-          userEmail: user.email,
-          status: 'cancelled',
-          mode: project.mode,
-        })
-      }
+    const user = await queryOne('SELECT email FROM users WHERE id = ?', [project.user_id])
+    if (user?.email) {
+      await safeAddNotify('projectDone', {
+        projectId,
+        projectTitle: project.title,
+        userEmail: user.email,
+        status: 'cancelled',
+        mode: project.mode,
+      })
     }
   } catch (notifyErr) {
     console.error('[CancelProject] Notification failed:', notifyErr.message)

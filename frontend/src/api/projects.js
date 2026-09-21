@@ -17,6 +17,11 @@ export const projectsApi = {
   transcript: (id) => api.get(`/projects/${id}/transcript`).then((r) => r.data),
   updateTranscript: (id, segments) => api.put(`/projects/${id}/transcript`, { segments }).then((r) => r.data),
   redub: (id) => api.post(`/projects/${id}/translate-dub/redub`).then((r) => r.data),
+  // Manual/auto subtitle masks (che/làm mờ hardsub gốc)
+  masks: (id) => api.get(`/projects/${id}/masks`).then((r) => r.data),
+  createMask: (id, body) => api.post(`/projects/${id}/masks`, body).then((r) => r.data),
+  updateMask: (id, maskId, body) => api.patch(`/projects/${id}/masks/${maskId}`, body).then((r) => r.data),
+  deleteMask: (id, maskId) => api.delete(`/projects/${id}/masks/${maskId}`).then((r) => r.data),
   // Group 1: Confirm preview (FR-J2)
   confirmPreview: (id) => api.post(`/projects/${id}/translate-dub/confirm-preview`).then((r) => r.data),
   stylePresets: () =>

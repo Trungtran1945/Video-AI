@@ -277,11 +277,24 @@ export async function initSchema() {
     language TEXT,
     translation TEXT,
     tts_audio_id TEXT,
-    subtitle_id TEXT
+    subtitle_id TEXT,
+    source TEXT, -- 'ocr' | 'asr' | NULL (legacy, coi như asr)
+    confidence REAL, -- OCR track avgConf; ASR để NULL
+    ratio_x REAL, -- bbox chữ theo TỶ LỆ (OCR), NULL khi không có (ASR)
+    ratio_y REAL,
+    ratio_w REAL,
+    ratio_h REAL
   )`)
   // Group 1: Overlap detection fields
   try { db.run(`ALTER TABLE transcript_segments ADD COLUMN is_time_manually_adjusted INTEGER DEFAULT 0`) } catch (_) {}
   try { db.run(`ALTER TABLE transcript_segments ADD COLUMN wpm_warning TEXT`) } catch (_) {}
+  // Subtitle-mask pipeline: nguồn segment + confidence + bbox chữ
+  try { db.run(`ALTER TABLE transcript_segments ADD COLUMN source TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE transcript_segments ADD COLUMN confidence REAL`) } catch (_) {}
+  try { db.run(`ALTER TABLE transcript_segments ADD COLUMN ratio_x REAL`) } catch (_) {}
+  try { db.run(`ALTER TABLE transcript_segments ADD COLUMN ratio_y REAL`) } catch (_) {}
+  try { db.run(`ALTER TABLE transcript_segments ADD COLUMN ratio_w REAL`) } catch (_) {}
+  try { db.run(`ALTER TABLE transcript_segments ADD COLUMN ratio_h REAL`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS ocr_regions (
     id TEXT PRIMARY KEY,
@@ -296,7 +309,11 @@ export async function initSchema() {
     is_static INTEGER DEFAULT 0,    -- hardsub tĩnh: áp dụng cho toàn bộ video (1 record)
     text TEXT,
     confidence REAL,
-    source TEXT DEFAULT 'AUTO'
+    source TEXT DEFAULT 'AUTO',
+    type TEXT DEFAULT 'blur', -- 'blur' | 'solid'
+    blur_radius REAL DEFAULT 8, -- 1..50, chỉ dùng khi type='blur'
+    opacity REAL DEFAULT 1, -- 0..1, độ đục lớp phủ (solid)
+    enabled INTEGER DEFAULT 1 -- 0 = tắt mask nhưng vẫn giữ row
   )`)
 
   db.run(`CREATE TABLE IF NOT EXISTS style_presets (
@@ -369,6 +386,18 @@ export async function initSchema() {
   addCol('ocr_regions', 'ratio_h', 'REAL DEFAULT 0')
   addCol('ocr_regions', 'mask_strength', 'REAL DEFAULT 0.6')
   addCol('ocr_regions', 'is_static', 'INTEGER DEFAULT 0')
+  // Subtitle-mask pipeline: loại mask + tham số blur/opacity + bật/tắt
+  addCol('ocr_regions', 'type', "TEXT DEFAULT 'blur'")
+  addCol('ocr_regions', 'blur_radius', 'REAL DEFAULT 8')
+  addCol('ocr_regions', 'opacity', 'REAL DEFAULT 1')
+  addCol('ocr_regions', 'enabled', 'INTEGER DEFAULT 1')
+  // Transcript source discriminator + OCR evidence (bbox/confidence)
+  addCol('transcript_segments', 'source', 'TEXT')
+  addCol('transcript_segments', 'confidence', 'REAL')
+  addCol('transcript_segments', 'ratio_x', 'REAL')
+  addCol('transcript_segments', 'ratio_y', 'REAL')
+  addCol('transcript_segments', 'ratio_w', 'REAL')
+  addCol('transcript_segments', 'ratio_h', 'REAL')
   // Upload sessions created before 2026-09-12 lack video_hash (only projects
   // got an ALTER migration). Without this, POST /uploads/:id/complete throws
   // "no such column: video_hash" on old data.db files.

@@ -86,6 +86,20 @@ export async function dedupeTranscriptSegments(projectId) {
   return { mergedGroups: groups.length, removedCount, removedIds }
 }
 
+// Chọn pool segment theo mode dịch: ocrMode → rows OCR (visible subtitles là
+// source of truth, ASR hallucination không được thành subtitle); STT mode →
+// rows ASR. Legacy rows (source NULL, project cũ trước migration) fallback giữ
+// hết để không đổi hành vi project cũ.
+export function selectModePool(segments, { ocrMode = false } = {}) {
+  const rows = segments || []
+  if (ocrMode) {
+    const ocr = rows.filter((s) => String(s.source || '').toLowerCase() === 'ocr')
+    return ocr.length ? ocr : rows
+  }
+  const nonOcr = rows.filter((s) => String(s.source || '').toLowerCase() !== 'ocr')
+  return nonOcr.length ? nonOcr : rows
+}
+
 /**
  * Validate before render (transflow doc 15 §5.0 — BLOCK_RENDER pattern).
  * Policy A: required = segments có text non-empty (khớp assertTranslateComplete).
@@ -119,7 +133,8 @@ export async function validateForRender(projectId) {
 
   const isRequired = (s) => s.text && String(s.text).trim() !== ''
   const hasTranslation = (s) => s.translation && String(s.translation).trim() !== ''
-  const required = segments.filter(isRequired)
+  // Chỉ validate pool của mode (ocrMode → OCR rows; ASR rows không phải subtitle).
+  const required = selectModePool(segments, params).filter(isRequired)
 
   // Kiểm tra 2: UNTRANSLATED trên required (policy A)
   const untranslated = required.filter((s) => !hasTranslation(s))
@@ -285,22 +300,25 @@ export async function validateForRender(projectId) {
  */
 export default async function dubMerge({ project, job, setProgress }) {
   const projectId = project.id
+  const params = parseParams(project.params)
+  const ocrMode = !!params.ocrMode
 
   setProgress(10)
 
-  // Check 1: Transcript segments exist (produced by dub.stt)
-  const transcriptSegments = await query(
-    'SELECT id, start_sec, end_sec, text FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC',
+  // Check 1: Transcript segments exist (pool theo mode: dub.ocr hoặc dub.stt)
+  const allSegments = await query(
+    'SELECT id, start_sec, end_sec, text, source FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC',
     [projectId]
   )
+  const transcriptSegments = selectModePool(allSegments, { ocrMode })
 
   setProgress(30)
 
   if (transcriptSegments.length === 0) {
-    throw new Error('Thiếu TranscriptSegment từ dub.stt')
+    throw new Error(`Thiếu TranscriptSegment từ ${ocrMode ? 'dub.ocr' : 'dub.stt'}`)
   }
 
-  // Check 2: All segments have text content from STT
+  // Check 2: All segments have text content
   const emptyTextSegments = transcriptSegments.filter(
     s => !s.text || s.text.trim() === ''
   )
@@ -308,7 +326,7 @@ export default async function dubMerge({ project, job, setProgress }) {
   setProgress(50)
 
   if (emptyTextSegments.length === transcriptSegments.length) {
-    throw new Error('Tất cả segment từ dub.stt đều trống — không có nội dung để dịch')
+    throw new Error(`Tất cả segment từ ${ocrMode ? 'dub.ocr' : 'dub.stt'} đều trống — không có nội dung để dịch`)
   }
 
   // Check 3: Duration validation (>0 and reasonable)
@@ -324,7 +342,6 @@ export default async function dubMerge({ project, job, setProgress }) {
   }
 
   // Check 4: Language config
-  const params = parseParams(project.params)
   if (!params.sourceLanguage || !params.targetLanguage) {
     throw new Error('Thiếu sourceLanguage hoặc targetLanguage trong project params')
   }
@@ -356,6 +373,7 @@ export default async function dubMerge({ project, job, setProgress }) {
     transcriptSegments: transcriptSegments.length,
     emptyTextSegments: emptyTextSegments.length,
     deduped,
+    source: ocrMode ? 'ocr' : 'asr',
     sourceLanguage: params.sourceLanguage,
     targetLanguage: params.targetLanguage,
   }

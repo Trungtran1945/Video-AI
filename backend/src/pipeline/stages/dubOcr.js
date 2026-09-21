@@ -71,15 +71,45 @@ export async function dubOcr(ctx) {
     setProgress(5 + Math.round(((i + 1) / frames.length) * 55))
   }
 
-  // Aggregate OCR results into segments (temporal + fuzzy + bbox)
+  // Aggregate OCR results into segments (temporal + fuzzy + bbox).
+  // filterOcrNoise chạy trước để loại UI text/logo/noise cho cả 2 provider
+  // (đặc biệt Gemini không có filter vị trí như tesseract).
   const frameStep = frames.length > 1 ? Math.abs((frames[1]?.t ?? 1) - (frames[0]?.t ?? 0)) || 1 / fps : 1 / fps
-  const segments = aggregateBoxes(allBoxes, durationSec, fps, { frameStep, height })
+  const cleanBoxes = filterOcrNoise(allBoxes, { width, height })
+  const segments = aggregateBoxes(cleanBoxes, durationSec, fps, { frameStep, height, sourceLanguage })
   setProgress(65)
 
-  // Write to transcript_segments
+  // Kích thước frame thực tế (sampleFrames downscale về min(1280,iw)) để đổi
+  // bbox pixel → ratio scale-invariant. Fallback kích thước đã probe.
+  let frameW = Number(width) || 0
+  let frameH = Number(height) || 0
+  try {
+    const fp = await probe(frames[0].file)
+    if (fp.width > 0) frameW = fp.width
+    if (fp.height > 0) frameH = fp.height
+  } catch (_) {}
+
+  // Write to transcript_segments (whitelist cột DB — bbox/confidence/frameCount
+  // là evidence nội bộ của aggregate, chỉ persist field schema cho phép).
   for (const seg of segments) {
     seg.project_id = project.id
-    await insert('transcript_segments', seg)
+    const row = {
+      id: seg.id,
+      project_id: project.id,
+      index_num: seg.index_num,
+      start_sec: seg.start_sec,
+      end_sec: seg.end_sec,
+      text: seg.text,
+      speaker: null,
+      language: null,
+      source: 'ocr',
+      confidence: Number.isFinite(Number(seg.confidence)) ? Number(seg.confidence) : null,
+      ratio_x: ratioOf(seg.bbox?.x, frameW),
+      ratio_y: ratioOf(seg.bbox?.y, frameH),
+      ratio_w: ratioOf(seg.bbox?.width, frameW),
+      ratio_h: ratioOf(seg.bbox?.height, frameH),
+    }
+    await insert('transcript_segments', row)
   }
 
   // Cleanup frame files
@@ -95,6 +125,60 @@ export async function dubOcr(ctx) {
 
 const OCR_MIN_CONF = () => Number(process.env.OCR_MIN_CONF || 0.55)
 const TEXT_SIM_THRESHOLD = 0.82
+// Box nằm hoàn toàn trên vùng này (tính từ đỉnh) bị coi là UI/logo, không phải subtitle.
+const NOISE_TOP_RATIO = () => Number(process.env.OCR_NOISE_TOP_RATIO || 0.35)
+const MIN_HEIGHT_RATIO = () => Number(process.env.OCR_MIN_HEIGHT_RATIO || 0.012)
+
+function ratioOf(px, dim) {
+  const v = Number(px)
+  const d = Number(dim)
+  if (!Number.isFinite(v) || !(d > 0)) return null
+  return Math.min(1, Math.max(0, Math.round((v / d) * 10000) / 10000))
+}
+
+function countLetters(s) {
+  return (String(s || '').match(/[A-Za-zÀ-ỹ\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length
+}
+
+function countCjkChars(s) {
+  return (String(s || '').match(/[぀-ヿ一-鿿가-힯]/g) || []).length
+}
+
+// Lọc noise OCR tập trung cho mọi provider (đặc biệt provider không tự lọc
+// vị trí như Gemini): giữ text có chữ, confidence đủ, chiều cao đủ lớn và
+// chạm vùng subtitle-like (không nằm gọn ở 1/3 trên màn hình).
+export function filterOcrNoise(allBoxes, { width = 1280, height = 720 } = {}) {
+  const h = Number(height) || 720
+  return (allBoxes || []).filter((b) => {
+    if (!normalizeText(b?.text)) return false
+    if ((Number(b?.confidence) || 0) < 0.3) return false
+    if (countLetters(b?.text) < 2) return false
+    const bh = Number(b?.height) || 0
+    if (bh < h * MIN_HEIGHT_RATIO()) return false
+    const bottom = (Number(b?.y) || 0) + bh
+    if (bottom < h * NOISE_TOP_RATIO()) return false
+    return true
+  })
+}
+
+// Script kỳ vọng theo sourceLanguage explicit ('auto'/rỗng = không gate).
+function expectedScript(sourceLanguage) {
+  const s = String(sourceLanguage || '').toLowerCase()
+  if (!s || s === 'auto') return null
+  if (['zh', 'zh-cn', 'zh-tw', 'ja', 'ko'].includes(s)) return 'cjk'
+  return 'latin'
+}
+
+function scriptMismatch(text, expected) {
+  if (!expected) return false
+  const t = String(text || '')
+  const cjk = countCjkChars(t)
+  const latin = (t.match(/[A-Za-zÀ-ỹ]/g) || []).length
+  const total = cjk + latin
+  if (total < 4) return false
+  if (expected === 'cjk') return latin / total > 0.7
+  return cjk / total > 0.7
+}
 
 export function normalizeText(t) {
   return (t || '').toLowerCase().replace(/[^a-z0-9\u00c0-\u1ef9\u3040-\u30ff\u4e00-\u9fff ]/gi, ' ').replace(/\s+/g, ' ').trim()
@@ -286,12 +370,16 @@ export function aggregateBoxes(allBoxes, durationSec, fps = 2, opts = {}) {
   }
 
   // Emit: persistence + confidence gate, representative text by count*avgConf.
+  // Static gate: track phủ >60% video là logo/watermark, không phải subtitle.
+  // Script gate: sourceLanguage explicit mà text lệch hẳn script → drop.
   const prelim = []
+  const expected = expectedScript(opts.sourceLanguage)
   for (const tr of tracks) {
     const avgConf = tr.confSum / Math.max(1, tr.frameCount)
     const span = tr.lastSeen - tr.firstSeen
     if (!(tr.frameCount >= 2 || avgConf >= minConf)) continue
     if (span < 0.4) continue
+    if (dur > 0 && span / dur > 0.6) continue
     let best = null
     for (const e of tr.textCandidates.values()) {
       const score = e.count * (e.confSum / e.count)
@@ -301,12 +389,14 @@ export function aggregateBoxes(allBoxes, durationSec, fps = 2, opts = {}) {
     }
     const rep = String(best?.text || '').trim()
     if (!rep) continue
+    if (scriptMismatch(rep, expected)) continue
     prelim.push({
       text: rep,
       startSec: Math.max(0, tr.firstSeen),
       endSec: Math.min(dur || Infinity, tr.lastSeen + frameStep),
       confidence: avgConf,
       count: tr.frameCount,
+      bbox: { ...tr.bbox },
     })
   }
   prelim.sort((a, b) => a.startSec - b.startSec)
@@ -319,11 +409,13 @@ export function aggregateBoxes(allBoxes, durationSec, fps = 2, opts = {}) {
     if (last && textSim(last.text, seg.text) >= TEXT_SIM_THRESHOLD && seg.startSec - last.endSec <= 0.6) {
       last.endSec = Math.min(dur || seg.endSec, Math.max(last.endSec, seg.endSec))
       last.confidence = Math.max(last.confidence, seg.confidence)
+      last.count = Math.max(last.count || 0, seg.count || 0)
       continue
     }
     merged.push(seg)
   }
 
+  const r1 = (n) => (Number.isFinite(Number(n)) ? Math.round(Number(n) * 10) / 10 : 0)
   return merged
     .filter(s => s.text.trim().length > 0 && s.confidence >= 0.3 && (s.endSec - s.startSec) >= 0.4 && (s.endSec - s.startSec) <= 15)
     .filter(s => !(dur > 0 && (s.startSec >= dur || s.endSec <= 0)))
@@ -336,6 +428,10 @@ export function aggregateBoxes(allBoxes, durationSec, fps = 2, opts = {}) {
       text: s.text.trim(),
       speaker: null,
       language: null,
+      source: 'ocr',
+      confidence: Math.round(s.confidence * 1000) / 1000,
+      frameCount: s.count || 0,
+      bbox: s.bbox ? { x: r1(s.bbox.x), y: r1(s.bbox.y), width: r1(s.bbox.width), height: r1(s.bbox.height) } : null,
     }))
     .filter(s => s.end_sec > s.start_sec)
 }

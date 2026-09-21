@@ -50,7 +50,7 @@ When designing and developing frontend interfaces:
 - **FFmpeg:** via `src/media/ffmpeg.js` (+ `FFMPEG_PATH` in `backend/.env`). NOT installed on this machine (2026-09-17) — mark FFmpeg checks SKIP/BLOCKED with reason, never PASS by assumption.
 - **AI services:** keys via env (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`); SMTP/quota vars in `docker-compose.yml`. Secrets: UNKNOWN values, never log.
 - **Docker:** `docker/api.Dockerfile`, `docker/web.Dockerfile`, `docker-compose.yml` as above.
-- **Existing agent/config (do not break):** `.opencode/plans/`, `.agents/plugins/` (playwright), `.agents/skills/` (10), `.cursor/agents/` (4 impeccable) + `hooks.json` + `mcp.json`, `.mcp.json` (playwright), `.ai-workflow/` (this pipeline). Merge safely, never delete.
+- **Existing agent/config (do not break):** `.opencode/plans/`, `.agents/plugins/` (playwright), `.agents/skills/` (10), `.cursor/agents/` (4 impeccable) + `hooks.json` + `mcp.json`, `.mcp.json` (playwright). Merge safely, never delete.
 
 ## Environment Rules
 
@@ -74,10 +74,7 @@ When designing and developing frontend interfaces:
 
 ## Agent Workflow (OpenCode + Antigravity)
 
-- Pipeline: `USER → PLANNER(opencode) → CODER(opencode) → TESTER(antigravity) → [DEBUGGER(opencode) → CODER → TESTER]×2 → REVIEWER(antigravity) → HUMAN`. See `.ai-workflow/README.md`.
-- Source of truth: `.ai-workflow/prompts/*.md`. Runtime adapters: `.opencode/agents/*.md`, `.agents/agents/*/agent.md`.
-- File-based handoff only (`.ai-workflow/handoff/`): `00-request → 01-plan (PLAN_READY) → 02-changes (IMPLEMENTED) → 03-test-results (TEST_PASS) → [04-debug (DEBUG_READY)] → 05-review (APPROVED)`. No agent may depend on another's conversation context.
-- Run: `.\.ai-workflow\run-pipeline.ps1 "request"` · `-Validate` · `-Status` · `-Resume` · `-DryRun`.
+- Pipeline/autopilot đã gỡ bỏ.
 - No Claude Code dependency. No auto commit/push/merge. No `--dangerously-skip-permissions` by default.
 
 ## Security Rules

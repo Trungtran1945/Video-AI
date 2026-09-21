@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { query, insert } from '../../db/query.js'
 import {
   burnSubtitlesStyled,
+  applySubtitleMasks,
   buildDubTrack,
   muxStream,
   makeThumbnail,
@@ -14,10 +15,11 @@ import {
   projectDir, ensureDir, requireSourceFile, toStorageKey, round3,
 } from '../context.js'
 
-// dub.render (docs/05 §B.7, transflow doc 15 §5): burn-in ASS → audio mix → mux NVENC.
+// dub.render (docs/05 §B.7, transflow doc 15 §5): mask/blur hardsub gốc → burn-in ASS → audio mix → mux NVENC.
 // BLOCK_RENDER: segment thiếu TTS audio khi dubbing bật → throw, không dùng giọng gốc,
 // không mượn file segment khác.
 const BURN_TIMEOUT = 20 * 60 * 1000
+const MASK_TIMEOUT = 20 * 60 * 1000
 const DUB_TRACK_TIMEOUT = 15 * 60 * 1000
 
 export async function dubRender(ctx) {
@@ -35,6 +37,27 @@ export async function dubRender(ctx) {
   let workingFile = src
   setProgress(30)
 
+  // ── 1. Mask/blur vùng hardsub gốc (AUTO từ transcript OCR + MANUAL từ API).
+  // Chạy TRƯỚC burn ASS để subtitle dịch overlay sau luôn visible (render order:
+  // source → mask → translated subtitle → audio mix → mux).
+  const maskMethod = params.maskMethod === 'solid' ? 'solid' : 'blur'
+  const regions = await loadSubtitleRegions(project.id, { maskMethod })
+  const activeMasks = regions.filter((r) => r.enabled !== 0)
+  if (activeMasks.length) {
+    const maskedFile = path.join(dir, 'masked.mp4')
+    await applySubtitleMasks(workingFile, activeMasks, {
+      width: info.width || 1280,
+      height: info.height || 720,
+      out: maskedFile,
+      timeout: MASK_TIMEOUT,
+    })
+    if (workingFile !== src) {
+      try { fs.unlinkSync(workingFile) } catch (_) {}
+    }
+    workingFile = maskedFile
+  }
+  setProgress(40)
+
   // ── 2. Burn-in phụ đề dịch dạng ASS \pos theo bbox cũ (docs/05 §B.7) ──
   const segments = await query(
     `SELECT * FROM transcript_segments WHERE project_id = ? AND translation IS NOT NULL AND translation != ''
@@ -44,7 +67,6 @@ export async function dubRender(ctx) {
   if (segments.length) {
     // Minimal plumbing: đọc ocr_regions nếu tồn tại (scale-invariant ratio 0..1),
     // normalize snake_case → camelCase, truyền đúng vào buildAss. Rỗng → fallback đáy.
-    const regions = await loadSubtitleRegions(project.id)
     const assPath = buildAss(dir, segments, regions, {
       width: info.width || 1280,
       height: info.height || 720,
@@ -195,17 +217,55 @@ export async function dubRender(ctx) {
 
 // Đọc subtitle/mask regions đã persist (nếu có). Scale-invariant ratio 0..1,
 // tương ứng resolution video thực tế qua PlayResX/Y + centerOf().
+// Gộp regions MANUAL đã lưu + AUTO suy ra từ transcript OCR (bbox đã persist
+// trên segment — luôn nhất quán với transcript, dedupe-safe).
 // Không hard-code vị trí khi region tồn tại; rỗng → fallback top/bottom/default.
-export async function loadSubtitleRegions(projectId) {
+export async function loadSubtitleRegions(projectId, { maskMethod = 'blur' } = {}) {
   try {
     const rows = await query(
       `SELECT * FROM ocr_regions WHERE project_id = ? ORDER BY start_sec ASC`,
       [projectId]
     )
-    return (rows || []).map(normalizeRegion).filter(Boolean)
+    const stored = (rows || []).map(normalizeRegion).filter(Boolean)
+    const auto = await deriveAutoRegions(projectId, maskMethod)
+    return [...stored, ...auto]
   } catch (_) {
     return []
   }
+}
+
+// Dựng mask AUTO từ transcript OCR (bbox ratio đã persist trên segment).
+// Không ghi DB — suy ra lúc render/API nên không bao giờ lệch với transcript.
+export async function deriveAutoRegions(projectId, maskMethod) {
+  const type = maskMethod === 'solid' ? 'solid' : 'blur'
+  const rows = await query(
+    `SELECT id, start_sec, end_sec, text, confidence, ratio_x, ratio_y, ratio_w, ratio_h
+     FROM transcript_segments
+     WHERE project_id = ? AND (source = 'ocr' OR source IS NULL)
+       AND ratio_x IS NOT NULL AND ratio_y IS NOT NULL AND ratio_w IS NOT NULL AND ratio_h IS NOT NULL
+     ORDER BY start_sec ASC`,
+    [projectId]
+  )
+  const out = []
+  for (const s of rows) {
+    const r = normalizeRegion({
+      ratio_x: s.ratio_x, ratio_y: s.ratio_y, ratio_w: s.ratio_w, ratio_h: s.ratio_h,
+      start_sec: s.start_sec, end_sec: s.end_sec,
+    })
+    if (!r) continue
+    out.push({
+      ...r,
+      id: `auto:${s.id}`,
+      type,
+      blur_radius: 8,
+      opacity: 1,
+      enabled: 1,
+      text: s.text,
+      confidence: s.confidence,
+      source: 'AUTO',
+    })
+  }
+  return out
 }
 
 export function normalizeRegion(r) {
@@ -220,9 +280,21 @@ export function normalizeRegion(r) {
   if (ratioW <= 0 || ratioH <= 0) return null
   if (ratioX < 0 || ratioY < 0 || ratioX > 1 || ratioY > 1) return null
   if (!(endSec > startSec)) return null
+  const type = r.type === 'solid' ? 'solid' : 'blur'
+  const blurRaw = Number(r.blur_radius ?? r.blurRadius ?? 8)
+  const opRaw = Number(r.opacity ?? r.mask_strength ?? 1)
+  const enabled = r.enabled === 0 || r.enabled === false || r.enabled === '0' ? 0 : 1
   return {
+    id: r.id ?? null,
     ratioX, ratioY, ratioW: Math.min(1, ratioW), ratioH: Math.min(1, ratioH),
     start_sec: startSec, end_sec: endSec,
+    type,
+    blur_radius: Number.isFinite(blurRaw) ? blurRaw : 8,
+    opacity: Number.isFinite(opRaw) ? opRaw : 1,
+    enabled,
+    text: typeof r.text === 'string' ? r.text : null,
+    confidence: Number.isFinite(Number(r.confidence)) ? Number(r.confidence) : null,
+    source: r.source || 'AUTO',
   }
 }
 
@@ -280,7 +352,7 @@ export function buildAss(dir, segments, regions, { width, height, title, subPosi
 
 export function pickRegion(regions, startSec, endSec) {
   const mid = (startSec + endSec) / 2
-  return (regions || []).find((r) => mid >= Number(r.start_sec) && mid <= Number(r.end_sec)) || null
+  return (regions || []).find((r) => r.enabled !== 0 && mid >= Number(r.start_sec) && mid <= Number(r.end_sec)) || null
 }
 
 // Kéo dài end tới hết region nếu câu kết thúc sát mép dưới của vùng chữ đang hiển thị.

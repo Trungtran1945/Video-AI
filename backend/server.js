@@ -76,17 +76,20 @@ async function start() {
   await seed()
 
   // ── Recover projects stuck in 'running' from previous crash/restart ──
+  // Park as queued (not failed) with artifacts preserved, so drain/manual
+  // retry resumes from the earliest incomplete stage via firstRunnableStage.
+  // Never stuck in 'running'; never delete valid artifacts here.
   try {
     const stale = await query(`SELECT id, title FROM projects WHERE status = 'running'`)
     if (stale.length > 0) {
       for (const p of stale) {
-        await run(`UPDATE projects SET status = 'failed' WHERE id = ?`, [p.id])
+        await run(`UPDATE projects SET status = 'queued' WHERE id = ?`, [p.id])
         await run(
-          `UPDATE generation_jobs SET status = 'failed', step = 'error', error_message = 'Pipeline interrupted — server restarted'
+          `UPDATE generation_jobs SET status = 'pending', step = 'queued', error_message = 'Pipeline interrupted — server restarted, queued for resume'
            WHERE project_id = ? AND status IN ('running', 'pending')`,
           [p.id]
         )
-        console.warn(`[Server] Reset stuck project "${p.title}" (${p.id}) to failed`)
+        console.warn(`[Server] Reset stuck project "${p.title}" (${p.id}) to queued for resume`)
       }
       console.log(`[Server] Recovered ${stale.length} stale project(s) from previous session`)
     }
@@ -104,7 +107,8 @@ async function start() {
     queueBooted = true
     try {
       const drainMod = await import('./src/queue/workers/drainQueued.js')
-      drainQueuedWorker = drainMod.default
+      const startDrain = drainMod.startDrainQueuedWorker || drainMod.default
+      drainQueuedWorker = await startDrain()
       console.log('[Queue] DrainQueued worker started')
     } catch (e) {
       console.warn('[Queue] DrainQueued worker failed to start:', e.message)
@@ -112,7 +116,8 @@ async function start() {
 
     try {
       const notifyMod = await import('./src/queue/workers/notifyWorker.js')
-      notifyWorker = notifyMod.default
+      const startNotify = notifyMod.startNotifyWorker || notifyMod.default
+      notifyWorker = await startNotify()
       console.log('[Queue] Notify worker started')
     } catch (e) {
       console.warn('[Queue] Notify worker failed to start:', e.message)
@@ -120,19 +125,14 @@ async function start() {
 
     try {
       const cleanupMod = await import('./src/queue/workers/cleanupWorker.js')
-      cleanupWorker = cleanupMod.default
-      // Schedule cleanup to run every hour (Redis is ready here by construction;
-      // re-check anyway — never throw from boot because of scheduling).
-      const { cleanupQueue } = await import('./src/queue/cleanupQueue.js')
-      const { isRedisReady } = await import('./src/queue/connection.js')
-      if (!isRedisReady()) {
-        console.warn('[Queue] Redis unavailable — cleanup sweep scheduling skipped')
-      } else {
-        await cleanupQueue.add('sweep', {}, {
-          repeat: { every: 60 * 60 * 1000 }, // every hour
-          removeOnComplete: true,
-        })
-      }
+      const startCleanup = cleanupMod.startCleanupWorker || cleanupMod.default
+      cleanupWorker = await startCleanup()
+      // Schedule cleanup to run every hour (isolated — never throw from boot).
+      const { safeAddCleanup } = await import('./src/queue/cleanupQueue.js')
+      await safeAddCleanup('sweep', {}, {
+        repeat: { every: 60 * 60 * 1000 }, // every hour
+        removeOnComplete: true,
+      })
       console.log('[Queue] Cleanup worker started (every hour)')
     } catch (e) {
       console.warn('[Queue] Cleanup worker/cron failed to start:', e.message)

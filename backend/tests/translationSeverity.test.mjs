@@ -30,5 +30,20 @@ assert(split.hard.length === 1 && split.warnings.length === 1, `classifier split
 assert(split.hard[0] === 'number mismatch (2→3)', 'hard bucket holds number mismatch')
 assert(split.warnings[0] === 'entity changed', 'warning bucket holds entity changed')
 
+// length 3 tầng (regression incident seg #15/#34 — câu EN ngắn nở câu tự nhiên,
+// style preset cố ý nở câu; ratio 3-8x KHÔNG chứng minh sai nghĩa).
+// Nở vừa (ratio ~8): soft warning, pipeline/PATCH cho qua.
+const expand = hasHardTranslationError('Hi', 'Xin chào các bạn', 'vi')
+assert(expand.hard === false, `moderate expansion is soft, not HARD (${(expand.errors || []).join(';')})`)
+assert(expand.errors.some((e) => e.startsWith('length expansion')), 'expansion still reported as warning')
+// Nở cực đoan (ratio > 8, bịa thêm): vẫn HARD.
+const padded = hasHardTranslationError('Hi', 'Xin chào các bạn, rất vui được gặp bạn hôm nay trong buổi tiệc lớn này nhé', 'vi')
+assert(padded.hard === true, `extreme padding stays HARD (${(padded.errors || []).join(';')})`)
+// Rụng nội dung (ratio < 0.3, vd LLM trả "nhé" cho câu dài): vẫn HARD.
+const dropped = hasHardTranslationError('this place is very beautiful', 'nhé', 'vi')
+assert(dropped.hard === true, `dropped content stays HARD (${(dropped.errors || []).join(';')})`)
+const expandSplit = classifyTranslationErrors(['length expansion (style?)'])
+assert(expandSplit.hard.length === 0 && expandSplit.warnings.length === 1, 'expansion bucketed as warning')
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

@@ -34,6 +34,82 @@ export function getRedisEndpoint() {
   return endpoint
 }
 
+/**
+ * Per-connection readiness (BullMQ/ioredis).
+ * The shared `_redisReady` flag only reflects the MAIN connection — it must
+ * never be used to gate commands on a DEDICATED Queue/Worker connection.
+ * A dedicated instance is writable only when `status === 'ready'`
+ * ('ready', not 'connect').
+ */
+export function isConnectionReady(conn) {
+  try {
+    return !!conn && conn.status === 'ready'
+  } catch (_) {
+    return false
+  }
+}
+
+/**
+ * Resolve true once the given connection emits `ready`, false after
+ * timeoutMs without throwing. Never rejects.
+ */
+export function waitForConnection(conn, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    try {
+      if (isConnectionReady(conn)) return resolve(true)
+    } catch (_) {
+      return resolve(false)
+    }
+    let done = false
+    const cleanup = () => {
+      try { clearTimeout(timer) } catch (_) {}
+      try { conn?.off?.('ready', onReady) } catch (_) {}
+    }
+    const onReady = () => {
+      if (done) return
+      done = true
+      cleanup()
+      resolve(true)
+    }
+    const timer = setTimeout(() => {
+      if (done) return
+      done = true
+      cleanup()
+      resolve(false)
+    }, timeoutMs)
+    try {
+      conn?.once?.('ready', onReady)
+    } catch (_) {
+      if (!done) {
+        done = true
+        cleanup()
+        resolve(false)
+      }
+    }
+  })
+}
+
+/** True for the ioredis "not writable + offline queue disabled" rejection. */
+export function isStreamNotWritableError(err) {
+  const m = String(err?.message || '')
+  return m.includes("Stream isn't writeable") || m.includes('enableOfflineQueue')
+}
+
+/**
+ * Attach throttled error logging to a DEDICATED connection immediately after
+ * creation (before any Queue/Worker uses it). Returns the throttled logger
+ * so callers can reuse it for worker errors.
+ */
+export function attachDedicatedLogging(conn, label = 'Redis') {
+  const log = createThrottledLogger(30000)
+  try {
+    conn?.on?.('error', (err) => {
+      log(`[${label}] Redis error: ${err?.message || err}`)
+    })
+  } catch (_) {}
+  return log
+}
+
 let _redisReady = false
 
 /** Collapse rapid repeats into one log line + suppressed count (no spam). */

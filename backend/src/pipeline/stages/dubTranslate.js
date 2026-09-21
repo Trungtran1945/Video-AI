@@ -7,6 +7,7 @@ import { callProvider } from '../../lib/callProvider.js'
 import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js'
 import { projectDir, extractJsonBlock, round2 } from '../context.js'
 import { TRANSLATION_VERSION } from '../../lib/cacheKey.js'
+import { selectModePool } from './dubMerge.js'
 
 // Single source of truth cho cache version (đồng bộ với POST /projects
 // isCacheCompatible). Bump TRANSLATION_VERSION trong lib/cacheKey.js khi
@@ -37,21 +38,25 @@ export async function dubTranslate(ctx) {
   )
   if (!segments.length) throw new Error('Không có transcript để dịch — stage dub.stt chưa chạy hoặc rỗng')
 
+  // Source-aware: ocrMode chỉ dịch OCR rows (visible subtitles là source of
+  // truth); STT mode chỉ dịch ASR rows. Không dịch noise/rejected/out-of-mode.
+  const pool = selectModePool(segments, params)
+
   // Skip translation if all segments already have translations.
   // Task 1: cache identity đã validate ở POST /projects (isCacheCompatible:
   // videoHash + source/target + stylePreset + ocrMode + translationVersion)
   // nên tới đây reuse translation là an toàn. Transcript-only reuse
   // (style khác) copy translation=NULL nên không skip mà dịch lại.
-  const untranslated = segments.filter((s) => s.text && !s.translation)
-  if (untranslated.length === 0 && segments.length > 0) {
+  const untranslated = pool.filter((s) => s.text && !s.translation)
+  if (untranslated.length === 0 && pool.length > 0) {
     // Build SRT from existing translations
-    const cues = segments
+    const cues = pool
       .filter((s) => s.translation)
       .map((s) => ({ start: Number(s.start_sec), end: Number(s.end_sec), text: s.translation }))
     if (cues.length) await writeSrt(project, cues)
     return {
-      translatedCount: segments.length,
-      segmentCount: segments.length,
+      translatedCount: pool.length,
+      segmentCount: pool.length,
       skipped: true,
       reason: 'cached',
       presetSlug: params.stylePreset || null,
@@ -95,7 +100,7 @@ export async function dubTranslate(ctx) {
   // TRANSIENT → retry bounded exponential backoff (tối đa 2 lần retry / segment).
   const gtResults = new Map() // index_num → bản dịch Google Translate (base)
   const gtErrors = new Map() // index_num → error kind (diagnostic)
-  const segmentsToTranslate = segments.filter((s) => s.text && s.text.trim())
+  const segmentsToTranslate = pool.filter((s) => s.text && s.text.trim())
   let googleUnhealthy = false
   let consecutiveConfig = 0
 
@@ -186,7 +191,7 @@ export async function dubTranslate(ctx) {
     // KHÔNG fail cả stage vì style. Nhưng mọi segment required đều phải có
     // translation hợp lệ — còn unresolved thì stage FAILED (không defer cho render).
     const restyleSystem = buildRestyleSystemPrompt(preset, targetLanguage)
-    const groups = groupByWindow(segments, getContextWindowSec(project))
+    const groups = groupByWindow(pool, getContextWindowSec(project))
     let styleFallback = false
     const unresolved = []
     const styledAll = new Map() // index_num → styled text (mọi group, cho quarantine details)
@@ -224,16 +229,35 @@ export async function dubTranslate(ctx) {
           translations.set(seg.id, final.text)
           if (final.via === 'base') styleFallback = true
         } else if (seg.text && seg.text.trim()) {
-          unresolved.push(seg.index_num)
-          const bErr = (validateTranslation(seg.text, gtResults.get(seg.index_num) || '', targetLanguage).errors || []).join(';')
-          const sErr = (validateTranslation(seg.text, restyledGroup.get(seg.index_num) || '', targetLanguage).errors || []).join(';')
-          console.warn(`[dubTranslate] Block segment #${seg.index_num}: restyle+GT đều fail gate (base:[${bErr}] styled:[${sErr}])`)
+          // Bounded repair: base hard-fail nhưng LLM có thể dịch lại đúng.
+          // Tối đa 1 lần/segment; output phải pass gate mới dùng; TRANSIENT
+          // (LLM quá tải) thì bỏ qua lặng và giữ unresolved như cũ.
+          const gi = group.indexOf(seg)
+          const repaired = await repairTranslationWithLlm(llm, {
+            source: seg.text,
+            badTranslation: gtResults.get(seg.index_num) || restyledGroup.get(seg.index_num) || null,
+            prev: group[gi - 1]?.text || '',
+            next: group[gi + 1]?.text || '',
+            targetLanguage,
+            system,
+          }, { job, projectId: project.id, userId: project.user_id }).catch(() => null)
+          if (repaired) {
+            await updateById('transcript_segments', seg.id, { translation: repaired })
+            translations.set(seg.id, repaired)
+            styleFallback = true
+            console.warn(`[dubTranslate] segment #${seg.index_num} repaired qua LLM (base+styled đều fail gate)`)
+          } else {
+            unresolved.push(seg.index_num)
+            const bErr = (validateTranslation(seg.text, gtResults.get(seg.index_num) || '', targetLanguage).errors || []).join(';')
+            const sErr = (validateTranslation(seg.text, restyledGroup.get(seg.index_num) || '', targetLanguage).errors || []).join(';')
+            console.warn(`[dubTranslate] Block segment #${seg.index_num}: restyle+GT đều fail gate (base:[${bErr}] styled:[${sErr}])`)
+          }
         }
       }
       setProgress(45 + Math.round(((g + 1) / groups.length) * 45))
     }
     if (!translations.size) {
-      await persistTranslateReview(job, buildTranslateReviewDetails(segments, unresolved, {
+      await persistTranslateReview(job, buildTranslateReviewDetails(pool, unresolved, {
         gtResults, styledAll, targetLanguage,
       }))
       throw new Error(
@@ -246,19 +270,30 @@ export async function dubTranslate(ctx) {
     // Quarantine: còn unresolved → lưu details vào job.result TRƯỚC khi throw
     // để user sửa tay từng segment (PATCH .../segments/:id/translation) rồi
     // regenerate từ dub.translate, thay vì retry mù cùng lỗi.
-    await persistTranslateReview(job, buildTranslateReviewDetails(segments, unresolved, {
+    await persistTranslateReview(job, buildTranslateReviewDetails(pool, unresolved, {
       gtResults, styledAll, targetLanguage,
     }))
-    assertTranslateComplete(segments, translations, unresolved)
+    // Restyle-down hint: group có nội dung nhưng LLM không trả styled nào
+    // (quá tải/outage) → mọi câu đang dùng bản gốc/repair; báo rõ để user
+    // phân biệt với lỗi dữ liệu và biết Regenerate sau cũng có thể khỏi.
+    try {
+      assertTranslateComplete(pool, translations, unresolved)
+    } catch (e) {
+      const restyleDown = styledAll.size === 0 && groups.some((g) => g.some((s) => s.text && s.text.trim()))
+      if (restyleDown && unresolved.length && String(e.message || '').startsWith('TRANSLATE_NEEDS_REVIEW:')) {
+        throw new Error(e.message + ' (lưu ý: LLM restyle đang quá tải nên các câu dùng bản dịch gốc; thử Regenerate sau ít phút, hoặc sửa tay)')
+      }
+      throw e
+    }
     // Sinh SRT từ timing gốc + bản dịch (docs/05 FR-T6)
-    const styleCues = segments
+    const styleCues = pool
       .filter((s) => translations.has(s.id))
       .map((s) => ({ start: Number(s.start_sec), end: Number(s.end_sec), text: translations.get(s.id) }))
     if (styleCues.length) await writeSrt(project, styleCues)
 
     return {
       translatedCount: translations.size,
-      segmentCount: segments.length,
+      segmentCount: pool.length,
       presetSlug: preset?.slug || null,
       targetLanguage,
       method: usedLlmDirect ? 'google_translate + llm_direct + llm_restyle' : 'google_translate + llm_restyle',
@@ -272,8 +307,8 @@ export async function dubTranslate(ctx) {
     }
     const repairLlm = llm || await getProvider(project.user_id, 'llm').catch(() => null)
     noStyleUnresolved = []
-    for (let si = 0; si < segments.length; si++) {
-      const seg = segments[si]
+    for (let si = 0; si < pool.length; si++) {
+      const seg = pool[si]
       let gtText = gtResults.get(seg.index_num)
       if (!gtText) {
         if (seg.text && seg.text.trim()) noStyleUnresolved.push(seg.index_num)
@@ -283,7 +318,7 @@ export async function dubTranslate(ctx) {
       if (gate.hard) {
         const fixed = repairLlm ? await repairTranslationWithLlm(repairLlm, {
           source: seg.text, badTranslation: gtText,
-          prev: segments[si - 1]?.text || '', next: segments[si + 1]?.text || '',
+          prev: pool[si - 1]?.text || '', next: pool[si + 1]?.text || '',
           targetLanguage, system,
         }, { job, projectId: project.id, userId: project.user_id }) : null
         if (fixed) gtText = fixed
@@ -305,20 +340,20 @@ export async function dubTranslate(ctx) {
 
   // Invariant: COMPLETED chỉ khi 100% required translations hợp lệ.
   // Quarantine như nhánh style (xem trên).
-  await persistTranslateReview(job, buildTranslateReviewDetails(segments, noStyleUnresolved, {
+  await persistTranslateReview(job, buildTranslateReviewDetails(pool, noStyleUnresolved, {
     gtResults, styledAll: null, targetLanguage,
   }))
-  assertTranslateComplete(segments, translations, noStyleUnresolved)
+  assertTranslateComplete(pool, translations, noStyleUnresolved)
 
   // Sinh SRT từ timing gốc + bản dịch (docs/05 FR-T6)
-  const cues = segments
+  const cues = pool
     .filter((s) => translations.has(s.id))
     .map((s) => ({ start: Number(s.start_sec), end: Number(s.end_sec), text: translations.get(s.id) }))
   if (cues.length) await writeSrt(project, cues)
 
   return {
     translatedCount: translations.size,
-    segmentCount: segments.length,
+    segmentCount: pool.length,
     presetSlug: preset?.slug || null,
     targetLanguage,
     method: usedLlmDirect ? 'google_translate + llm_direct' : (hasStyle ? 'google_translate + llm_restyle' : 'google_translate'),
@@ -528,7 +563,8 @@ async function restyleGroup(llm, system, groupTranslations, preset, job, project
   const prompt =
     `Viết lại các câu lồng tiếng dưới đây theo phong cách: ${preset.name}.\n` +
     `Bản dịch gốc đã ĐÚNG NGHĨA — KHÔNG được thay đổi ý, chỉ thay đổi văn phong. Giữ tên riêng, con số, phủ định, nghi vấn.\n` +
-    `Mỗi dòng có định dạng "index|src:nguồn|tgt:bản dịch". Giữ nguyên index, CHỈ viết lại phần bản dịch (sau "tgt:").\n\n` +
+    `Mỗi dòng có định dạng "index|src:nguồn|tgt:bản dịch". Giữ nguyên index, CHỈ viết lại phần bản dịch (sau "tgt:").\n` +
+    `GIỮ NGUYÊN mọi con số, tên riêng trong bản dịch (cấm đổi/thêm/bớt số). Mỗi index bắt buộc có translation khác rỗng.\n\n` +
     `${input}\n\n` +
     `Trả về DUY NHẤT JSON: {"segments":[{"index":int,"translation":string}]}`
 
@@ -806,7 +842,14 @@ export function validateTranslation(src, tgt, targetLang = 'vi') {
   // CJK chars expand ~3-8x into Vietnamese; the latin 0.3-3 band would reject
   // every correct zh->vi translation (live GT ratios 3.4-7.7).
   const maxRatio = countCjk(s) > 0 ? 8 : 3
-  if (ratio < 0.3 || ratio > maxRatio) errors.push('length implausible (hallucination?)')
+  // Ba tầng length (incident seg #15/#34 — câu EN ngắn nở câu tự nhiên + style
+  // preset cố ý nở câu, ratio 3-8x latin KHÔNG chứng minh sai nghĩa):
+  // - ratio < 0.3 (rụng nội dung, vd LLM trả "nhé" cho câu 27 ký tự) → HARD.
+  // - ratio > 8 (bịa/nở cực đoan, vd CJK 5 chữ → VI 100 chữ) → HARD.
+  // - giữa maxRatio..8 (nở vừa, câu ngắn/style) → soft warning, pipeline/PATCH
+  //   cho qua như 'entity changed'. Number/language/empty vẫn bắt HARD.
+  if (ratio < 0.3 || ratio > 8) errors.push('length implausible (hallucination?)')
+  else if (ratio > maxRatio) errors.push('length expansion (style?)')
   return { ok: errors.length === 0, errors }
 }
 
@@ -846,7 +889,14 @@ export async function repairTranslationWithLlm(llm, { source, badTranslation, pr
       userId, apiKeyId: llm.apiKeyId, projectId, jobId: job?.id,
     })
     const out = String(res?.text || '').replace(/^["'\s]+|["'\s]+$/g, '').trim()
-    if (out && validateTranslation(source, out, targetLanguage).ok) return out
+    // Từ chối JSON artifact lọt qua gate yếu (validateTranslation không check
+    // ngoặc — hasHardTranslationError mới check; repair phải check ở đây để
+    // không bao giờ ghi '{"segments":...}' vào DB như bản dịch thật).
+    if (!out || /[{}[\]]/.test(out)) return null
+    // Chấp nhận repair khi không lỗi HARD (khớp resolveFinalTranslation) —
+    // trước đây đòi .ok tuyệt đối nên bản repair chỉ dính soft warning
+    // (entity changed/length) bị loại oan dù pipeline vẫn accept via base.
+    if (!hasHardTranslationError(source, out, targetLanguage).hard) return out
   } catch (_) {}
   return null
 }

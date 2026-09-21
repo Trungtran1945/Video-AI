@@ -12,6 +12,7 @@ import apiKeysRouter from './apiKeys.js'
 import logsRouter from './logs.js'
 import adminRouter from './admin.js'
 import dubDataRouter from './dubData.js'
+import masksRouter from './masks.js'
 import eventsRouter from './events.js'
 import confirmPreviewRouter from './confirmPreview.js'
 
@@ -22,6 +23,7 @@ router.use('/projects', projectsRouter)
 router.use('/projects', generationRouter)
 router.use('/projects', confirmPreviewRouter) // FR-J2: POST /projects/:id/translate-dub/confirm-preview
 router.use('/', dubDataRouter) // /style-presets + /projects/:id/transcript
+router.use('/', masksRouter) // /projects/:id/masks (manual mask CRUD + auto derive)
 router.use('/', eventsRouter) // SSE GET /projects/:id/events
 router.use('/upload', uploadRouter) // legacy multipart
 router.use('/uploads', uploadRouter) // resumable kiểu TUS (docs/06 §2.1)

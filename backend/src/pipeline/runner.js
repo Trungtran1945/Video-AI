@@ -10,7 +10,9 @@ import {
   getUserSettings,
 } from './context.js'
 import eventBus from './eventBus.js'
-import { notifyQueue } from '../queue/notifyQueue.js'
+import { safeAddNotify } from '../queue/notifyQueue.js'
+import { classifyProviderError, ERROR_KINDS } from '../lib/providerErrors.js'
+import { firstRunnableStage } from './context.js'
 
 function isRateLimitError(err) {
   if (err?.name === 'RateLimitExhaustedError') return true
@@ -251,8 +253,38 @@ function checkInputs(project) {
   }
 }
 
+export function describeFailure(errOrMessage, stage) {
+  const err = typeof errOrMessage === 'string' ? { message: errOrMessage } : (errOrMessage || {})
+  const message = String(err?.message || errOrMessage || '')
+  if (message.startsWith('TRANSLATE_NEEDS_REVIEW:') || message.startsWith('BLOCK_RENDER:')) {
+    return { category: 'VALIDATION', retryable: false, provider: STAGE_PROVIDER[stage] || 'core' }
+  }
+  if (isRateLimitError(err)) {
+    return { category: 'RATE_LIMIT', retryable: true, provider: STAGE_PROVIDER[stage] || 'core' }
+  }
+  if (message === 'Cancelled') {
+    return { category: 'CANCELLED', retryable: false, provider: STAGE_PROVIDER[stage] || 'core' }
+  }
+  try {
+    const cls = classifyProviderError(err)
+    return { category: cls.kind, retryable: cls.retryable === true, provider: STAGE_PROVIDER[stage] || 'core' }
+  } catch (_) {
+    return { category: 'UNKNOWN', retryable: false, provider: STAGE_PROVIDER[stage] || 'core' }
+  }
+}
+
+function logStageFailure({ projectId, stage, errOrMessage, attempt, nextRetryAt = null }) {
+  const { category, retryable, provider } = describeFailure(errOrMessage, stage)
+  const msg = String((errOrMessage && errOrMessage.message) || errOrMessage || '').slice(0, 300)
+  console.error(
+    `[Pipeline] project=${projectId} stage=${stage} category=${category} attempt=${attempt} ` +
+    `provider=${provider} retryable=${retryable} nextRetryAt=${nextRetryAt || '-'} error=${msg}`
+  )
+}
+
 async function failJob(job, projectId, message) {
-  console.error(`[Pipeline] stage ${job.type} thất bại cho ${projectId}: ${message}`)
+  const attempt = (job.attempts || 0) + 1
+  logStageFailure({ projectId, stage: job.type, errOrMessage: message, attempt })
   await updateById('generation_jobs', job.id, {
     status: 'failed',
     step: 'error',
@@ -448,6 +480,40 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       return 'waiting'
     }
 
+    // Transient provider failure (503/timeout/network blip) → bounded retry
+    // with stage backoff (RETRY_POLICY). Permanent/Configuration/Invalid →
+    // fail fast (retrying cannot help). Validation already handled above.
+    // 'Cancelled' never retries.
+    if (String(err?.message || '') !== 'Cancelled') {
+      let kind = null
+      try {
+        kind = classifyProviderError(err).kind
+      } catch (_) {}
+      if (kind === ERROR_KINDS.TRANSIENT) {
+        const policy = RETRY_POLICY[job.type] || { maxRetries: 2, backoffMs: [10_000, 30_000] }
+        const attempts = (job.attempts || 0) + 1
+        if (attempts <= policy.maxRetries) {
+          const delayMs = policy.backoffMs[Math.min(attempts - 1, policy.backoffMs.length - 1)]
+          const nextRetryAt = new Date(Date.now() + delayMs).toISOString()
+          await updateById('generation_jobs', job.id, {
+            status: 'retry',
+            step: 'transient',
+            attempts,
+            next_retry_at: nextRetryAt,
+            error_message: `Transient: ${String(err.message).slice(0, 400)}`,
+          })
+          eventBus.publish(projectId, {
+            stage: job.type,
+            status: 'retry',
+            nextRetryAt,
+            percent: 0,
+          })
+          logStageFailure({ projectId, stage: job.type, errOrMessage: err, attempt: attempts, nextRetryAt })
+          return 'waiting'
+        }
+      }
+    }
+
     await failJob(job, projectId, err.message)
     return false
   }
@@ -492,10 +558,33 @@ export async function runPipeline(projectId, fromStage = null) {
       for (const type of list) await ensureStageJob(projectId, type)
     }
 
+    // Clamp fromStage to the earliest incomplete stage in pipeline order.
+    // Never skip an incomplete predecessor (e.g. redub forcing dub.ttsAlign
+    // while dub.translate is failed → deterministic BLOCK_RENDER). Callers
+    // already use firstRunnableStage, this is the enforcement point.
+    let effectiveFrom = fromStage
+    if (effectiveFrom) {
+      try {
+        const allJobs = await query(
+          'SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?',
+          [projectId]
+        )
+        const r = firstRunnableStage(STAGES[project.mode] || [], allJobs)
+        if (r.waiting) {
+          await parkProjectForRetry(projectId, r.type)
+          return
+        }
+        if (r.type && r.type !== effectiveFrom) {
+          console.warn(`[Pipeline] Clamped resume ${effectiveFrom} → ${r.type} (earliest incomplete) for ${projectId}`)
+          effectiveFrom = r.type
+        }
+      } catch (_) {}
+    }
+
     await updateById('projects', projectId, { status: 'running', progress: 0 })
     eventBus.publish(projectId, { stage: '__project__', status: 'running', percent: 0 })
 
-    let started = !fromStage
+    let started = !effectiveFrom
     let isFirstExecutedStage = true
     const total = stageGroups.length
     let done = 0
@@ -515,7 +604,7 @@ export async function runPipeline(projectId, fromStage = null) {
       const types = Array.isArray(group) ? group : [group]
 
       if (!started) {
-        if (types.includes(fromStage)) started = true
+        if (types.includes(effectiveFrom)) started = true
         else continue
       }
 
@@ -579,22 +668,19 @@ export async function runPipeline(projectId, fromStage = null) {
     await updateById('projects', projectId, { status: 'completed', progress: 100 })
     eventBus.publish(projectId, { stage: '__project__', status: 'success', percent: 100 })
 
-    // Group 2: Send notification on success (skip when Redis is down)
+    // Isolated: queue failure must never fail a successful video pipeline.
+    // safeAddNotify skips when any Redis stream is down and converts
+    // "Stream isn't writeable" into a skip instead of a throw.
     try {
-      const { isRedisReady } = await import('../queue/connection.js')
-      if (!isRedisReady()) {
-        console.warn('[Pipeline] Redis unavailable — success notification skipped')
-      } else {
-        const user = await queryOne('SELECT email FROM users WHERE id = ?', [project.user_id])
-        if (user?.email) {
-          await notifyQueue.add('projectDone', {
-            projectId,
-            projectTitle: project.title,
-            userEmail: user.email,
-            status: 'success',
-            mode: project.mode,
-          })
-        }
+      const user = await queryOne('SELECT email FROM users WHERE id = ?', [project.user_id])
+      if (user?.email) {
+        await safeAddNotify('projectDone', {
+          projectId,
+          projectTitle: project.title,
+          userEmail: user.email,
+          status: 'success',
+          mode: project.mode,
+        })
       }
     } catch (notifyErr) {
       console.error('[Pipeline] Notification failed:', notifyErr.message)
@@ -604,22 +690,17 @@ export async function runPipeline(projectId, fromStage = null) {
     await updateById('projects', projectId, { status: 'failed' })
     eventBus.publish(projectId, { stage: '__project__', status: 'failed', percent: 0 })
 
-    // Group 2: Send notification on failure (skip when Redis is down)
+    // Isolated: queue failure must never corrupt pipeline failure handling.
     try {
-      const { isRedisReady } = await import('../queue/connection.js')
-      if (!isRedisReady()) {
-        console.warn('[Pipeline] Redis unavailable — failure notification skipped')
-      } else {
-        const user = await queryOne('SELECT email FROM users WHERE id = ?', [project.user_id])
-        if (user?.email) {
-          await notifyQueue.add('projectDone', {
-            projectId,
-            projectTitle: project.title,
-            userEmail: user.email,
-            status: 'failed',
-            mode: project.mode,
-          })
-        }
+      const user = await queryOne('SELECT email FROM users WHERE id = ?', [project.user_id])
+      if (user?.email) {
+        await safeAddNotify('projectDone', {
+          projectId,
+          projectTitle: project.title,
+          userEmail: user.email,
+          status: 'failed',
+          mode: project.mode,
+        })
       }
     } catch (notifyErr) {
       console.error('[Pipeline] Notification failed:', notifyErr.message)

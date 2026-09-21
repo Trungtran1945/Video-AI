@@ -374,6 +374,98 @@ export async function burnSubtitlesStyled(inFile, assPath, out, { timeout = 0 } 
   return out
 }
 
+const fmtT = (n) => String(Math.round(Number(n) * 1000) / 1000)
+
+// Dựng filter che hardsub gốc từ mask regions (ratio 0..1, timeline riêng).
+// blur: crop vùng → boxblur → overlay lại đúng vị trí, chỉ trong [start,end].
+// solid: drawbox fill đen theo opacity, chỉ trong [start,end].
+// Trả về null khi không có mask enabled (caller giữ nguyên file, không re-encode).
+// Region enabled mà invalid → throw BLOCK_RENDER (config sai phải sửa, không skip lặng).
+export function buildMaskFilter(regions, { width, height } = {}) {
+  const W = Math.round(Number(width))
+  const H = Math.round(Number(height))
+  if (!(W > 0 && H > 0)) throw new Error('BLOCK_RENDER: MASK_INVALID — thiếu resolution video để tính mask')
+  const enabled = (regions || []).filter((r) => r && r.enabled !== 0 && r.enabled !== false)
+  if (!enabled.length) return null
+  const blurs = []
+  const solids = []
+  for (const r of enabled) {
+    const id = r.id || '?'
+    const rx = Number(r.ratioX ?? r.ratio_x)
+    const ry = Number(r.ratioY ?? r.ratio_y)
+    const rw = Number(r.ratioW ?? r.ratio_w)
+    const rh = Number(r.ratioH ?? r.ratio_h)
+    const s = Number(r.start_sec ?? r.startSec)
+    const e = Number(r.end_sec ?? r.endSec)
+    if (![rx, ry, rw, rh, s, e].every(Number.isFinite)) {
+      throw new Error(`BLOCK_RENDER: MASK_INVALID — region ${id} thiếu toạ độ/timing`)
+    }
+    if (rx < 0 || rx > 1 || ry < 0 || ry > 1 || rw <= 0 || rw > 1 || rh <= 0 || rh > 1) {
+      throw new Error(`BLOCK_RENDER: MASK_INVALID — region ${id} ratio ngoài 0..1`)
+    }
+    if (!(e > s) || s < 0) {
+      throw new Error(`BLOCK_RENDER: MASK_INVALID — region ${id} timing phải 0<=start<end`)
+    }
+    const type = r.type || 'blur'
+    if (type !== 'blur' && type !== 'solid') {
+      throw new Error(`BLOCK_RENDER: MASK_INVALID — region ${id} type phải là blur|solid`)
+    }
+    const x = Math.min(Math.max(0, Math.round(rx * W)), W - 1)
+    const y = Math.min(Math.max(0, Math.round(ry * H)), H - 1)
+    const w = Math.min(Math.max(2, Math.round(rw * W)), W - x)
+    const h = Math.min(Math.max(2, Math.round(rh * H)), H - y)
+    const when = `between(t,${fmtT(s)},${fmtT(e)})`
+    if (type === 'blur') {
+      const lr = Math.round(Math.min(50, Math.max(1, Number(r.blur_radius ?? r.blurRadius ?? 8))))
+      if (!Number.isFinite(lr)) throw new Error(`BLOCK_RENDER: MASK_INVALID — region ${id} blurRadius sai`)
+      blurs.push({ x, y, w, h, lr, when })
+    } else {
+      const op = Number(r.opacity ?? 1)
+      if (!Number.isFinite(op) || op < 0 || op > 1) {
+        throw new Error(`BLOCK_RENDER: MASK_INVALID — region ${id} opacity phải trong 0..1`)
+      }
+      solids.push(`drawbox=x=${x}:y=${y}:w=${w}:h=${h}:c=black@${op}:t=fill:enable='${when}'`)
+    }
+  }
+  if (!blurs.length && !solids.length) return null
+  // Chỉ solid → -vf đơn, không cần filter_complex.
+  if (!blurs.length) return { filter: solids.join(','), isComplex: false, outLabel: null }
+  const parts = []
+  let cur = '[0:v]'
+  blurs.forEach((m, i) => {
+    parts.push(`${cur}crop=${m.w}:${m.h}:${m.x}:${m.y},boxblur=${m.lr}:1[b${i}]`)
+    parts.push(`${cur}[b${i}]overlay=${m.x}:${m.y}:enable='${m.when}'[v${i + 1}]`)
+    cur = `[v${i + 1}]`
+  })
+  let outLabel = cur
+  if (solids.length) {
+    parts.push(`${cur}${solids.join(',')}[vout]`)
+    outLabel = '[vout]'
+  }
+  return { filter: parts.join(';'), isComplex: true, outLabel }
+}
+
+// Áp mask che hardsub gốc lên video (bước trước burn ASS — sub dịch overlay
+// sau nên luôn visible). Không có mask → trả về inFile (không re-encode).
+export async function applySubtitleMasks(inFile, regions, { width, height, out, timeout = 0 } = {}) {
+  const built = buildMaskFilter(regions, { width, height })
+  if (!built) return inFile
+  ensureDir(out)
+  const enc = await encodeArgs()
+  if (built.isComplex) {
+    await ffmpeg(
+      ['-y', '-i', inFile, '-filter_complex', built.filter, '-map', built.outLabel, '-map', '0:a?', '-c:a', 'copy', ...enc, '-movflags', '+faststart', out],
+      { timeout }
+    )
+  } else {
+    await ffmpeg(
+      ['-y', '-i', inFile, '-vf', built.filter, ...enc, '-movflags', '+faststart', out],
+      { timeout }
+    )
+  }
+  return out
+}
+
 // Áp tempo + chèn im lặng cho 1 segment dub (docs/07 §2.5 applySpeed tương ứng).
 export async function applyTempoAudio(inFile, out, { tempo = 1, padBeforeSec = 0, padAfterSec = 0 } = {}) {
   ensureDir(out)
@@ -472,7 +564,7 @@ function baseQualityArgs() {
   return ['-pix_fmt', 'yuv420p']
 }
 
-async function encodeArgs() {
+export async function encodeArgs() {
   if (nvencAvailable === null) {
     try {
       const { stderr } = await ffmpeg(['-hide_banner', '-encoders'])

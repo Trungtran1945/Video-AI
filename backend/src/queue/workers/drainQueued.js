@@ -1,7 +1,7 @@
 import { Worker } from 'bullmq'
-import { connection, createRedisConnection, createThrottledLogger, isRedisReady } from '../connection.js'
+import { connection, createRedisConnection, createThrottledLogger, isRedisReady, isConnectionReady, waitForConnection, attachDedicatedLogging } from '../connection.js'
 import { query, queryOne, run } from '../../db/query.js'
-import { runPipeline } from '../../pipeline/runner.js'
+import { runPipeline, isPipelineRunning } from '../../pipeline/runner.js'
 import { config } from '../../config.js'
 
 const STALE_RUNNING_MINUTES = 30
@@ -14,12 +14,13 @@ const logWorkerError = createThrottledLogger(30000)
  * cũ nhất khi user đó có slot RUNNING trống.
  * Đồng thời dọn các project stuck 'running' quá lâu (backend crash mid-pipeline).
  */
-const workerConnection = createRedisConnection()
-
-const worker = new Worker('drain-queued', async (job) => {
+async function processDrainQueued(job) {
   const maxConcurrent = config.maxConcurrentProjectsPerUser
 
-  // ── 1. Recover stuck projects (running too long → failed) ──
+  // ── 1. Recover stuck projects (running too long → queued for resume) ──
+  // Resume (not terminal fail): artifacts are preserved so the next retry /
+  // regenerate resumes from the earliest incomplete stage via firstRunnableStage.
+  // Skip projects with a live in-process run — killing them would corrupt output.
   const staleCutoff = new Date(Date.now() - STALE_RUNNING_MINUTES * 60 * 1000).toISOString()
   // NOTE: projects has no per-update timestamp column (see schema.js), so
   // created_date is used as the stale-cutoff proxy. Do not add another column.
@@ -30,17 +31,21 @@ const worker = new Worker('drain-queued', async (job) => {
 
   let recovered = 0
   for (const p of staleProjects) {
+    try {
+      if (isPipelineRunning(p.id)) continue
+    } catch (_) {}
     await run(
-      `UPDATE projects SET status = 'failed' WHERE id = ?`,
+      `UPDATE projects SET status = 'queued' WHERE id = ?`,
       [p.id]
     )
-    // Mark any running/pending jobs for this project as failed
+    // Park running/pending jobs for resume (do not mark failed — resume path
+    // follows stage order, failed would need manual retry).
     await run(
-      `UPDATE generation_jobs SET status = 'failed', step = 'error', error_message = 'Pipeline interrupted — backend restarted or timed out'
+      `UPDATE generation_jobs SET status = 'pending', step = 'queued', error_message = 'Pipeline interrupted — queued for resume'
        WHERE project_id = ? AND status IN ('running', 'pending')`,
       [p.id]
     )
-    console.warn(`[DrainQueued] Recovered stuck project "${p.title}" (${p.id}) — marked failed`)
+    console.warn(`[DrainQueued] Recovered stuck project "${p.title}" (${p.id}) — queued for resume`)
     recovered++
   }
 
@@ -54,12 +59,12 @@ const worker = new Worker('drain-queued', async (job) => {
   let drained = 0
 
   // Get all unique user_ids with queued projects
-  const rows = await queryOne(
+  const rows = await query(
     `SELECT user_id, COUNT(*) as cnt FROM projects WHERE status = 'queued' GROUP BY user_id`
   )
 
   // For each user, check if they have a slot available
-  const userIds = rows ? [rows] : []
+  const userIds = rows || []
 
   for (const userRow of userIds) {
     const userId = userRow.user_id
@@ -91,36 +96,62 @@ const worker = new Worker('drain-queued', async (job) => {
   }
 
   return { drained, recovered }
-}, {
-  connection: workerConnection,
-  concurrency: 1,
-  limiter: { max: 10, duration: 60000 }, // Max 10 jobs per minute
-})
+}
 
-// Pause (never close) while Redis is down so no job is lost; resume on ready.
-connection.on('close', () => { worker.pause().catch(() => {}) })
-connection.on('end', () => { worker.pause().catch(() => {}) })
-connection.on('ready', () => { worker.resume() })
-workerConnection.on('close', () => { worker.pause().catch(() => {}) })
-workerConnection.on('end', () => { worker.pause().catch(() => {}) })
-workerConnection.on('ready', () => { worker.resume() })
-if (!isRedisReady()) worker.pause().catch(() => {})
-
-worker.on('error', (err) => {
-  logWorkerError(`[DrainQueued] Worker error: ${err.message}`)
-})
-
-worker.on('failed', (job, err) => {
-  console.error('[DrainQueued] Job failed:', err.message)
-})
-
-worker.on('completed', (job, result) => {
-  if (result.recovered > 0) {
-    console.log(`[DrainQueued] Recovered ${result.recovered} stuck project(s)`)
+/**
+ * Safe Worker factory — BullMQ/ioredis lifecycle:
+ *   dedicated connection created → error listener attached immediately →
+ *   wait for dedicated READY → create Worker → attach worker error listener
+ *   immediately → wire pause/resume on BOTH main + dedicated streams →
+ *   start paused when either stream is not ready.
+ * Never issues Redis commands before the dedicated stream is writable, so
+ * `Stream isn't writeable and enableOfflineQueue options is false` cannot
+ * fire during startup/reconnect. Never closes the worker on disconnect
+ * (pause only — no job loss).
+ */
+export async function startDrainQueuedWorker(opts = {}) {
+  const workerConnection = opts.connection || createRedisConnection()
+  attachDedicatedLogging(workerConnection, 'DrainQueued')
+  const waitMs = opts.waitTimeoutMs ?? 5000
+  const dedicatedReady = await waitForConnection(workerConnection, waitMs)
+  if (!dedicatedReady) {
+    console.warn('[DrainQueued] Dedicated Redis connection not ready — worker starts paused')
   }
-  if (result.drained > 0) {
-    console.log(`[DrainQueued] Drained ${result.drained} queued project(s)`)
-  }
-})
 
-export default worker
+  const worker = new Worker('drain-queued', processDrainQueued, {
+    connection: workerConnection,
+    concurrency: 1,
+    limiter: { max: 10, duration: 60000 }, // Max 10 jobs per minute
+  })
+
+  // Pause (never close) while Redis is down so no job is lost; resume on ready.
+  connection.on('close', () => { worker.pause().catch(() => {}) })
+  connection.on('end', () => { worker.pause().catch(() => {}) })
+  connection.on('ready', () => { worker.resume() })
+  workerConnection.on('close', () => { worker.pause().catch(() => {}) })
+  workerConnection.on('end', () => { worker.pause().catch(() => {}) })
+  workerConnection.on('ready', () => { worker.resume() })
+  if (!isRedisReady()) worker.pause().catch(() => {})
+  if (!isConnectionReady(workerConnection)) worker.pause().catch(() => {})
+
+  worker.on('error', (err) => {
+    logWorkerError(`[DrainQueued] Worker error: ${err.message}`)
+  })
+
+  worker.on('failed', (job, err) => {
+    console.error('[DrainQueued] Job failed:', err.message)
+  })
+
+  worker.on('completed', (job, result) => {
+    if (result.recovered > 0) {
+      console.log(`[DrainQueued] Recovered ${result.recovered} stuck project(s)`)
+    }
+    if (result.drained > 0) {
+      console.log(`[DrainQueued] Drained ${result.drained} queued project(s)`)
+    }
+  })
+
+  return worker
+}
+
+export default startDrainQueuedWorker

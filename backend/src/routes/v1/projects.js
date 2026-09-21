@@ -282,7 +282,7 @@ router.patch('/:id/segments/:segmentId/translation', requireProjectOwner, async 
     if ((gate.errors || []).length) {
       console.warn(`[Projects] manual translation segment #${seg.index_num} soft warnings (allowed): ${gate.errors.join(';')}`)
     }
-    await updateById('transcript_segments', seg.id, { translation })
+    await updateById('transcript_segments', seg.id, { translation, tts_audio_id: null })
     const updated = await queryOne('SELECT * FROM transcript_segments WHERE id = ?', [seg.id])
     res.json({ ...updated, warnings: gate.errors || [] })
   } catch (err) {
