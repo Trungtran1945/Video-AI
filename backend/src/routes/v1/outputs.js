@@ -1,6 +1,6 @@
 import { Router } from 'express'
-import { query, queryOne, insert, updateById } from '../../db/query.js'
-import { authMiddleware, requireRole } from '../../middleware/auth.js'
+import { query, queryOne, insert } from '../../db/query.js'
+import { authMiddleware } from '../../middleware/auth.js'
 import { requireOutputOwner } from '../../middleware/projectAccess.js'
 import { sendError, ERR } from '../../lib/httpError.js'
 

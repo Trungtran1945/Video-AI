@@ -1,7 +1,7 @@
 import path from 'path'
 import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
-import { insert, updateById, query } from '../../db/query.js'
+import { insert, query } from '../../db/query.js'
 import { extractAudio, sliceAudio, probe, compressAudioForUpload } from '../../media/mediaService.js'
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
@@ -38,7 +38,7 @@ export async function dubStt(ctx) {
   }
   let languageHint = ingest.language
   if (!fullWav) {
-    const info = await probe(src)
+    await probe(src)
     fullWav = path.join(tmp, `dub_raw_${project.id}.wav`)
     await extractAudio(src, fullWav)
     languageHint = undefined

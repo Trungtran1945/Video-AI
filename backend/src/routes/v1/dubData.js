@@ -106,7 +106,6 @@ router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
           for (let j = idx + 1; j < allSegments.length; j++) {
             const next = allSegments[j]
             const nextNewStart = next.start_sec + delta
-            const nextNewEnd = next.end_sec + delta
 
             // Rule 3: If next segment has isTimeManuallyAdjusted=true, reject
             if (next.is_time_manually_adjusted) {

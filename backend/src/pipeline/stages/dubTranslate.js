@@ -5,7 +5,7 @@ import { query, queryOne, updateById, insert, run } from '../../db/query.js'
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
 import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js'
-import { projectDir, extractJsonBlock, round2 } from '../context.js'
+import { projectDir, extractJsonBlock } from '../context.js'
 import { TRANSLATION_VERSION } from '../../lib/cacheKey.js'
 import { selectModePool } from './dubMerge.js'
 

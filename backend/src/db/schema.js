@@ -104,6 +104,13 @@ export async function initSchema() {
   try { db.run(`ALTER TABLE projects ADD COLUMN cancelled_at TEXT`) } catch (_) {}
   try { db.run(`ALTER TABLE projects ADD COLUMN expires_at TEXT`) } catch (_) {}
   try { db.run(`ALTER TABLE projects ADD COLUMN video_hash TEXT`) } catch (_) {}
+  // Heartbeat for stale detection (replaces created_date proxy):
+  // started_at = when the current run began; last_heartbeat_at = last
+  // observed activity (stage success / claim / progress tick).
+  // recovery_reason = why the last recovery parked this project (audit).
+  try { db.run(`ALTER TABLE projects ADD COLUMN started_at TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN last_heartbeat_at TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN recovery_reason TEXT`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS assets (
     id TEXT PRIMARY KEY,
@@ -361,6 +368,7 @@ export async function initSchema() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_ocr_regions_project ON ocr_regions(project_id, start_sec)`)
   // Group 1: Indexes for concurrency limit and cleanup
   db.run(`CREATE INDEX IF NOT EXISTS idx_projects_user_status ON projects(user_id, status)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_projects_status_heartbeat ON projects(status, last_heartbeat_at)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_projects_expires_at ON projects(expires_at)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_projects_video_hash ON projects(video_hash)`)
 

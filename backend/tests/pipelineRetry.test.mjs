@@ -66,14 +66,19 @@ assert(Array.isArray(RETRY_POLICY['dub.ttsAlign']?.backoffMs), 'ttsAlign has bac
   assert(r.type === 'dub.translate', `forced ttsAlign clamps to translate (got ${r.type})`)
 }
 
-// 6. Restart recovery is resumable (queued + artifacts preserved, never stuck running).
+// 6. Restart recovery is resumable (queued + artifacts preserved, never stuck running)
+// via the single shared service (server boot + periodic drain call the same
+// recoverStaleProjects — no divergent SQL copies).
 {
   const __dirname = path.dirname(fileURLToPath(import.meta.url))
   const serverSrc = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8')
-  assert(serverSrc.includes("SET status = 'queued'"), 'boot parks stale running as queued')
+  assert(serverSrc.includes('recoverStaleProjects'), 'boot uses shared recovery service')
   assert(!serverSrc.match(/UPDATE projects SET status = 'failed' WHERE id = \?/), 'boot no longer terminal-fails stale projects')
   const drainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'workers', 'drainQueued.js'), 'utf8')
-  assert(drainSrc.includes("SET status = 'queued'"), 'drain parks stale running as queued')
+  assert(drainSrc.includes('recoverStaleProjects'), 'drain uses shared recovery service')
+  const recSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'pipeline', 'recovery.js'), 'utf8')
+  assert(recSrc.includes("SET status = 'queued'"), 'shared service parks stale running as queued')
+  assert(recSrc.includes("AND status = 'running'"), 'shared service recovery is conditional (idempotent)')
 }
 
 // 7. Strict render gates preserved (BLOCK_RENDER, 1:1 audio, no fallback).

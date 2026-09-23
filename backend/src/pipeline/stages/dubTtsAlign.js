@@ -87,7 +87,6 @@ export async function dubTtsAlign(ctx) {
     // Bounded retry cho TTS transient (tối đa 1 retry = 2 attempts).
     // PERMANENT/CONFIGURATION → không retry. Provider fallback hợp lệ
     // hiện chưa có TTS thứ hai nên ghi nhận lỗi và fail strict ở cuối.
-    let lastErr = null
     let done = false
     for (let ttsAttempt = 0; ttsAttempt <= 1 && !done; ttsAttempt++) {
       try {
@@ -164,7 +163,6 @@ export async function dubTtsAlign(ctx) {
         successCount++
         done = true
       } catch (err) {
-        lastErr = err
         const cls = classifyProviderError(err)
         // Chỉ retry TRANSIENT, bounded 1 lần với backoff.
         if (cls.kind === ERROR_KINDS.TRANSIENT && ttsAttempt < 1) {

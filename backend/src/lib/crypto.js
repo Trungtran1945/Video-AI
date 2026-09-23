@@ -3,9 +3,19 @@ import crypto from 'node:crypto'
 // AES-256-GCM encryption for user API keys (master key from env)
 const ALGO = 'aes-256-gcm'
 
+function getMasterKey() {
+  // Prefer validated config.masterKey (config.js fail-fasts in production).
+  // Fall back to env for contexts importing crypto before config init.
+  try {
+    const m = process.env.MASTER_KEY
+    if (m) return m
+  } catch (_) {}
+  return 'dev'
+}
+
 function getKey() {
-  // Derive a 32-byte key from MASTER_KEY
-  return crypto.createHash('sha256').update(process.env.MASTER_KEY || 'dev').digest()
+  // Derive a 32-byte key from MASTER_KEY (never logged).
+  return crypto.createHash('sha256').update(getMasterKey()).digest()
 }
 
 export function encrypt(plainText) {

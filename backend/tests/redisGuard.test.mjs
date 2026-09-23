@@ -75,11 +75,16 @@ const serverSrc = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8
 assert(serverSrc.includes('safeAddCleanup'), 'server.js isolates cleanup scheduling via safeAddCleanup')
 assert(!serverSrc.includes('cleanupQueue.add'), 'server.js never calls raw cleanupQueue.add')
 
-// 7. DrainQueued stale-recovery query must reference a real projects column
-// (schema has created_date, NOT updated_date — "no such column" otherwise).
+// 7. DrainQueued stale recovery is heartbeat-based via the shared service
+// (created_date is NOT the age signal — a long-lived project with a fresh
+// heartbeat must never be mistaken for stale). created_date survives only as
+// a legacy fallback inside recovery.js for rows predating the migration.
 const drainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'workers', 'drainQueued.js'), 'utf8')
 assert(!drainSrc.includes('updated_date'), 'drainQueued.js does not reference missing updated_date column')
-assert(drainSrc.includes('created_date < ?'), 'drainQueued.js stale cutoff uses created_date')
+assert(!drainSrc.includes('created_date < ?'), 'drainQueued.js does not use created_date as stale proxy')
+assert(drainSrc.includes('recoverStaleProjects'), 'drainQueued.js recovers via shared recovery service')
+const recSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'pipeline', 'recovery.js'), 'utf8')
+assert(recSrc.includes('last_heartbeat_at'), 'recovery.js uses heartbeat for staleness')
 
 // 8. Redis bắt buộc: mỗi Queue/Worker dùng dedicated connection (không share
 // 1 stream cho nhiều consumer — nguyên nhân "Stream isn't writeable" lan cả 3 workers).

@@ -8,14 +8,67 @@ dotenv.config({ path: path.join(__dirname, '..', '.env') })
 
 const storageDir = path.resolve(__dirname, '..', process.env.STORAGE_DIR || './storage')
 
+export const DEV_ACCESS_SECRET = 'video-ai-dev-access-secret'
+export const DEV_REFRESH_SECRET = 'video-ai-dev-refresh-secret'
+export const DEV_MASTER_KEY = 'dev-master-key'
+export const MIN_SECRET_LENGTH = 32
+const PLACEHOLDER_SECRETS = new Set([
+  DEV_ACCESS_SECRET,
+  DEV_REFRESH_SECRET,
+  DEV_MASTER_KEY,
+  'change-me-in-production',
+  'changeme',
+  'dev',
+  '',
+])
+
+export function isPlaceholderSecret(value) {
+  return !value || PLACEHOLDER_SECRETS.has(String(value))
+}
+
+// Pure validator (unit-testable without rebooting the process).
+// Throws in production when secrets are missing, too short, or dev defaults.
+export function assertProductionSecrets({ nodeEnv, jwtAccessSecret, jwtRefreshSecret, masterKey } = {}) {
+  if (nodeEnv !== 'production') return
+  const bad = []
+  for (const [name, value] of [
+    ['JWT_ACCESS_SECRET', jwtAccessSecret],
+    ['JWT_REFRESH_SECRET', jwtRefreshSecret],
+    ['MASTER_KEY', masterKey],
+  ]) {
+    if (!value || isPlaceholderSecret(value) || String(value).length < MIN_SECRET_LENGTH) {
+      bad.push(name)
+    }
+  }
+  if (bad.length) {
+    throw new Error(
+      `[Config] FATAL: missing or unsafe secrets in production: ${bad.join(', ')}. ` +
+      `Set JWT_ACCESS_SECRET (>=${MIN_SECRET_LENGTH} chars), JWT_REFRESH_SECRET, MASTER_KEY via environment.`
+    )
+  }
+}
+
+function parseOrigins(raw) {
+  if (!raw) return []
+  return String(raw).split(',').map((s) => s.trim()).filter(Boolean)
+}
+
+const nodeEnv = process.env.NODE_ENV || 'development'
+const jwtAccessSecret = process.env.JWT_ACCESS_SECRET || (nodeEnv === 'production' ? '' : DEV_ACCESS_SECRET)
+const jwtRefreshSecret = process.env.JWT_REFRESH_SECRET || (nodeEnv === 'production' ? '' : DEV_REFRESH_SECRET)
+const masterKey = process.env.MASTER_KEY || (nodeEnv === 'production' ? '' : DEV_MASTER_KEY)
+
+// Fail-fast in production (no dev-secret boot). Never logs secret values.
+assertProductionSecrets({ nodeEnv, jwtAccessSecret, jwtRefreshSecret, masterKey })
+
 export const config = {
   port: Number(process.env.PORT || 3001),
-  nodeEnv: process.env.NODE_ENV || 'development',
-  jwtAccessSecret: process.env.JWT_ACCESS_SECRET || 'video-ai-dev-access-secret',
-  jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || 'video-ai-dev-refresh-secret',
+  nodeEnv,
+  jwtAccessSecret,
+  jwtRefreshSecret,
   jwtAccessExpiresIn: '15m',
   jwtRefreshExpiresIn: '7d',
-  masterKey: process.env.MASTER_KEY || 'dev-master-key',
+  masterKey,
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
@@ -46,6 +99,20 @@ export const config = {
   providerCacheEnabled: process.env.PROVIDER_CACHE_ENABLED !== 'false',
   providerCacheTtlDays: Number(process.env.PROVIDER_CACHE_TTL_DAYS || 90),
   defaultProviderMode: process.env.DEFAULT_PROVIDER_MODE || 'live', // 'live' | 'mock'
+  // CORS allowlist: production reads CORS_ORIGINS (comma-separated, fail-closed
+  // when empty). Development allows local Vite/dev origins by default.
+  corsOrigins: nodeEnv === 'production'
+    ? parseOrigins(process.env.CORS_ORIGINS)
+    : parseOrigins(process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3000,http://localhost:4173'),
+  // Stale heartbeat timeout (minutes) for running projects without activity.
+  recoveryStaleMinutes: Number(process.env.RECOVERY_STALE_MINUTES || 10),
+}
+
+// Pure CORS check (unit-testable). Non-production allows localhost defaults;
+// production only allows origins explicitly listed in CORS_ORIGINS.
+export function isOriginAllowed(origin, { nodeEnv: env = nodeEnv, corsOrigins = config.corsOrigins } = {}) {
+  if (!origin) return true // same-origin / curl / non-browser
+  return corsOrigins.includes(origin)
 }
 
 // Ensure storage sub-directories exist

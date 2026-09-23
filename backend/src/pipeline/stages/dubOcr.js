@@ -5,7 +5,7 @@ import { insert, query } from '../../db/query.js'
 import { sampleFrames, probe } from '../../media/mediaService.js'
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
-import { projectDir, tmpDirOf, ensureDir, requireSourceFile, round2 } from '../context.js'
+import { tmpDirOf, ensureDir, requireSourceFile, round2 } from '../context.js'
 
 export async function dubOcr(ctx) {
   const { project, job, setProgress, results, signal } = ctx

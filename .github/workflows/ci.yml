@@ -25,7 +25,15 @@ jobs:
         run: cd frontend && npm ci
 
       - name: Lint backend
-        run: cd backend && npm run lint 2>/dev/null || echo "No lint script"
+        run: cd backend && npm run lint
+
+      - name: Test backend
+        run: cd backend && npm test
+        env:
+          NODE_ENV: test
+          JWT_ACCESS_SECRET: test-access-secret-0123456789abcdef
+          JWT_REFRESH_SECRET: test-refresh-secret-0123456789abcdef
+          MASTER_KEY: test-master-key-0123456789abcdef
 
       - name: Lint frontend
         run: cd frontend && npm run lint

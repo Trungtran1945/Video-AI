@@ -38,7 +38,7 @@ export function isValidationError(err) {
 }
 
 async function getNextRetryAt(provider) {
-  const limit = await queryOne(
+  await queryOne(
     `SELECT requests_per_minute FROM provider_rate_limits WHERE provider = ? AND tier = 'free' LIMIT 1`,
     [provider]
   )
@@ -526,6 +526,22 @@ export function isPipelineRunning(projectId) {
   return activeRuns.has(projectId)
 }
 
+function nowIso() {
+  return new Date().toISOString()
+}
+
+// Heartbeat: marks a running pipeline as alive so unified recovery never
+// mistakes a long-but-healthy run for a stale one. Conditional on
+// status='running' so a cancelled/failed project is never resurrected.
+export async function touchHeartbeat(projectId) {
+  try {
+    await run(
+      `UPDATE projects SET last_heartbeat_at = ? WHERE id = ? AND status = 'running'`,
+      [nowIso(), projectId]
+    )
+  } catch (_) {}
+}
+
 export function abortPipeline(projectId) {
   const ac = abortControllers.get(projectId)
   if (ac) ac.abort()
@@ -536,12 +552,43 @@ export async function runPipeline(projectId, fromStage = null) {
   const project = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
   if (!project) return
 
-  // If DB says 'running' but this process doesn't own it → stale from previous crash.
-  // Reset to pending so this run can take over.
+  // Distributed guard: DB says 'running' with a FRESH heartbeat means another
+  // process owns this run — do not double-start. Only a stale 'running'
+  // (heartbeat older than timeout, i.e. previous crash) may be taken over.
   if (project.status === 'running') {
+    const hb = project.last_heartbeat_at || project.started_at || null
+    let stale = true
+    if (hb) {
+      try {
+        const { config: cfg } = await import('../config.js')
+        const timeoutMin = Number(cfg.recoveryStaleMinutes || 10)
+        stale = new Date(hb).getTime() < Date.now() - timeoutMin * 60 * 1000
+      } catch (_) {
+        stale = false
+      }
+    }
+    if (!stale) return // owned by a live run elsewhere
     console.warn(`[Pipeline] Project ${projectId} was stale 'running' — resetting to pending`)
     await updateById('projects', projectId, { status: 'pending' })
     project.status = 'pending'
+  }
+
+  // Per-user concurrency enforcement at the single choke point every caller
+  // flows through (create, regenerate, retry, redub, drain). DB-counted so
+  // it holds across processes; parks excess starts as queued for later drain.
+  if (project.status !== 'running') {
+    try {
+      const { config: cfg } = await import('../config.js')
+      const maxConcurrent = Number(cfg.maxConcurrentProjectsPerUser || 2)
+      const running = await queryOne(
+        `SELECT COUNT(*) as cnt FROM projects WHERE user_id = ? AND status = 'running'`,
+        [project.user_id]
+      )
+      if ((running?.cnt || 0) >= maxConcurrent) {
+        await updateById('projects', projectId, { status: 'queued' })
+        return
+      }
+    } catch (_) {}
   }
 
   activeRuns.add(projectId)
@@ -581,7 +628,8 @@ export async function runPipeline(projectId, fromStage = null) {
       } catch (_) {}
     }
 
-    await updateById('projects', projectId, { status: 'running', progress: 0 })
+    const startedAt = nowIso()
+    await updateById('projects', projectId, { status: 'running', progress: 0, started_at: startedAt, last_heartbeat_at: startedAt })
     eventBus.publish(projectId, { stage: '__project__', status: 'running', percent: 0 })
 
     let started = !effectiveFrom
@@ -656,6 +704,7 @@ export async function runPipeline(projectId, fromStage = null) {
       done++
       await updateById('projects', projectId, {
         progress: Math.round((done / total) * 100),
+        last_heartbeat_at: nowIso(),
       })
       eventBus.publish(projectId, {
         stage: '__project__',

@@ -1,10 +1,10 @@
 import { Worker } from 'bullmq'
 import { connection, createRedisConnection, createThrottledLogger, isRedisReady, isConnectionReady, waitForConnection, attachDedicatedLogging } from '../connection.js'
-import { query, queryOne, run } from '../../db/query.js'
-import { runPipeline, isPipelineRunning } from '../../pipeline/runner.js'
+import { query, queryOne } from '../../db/query.js'
+import { runPipeline } from '../../pipeline/runner.js'
+import { recoverStaleProjects, RECOVERY_REASON_STALE } from '../../pipeline/recovery.js'
+import { claimQueuedProject } from '../claim.js'
 import { config } from '../../config.js'
-
-const STALE_RUNNING_MINUTES = 30
 
 // Throttled: a dead Redis stream emits errors continuously — log without spam.
 const logWorkerError = createThrottledLogger(30000)
@@ -17,36 +17,16 @@ const logWorkerError = createThrottledLogger(30000)
 async function processDrainQueued(job) {
   const maxConcurrent = config.maxConcurrentProjectsPerUser
 
-  // ── 1. Recover stuck projects (running too long → queued for resume) ──
-  // Resume (not terminal fail): artifacts are preserved so the next retry /
-  // regenerate resumes from the earliest incomplete stage via firstRunnableStage.
-  // Skip projects with a live in-process run — killing them would corrupt output.
-  const staleCutoff = new Date(Date.now() - STALE_RUNNING_MINUTES * 60 * 1000).toISOString()
-  // NOTE: projects has no per-update timestamp column (see schema.js), so
-  // created_date is used as the stale-cutoff proxy. Do not add another column.
-  const staleProjects = await query(
-    `SELECT id, title, user_id FROM projects WHERE status = 'running' AND created_date < ?`,
-    [staleCutoff]
-  )
-
-  let recovered = 0
-  for (const p of staleProjects) {
-    try {
-      if (isPipelineRunning(p.id)) continue
-    } catch (_) {}
-    await run(
-      `UPDATE projects SET status = 'queued' WHERE id = ?`,
-      [p.id]
-    )
-    // Park running/pending jobs for resume (do not mark failed — resume path
-    // follows stage order, failed would need manual retry).
-    await run(
-      `UPDATE generation_jobs SET status = 'pending', step = 'queued', error_message = 'Pipeline interrupted — queued for resume'
-       WHERE project_id = ? AND status IN ('running', 'pending')`,
-      [p.id]
-    )
-    console.warn(`[DrainQueued] Recovered stuck project "${p.title}" (${p.id}) — queued for resume`)
-    recovered++
+  // ── 1. Recover stale projects via the shared service ──
+  // Heartbeat-based (last_heartbeat_at/started_at), never created_date.
+  // Artifacts preserved; live in-process runs skipped; idempotent.
+  const recovery = await recoverStaleProjects({
+    timeoutMin: config.recoveryStaleMinutes,
+    reason: RECOVERY_REASON_STALE,
+  })
+  const recovered = recovery.recovered
+  if (recovered > 0) {
+    console.warn(`[DrainQueued] Recovered ${recovered} stale project(s) — queued for resume`)
   }
 
   // ── 2. Drain queued projects ──
@@ -84,11 +64,10 @@ async function processDrainQueued(job) {
       )
 
       if (oldest) {
-        // Update status to pending and enqueue
-        await run(
-          `UPDATE projects SET status = 'pending' WHERE id = ?`,
-          [oldest.id]
-        )
+        // Atomic single-winner claim (conditional UPDATE on status='queued').
+        // Losers get claimed:false and must NOT call runPipeline().
+        const claim = await claimQueuedProject(oldest.id)
+        if (!claim.claimed) continue
         runPipeline(oldest.id).catch((e) => console.error('[DrainQueued] start failed', e))
         drained++
       }

@@ -30,13 +30,27 @@ export async function run(sql, params = []) {
   return true
 }
 
+// Conditional write with affected-row count (for atomic claims).
+// sql.js exposes changes via getRowsModified() right after run().
+export async function runAffected(sql, params = []) {
+  const db = await getDb()
+  db.run(sql, params)
+  let affected = 0
+  try {
+    affected = db.getRowsModified()
+  } catch (_) {
+    affected = 0
+  }
+  save()
+  return affected
+}
+
 // Insert an object; keys map to columns. Returns the inserted row (with id).
 export async function insert(table, obj) {
   const cols = Object.keys(obj)
   const placeholders = cols.map(() => '?').join(', ')
   const sql = `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${placeholders})`
   await run(sql, cols.map((c) => obj[c]))
-  const idCol = obj.id ? 'id' : 'id'
   const id = obj.id || null
   if (id) return queryOne(`SELECT * FROM ${table} WHERE id = ?`, [id])
   // fallback: last row (for autoincrement)
@@ -55,4 +69,4 @@ export async function findById(table, id) {
   return queryOne(`SELECT * FROM ${table} WHERE id = ?`, [id])
 }
 
-export default { query, queryOne, run, insert, updateById, findById }
+export default { query, queryOne, run, runAffected, insert, updateById, findById }

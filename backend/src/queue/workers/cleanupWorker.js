@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'path'
 import { connection, createRedisConnection, createThrottledLogger, isRedisReady, isConnectionReady, waitForConnection, attachDedicatedLogging } from '../connection.js'
 import { query, run } from '../../db/query.js'
-import { projectDir, resolveStorageKey } from '../../pipeline/context.js'
+import { projectDir } from '../../pipeline/context.js'
 import { config } from '../../config.js'
 
 // Throttled: a dead Redis stream emits errors continuously — log without spam.

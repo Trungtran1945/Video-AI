@@ -7,9 +7,9 @@ import fs from 'node:fs'
 import { getDb } from './src/db.js'
 import { initSchema } from './src/db/schema.js'
 import { seed } from './src/db/seed.js'
-import { config } from './src/config.js'
+import { config, isOriginAllowed } from './src/config.js'
 import { ffmpegAvailable } from './src/media/ffmpeg.js'
-import { query, run } from './src/db/query.js'
+
 import v1Router from './src/routes/v1/index.js'
 
 // Group 1: Queue workers (lazy import to avoid crash if Redis unavailable)
@@ -21,9 +21,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 const PORT = config.port
 
-app.use(cors())
-app.use(express.json({ limit: '2gb' }))
-app.use(express.urlencoded({ extended: true }))
+app.use(cors({
+  origin: (origin, callback) => {
+    // Same-origin / curl / non-browser (no Origin header) always allowed.
+    if (!origin) return callback(null, true)
+    if (isOriginAllowed(origin)) return callback(null, true)
+    callback(new Error(`CORS: origin not allowed: ${origin}`))
+  },
+  credentials: true,
+}))
+// Tight global JSON limit (1MB): API payloads are KB-scale (project create,
+// mask CRUD, translation patch). Large video uploads bypass this via
+// multer (multipart) and express.raw 16MB chunk endpoints in upload.js.
+app.use(express.json({ limit: '1mb' }))
+app.use(express.urlencoded({ extended: true, limit: '1mb' }))
 
 // Serve uploaded / generated files
 app.use('/storage', express.static(path.join(config.storageDir)))
@@ -76,22 +87,15 @@ async function start() {
   await seed()
 
   // ── Recover projects stuck in 'running' from previous crash/restart ──
-  // Park as queued (not failed) with artifacts preserved, so drain/manual
-  // retry resumes from the earliest incomplete stage via firstRunnableStage.
-  // Never stuck in 'running'; never delete valid artifacts here.
+  // Single shared service (see src/pipeline/recovery.js): heartbeat-based,
+  // idempotent, preserves artifacts, never touches live in-process runs.
+  // At boot there are no live runs in this process, so every stale 'running'
+  // project is parked as queued for resume via firstRunnableStage.
   try {
-    const stale = await query(`SELECT id, title FROM projects WHERE status = 'running'`)
-    if (stale.length > 0) {
-      for (const p of stale) {
-        await run(`UPDATE projects SET status = 'queued' WHERE id = ?`, [p.id])
-        await run(
-          `UPDATE generation_jobs SET status = 'pending', step = 'queued', error_message = 'Pipeline interrupted — server restarted, queued for resume'
-           WHERE project_id = ? AND status IN ('running', 'pending')`,
-          [p.id]
-        )
-        console.warn(`[Server] Reset stuck project "${p.title}" (${p.id}) to queued for resume`)
-      }
-      console.log(`[Server] Recovered ${stale.length} stale project(s) from previous session`)
+    const { recoverStaleProjects, RECOVERY_REASON_RESTART } = await import('./src/pipeline/recovery.js')
+    const r = await recoverStaleProjects({ timeoutMin: 0, reason: RECOVERY_REASON_RESTART })
+    if (r.recovered > 0) {
+      console.log(`[Server] Recovered ${r.recovered} stale project(s) from previous session`)
     }
   } catch (e) {
     console.warn('[Server] Stale project recovery failed:', e.message)

@@ -96,10 +96,14 @@ for (const [f, fn] of [['notifyQueue.js', 'safeAddNotify'], ['cleanupQueue.js', 
 }
 
 // 10. Drain recovery is resumable (queued, live-run guard) and drains ALL users.
+// Recovery lives in the shared service; claims go through the atomic helper.
 {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'workers', 'drainQueued.js'), 'utf8')
-  assert(src.includes("SET status = 'queued'"), 'drain parks stale projects as queued (not failed)')
-  assert(src.includes('isPipelineRunning'), 'drain skips live in-process runs')
+  assert(src.includes('recoverStaleProjects'), 'drain recovers via shared service (queued, not failed)')
+  assert(src.includes('claimQueuedProject'), 'drain claims via atomic helper')
+  const recSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'pipeline', 'recovery.js'), 'utf8')
+  assert(recSrc.includes("SET status = 'queued'"), 'shared service parks stale projects as queued (not failed)')
+  assert(recSrc.includes('isPipelineRunning') || recSrc.includes('isActive'), 'recovery skips live in-process runs')
   assert(src.includes('SELECT user_id, COUNT(*) as cnt FROM projects WHERE status = \'queued\' GROUP BY user_id'), 'drain lists all queued users')
   assert(!src.match(/await queryOne\(\s*`SELECT user_id, COUNT\(\*\)/), 'drain GROUP BY uses query (not queryOne)')
 }

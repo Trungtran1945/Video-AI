@@ -1,7 +1,5 @@
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { v4 as uuidv4 } from 'uuid'
 import gTTS from 'gtts'
 import { probe } from '../../media/ffmpeg.js'
 
