@@ -27,9 +27,19 @@ export function useJobEvents(projectId, enabled = true) {
     const es = new EventSource(`${API_BASE}/projects/${projectId}/events?token=${encodeURIComponent(getAccessToken())}`)
     sourceRef.current = es
 
+    // Chuẩn hoá vocabulary: backend cũ emit 'success' cho __project__,
+    // backend mới emit 'completed' (khớp projects.status). Frontend chỉ dùng 'completed'.
+    const normalize = (data) => {
+      if (!data || typeof data !== 'object') return data
+      if (data.stage === '__project__' && data.status === 'success') {
+        return { ...data, status: 'completed' }
+      }
+      return data
+    }
+
     const applyEvent = (raw) => {
       try {
-        const data = JSON.parse(raw)
+        const data = normalize(JSON.parse(raw))
         setLastEvent(data)
         setEvents((prev) => ({
           ...prev,
@@ -45,6 +55,13 @@ export function useJobEvents(projectId, enabled = true) {
 
     es.onmessage = (e) => applyEvent(e.data)
     es.addEventListener('progress', (e) => applyEvent(e.data))
+    // Backend đóng stream bằng event 'done' sau terminal — coi như completion.
+    es.addEventListener('done', () => {
+      setLastEvent((prev) => {
+        if (prev && prev.stage === '__project__' && ['completed', 'failed'].includes(prev.status)) return prev
+        return { stage: '__project__', status: 'completed' }
+      })
+    })
     es.onerror = () => {
       // SSE chưa có ở backend (404) hoặc mất kết nối → tắt hẳn, fallback polling
       setSseAvailable(false)

@@ -60,6 +60,8 @@ function normSegment(s) {
     text: s.text || s.original_text || '',
     translation: s.translation || s.translated_text || '',
     speaker: s.speaker || null,
+    isTextManuallyEdited: !!(s.isTextManuallyEdited ?? s.is_text_manually_edited),
+    isTranslationManuallyEdited: !!(s.isTranslationManuallyEdited ?? s.is_translation_manually_edited),
   };
 }
 
@@ -94,10 +96,16 @@ export default function ProjectDetail() {
   const setStoreCurrentTime = useTimelineStore((s) => s.setCurrentTime);
 
   // SSE realtime — tự tắt và fallback polling nếu backend chưa hỗ trợ
-  const { events: sseEvents, sseAvailable } = useJobEvents(id, !!project && ACTIVE_STATUSES.includes(project?.status));
+  const { events: sseEvents, sseAvailable, lastEvent } = useJobEvents(id, !!project && ACTIVE_STATUSES.includes(project?.status));
 
   const isDub = project?.mode === 'TRANSLATE_DUB' || project?.mode === 'translate_dub';
-  const outputUrl = project?.output?.storage_key ? `/storage/${project.output.storage_key}?v=${project.output.id}` : null;
+  // §1: output chỉ available khi pipeline COMPLETED + output success + artifact hợp lệ.
+  // Lúc pending/queued/running/generating (hoặc failed) KHÔNG hiển thị output cũ.
+  const isOutputAvailable =
+    project?.status === 'completed' &&
+    !!project?.output?.storage_key &&
+    (project?.output?.status === 'success' || !project?.output?.status);
+  const outputUrl = isOutputAvailable ? `/storage/${project.output.storage_key}?v=${project.output.id}` : null;
   const isVideoOutput = /\.(mp4|webm|mov|m4v|mkv)$/i.test(project?.output?.storage_key || '');
   // Preview che chữ dùng video NGUỒN để thấy hardsub gốc (output đã blur + sub dịch).
   const sourceUrl = project?.source_video_key ? `/storage/${project.source_video_key}` : outputUrl;
@@ -303,6 +311,36 @@ export default function ProjectDetail() {
     }
     prevStatus.current = project?.status;
   }, [project?.status, load]);
+
+  // §10 realtime completion: SSE báo __project__ terminal → reload project + jobs
+  // (qua load) + transcript ngay, KHÔNG cần browser reload. Retry ngắn có giới hạn
+  // (tối đa 3 lần, cách 800ms) vì event có thể đến trước khi REST commit xong.
+  // Không polling vô hạn: chỉ chạy khi có terminal event mới.
+  const terminalReloadRef = useRef(0);
+  useEffect(() => {
+    if (project && ACTIVE_STATUSES.includes(project.status)) terminalReloadRef.current = 0;
+  }, [project?.status]);
+  useEffect(() => {
+    if (!lastEvent || lastEvent.stage !== '__project__') return undefined;
+    if (!['completed', 'failed'].includes(lastEvent.status)) return undefined;
+    if (terminalReloadRef.current >= 3) return undefined;
+    terminalReloadRef.current += 1;
+    let cancelled = false;
+    let attempts = 0;
+    const tryReload = async () => {
+      attempts += 1;
+      const p = await load();
+      if (!cancelled && p && (p.mode === 'TRANSLATE_DUB' || p.mode === 'translate_dub')) {
+        await loadDubData();
+      }
+      const settled = p && ['completed', 'failed'].includes(p.status);
+      if (!cancelled && !settled && attempts < 3) {
+        setTimeout(() => { if (!cancelled) tryReload(); }, 800);
+      }
+    };
+    tryReload();
+    return () => { cancelled = true; };
+  }, [lastEvent, load, loadDubData]);
 
   const isActive = project && ACTIVE_STATUSES.includes(project.status);
   const canRegenerate = project && ['completed', 'failed'].includes(project.status);
@@ -560,7 +598,25 @@ export default function ProjectDetail() {
 
             {/* Right Panel: Video Preview */}
             <div className="w-[42%] flex flex-col min-h-0 bg-card border-l border-border overflow-y-auto">
-              {outputUrl ? (
+              {/* §1: pipeline đang chạy → ẩn output, hiện tiến trình + stage hiện tại */}
+              {isActive ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
+                  <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                  <div className="text-sm font-semibold text-foreground">
+                    Đang xử lý{typeof project.progress === 'number' ? ` — ${project.progress}%` : ''}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {(() => {
+                      const cur = stages.map((k) => ({ key: k, job: jobByStage[k] })).find((s) => s.job?.status === 'running');
+                      const label = cur ? (STAGE_LABELS[cur.key]?.label || cur.key) : 'Chuẩn bị pipeline';
+                      return `Stage hiện tại: ${label}`;
+                    })()}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground/70 max-w-[260px]">
+                    Video output sẽ xuất hiện khi pipeline hoàn thành — đây không phải kết quả cũ.
+                  </div>
+                </div>
+              ) : outputUrl ? (
                 <div className="flex-1 flex flex-col min-h-0 p-3 gap-2">
                   {/* Video Container */}
                   <div className="relative flex-1 min-h-0 bg-black rounded-xl overflow-hidden group">
@@ -939,20 +995,75 @@ function InfoGrid({ project, isDub, params }) {
 }
 
 function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, saving, redubbing, disabled, error, compact = false, targetLanguage = 'vi', onLanguageChange }) {
+  // §7: chỉnh trực tiếp Original / Translation / Start / End. Không drag-and-drop.
+  // edits: { [segmentId]: { text?, translation?, startSec?, endSec? } }
   const [edits, setEdits] = useState({});
+  const [localError, setLocalError] = useState('');
 
-  const getTranslation = (seg) => (edits[seg.id] !== undefined ? edits[seg.id] : seg.translation);
-  const dirtyCount = transcript.filter((s) => edits[s.id] !== undefined && edits[s.id] !== s.translation).length;
-  const translatedCount = transcript.filter((s) => String(s.translation || '').trim()).length;
+  const getField = (seg, field) => (edits[seg.id]?.[field] !== undefined ? edits[seg.id][field] : seg[field]);
+  const isDirtyRow = (s) => {
+    const e = edits[s.id];
+    if (!e) return false;
+    return ['text', 'translation', 'startSec', 'endSec'].some((f) => e[f] !== undefined && e[f] !== s[f]);
+  };
+  const dirtyCount = transcript.filter(isDirtyRow).length;
+  const translatedCount = transcript.filter((s) => String(getField(s, 'translation') || '').trim()).length;
+
+  const setField = (seg, field, value) => {
+    setLocalError('');
+    setEdits((p) => ({ ...p, [seg.id]: { ...p[seg.id], [field]: value } }));
+  };
+
+  // Validation client: 0 <= start < end + không overlap câu trước/sau.
+  // Server (OVERLAP_CONFLICT) là authority cuối; đây chỉ là pre-check nhanh.
+  const validatePayload = (payload) => {
+    const byId = new Map(transcript.map((s) => [s.id, s]));
+    const eff = (s) => {
+      const p = payload.find((x) => x.id === s.id);
+      return {
+        startSec: p?.startSec !== undefined ? Number(p.startSec) : Number(s.startSec),
+        endSec: p?.endSec !== undefined ? Number(p.endSec) : Number(s.endSec),
+      };
+    };
+    const sorted = [...transcript].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+    for (const p of payload) {
+      const s = byId.get(p.id);
+      if (!s) continue;
+      const { startSec, endSec } = eff(s);
+      if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || !(startSec >= 0) || !(endSec > startSec)) {
+        return `Câu #${s.index ?? ''}: timing không hợp lệ (cần 0 ≤ start < end).`;
+      }
+      const i = sorted.findIndex((x) => x.id === s.id);
+      if (i > 0 && startSec < Number(eff(sorted[i - 1]).endSec)) {
+        return `Câu #${s.index ?? ''}: start (${startSec}s) overlap câu trước (kết thúc ${eff(sorted[i - 1]).endSec}s).`;
+      }
+      if (i < sorted.length - 1 && endSec > Number(eff(sorted[i + 1]).startSec)) {
+        return `Câu #${s.index ?? ''}: end (${endSec}s) overlap câu sau (bắt đầu ${eff(sorted[i + 1]).startSec}s).`;
+      }
+    }
+    return '';
+  };
 
   const changedPayload = () =>
     transcript
-      .filter((s) => edits[s.id] !== undefined && edits[s.id] !== s.translation)
-      .map((s) => ({ id: s.id, translation: edits[s.id] }));
+      .filter(isDirtyRow)
+      .map((s) => {
+        const e = edits[s.id];
+        const out = { id: s.id };
+        for (const f of ['text', 'translation', 'startSec', 'endSec']) {
+          if (e[f] !== undefined && e[f] !== s[f]) out[f] = e[f];
+        }
+        return out;
+      });
 
   const handleSave = async () => {
     const payload = changedPayload();
     if (!payload.length) return;
+    const err = validatePayload(payload);
+    if (err) {
+      setLocalError(err);
+      return;
+    }
     const result = await onSave(payload);
     if (result === null) return;
     const savedIds = new Set(payload.map((p) => p.id));
@@ -971,7 +1082,14 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
 
   const handleRedub = async () => {
     const payload = changedPayload();
-    if (payload.length) await onSave(payload);
+    if (payload.length) {
+      const err = validatePayload(payload);
+      if (err) {
+        setLocalError(err);
+        return;
+      }
+      await onSave(payload);
+    }
     setEdits({});
     onRedub();
   };
@@ -1033,47 +1151,24 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
 
         {/* Transcript list */}
         <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
-          {transcript.map((seg, i) => {
-            const isDirty = edits[seg.id] !== undefined && edits[seg.id] !== seg.translation;
-            return (
-              <div
-                key={seg.id || i}
-                draggable={!disabled}
-                onDragStart={(e) => {
-                  e.dataTransfer.setData('application/x-transcript-segment', JSON.stringify({
-                    id: seg.id,
-                    text: seg.translation || seg.text,
-                    startSec: seg.startSec,
-                    endSec: seg.endSec,
-                    duration: seg.endSec - seg.startSec,
-                  }));
-                  e.dataTransfer.effectAllowed = 'copy';
-                }}
-                className={`p-2 rounded-lg border transition cursor-grab active:cursor-grabbing ${
-                  isDirty ? 'bg-amber-500/10 border-amber-500/30' : 'bg-muted/25 border-border/70'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-1 mb-1">
-                  <button onClick={() => onSeek(seg.startSec)} disabled={!hasVideo}
-                    className="text-[10px] text-muted-foreground hover:text-primary transition disabled:cursor-default tabular-nums">
-                    {fmtSec(seg.startSec)} → {fmtSec(seg.endSec)}
-                  </button>
-                  {seg.speaker && (
-                    <span className="text-[8px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-700 dark:text-violet-300">{seg.speaker}</span>
-                  )}
-                </div>
-                <div className="text-[11px] text-muted-foreground line-clamp-1 mb-1">{seg.text}</div>
-                <textarea
-                  value={getTranslation(seg)}
-                  onChange={(e) => setEdits((p) => ({ ...p, [seg.id]: e.target.value }))}
-                  disabled={disabled}
-                  rows={1}
-                  placeholder={seg.translation ? '' : '...'}
-                  className="w-full resize-none rounded bg-background border border-input px-2 py-1 text-[11px] text-foreground leading-snug focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
-                />
-              </div>
-            );
-          })}
+          {localError && (
+            <div className="flex items-center gap-1 text-[10px] text-destructive bg-destructive/10 rounded px-2 py-1">
+              <AlertCircle className="w-2.5 h-2.5 shrink-0" /> {localError}
+            </div>
+          )}
+          {transcript.map((seg, i) => (
+            <SegmentCard
+              key={seg.id || i}
+              seg={seg}
+              compact
+              isDirty={isDirtyRow(seg)}
+              getField={getField}
+              onField={setField}
+              onSeek={onSeek}
+              hasVideo={hasVideo}
+              disabled={disabled}
+            />
+          ))}
         </div>
       </div>
     );
@@ -1136,47 +1231,94 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
         </div>
       )}
 
+      {localError && (
+        <div className="mb-4 flex items-center gap-2 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-3">
+          <AlertCircle className="w-4 h-4 shrink-0" /> {localError}
+        </div>
+      )}
+
       <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
-        {transcript.map((seg, i) => {
-          const isDirty = edits[seg.id] !== undefined && edits[seg.id] !== seg.translation;
-          return (
-            <div
-              key={seg.id || i}
-              draggable={!disabled}
-              onDragStart={(e) => {
-                e.dataTransfer.setData('application/x-transcript-segment', JSON.stringify({
-                  id: seg.id,
-                  text: seg.translation || seg.text,
-                  startSec: seg.startSec,
-                  endSec: seg.endSec,
-                  duration: seg.endSec - seg.startSec,
-                }));
-                e.dataTransfer.effectAllowed = 'copy';
-              }}
-              className="p-3 rounded-xl bg-muted/30 border border-border/70 cursor-grab active:cursor-grabbing"
-            >
-              <div className="flex items-center justify-between gap-2 mb-1.5">
-                <button onClick={() => onSeek(seg.startSec)} disabled={!hasVideo}
-                  className="flex items-center gap-2 text-[11px] text-muted-foreground hover:text-primary transition disabled:hover:text-muted-foreground disabled:cursor-default">
-                  <span className="tabular-nums">{fmtSec(seg.startSec)} → {fmtSec(seg.endSec)}</span>
-                  {seg.speaker && (
-                    <span className="px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-700 dark:text-violet-300 font-medium">{seg.speaker}</span>
-                  )}
-                </button>
-                {isDirty && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 font-medium">đã sửa</span>}
-              </div>
-              <div className="text-sm text-muted-foreground line-clamp-1">{seg.text}</div>
-              <textarea
-                value={getTranslation(seg)}
-                onChange={(e) => setEdits((p) => ({ ...p, [seg.id]: e.target.value }))}
-                disabled={disabled}
-                rows={2}
-                placeholder={seg.translation ? '' : 'Chưa dịch — bạn có thể nhập bản dịch thủ công'}
-                className="mt-1.5 w-full resize-y rounded-lg bg-background border border-input px-3 py-2 text-sm text-foreground leading-snug focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
-              />
-            </div>
-          );
-        })}
+        {transcript.map((seg, i) => (
+          <SegmentCard
+            key={seg.id || i}
+            seg={seg}
+            isDirty={isDirtyRow(seg)}
+            getField={getField}
+            onField={setField}
+            onSeek={onSeek}
+            hasVideo={hasVideo}
+            disabled={disabled}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// §7: thẻ subtitle chỉnh trực tiếp 4 trường (Original / Translation / Start / End).
+// Không kéo-thả, không draggable/dataTransfer.
+function SegmentCard({ seg, compact = false, isDirty, getField, onField, onSeek, hasVideo, disabled }) {
+  const numCls = compact
+    ? 'w-full bg-background border border-input rounded px-1.5 py-0.5 text-[11px] text-foreground tabular-nums focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60'
+    : 'w-full bg-background border border-input rounded-lg px-2 py-1 text-xs text-foreground tabular-nums focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60';
+  const areaCls = compact
+    ? 'w-full resize-none rounded bg-background border border-input px-2 py-1 text-[11px] text-foreground leading-snug focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60'
+    : 'w-full resize-y rounded-lg bg-background border border-input px-3 py-1.5 text-sm text-foreground leading-snug focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60';
+  return (
+    <div className={compact
+      ? `p-2 rounded-lg border transition ${isDirty ? 'bg-amber-500/10 border-amber-500/30' : 'bg-muted/25 border-border/70'}`
+      : 'p-3 rounded-xl bg-muted/30 border border-border/70'}>
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <button onClick={() => onSeek(Number(getField(seg, 'startSec')))} disabled={!hasVideo}
+          className="text-[10px] text-muted-foreground hover:text-primary transition disabled:cursor-default tabular-nums">
+          {fmtSec(getField(seg, 'startSec'))} → {fmtSec(getField(seg, 'endSec'))}
+        </button>
+        <span className="flex items-center gap-1.5">
+          {seg.speaker && (
+            <span className="text-[9px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-700 dark:text-violet-300">{seg.speaker}</span>
+          )}
+          {isDirty && (
+            <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 font-medium">đã sửa</span>
+          )}
+        </span>
+      </div>
+      <label className="block text-[10px] text-muted-foreground mb-0.5">Original</label>
+      <textarea
+        value={getField(seg, 'text') ?? ''}
+        onChange={(e) => onField(seg, 'text', e.target.value)}
+        disabled={disabled}
+        rows={compact ? 1 : 2}
+        placeholder="Câu gốc (OCR/STT)"
+        className={areaCls}
+      />
+      <label className="block text-[10px] text-muted-foreground mt-1.5 mb-0.5">Translation</label>
+      <textarea
+        value={getField(seg, 'translation') ?? ''}
+        onChange={(e) => onField(seg, 'translation', e.target.value)}
+        disabled={disabled}
+        rows={compact ? 1 : 2}
+        placeholder="Bản dịch — sửa tay được giữ nguyên khi chạy lại"
+        className={areaCls}
+      />
+      <div className="grid grid-cols-2 gap-1.5 mt-1.5">
+        <label className="block text-[10px] text-muted-foreground">Start (s)
+          <input
+            type="number" step={0.1} min={0}
+            value={getField(seg, 'startSec') ?? 0}
+            onChange={(e) => onField(seg, 'startSec', Number(e.target.value))}
+            disabled={disabled}
+            className={numCls}
+          />
+        </label>
+        <label className="block text-[10px] text-muted-foreground">End (s)
+          <input
+            type="number" step={0.1} min={0}
+            value={getField(seg, 'endSec') ?? 0}
+            onChange={(e) => onField(seg, 'endSec', Number(e.target.value))}
+            disabled={disabled}
+            className={numCls}
+          />
+        </label>
       </div>
     </div>
   );

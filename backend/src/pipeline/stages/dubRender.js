@@ -42,8 +42,10 @@ export async function dubRender(ctx) {
   // source → mask → translated subtitle → audio mix → mux).
   const maskMethod = params.maskMethod === 'solid' ? 'solid' : 'blur'
   const regions = await loadSubtitleRegions(project.id, { maskMethod })
-  const activeMasks = regions.filter((r) => r.enabled !== 0)
+  // loadSubtitleRegions đã lọc APPROVED-only (+AUTO legacy); giữ check phòng thủ.
+  const activeMasks = regions.filter((r) => (r.status === 'APPROVED' || r.source === 'AUTO') && r.enabled !== 0)
   if (activeMasks.length) {
+    console.log(`[dub.render] Burning ${activeMasks.length} APPROVED mask(s) vào video trước ASS`)
     const maskedFile = path.join(dir, 'masked.mp4')
     await applySubtitleMasks(workingFile, activeMasks, {
       width: info.width || 1280,
@@ -191,6 +193,11 @@ export async function dubRender(ctx) {
   const outputKey = toStorageKey(finalFile)
   const thumbKey = toStorageKey(thumbPath)
   const finalInfo = await probe(finalFile)
+  // §3 verification: final file phải tồn tại với duration hợp lệ — nếu không,
+  // BLOCK_RENDER thay vì ghi outputs row giả.
+  if (!Number.isFinite(Number(finalInfo?.durationSec)) || Number(finalInfo.durationSec) <= 0) {
+    throw new Error(`BLOCK_RENDER: INVALID_FINAL — final video duration không hợp lệ (${finalInfo?.durationSec})`)
+  }
   setProgress(95)
 
   await insert('outputs', {
@@ -217,8 +224,9 @@ export async function dubRender(ctx) {
 
 // Đọc subtitle/mask regions đã persist (nếu có). Scale-invariant ratio 0..1,
 // tương ứng resolution video thực tế qua PlayResX/Y + centerOf().
-// Gộp regions MANUAL đã lưu + AUTO suy ra từ transcript OCR (bbox đã persist
-// trên segment — luôn nhất quán với transcript, dedupe-safe).
+// Gộp regions MANUAL đã APPROVE + AUTO suy ra từ transcript OCR (bbox đã persist
+// trên segment — luôn nhất quán với transcript, dedupe-safe). Mask DRAFT/DISABLED
+// KHÔNG được render (§2: chỉ APPROVED mới burn vào video thật).
 // Không hard-code vị trí khi region tồn tại; rỗng → fallback top/bottom/default.
 export async function loadSubtitleRegions(projectId, { maskMethod = 'blur' } = {}) {
   try {
@@ -226,7 +234,12 @@ export async function loadSubtitleRegions(projectId, { maskMethod = 'blur' } = {
       `SELECT * FROM ocr_regions WHERE project_id = ? ORDER BY start_sec ASC`,
       [projectId]
     )
-    const stored = (rows || []).map(normalizeRegion).filter(Boolean)
+    // Tương thích ngược: row AUTO lưu trong DB từ phiên bản cũ (chưa có
+    // status, backfill giữ DRAFT) vẫn được render như trước — chỉ MANUAL mới
+    // bắt buộc APPROVED. `enabled` vẫn là kill-switch cho mọi row.
+    const stored = (rows || [])
+      .map(normalizeRegion)
+      .filter((r) => r && (r.status === 'APPROVED' || r.source === 'AUTO') && r.enabled !== 0)
     const auto = await deriveAutoRegions(projectId, maskMethod)
     return [...stored, ...auto]
   } catch (_) {
@@ -284,6 +297,8 @@ export function normalizeRegion(r) {
   const blurRaw = Number(r.blur_radius ?? r.blurRadius ?? 8)
   const opRaw = Number(r.opacity ?? r.mask_strength ?? 1)
   const enabled = r.enabled === 0 || r.enabled === false || r.enabled === '0' ? 0 : 1
+  const source = r.source || 'AUTO'
+  const rawStatus = String(r.status || '').toUpperCase()
   return {
     id: r.id ?? null,
     ratioX, ratioY, ratioW: Math.min(1, ratioW), ratioH: Math.min(1, ratioH),
@@ -294,7 +309,9 @@ export function normalizeRegion(r) {
     enabled,
     text: typeof r.text === 'string' ? r.text : null,
     confidence: Number.isFinite(Number(r.confidence)) ? Number(r.confidence) : null,
-    source: r.source || 'AUTO',
+    source,
+    // AUTO suy ra lúc đọc luôn APPROVED; MANUAL thiếu status → DRAFT (render bỏ qua).
+    status: ['DRAFT', 'APPROVED', 'DISABLED'].includes(rawStatus) ? rawStatus : (source === 'AUTO' ? 'APPROVED' : 'DRAFT'),
   }
 }
 
@@ -322,10 +339,12 @@ export function buildAss(dir, segments, regions, { width, height, title, subPosi
     cx: Math.round((Number(r.ratioX) + Number(r.ratioW) / 2) * width),
     cy: Math.round((Number(r.ratioY) + Number(r.ratioH) * 0.72) * height),
   })
-  const lines = segments.map((seg) => {
+  const lines = segments.map((seg, i) => {
     const region = pickRegion(regions, Number(seg.start_sec), Number(seg.end_sec))
     const text = escapeAssText(seg.translation)
-    const end = alignEnd(seg, regions)
+    // Clamp với cue kế tiếp để alignEnd không tạo overlap ASS (§11).
+    const nextStart = i + 1 < segments.length ? Number(segments[i + 1].start_sec) : null
+    const end = alignEnd(seg, regions, nextStart)
     if (region && subPosition === 'original') {
       // Đè lên vùng mask cũ (docs/05 §B.7: phụ đề mới đè đúng chỗ hardsub gốc)
       const { cx, cy } = centerOf(region)
@@ -356,13 +375,24 @@ export function pickRegion(regions, startSec, endSec) {
 }
 
 // Kéo dài end tới hết region nếu câu kết thúc sát mép dưới của vùng chữ đang hiển thị.
-export function alignEnd(seg, regions) {
+// nextStartSec (start của cue kế, nếu có): clamp để không overlap cue kế (§11).
+// Canonical timing là transcript_segments.start_sec/end_sec — hàm này chỉ đọc số,
+// không cộng offset (offset STT đã cộng đúng 1 lần ở dubStt).
+export function alignEnd(seg, regions, nextStartSec = null) {
   const end = Number(seg.end_sec)
   const region = pickRegion(regions, Number(seg.start_sec), end)
+  let out = end
   if (region && end < Number(region.end_sec) && Number(region.end_sec) - end < 1.2) {
-    return round3(Number(region.end_sec))
+    out = Number(region.end_sec)
   }
-  return round3(end)
+  // Chỉ clamp khi caller truyền start của cue kế (null/undefined = cue cuối, giữ nguyên).
+  if (nextStartSec !== null && nextStartSec !== undefined) {
+    const next = Number(nextStartSec)
+    if (Number.isFinite(next) && out > next - 0.02) {
+      out = Math.max(Number(seg.start_sec), next - 0.02)
+    }
+  }
+  return round3(out)
 }
 
 function escapeAssText(text) {

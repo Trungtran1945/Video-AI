@@ -16,6 +16,11 @@ const isDubMode = (mode) => {
 
 const MASK_TYPES = ['blur', 'solid']
 
+// Mask approve lifecycle (§2): DRAFT (đang chỉnh, render bỏ qua) → APPROVED
+// (render bắt buộc dùng) | DISABLED (giữ row, render bỏ qua). `enabled` giữ lại
+// để tương thích cũ và mirror theo status (APPROVED→1, DISABLED→0).
+const MASK_STATUSES = ['DRAFT', 'APPROVED', 'DISABLED']
+
 function num(v) {
   const n = Number(v)
   return Number.isFinite(n) ? n : null
@@ -84,6 +89,11 @@ export function validateMaskInput(body, { partial = false } = {}) {
   if (b.enabled !== undefined) {
     out.enabled = b.enabled === true || b.enabled === 1 || b.enabled === '1' ? 1 : 0
   }
+  if (b.status !== undefined) {
+    const s = String(b.status || '').toUpperCase()
+    if (!MASK_STATUSES.includes(s)) return fail('status', `status phải là ${MASK_STATUSES.join('|')}`)
+    out.status = s
+  }
   if (b.text !== undefined) {
     out.text = typeof b.text === 'string' ? b.text.slice(0, 500) : null
   }
@@ -91,7 +101,9 @@ export function validateMaskInput(body, { partial = false } = {}) {
     out.type = out.type || 'blur'
     if (out.blurRadius === undefined) out.blurRadius = 8
     if (out.opacity === undefined) out.opacity = 1
-    if (out.enabled === undefined) out.enabled = 1
+    if (out.status === undefined) out.status = 'DRAFT'
+    // Mirror enabled theo status khi client không gửi enabled tường minh.
+    if (out.enabled === undefined) out.enabled = out.status === 'DISABLED' ? 0 : 1
   }
   return { ok: true, value: out }
 }
@@ -108,6 +120,7 @@ export async function deriveAutoMasks(projectId, maskMethod) {
 }
 
 export function toMaskJson(r) {
+  const source = r.source || 'MANUAL'
   return {
     ...r,
     startSec: r.start_sec ?? r.startSec,
@@ -119,8 +132,11 @@ export function toMaskJson(r) {
     blurRadius: r.blur_radius ?? r.blurRadius ?? 8,
     opacity: r.opacity ?? 1,
     enabled: r.enabled === 1 || r.enabled === true,
-    source: r.source || 'MANUAL',
+    source,
     type: r.type || 'blur',
+    // Mask ảo AUTO suy ra lúc đọc (deriveAutoRegions) luôn coi như APPROVED
+    // để filter render đồng nhất; mask MANUAL thiếu status → DRAFT.
+    status: r.status || (source === 'AUTO' ? 'APPROVED' : 'DRAFT'),
   }
 }
 
@@ -164,6 +180,7 @@ router.post('/projects/:id/masks', requireProjectOwner, async (req, res) => {
       blur_radius: v.value.blurRadius,
       opacity: v.value.opacity,
       enabled: v.value.enabled,
+      status: v.value.status,
       text: v.value.text ?? null,
       confidence: null,
       source: 'MANUAL',
@@ -205,6 +222,13 @@ router.patch('/projects/:id/masks/:maskId', requireProjectOwner, async (req, res
     if (v.value.blurRadius !== undefined) patch.blur_radius = v.value.blurRadius
     if (v.value.opacity !== undefined) patch.opacity = v.value.opacity
     if (v.value.enabled !== undefined) patch.enabled = v.value.enabled
+    if (v.value.status !== undefined) {
+      patch.status = v.value.status
+      // Mirror enabled khi đổi status mà không gửi enabled tường minh.
+      if (v.value.enabled === undefined) {
+        patch.enabled = v.value.status === 'APPROVED' ? 1 : v.value.status === 'DISABLED' ? 0 : row.enabled
+      }
+    }
     if (v.value.text !== undefined) patch.text = v.value.text
     // Validate timing sau merge (end > start).
     const startSec = patch.start_sec !== undefined ? patch.start_sec : row.start_sec

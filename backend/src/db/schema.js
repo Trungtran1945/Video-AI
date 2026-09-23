@@ -313,7 +313,8 @@ export async function initSchema() {
     type TEXT DEFAULT 'blur', -- 'blur' | 'solid'
     blur_radius REAL DEFAULT 8, -- 1..50, chỉ dùng khi type='blur'
     opacity REAL DEFAULT 1, -- 0..1, độ đục lớp phủ (solid)
-    enabled INTEGER DEFAULT 1 -- 0 = tắt mask nhưng vẫn giữ row
+    enabled INTEGER DEFAULT 1, -- 0 = tắt mask nhưng vẫn giữ row
+    status TEXT DEFAULT 'DRAFT' -- mask lifecycle: DRAFT | APPROVED | DISABLED (render chỉ dùng APPROVED)
   )`)
 
   db.run(`CREATE TABLE IF NOT EXISTS style_presets (
@@ -391,6 +392,15 @@ export async function initSchema() {
   addCol('ocr_regions', 'blur_radius', 'REAL DEFAULT 8')
   addCol('ocr_regions', 'opacity', 'REAL DEFAULT 1')
   addCol('ocr_regions', 'enabled', 'INTEGER DEFAULT 1')
+  // Mask approve lifecycle (§2): DRAFT (đang chỉnh) | APPROVED (render dùng) | DISABLED.
+  // Backfill giữ nguyên hành vi cũ: manual đang bật → APPROVED, đang tắt → DISABLED.
+  addCol('ocr_regions', 'status', "TEXT DEFAULT 'DRAFT'")
+  try { db.run(`UPDATE ocr_regions SET status = 'APPROVED' WHERE source = 'MANUAL' AND enabled = 1 AND (status IS NULL OR status = '' OR status = 'DRAFT')`) } catch (_) {}
+  try { db.run(`UPDATE ocr_regions SET status = 'DISABLED' WHERE source = 'MANUAL' AND enabled = 0 AND (status IS NULL OR status = '' OR status = 'DRAFT')`) } catch (_) {}
+  try { db.run(`UPDATE ocr_regions SET status = 'DRAFT' WHERE status IS NULL OR status = ''`) } catch (_) {}
+  // Manual-edit source of truth (§8): phân biệt user sửa tay với AI-generated.
+  addCol('transcript_segments', 'is_text_manually_edited', 'INTEGER DEFAULT 0')
+  addCol('transcript_segments', 'is_translation_manually_edited', 'INTEGER DEFAULT 0')
   // Transcript source discriminator + OCR evidence (bbox/confidence)
   addCol('transcript_segments', 'source', 'TEXT')
   addCol('transcript_segments', 'confidence', 'REAL')

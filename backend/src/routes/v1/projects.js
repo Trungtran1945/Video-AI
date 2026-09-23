@@ -235,7 +235,12 @@ router.get('/:id', async (req, res) => {
     }
     const jobs = await query('SELECT * FROM generation_jobs WHERE project_id = ? ORDER BY created_date ASC', [project.id])
     const timeline = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [project.id])
-    const output = await queryOne('SELECT * FROM outputs WHERE project_id = ? ORDER BY created_date DESC LIMIT 1', [project.id])
+    const latestOutput = await queryOne('SELECT * FROM outputs WHERE project_id = ? ORDER BY created_date DESC LIMIT 1', [project.id])
+    // §1: pipeline đang chạy (pending/queued/running/generating) thì KHÔNG expose
+    // output cũ — tránh user nhầm output của lần chạy trước là kết quả mới.
+    // Không DELETE gì cả (non-destructive); row cũ vẫn nằm trong DB.
+    const ACTIVE_OUTPUT_HIDDEN = new Set(['pending', 'queued', 'running', 'generating'])
+    const output = project && ACTIVE_OUTPUT_HIDDEN.has(project.status) ? null : latestOutput
     let extras = {}
     if (project.mode === 'SUMMARY') {
       extras.scenes = await query('SELECT * FROM scenes WHERE project_id = ? ORDER BY start_sec ASC', [project.id])
@@ -282,7 +287,8 @@ router.patch('/:id/segments/:segmentId/translation', requireProjectOwner, async 
     if ((gate.errors || []).length) {
       console.warn(`[Projects] manual translation segment #${seg.index_num} soft warnings (allowed): ${gate.errors.join(';')}`)
     }
-    await updateById('transcript_segments', seg.id, { translation, tts_audio_id: null })
+    // §8: đánh dấu sửa tay để dub.translate không overwrite trong lần chạy sau.
+    await updateById('transcript_segments', seg.id, { translation, tts_audio_id: null, is_translation_manually_edited: 1 })
     const updated = await queryOne('SELECT * FROM transcript_segments WHERE id = ?', [seg.id])
     res.json({ ...updated, warnings: gate.errors || [] })
   } catch (err) {

@@ -22,7 +22,9 @@ router.get('/projects/:id/events', requireProjectOwner, async (req, res) => {
   const unsubscribe = eventBus.subscribe(req.project.id, (payload) => {
     try {
       res.write(`event: progress\ndata: ${JSON.stringify(payload)}\n\n`)
-      if (payload.stage === '__project__' && ['success', 'failed'].includes(payload.status)) {
+      // Terminal statuses: 'completed' (chuẩn mới, khớp projects.status) +
+      // 'success' (tương thích event cũ) + 'failed'.
+      if (payload.stage === '__project__' && ['completed', 'success', 'failed'].includes(payload.status)) {
         res.write('event: done\ndata: {}\n\n')
         cleanup()
         res.end()

@@ -36,14 +36,20 @@ export class GeminiVision {
 
   // OCR hardsub (docs/05 §B.3): phát hiện vùng phụ đề cứng trong frame.
   // Trả về [{x, y, width, height, text, confidence}] theo pixel khung hình.
-  async detectSubtitle({ imagePath, width, height }) {
+  // sourceLanguage (nếu explicit, khác 'auto') được dùng làm language hint (§5).
+  async detectSubtitle({ imagePath, width, height, sourceLanguage }) {
     const data = fs.readFileSync(imagePath).toString('base64')
     const w = Number(width) || 1280
     const h = Number(height) || 720
+    const langHint = String(sourceLanguage || '').trim().toLowerCase()
+    const langLine = langHint && langHint !== 'auto'
+      ? `Ngôn ngữ phụ đề kỳ vọng: ${langHint} (ưu tiên đọc đúng chữ của ngôn ngữ này).\n`
+      : ''
     const prompt =
       `Bạn là mô hình OCR chuyên phát hiện PHỤ ĐỀ CỨNG (hardsub) trong ảnh khung hình video ` +
       `kích thước ${w}x${h} pixel. Chỉ quan tâm chữ của PHỤ ĐỆ (thường ở phần dưới khung), ` +
       `BỎ QUA watermark, logo, tên thương hiệu ở góc và chữ nằm trong cảnh phim.\n` +
+      langLine +
       `Trả về DUY NHẤT một JSON (không markdown) theo schema:\n` +
       `{"boxes":[{"x":int,"y":int,"width":int,"height":int,"text":string,"confidence":float}]}\n` +
       `Toạ độ tính bằng pixel theo kích thước ${w}x${h}. Không có phụ đề → {"boxes":[]}.`

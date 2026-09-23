@@ -100,7 +100,11 @@ export async function dubTranslate(ctx) {
   // TRANSIENT → retry bounded exponential backoff (tối đa 2 lần retry / segment).
   const gtResults = new Map() // index_num → bản dịch Google Translate (base)
   const gtErrors = new Map() // index_num → error kind (diagnostic)
-  const segmentsToTranslate = pool.filter((s) => s.text && s.text.trim())
+  // §8: user edit là source of truth — segment đã sửa translation tay thì AI
+  // không được overwrite. Chúng được seed vào `translations` ở dưới và loại
+  // khỏi mọi vòng dịch/ghi DB.
+  const isManualTranslation = (s) => s.is_translation_manually_edited && s.translation && String(s.translation).trim()
+  const segmentsToTranslate = pool.filter((s) => s.text && s.text.trim() && !isManualTranslation(s))
   let googleUnhealthy = false
   let consecutiveConfig = 0
 
@@ -183,6 +187,10 @@ export async function dubTranslate(ctx) {
 
   // BƯỚC 2: LLM restyle (chỉ khi có style preset VÀ có LLM)
   const translations = new Map() // segment id → bản dịch cuối cùng
+  // Seed bản dịch sửa tay để assertTranslateComplete/SRT tính đủ mà không ghi đè DB.
+  for (const s of pool) {
+    if (isManualTranslation(s)) translations.set(s.id, s.translation)
+  }
   let noStyleUnresolved = []
 
   if (hasStyle && llm) {
@@ -196,7 +204,9 @@ export async function dubTranslate(ctx) {
     const unresolved = []
     const styledAll = new Map() // index_num → styled text (mọi group, cho quarantine details)
     for (let g = 0; g < groups.length; g++) {
-      const group = groups[g]
+      // Bỏ segment sửa tay khỏi group dịch (giữ nguyên DB) — group rỗng thì qua.
+      const group = groups[g].filter((s) => !isManualTranslation(s))
+      if (!group.length) continue
       const groupTranslations = []
       for (const seg of group) {
         const gtText = gtResults.get(seg.index_num)
@@ -309,6 +319,7 @@ export async function dubTranslate(ctx) {
     noStyleUnresolved = []
     for (let si = 0; si < pool.length; si++) {
       const seg = pool[si]
+      if (isManualTranslation(seg)) continue // §8: giữ bản sửa tay, không ghi đè
       let gtText = gtResults.get(seg.index_num)
       if (!gtText) {
         if (seg.text && seg.text.trim()) noStyleUnresolved.push(seg.index_num)

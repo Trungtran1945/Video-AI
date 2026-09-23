@@ -32,7 +32,10 @@ export async function dubOcr(ctx) {
   const width = ingest.width || 1280
   const height = ingest.height || 720
 
-  // Temporal sampling: 2 FPS default (env OCR_FPS), cap 900 — adaptive via sampleFrames
+  // Temporal sampling: 2 FPS default (env OCR_FPS), cap 900 — adaptive via sampleFrames.
+  // §6: OCR đọc frame gốc của SOURCE VIDEO trực tiếp — manual mask (ocr_regions)
+  // KHÔNG bao giờ được áp lên frame trước OCR, nên mask không che mất subtitle gốc.
+  // Không tạo video tạm, không mutate DB mask ở stage này.
   const framesDir = path.join(tmp, 'ocr_frames')
   const fps = Number(process.env.OCR_FPS || 2)
   const cap = Number(process.env.OCR_CAP || 900)
@@ -124,6 +127,11 @@ export async function dubOcr(ctx) {
 }
 
 const OCR_MIN_CONF = () => Number(process.env.OCR_MIN_CONF || 0.55)
+// Số frame tối thiểu để một track được coi là ổn định (§5 multi-frame consensus).
+const OCR_MIN_FRAMES = () => Number(process.env.OCR_MIN_FRAMES || 2)
+// Frame đơn lẻ chỉ thành subtitle khi confidence rất cao — bảo vệ subtitle ngắn
+// mà không tạo subtitle từ một frame OCR sai (§5).
+const OCR_SINGLE_FRAME_CONF = () => Number(process.env.OCR_SINGLE_FRAME_CONF || 0.85)
 const TEXT_SIM_THRESHOLD = 0.82
 // Box nằm hoàn toàn trên vùng này (tính từ đỉnh) bị coi là UI/logo, không phải subtitle.
 const NOISE_TOP_RATIO = () => Number(process.env.OCR_NOISE_TOP_RATIO || 0.35)
@@ -372,13 +380,18 @@ export function aggregateBoxes(allBoxes, durationSec, fps = 2, opts = {}) {
   // Emit: persistence + confidence gate, representative text by count*avgConf.
   // Static gate: track phủ >60% video là logo/watermark, không phải subtitle.
   // Script gate: sourceLanguage explicit mà text lệch hẳn script → drop.
+  // Consensus gate (§5): text đại diện phải xuất hiện ổn định trên ≥2 frame
+  // (best.count) HOẶC track có avgConf cao — không tin một frame đơn lẻ yếu.
+  // Short-subtitle guard: frame đơn lẻ conf rất cao vẫn được giữ (OCR_SINGLE_FRAME_CONF).
   const prelim = []
   const expected = expectedScript(opts.sourceLanguage)
+  const minFrames = OCR_MIN_FRAMES()
+  const singleConf = OCR_SINGLE_FRAME_CONF()
   for (const tr of tracks) {
     const avgConf = tr.confSum / Math.max(1, tr.frameCount)
     const span = tr.lastSeen - tr.firstSeen
-    if (!(tr.frameCount >= 2 || avgConf >= minConf)) continue
-    if (span < 0.4) continue
+    if (!(tr.frameCount >= minFrames || avgConf >= minConf)) continue
+    if (span < 0.4 && !(tr.frameCount === 1 && avgConf >= singleConf)) continue
     if (dur > 0 && span / dur > 0.6) continue
     let best = null
     for (const e of tr.textCandidates.values()) {
@@ -389,6 +402,7 @@ export function aggregateBoxes(allBoxes, durationSec, fps = 2, opts = {}) {
     }
     const rep = String(best?.text || '').trim()
     if (!rep) continue
+    if (!((best?.count || 0) >= 2 || avgConf >= minConf)) continue
     if (scriptMismatch(rep, expected)) continue
     prelim.push({
       text: rep,

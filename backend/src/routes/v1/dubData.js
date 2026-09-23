@@ -29,7 +29,8 @@ router.get('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
       return sendError(res, 400, ERR.VALIDATION, 'Chỉ dự án TRANSLATE_DUB mới có transcript', { field: 'mode' })
     }
     const rows = await query(
-      `SELECT id, index_num, start_sec, end_sec, text, speaker, language, translation
+      `SELECT id, index_num, start_sec, end_sec, text, speaker, language, translation,
+              is_time_manually_adjusted, is_text_manually_edited, is_translation_manually_edited
        FROM transcript_segments WHERE project_id = ?
        ORDER BY index_num ASC`,
       [req.project.id]
@@ -40,6 +41,9 @@ router.get('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
       index: r.index_num,
       startSec: r.start_sec,
       endSec: r.end_sec,
+      isTimeManuallyAdjusted: !!r.is_time_manually_adjusted,
+      isTextManuallyEdited: !!r.is_text_manually_edited,
+      isTranslationManuallyEdited: !!r.is_translation_manually_edited,
     })))
   } catch (err) {
     console.error('Transcript error:', err)
@@ -47,9 +51,12 @@ router.get('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
   }
 })
 
-// PUT /api/v1/projects/:id/transcript — lưu bản dịch đã chỉnh sửa của user.
-// Hỗ trợ chỉnh sửa timing với overlap detection (docs/03 §3, VAL_002).
-// Body: { segments: [{ id, translation?, startSec?, endSec? }] }
+// PUT /api/v1/projects/:id/transcript — lưu bản chỉnh sửa của user (source of truth §8).
+// Hỗ trợ chỉnh sửa source text + translation + timing với overlap detection (docs/03 §3, VAL_002).
+// Body: { segments: [{ id, text?, translation?, startSec?, endSec? }] }
+// - text đổi mà payload không kèm translation → translation=NULL + flag tay reset
+//   (bản dịch cũ đã stale, dub.translate sẽ dịch lại; không overwrite ngầm).
+// - translation kèm theo → flag is_translation_manually_edited=1 (AI không ghi đè).
 router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => {
   try {
     if (!isDubMode(req.project.mode)) {
@@ -60,7 +67,7 @@ router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
 
     // Load all segments ordered by index_num for overlap detection
     const allSegments = await query(
-      'SELECT id, index_num, start_sec, end_sec, is_time_manually_adjusted FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC',
+      'SELECT id, index_num, start_sec, end_sec, text, translation, is_time_manually_adjusted, is_text_manually_edited, is_translation_manually_edited FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC',
       [req.project.id]
     )
     const segmentMap = new Map(allSegments.map((r) => [r.id, r]))
@@ -140,21 +147,44 @@ router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
         }
       }
 
-      // Update the segment
-      const translation = typeof s.translation === 'string' ? s.translation : null
+      // Update the segment — user edit là source of truth (§7, §8).
+      const hasTextKey = s.text !== undefined
+      const hasTranslationKey = s.translation !== undefined
+      const newText = typeof s.text === 'string' ? s.text : seg.text
+      const textChanged = hasTextKey && typeof s.text === 'string' && s.text !== seg.text
+      let newTranslation
+      let newTextEdited = seg.is_text_manually_edited
+      let newTranslationEdited = seg.is_translation_manually_edited
+      if (textChanged) {
+        newTextEdited = 1
+        if (!hasTranslationKey || s.translation === undefined) {
+          // Text mới + không kèm translation → bản dịch cũ stale, clear để
+          // dub.translate dịch lại thay vì giữ bản dịch của text cũ.
+          newTranslation = null
+          newTranslationEdited = 0
+        } else {
+          newTranslation = typeof s.translation === 'string' ? s.translation : null
+          newTranslationEdited = newTranslation !== null ? 1 : 0
+        }
+      } else if (hasTranslationKey) {
+        newTranslation = typeof s.translation === 'string' ? s.translation : null
+        newTranslationEdited = newTranslation !== null ? 1 : 0
+      } else {
+        newTranslation = seg.translation
+      }
       await run(
-        `UPDATE transcript_segments SET translation = ?, start_sec = ?, end_sec = ?, is_time_manually_adjusted = ? WHERE id = ? AND project_id = ?`,
-        [translation, newStart, newEnd, hasTimingChange ? 1 : seg.is_time_manually_adjusted, id, req.project.id]
+        `UPDATE transcript_segments SET text = ?, translation = ?, start_sec = ?, end_sec = ?, is_time_manually_adjusted = ?, is_text_manually_edited = ?, is_translation_manually_edited = ? WHERE id = ? AND project_id = ?`,
+        [newText, newTranslation, newStart, newEnd, hasTimingChange ? 1 : seg.is_time_manually_adjusted, newTextEdited, newTranslationEdited, id, req.project.id]
       )
-      // Sửa tay bản dịch → audio TTS cũ (nếu có) đã stale, đánh dấu tổng hợp lại.
-      if (translation !== null) {
+      // Sửa tay text/translation → audio TTS cũ (nếu có) đã stale, tổng hợp lại.
+      if (textChanged || newTranslation !== seg.translation) {
         await run(`UPDATE transcript_segments SET tts_audio_id = NULL WHERE id = ?`, [id])
       }
       updated++
     }
 
     const rows = await query(
-      `SELECT id, index_num, start_sec, end_sec, text, speaker, language, translation, is_time_manually_adjusted
+      `SELECT id, index_num, start_sec, end_sec, text, speaker, language, translation, is_time_manually_adjusted, is_text_manually_edited, is_translation_manually_edited
        FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC`,
       [req.project.id]
     )
@@ -174,6 +204,8 @@ router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
         startSec: r.start_sec,
         endSec: r.end_sec,
         isTimeManuallyAdjusted: !!r.is_time_manually_adjusted,
+        isTextManuallyEdited: !!r.is_text_manually_edited,
+        isTranslationManuallyEdited: !!r.is_translation_manually_edited,
       })),
     })
   } catch (err) {

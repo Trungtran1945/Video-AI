@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { projectsApi } from '@/api/projects';
-import { Plus, Trash2, Eye, EyeOff, Copy, Loader2, AlertCircle, Scissors } from 'lucide-react';
+import { Plus, Trash2, Eye, EyeOff, Copy, Loader2, AlertCircle, Scissors, Check } from 'lucide-react';
 
 const toPct = (r) => Math.round(Number(r || 0) * 1000) / 10;
 const toRatio = (p) => Math.min(1, Math.max(0, Number(p) / 100));
@@ -82,7 +82,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
       const created = await projectsApi.createMask(projectId, {
         ratioX: 0.25, ratioY: 0.65, ratioW: 0.5, ratioH: 0.2,
         startSec: Math.max(0, t), endSec: Math.max(0, t) + 2,
-        type: 'blur', blurRadius: 8, opacity: 1, enabled: true,
+        type: 'blur', blurRadius: 8, opacity: 1, enabled: true, status: 'DRAFT',
       });
       setMasks((prev) => [...prev, created]);
       setSelectedId(created.id);
@@ -91,6 +91,34 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
     } finally {
       setSaving(false);
     }
+  };
+
+  // §2 approve lifecycle: DRAFT → APPROVED (render burn thật) | DISABLED.
+  // Chưa chọn mask hoặc mask AUTO → nút Approve disabled.
+  const canApprove = selected && !isAuto(selected) && selected.status !== 'APPROVED' && !disabled && !saving;
+  const handleApprove = async () => {
+    if (!canApprove) return;
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await projectsApi.updateMask(projectId, selected.id, { status: 'APPROVED' });
+      setMasks((prev) => prev.map((m) => (String(m.id) === String(selected.id) ? { ...m, ...updated } : m)));
+    } catch (e) {
+      setError('Không approve được mask: ' + (e?.response?.data?.message || e.message));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Eye toggle chuyển trạng thái DISABLED ↔ APPROVED (giữ row, render bỏ qua/khôi phục).
+  const handleToggleEnabled = async (m) => {
+    const toDisabled = m.status === 'APPROVED' || (m.status !== 'DISABLED' && m.enabled);
+    await patchMask(m.id, toDisabled ? { status: 'DISABLED' } : { status: 'APPROVED' });
+  };
+
+  const statusBadge = (m) => {
+    if (isAuto(m)) return 'AUTO';
+    return m.status === 'APPROVED' ? 'APPROVED' : m.status === 'DISABLED' ? 'DISABLED' : 'DRAFT';
   };
 
   const handleDelete = async (m) => {
@@ -114,7 +142,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
         ratioX: m.ratioX, ratioY: m.ratioY, ratioW: m.ratioW, ratioH: m.ratioH,
         startSec: m.startSec, endSec: m.endSec,
         type: m.type === 'solid' ? 'solid' : 'blur',
-        blurRadius: m.blurRadius ?? 8, opacity: m.opacity ?? 1, enabled: true,
+        blurRadius: m.blurRadius ?? 8, opacity: m.opacity ?? 1, enabled: true, status: 'DRAFT',
         text: m.text || null,
       });
       setMasks((prev) => [...prev, created]);
@@ -226,13 +254,23 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
           <Scissors className="w-3.5 h-3.5" /> Che chữ thủ công
           <span className="text-[10px] font-normal text-muted-foreground">{masks.length} vùng</span>
         </div>
-        <button
-          onClick={handleAdd}
-          disabled={disabled || saving}
-          className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-        >
-          {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />} Thêm mask
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={handleApprove}
+            disabled={!canApprove}
+            title={!selected ? 'Chọn một mask thủ công để approve' : isAuto(selected) ? 'Mask tự động chỉ đọc' : 'Approve mask để render burn vào video'}
+            className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40"
+          >
+            {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />} Approve
+          </button>
+          <button
+            onClick={handleAdd}
+            disabled={disabled || saving}
+            className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />} Thêm mask
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -304,18 +342,23 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
               String(selectedId) === String(m.id) ? 'border-primary/60 bg-primary/10' : 'border-border hover:bg-muted'
             }`}
           >
-            <span className={`shrink-0 px-1 rounded text-[9px] ${isAuto(m) ? 'bg-emerald-500/15 text-emerald-400' : 'bg-blue-500/15 text-blue-400'}`}>
-              {isAuto(m) ? 'AUTO' : 'TAY'}
+            <span className={`shrink-0 px-1 rounded text-[9px] ${
+              isAuto(m) ? 'bg-emerald-500/15 text-emerald-400'
+              : m.status === 'APPROVED' ? 'bg-emerald-500/15 text-emerald-300'
+              : m.status === 'DISABLED' ? 'bg-slate-500/15 text-slate-400'
+              : 'bg-amber-500/15 text-amber-300'
+            }`}>
+              {statusBadge(m)}
             </span>
             <span className="flex-1 truncate">{m.text || `${m.type} ${toPct(m.ratioW)}×${toPct(m.ratioH)}%`}</span>
             <span className="text-muted-foreground shrink-0">{Number(m.startSec).toFixed(1)}–{Number(m.endSec).toFixed(1)}s</span>
             {!isAuto(m) && (
               <button
-                onClick={(e) => { e.stopPropagation(); patchMask(m.id, { enabled: !m.enabled }); }}
+                onClick={(e) => { e.stopPropagation(); handleToggleEnabled(m); }}
                 className="shrink-0 text-muted-foreground hover:text-foreground"
-                title={m.enabled ? 'Tắt mask' : 'Bật mask'}
+                title={m.status === 'DISABLED' ? 'Bật lại (APPROVED)' : 'Tắt mask (DISABLED)'}
               >
-                {m.enabled ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                {m.status === 'DISABLED' ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
               </button>
             )}
           </div>
@@ -365,7 +408,7 @@ function MaskForm({ mask, readOnly, disabled, onCommit, onDelete, onDuplicate })
     <div className="border border-border rounded-xl p-2 flex flex-col gap-2 bg-card">
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-semibold">
-          {readOnly ? 'Mask tự động (chỉ đọc)' : 'Chỉnh mask thủ công'}
+          {readOnly ? 'Mask tự động (chỉ đọc)' : `Chỉnh mask thủ công — ${mask.status || 'DRAFT'}`}
         </span>
         <div className="flex items-center gap-1">
           {readOnly ? (

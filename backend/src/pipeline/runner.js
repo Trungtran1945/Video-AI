@@ -659,14 +659,14 @@ export async function runPipeline(projectId, fromStage = null) {
       })
       eventBus.publish(projectId, {
         stage: '__project__',
-        status: done >= total ? 'success' : 'running',
+        status: done >= total ? 'completed' : 'running',
         percent: Math.round((done / total) * 100),
       })
       currentProject = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId]) || currentProject
     }
 
     await updateById('projects', projectId, { status: 'completed', progress: 100 })
-    eventBus.publish(projectId, { stage: '__project__', status: 'success', percent: 100 })
+    eventBus.publish(projectId, { stage: '__project__', status: 'completed', percent: 100 })
 
     // Isolated: queue failure must never fail a successful video pipeline.
     // safeAddNotify skips when any Redis stream is down and converts
