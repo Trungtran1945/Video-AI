@@ -1,5 +1,7 @@
 import { Router } from 'express'
-import { query, queryOne, run } from '../../db/query.js'
+import { query, queryOne } from '../../db/query.js'
+import { withTransaction } from '../../db/query.js'
+import { computeProposedState, validateProposedState, TIMING_GAP } from '../../lib/transcriptTiming.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { sendError, ERR } from '../../lib/httpError.js'
@@ -57,6 +59,9 @@ router.get('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
 // - text đổi mà payload không kèm translation → translation=NULL + flag tay reset
 //   (bản dịch cũ đã stale, dub.translate sẽ dịch lại; không overwrite ngầm).
 // - translation kèm theo → flag is_translation_manually_edited=1 (AI không ghi đè).
+// Atomic + deterministic: tính toàn bộ proposed state trong memory (minimal-push,
+// chỉ đẩy downstream khi overlap, giữ gap thừa), validate hết rồi mới commit một
+// transaction duy nhất. Bất kỳ lỗi nào → không ghi DB.
 router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => {
   try {
     if (!isDubMode(req.project.mode)) {
@@ -65,122 +70,63 @@ router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
     const incoming = Array.isArray(req.body?.segments) ? req.body.segments : []
     if (!incoming.length) return sendError(res, 400, ERR.VALIDATION, 'segments rỗng', { field: 'segments' })
 
-    // Load all segments ordered by index_num for overlap detection
+    // Load all segments ordered by index_num for proposed-state computation
     const allSegments = await query(
       'SELECT id, index_num, start_sec, end_sec, text, translation, is_time_manually_adjusted, is_text_manually_edited, is_translation_manually_edited FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC',
       [req.project.id]
     )
-    const segmentMap = new Map(allSegments.map((r) => [r.id, r]))
-    const adjustedSegments = []
-    let updated = 0
+    if (!allSegments.length) return sendError(res, 400, ERR.VALIDATION, 'Không có transcript để sửa', { field: 'segments' })
+    const durationSec = Number.isFinite(Number(req.project?.target_duration_sec))
+      ? Number(req.project.target_duration_sec)
+      : null
 
-    for (const s of incoming) {
-      if (!s || typeof s !== 'object') continue
-      const id = String(s.id)
-      const seg = segmentMap.get(id)
-      if (!seg) continue
-
-      let newStart = Number.isFinite(Number(s.startSec)) ? Number(s.startSec) : seg.start_sec
-      let newEnd = Number.isFinite(Number(s.endSec)) ? Number(s.endSec) : seg.end_sec
-      const hasTimingChange = newStart !== seg.start_sec || newEnd !== seg.end_sec
-
-      // Overlap detection for timing changes
-      if (hasTimingChange) {
-        const idx = allSegments.findIndex((r) => r.id === id)
-        const GAP = 0.1 // minimum allowed gap between segments
-
-        // Rule 1: Check overlap with previous segment (N-1)
-        if (idx > 0) {
-          const prev = allSegments[idx - 1]
-          if (prev.end_sec - GAP > newStart) {
-            return sendError(res, 400, ERR.OVERLAP_CONFLICT,
-              `Overlap detected: segment trước (index ${prev.index_num}) kết thúc lúc ${prev.end_sec}s, segment này bắt đầu lúc ${newStart}s. Chênh lệch tối thiểu ${GAP}s.`,
-              { code: ERR.OVERLAP_CONFLICT, prevSegmentId: prev.id, prevEnd: prev.end_sec, newStart })
-          }
-        }
-
-        // Rule 2 & 3: Auto-push downstream segments if needed
-        const delta = (newEnd - seg.end_sec)
-        if (delta > 0) {
-          // Check downstream segments for overlap
-          for (let j = idx + 1; j < allSegments.length; j++) {
-            const next = allSegments[j]
-            const nextNewStart = next.start_sec + delta
-
-            // Rule 3: If next segment has isTimeManuallyAdjusted=true, reject
-            if (next.is_time_manually_adjusted) {
-              if (nextNewStart < newEnd + GAP) {
-                return sendError(res, 400, ERR.OVERLAP_CONFLICT,
-                  `Conflict with manually adjusted segment (index ${next.index_num}). Please adjust manually.`,
-                  { code: ERR.OVERLAP_CONFLICT, conflictSegmentId: next.id })
-              }
-              break // No need to check further
-            }
-
-            // Rule 2: Auto-push if not manually adjusted
-            const overlap = next.start_sec < newEnd + GAP
-            if (overlap || delta > 0) {
-              // Push this segment and all subsequent ones
-              for (let k = j; k < allSegments.length; k++) {
-                const pushSeg = allSegments[k]
-                const pushDelta = delta
-                await run(
-                  `UPDATE transcript_segments SET start_sec = start_sec + ?, end_sec = end_sec + ?, is_time_manually_adjusted = 0 WHERE id = ?`,
-                  [pushDelta, pushDelta, pushSeg.id]
-                )
-                adjustedSegments.push({
-                  id: pushSeg.id,
-                  index: pushSeg.index_num,
-                  prevStart: pushSeg.start_sec,
-                  prevEnd: pushSeg.end_sec,
-                  newStart: pushSeg.start_sec + pushDelta,
-                  newEnd: pushSeg.end_sec + pushDelta,
-                })
-                // Update in-memory map
-                pushSeg.start_sec += pushDelta
-                pushSeg.end_sec += pushDelta
-              }
-              break
-            }
-          }
-        }
-      }
-
-      // Update the segment — user edit là source of truth (§7, §8).
-      const hasTextKey = s.text !== undefined
-      const hasTranslationKey = s.translation !== undefined
-      const newText = typeof s.text === 'string' ? s.text : seg.text
-      const textChanged = hasTextKey && typeof s.text === 'string' && s.text !== seg.text
-      let newTranslation
-      let newTextEdited = seg.is_text_manually_edited
-      let newTranslationEdited = seg.is_translation_manually_edited
-      if (textChanged) {
-        newTextEdited = 1
-        if (!hasTranslationKey || s.translation === undefined) {
-          // Text mới + không kèm translation → bản dịch cũ stale, clear để
-          // dub.translate dịch lại thay vì giữ bản dịch của text cũ.
-          newTranslation = null
-          newTranslationEdited = 0
-        } else {
-          newTranslation = typeof s.translation === 'string' ? s.translation : null
-          newTranslationEdited = newTranslation !== null ? 1 : 0
-        }
-      } else if (hasTranslationKey) {
-        newTranslation = typeof s.translation === 'string' ? s.translation : null
-        newTranslationEdited = newTranslation !== null ? 1 : 0
-      } else {
-        newTranslation = seg.translation
-      }
-      await run(
-        `UPDATE transcript_segments SET text = ?, translation = ?, start_sec = ?, end_sec = ?, is_time_manually_adjusted = ?, is_text_manually_edited = ?, is_translation_manually_edited = ? WHERE id = ? AND project_id = ?`,
-        [newText, newTranslation, newStart, newEnd, hasTimingChange ? 1 : seg.is_time_manually_adjusted, newTextEdited, newTranslationEdited, id, req.project.id]
-      )
-      // Sửa tay text/translation → audio TTS cũ (nếu có) đã stale, tổng hợp lại.
-      if (textChanged || newTranslation !== seg.translation) {
-        await run(`UPDATE transcript_segments SET tts_audio_id = NULL WHERE id = ?`, [id])
-      }
-      updated++
+    // 1-5. Proposed state trong memory (không ghi DB): apply text/translation/
+    // timing explicit + minimal downstream push, deterministic theo index_num.
+    const computed = computeProposedState(allSegments, incoming, { gap: TIMING_GAP, durationSec })
+    if (computed.errors.length) {
+      const first = computed.errors[0]
+      const code = first.code === 'UNKNOWN_SEGMENT' ? ERR.VALIDATION : ERR.VALIDATION
+      return sendError(res, 400, code, first.message, { ...first })
     }
+    if (computed.conflicts.length) {
+      const first = computed.conflicts[0]
+      return sendError(res, 400, ERR.OVERLAP_CONFLICT, first.message, { ...first, conflicts: computed.conflicts })
+    }
+    // 6. Validate toàn bộ proposed state (overlap/âm/duration).
+    const validation = validateProposedState(computed.ordered, { gap: TIMING_GAP, durationSec })
+    if (!validation.ok) {
+      const first = validation.errors[0]
+      const code = first.code === 'OVERLAP_CONFLICT' ? ERR.OVERLAP_CONFLICT : ERR.VALIDATION
+      return sendError(res, 400, code, first.message, { ...first, errors: validation.errors })
+    }
+
+    const origById = new Map(allSegments.map((r) => [String(r.id), r]))
+    const explicitIds = new Set(
+      incoming.filter((s) => s && typeof s === 'object' && origById.has(String(s.id))).map((s) => String(s.id))
+    )
+    const adjustedIds = new Set((computed.adjusted || []).map((a) => String(a.id)))
+    const dirtyIds = new Set([...explicitIds, ...adjustedIds])
+    const adjustedSegments = computed.adjusted || []
+    const ttsInvalidate = new Set(computed.ttsInvalidate || [])
+
+    // 7-9. Commit toàn bộ trong một transaction duy nhất; fail → rollback hết.
+    try {
+      await withTransaction(async (tx) => {
+        for (const id of dirtyIds) {
+          const row = computed.proposed.get(id)
+          if (!row) continue
+          const ttsNull = ttsInvalidate.has(id)
+          await tx.run(
+            `UPDATE transcript_segments SET text = ?, translation = ?, start_sec = ?, end_sec = ?, is_time_manually_adjusted = ?, is_text_manually_edited = ?, is_translation_manually_edited = ?${ttsNull ? ', tts_audio_id = NULL' : ''} WHERE id = ? AND project_id = ?`,
+            [row.text, row.translation, row.start_sec, row.end_sec, row.is_time_manually_adjusted, row.is_text_manually_edited, row.is_translation_manually_edited, id, req.project.id]
+          )
+        }
+      })
+    } catch (txErr) {
+      console.error('Transcript PUT transaction failed:', txErr)
+      return sendError(res, 500, 'INTERNAL_ERROR', 'Không lưu được transcript (transaction rollback)')
+    }
+    const updated = explicitIds.size
 
     const rows = await query(
       `SELECT id, index_num, start_sec, end_sec, text, speaker, language, translation, is_time_manually_adjusted, is_text_manually_edited, is_translation_manually_edited

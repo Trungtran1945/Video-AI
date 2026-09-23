@@ -24,6 +24,8 @@ export const projectsApi = {
   deleteMask: (id, maskId) => api.delete(`/projects/${id}/masks/${maskId}`).then((r) => r.data),
   // Group 1: Confirm preview (FR-J2)
   confirmPreview: (id) => api.post(`/projects/${id}/translate-dub/confirm-preview`).then((r) => r.data),
+  // SSE ticket single-use TTL 60s (không để JWT dài hạn trong URL)
+  sseTicket: (id) => api.post(`/projects/${id}/sse-ticket`).then((r) => r.data),
   stylePresets: () =>
     api
       .get('/style-presets')

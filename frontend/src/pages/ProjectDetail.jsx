@@ -95,8 +95,9 @@ export default function ProjectDetail() {
   // Zustand store setter for smooth playhead sync
   const setStoreCurrentTime = useTimelineStore((s) => s.setCurrentTime);
 
-  // SSE realtime — tự tắt và fallback polling nếu backend chưa hỗ trợ
-  const { events: sseEvents, sseAvailable, lastEvent } = useJobEvents(id, !!project && ACTIVE_STATUSES.includes(project?.status));
+  // SSE realtime (best-effort) + DB polling là authoritative fallback.
+  // useJobEvents dùng ticket single-use, done không tự suy diễn completed.
+  const { events: sseEvents, sseAvailable, lastEvent, streamClosed } = useJobEvents(id, !!project && ACTIVE_STATUSES.includes(project?.status));
 
   const isDub = project?.mode === 'TRANSLATE_DUB' || project?.mode === 'translate_dub';
   // §1: output chỉ available khi pipeline COMPLETED + output success + artifact hợp lệ.
@@ -316,6 +317,7 @@ export default function ProjectDetail() {
   // (qua load) + transcript ngay, KHÔNG cần browser reload. Retry ngắn có giới hạn
   // (tối đa 3 lần, cách 800ms) vì event có thể đến trước khi REST commit xong.
   // Không polling vô hạn: chỉ chạy khi có terminal event mới.
+  // DB (load) là source of truth — lastEvent/done không tự quyết định completion.
   const terminalReloadRef = useRef(0);
   useEffect(() => {
     if (project && ACTIVE_STATUSES.includes(project.status)) terminalReloadRef.current = 0;
@@ -341,6 +343,21 @@ export default function ProjectDetail() {
     tryReload();
     return () => { cancelled = true; };
   }, [lastEvent, load, loadDubData]);
+
+  // done = stream closed (có thể không kèm terminal nếu miss event): fetch DB truth
+  // một lần để không stuck, không tự đoán completed. Reload page giữa pipeline cũng
+  // được cover vì initial load() luôn chạy trước khi subscribe SSE.
+  useEffect(() => {
+    if (!streamClosed) return undefined;
+    let cancelled = false;
+    (async () => {
+      const p = await load();
+      if (!cancelled && p && (p.mode === 'TRANSLATE_DUB' || p.mode === 'translate_dub')) {
+        await loadDubData();
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [streamClosed, load, loadDubData]);
 
   const isActive = project && ACTIVE_STATUSES.includes(project.status);
   const canRegenerate = project && ['completed', 'failed'].includes(project.status);

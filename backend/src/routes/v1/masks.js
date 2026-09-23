@@ -17,9 +17,38 @@ const isDubMode = (mode) => {
 const MASK_TYPES = ['blur', 'solid']
 
 // Mask approve lifecycle (§2): DRAFT (đang chỉnh, render bỏ qua) → APPROVED
-// (render bắt buộc dùng) | DISABLED (giữ row, render bỏ qua). `enabled` giữ lại
-// để tương thích cũ và mirror theo status (APPROVED→1, DISABLED→0).
+// (render bắt buộc dùng) | DISABLED (giữ row, render bỏ qua).
+// `status` là source of truth duy nhất; `enabled` chỉ giữ tương thích cũ và luôn
+// mirror theo status (APPROVED→1, DISABLED→0, DRAFT giữ nguyên). Mọi mutation đi
+// qua normalizeMaskState nên không tồn tại APPROVED+0 hay DISABLED+1.
 const MASK_STATUSES = ['DRAFT', 'APPROVED', 'DISABLED']
+
+// Normalize về một state hợp lệ duy nhất (decision 3a).
+// - APPROVED → enabled=1 (kể cả khi client gửi enabled:0 tường minh)
+// - DISABLED → enabled=0 (kể cả khi client gửi enabled:1 tường minh)
+// - DRAFT → giữ enabled tường minh, fallback row/request hiện tại
+// - enabled-only patch (không kèm status): APPROVED+0 → DISABLED+0,
+//   DISABLED+1 → APPROVED+1, DRAFT giữ DRAFT.
+export function normalizeMaskState({ status, enabled }, row = null) {
+  const hasStatus = status !== undefined
+  const hasEnabled = enabled !== undefined
+  // enabled-only patch (không kèm status): diễn giải như bật/tắt trên status hiện tại.
+  if (!hasStatus && hasEnabled && row) {
+    const cur = String(row.status || 'DRAFT').toUpperCase()
+    if (cur === 'APPROVED' && enabled === 0) return { status: 'DISABLED', enabled: 0 }
+    if (cur === 'DISABLED' && enabled === 1) return { status: 'APPROVED', enabled: 1 }
+    if (cur === 'APPROVED') return { status: 'APPROVED', enabled: 1 }
+    if (cur === 'DISABLED') return { status: 'DISABLED', enabled: 0 }
+    return { status: 'DRAFT', enabled }
+  }
+  const baseStatus = hasStatus ? status : row?.status || 'DRAFT'
+  if (baseStatus === 'APPROVED') return { status: 'APPROVED', enabled: 1 }
+  if (baseStatus === 'DISABLED') return { status: 'DISABLED', enabled: 0 }
+  // DRAFT (hoặc thiếu): không render nên enabled nào cũng hợp lệ, ưu tiên explicit.
+  if (hasEnabled) return { status: 'DRAFT', enabled }
+  if (hasStatus) return { status: 'DRAFT', enabled: row?.enabled ?? 1 }
+  return { status: baseStatus, enabled: hasEnabled ? enabled : (row?.enabled ?? 1) }
+}
 
 function num(v) {
   const n = Number(v)
@@ -102,8 +131,10 @@ export function validateMaskInput(body, { partial = false } = {}) {
     if (out.blurRadius === undefined) out.blurRadius = 8
     if (out.opacity === undefined) out.opacity = 1
     if (out.status === undefined) out.status = 'DRAFT'
-    // Mirror enabled theo status khi client không gửi enabled tường minh.
-    if (out.enabled === undefined) out.enabled = out.status === 'DISABLED' ? 0 : 1
+    // Normalize về state hợp lệ duy nhất (status SoT).
+    const norm = normalizeMaskState({ status: out.status, enabled: out.enabled })
+    out.status = norm.status
+    out.enabled = norm.enabled
   }
   return { ok: true, value: out }
 }
@@ -221,13 +252,11 @@ router.patch('/projects/:id/masks/:maskId', requireProjectOwner, async (req, res
     if (v.value.type !== undefined) patch.type = v.value.type
     if (v.value.blurRadius !== undefined) patch.blur_radius = v.value.blurRadius
     if (v.value.opacity !== undefined) patch.opacity = v.value.opacity
-    if (v.value.enabled !== undefined) patch.enabled = v.value.enabled
-    if (v.value.status !== undefined) {
-      patch.status = v.value.status
-      // Mirror enabled khi đổi status mà không gửi enabled tường minh.
-      if (v.value.enabled === undefined) {
-        patch.enabled = v.value.status === 'APPROVED' ? 1 : v.value.status === 'DISABLED' ? 0 : row.enabled
-      }
+    if (v.value.status !== undefined || v.value.enabled !== undefined) {
+      // status là SoT: normalize mọi tổ hợp status/enabled về state hợp lệ duy nhất.
+      const norm = normalizeMaskState({ status: v.value.status, enabled: v.value.enabled }, row)
+      patch.status = norm.status
+      patch.enabled = norm.enabled
     }
     if (v.value.text !== undefined) patch.text = v.value.text
     // Validate timing sau merge (end > start).

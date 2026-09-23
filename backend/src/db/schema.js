@@ -333,6 +333,20 @@ export async function initSchema() {
     is_system INTEGER DEFAULT 1
   )`)
 
+  // SSE tickets: short-lived single-use auth for EventSource (no long-lived JWT in URL).
+  // ticket_hash = sha256(ticket); TTL 60s; bound to user+project; consumed on first use.
+  db.run(`CREATE TABLE IF NOT EXISTS sse_tickets (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    ticket_hash TEXT UNIQUE NOT NULL,
+    expires_at TEXT NOT NULL,
+    used INTEGER DEFAULT 0,
+    created_date TEXT DEFAULT (datetime('now'))
+  )`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_sse_tickets_hash ON sse_tickets(ticket_hash)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_sse_tickets_expires ON sse_tickets(expires_at)`)
+
   // Resumable upload sessions (TUS-style, docs/06 §2.1)
   db.run(`CREATE TABLE IF NOT EXISTS upload_sessions (
     id TEXT PRIMARY KEY,

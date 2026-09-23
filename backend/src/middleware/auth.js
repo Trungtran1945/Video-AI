@@ -34,7 +34,7 @@ export async function clearRefreshToken(userId) {
 }
 
 // Lấy token: Authorization: Bearer <token>; chỉ chấp nhận ?token= khi allowQueryToken
-// (EventSource của SSE không gửi được header — frontend useJobEvents truyền ?token=).
+// (legacy SSE fallback — frontend mới dùng ?ticket= single-use, xem sseAuthMiddleware).
 export function extractBearerToken(req, { allowQueryToken = false } = {}) {
   const header = req.headers.authorization
   if (header && header.startsWith('Bearer ')) return header.slice(7).trim()
@@ -62,18 +62,54 @@ export function authMiddleware(req, res, next) {
   }
 }
 
-// Auth cho SSE: header trước, fallback ?token= (chỉ dùng cho route events).
-export function sseAuthMiddleware(req, res, next) {
-  const token = extractBearerToken(req, { allowQueryToken: true })
-  if (!token) {
-    return sendError(res, 401, ERR.AUTH_TOKEN, 'Authentication required')
+// Auth cho SSE: ưu tiên Authorization header, sau đó ?ticket= (single-use,
+// TTL ngắn, không chứa secret thật trong URL), cuối cùng fallback ?token= JWT
+// dài hạn (deprecated — giữ 1 release để client cũ không vỡ, frontend mới phải
+// dùng ticket). Không log token/ticket ở bất kỳ nhánh nào.
+export async function sseAuthMiddleware(req, res, next) {
+  const header = req.headers.authorization
+  if (header && header.startsWith('Bearer ')) {
+    try {
+      req.user = verifyAccessToken(header.slice(7).trim())
+      return next()
+    } catch (_) {
+      return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid or expired token')
+    }
   }
-  try {
-    req.user = verifyAccessToken(token)
-    next()
-  } catch (err) {
-    return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid or expired token')
+  const ticket = typeof req.query?.ticket === 'string' && req.query.ticket ? req.query.ticket : null
+  if (ticket) {
+    try {
+      const row = await queryOne(`SELECT * FROM sse_tickets WHERE ticket_hash = ?`, [sha256(ticket)])
+      if (!row || row.used) return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid or expired ticket')
+      if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) {
+        try { await run(`DELETE FROM sse_tickets WHERE ticket_hash = ?`, [sha256(ticket)]) } catch (_) {}
+        return sendError(res, 401, ERR.AUTH_TOKEN, 'Ticket expired')
+      }
+      if (req.params?.id && String(row.project_id) !== String(req.params.id)) {
+        return sendError(res, 403, ERR.AUTH_FORBIDDEN, 'Ticket không thuộc project này')
+      }
+      const user = await queryOne(`SELECT id, email, role FROM users WHERE id = ?`, [row.user_id])
+      if (!user) return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid ticket user')
+      // Single-use: consume ngay để không reuse vô hạn.
+      try { await run(`DELETE FROM sse_tickets WHERE ticket_hash = ?`, [sha256(ticket)]) } catch (_) {}
+      req.user = { id: user.id, email: user.email, role: user.role }
+      req.sseTicket = true
+      return next()
+    } catch (_) {
+      return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid ticket')
+    }
   }
+  // Legacy fallback: ?token=<JWT> (deprecated, sẽ chặn sau 1 release).
+  const legacy = typeof req.query?.token === 'string' && req.query.token ? req.query.token : null
+  if (legacy) {
+    try {
+      req.user = verifyAccessToken(legacy)
+      return next()
+    } catch (_) {
+      return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid or expired token')
+    }
+  }
+  return sendError(res, 401, ERR.AUTH_TOKEN, 'Authentication required')
 }
 
 // Verify refresh token (in body.refreshToken or header x-refresh-token)

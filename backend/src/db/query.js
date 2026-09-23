@@ -69,4 +69,65 @@ export async function findById(table, id) {
   return queryOne(`SELECT * FROM ${table} WHERE id = ?`, [id])
 }
 
-export default { query, queryOne, run, runAffected, insert, updateById, findById }
+// Single transaction helper for sql.js (file-backed, process-local).
+// Usage: await withTransaction(async (tx) => { await tx.run(...); ... })
+// - BEGIN/COMMIT/ROLLBACK via db.exec; save() only once after COMMIT.
+// - Inside fn MUST use tx.* (never query/run directly) to avoid mid-txn save().
+// - No nesting: throws if already in transaction.
+export async function withTransaction(fn) {
+  const db = await getDb()
+  const txRows = (result) => rowsToObjects(result)
+  const tx = {
+    async query(sql, params = []) {
+      return txRows(db.exec(sql, params))
+    },
+    async queryOne(sql, params = []) {
+      const rows = txRows(db.exec(sql, params))
+      return rows[0] || null
+    },
+    async run(sql, params = []) {
+      db.run(sql, params)
+      return true
+    },
+    async runAffected(sql, params = []) {
+      db.run(sql, params)
+      try {
+        return db.getRowsModified()
+      } catch (_) {
+        return 0
+      }
+    },
+    async insert(table, obj) {
+      const cols = Object.keys(obj)
+      const placeholders = cols.map(() => '?').join(', ')
+      db.run(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${placeholders})`, cols.map((c) => obj[c]))
+      if (obj.id) {
+        const rows = txRows(db.exec(`SELECT * FROM ${table} WHERE id = ?`, [obj.id]))
+        return rows[0] || null
+      }
+      const rows = txRows(db.exec(`SELECT * FROM ${table} ORDER BY rowid DESC LIMIT 1`))
+      return rows[0] || null
+    },
+    async updateById(table, id, obj) {
+      const cols = Object.keys(obj)
+      const sets = cols.map((c) => `${c} = ?`).join(', ')
+      db.run(`UPDATE ${table} SET ${sets} WHERE id = ?`, [...cols.map((c) => obj[c]), id])
+      const rows = txRows(db.exec(`SELECT * FROM ${table} WHERE id = ?`, [id]))
+      return rows[0] || null
+    },
+  }
+  db.exec('BEGIN')
+  try {
+    const out = await fn(tx)
+    db.exec('COMMIT')
+    save()
+    return out
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK')
+    } catch (_) {}
+    throw err
+  }
+}
+
+export default { query, queryOne, run, runAffected, insert, updateById, findById, withTransaction }
