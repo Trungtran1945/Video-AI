@@ -31,6 +31,17 @@ pnpm-debug.log*
 .codex/
 .cursor/
 .impeccable/
+.playwright-mcp/
+
+# ===== External / Reference repositories =====
+transflow/
+
+# ===== Media & binary assets =====
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.avi
 
 # ===== Editor / IDE =====
 .vscode/*
