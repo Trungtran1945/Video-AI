@@ -20,6 +20,7 @@ assert(compose.includes('DB_PATH=/app/data/data.db'), 'Compose persists the sql.
 assert(compose.includes('INSTANCE_MODE=single'), 'Compose API declares the single-writer invariant')
 assert(compose.includes('INSTANCE_MODE=multi'), 'Compose scale worker is explicitly blocked from sql.js ownership')
 assert(compose.includes('- scale-disabled'), 'unsafe scale worker is not in the default scale profile')
+assert(compose.includes('UPLOAD_SESSION_TTL_MINUTES=${UPLOAD_SESSION_TTL_MINUTES:-60}'), 'Compose configures the upload session TTL')
 
 const result = spawnSync(process.execPath, ['-e', "process.env.INSTANCE_MODE='multi'; import('./src/config.js')"], {
   cwd: root,
@@ -29,8 +30,21 @@ assert(result.status !== 0 && String(result.stderr).includes('INSTANCE_MODE=sing
 
 const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8')
 const drainQueue = fs.readFileSync(path.join(root, 'src', 'queue', 'drainQueue.js'), 'utf8')
+const nginx = fs.readFileSync(path.join(root, '..', 'docker', 'nginx.conf'), 'utf8')
+const apiDockerfile = fs.readFileSync(path.join(root, '..', 'docker', 'api.Dockerfile'), 'utf8')
 assert(server.includes('safeAddDrainSweep'), 'server schedules queued-project draining')
+assert(server.includes('resumableUploadService.recoverUploadSessions()'), 'server recovers completing uploads before listening')
+assert(server.includes('createSafeMediaStatic'), 'server uses filtered media serving')
 assert(drainQueue.includes("every: 5000"), 'queued-project drain has a bounded repeat interval')
+assert(nginx.includes('client_max_body_size 4100m') && nginx.includes('proxy_request_buffering off') && nginx.includes('proxy_read_timeout 7200s'), 'Nginx admits 4GiB multipart overhead and long upload processing without prebuffering')
+assert(!/\|\| true/.test(apiDockerfile), 'API image build does not mask a missing build command')
+
+const ttlConfig = spawnSync(process.execPath, ['-e', "import('./src/config.js').then(({ config }) => console.log(config.uploadSessionTtlMinutes))"], {
+  cwd: root,
+  encoding: 'utf8',
+  env: { ...process.env, UPLOAD_SESSION_TTL_MINUTES: '17', INSTANCE_MODE: 'single', NODE_ENV: 'test' },
+})
+assert(ttlConfig.status === 0 && String(ttlConfig.stdout).trim().endsWith('17'), 'upload session TTL is configurable')
 
 const dbRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-single-writer-'))
 const dbPath = path.join(dbRoot, 'data.db')

@@ -40,6 +40,8 @@ const pending = rows.filter((row) => row.status === 'pending').length
 const queued = rows.filter((row) => row.status === 'queued').length
 assert(created.length === 10, 'all concurrent create operations complete')
 assert(pending === 2 && queued === 8, `max=2 reserves two slots and queues eight projects (got ${pending} pending, ${queued} queued)`)
+const launchEligible = created.filter((result) => result.admitted && result.project.status === 'pending' && result.runToken)
+assert(launchEligible.length === 2 && new Set(launchEligible.map((result) => result.runToken)).size === 2, 'only two distinct admitted projects are pipeline-launch eligible')
 
 const oldest = await queryOne('SELECT id FROM projects WHERE user_id = ? AND status = ? ORDER BY created_date ASC, rowid ASC LIMIT 1', ['admission-user', 'queued'])
 const completed = await queryOne('SELECT id FROM projects WHERE user_id = ? AND status = ? LIMIT 1', ['admission-user', 'pending'])

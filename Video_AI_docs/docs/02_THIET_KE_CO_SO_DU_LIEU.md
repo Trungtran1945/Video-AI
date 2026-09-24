@@ -2,7 +2,7 @@
 
 # Current Implementation (CURRENT)
 
-> Nguồn đối chiếu (source of truth, branch main): `backend/src/db/schema.js` (toàn file, 382 dòng).
+> Nguồn đối chiếu (source of truth, branch main): `backend/src/db/schema.js` (toàn file).
 
 CURRENT có đúng 21 tables (verbatim): users, reset_tokens, settings, projects, assets, generation_jobs, scenes, script_segments, timeline_clips, audios, subtitles, outputs, youtube_uploads, api_keys, provider_logs, provider_rate_limits, provider_cache, transcript_segments, ocr_regions, style_presets, upload_sessions.
 
@@ -11,7 +11,7 @@ CURRENT có đúng 21 tables (verbatim): users, reset_tokens, settings, projects
 - projects.status='completed' ngoài enum cũ: pipeline đánh `'completed'` khi xong (`backend/src/pipeline/runner.js`); enum `JobStatus` Prisma ở §2 [TARGET/FUTURE] không có giá trị này.
 - settings ~15 cột (voice_provider='edge_tts', default_style='cinematic', không maskMethod): defaults `voice_provider='edge_tts'`, `default_style='cinematic'`; không có cột `maskMethod` (mask method chỉ nằm trong `projects.params` JSON của TRANSLATE_DUB).
 - transcript_segments thiếu ttsAudioRef/startMs/endMs + wpm_warning TEXT: CURRENT chỉ có `tts_audio_id` (+ `subtitle_id`), `wpm_warning TEXT`, `is_time_manually_adjusted`; không có `ttsAudioRef`/`startMs`/`endMs` như model Prisma §2.
-- extras reset_tokens + upload_sessions: `reset_tokens` (flow quên mật khẩu) và `upload_sessions` (upload resumable TUS-style, `docs/06` §2.1) là bảng mở rộng, không có trong schema Prisma gốc §2.
+- extras reset_tokens + upload_sessions: `reset_tokens` (flow quên mật khẩu) và `upload_sessions` (upload resumable TUS-style, `docs/06` §2.1) là bảng mở rộng, không có trong schema Prisma gốc §2. `upload_sessions` có `last_activity_at`, `expires_at`, index `(status, expires_at)` và state machine `pending → completing → completed|expired`; `storage_key` + `video_hash` là durable completion intent trước filesystem rename.
 - Prisma MediaConsent/MediaJob/MediaJobStage là NOT IMPLEMENTED (không table trong schema.js); CURRENT equivalents là generation_jobs(type,step) + transcript_segments/ocr_regions: tracking stage dùng `generation_jobs` (`type` = tên stage, `step`, `status`, `progress` + index `(project_id, type)`), dữ liệu dub dùng `transcript_segments`/`ocr_regions`.
 - Mapping snake↔camel (DB ↔ API/frontend): project_id↔projectId, start_sec↔startSec, tts_audio_id↔ttsAudioId, storage_key↔storageKey.
 

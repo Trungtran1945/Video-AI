@@ -12,7 +12,7 @@ process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || 'C:\\ffmpeg\\bin\\ffmpeg.ex
 process.env.FFPROBE_PATH = process.env.FFPROBE_PATH || 'C:\\ffmpeg\\bin\\ffprobe.exe'
 
 const { initSchema } = await import('../src/db/schema.js')
-const { query, queryOne, run, withTransaction, withWriteLock } = await import('../src/db/query.js')
+const { query, queryOne, run, withTransaction, withWriteLock, getWriteQueueStats } = await import('../src/db/query.js')
 
 await initSchema()
 
@@ -111,6 +111,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   const check = await query(`PRAGMA integrity_check`)
   const ok = check.length > 0 && String(Object.values(check[0])[0]).toLowerCase() === 'ok'
   assert(ok, 'database file valid after concurrent writes (integrity_check ok)')
+  const stats = getWriteQueueStats()
+  assert(stats.depth === 0 && Number.isFinite(stats.oldestWaitMs) && Number.isFinite(stats.lastDurationMs), 'write queue exposes depth, wait, and duration telemetry')
   await run(`DELETE FROM provider_cache WHERE provider = ?`, ['test'])
   void before
 }

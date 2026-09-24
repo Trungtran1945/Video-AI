@@ -1,41 +1,65 @@
-// Regression test: upload complete must calculate videoHash BEFORE using it.
-// Bug was: `video_hash: videoHash` inside updateById() ran before
-// `const videoHash = await ...` -> ReferenceError (TDZ).
-// Expected order: rename file -> sha256 hash -> updateById -> respond.
-// Run: node backend/tests/uploadComplete.test.mjs
+import crypto from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'v1', 'upload.js'), 'utf8')
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-upload-complete-'))
+process.env.DB_PATH = path.join(tmpRoot, 'data.db')
+process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
+process.env.NODE_ENV = 'test'
+
+const { initSchema } = await import('../src/db/schema.js')
+const realDb = await import('../src/db/query.js')
+const { createResumableUploadService } = await import('../src/services/resumableUploadService.js')
+await initSchema()
 
 let failures = 0
-const assert = (c, m) => { if (c) console.log('PASS:', m); else { failures++; console.error('FAIL:', m) } }
+function assert(condition, message) {
+  if (condition) console.log('PASS:', message)
+  else {
+    failures += 1
+    console.error('FAIL:', message)
+  }
+}
 
-// Isolate the complete handler to avoid matching unrelated code.
-const completeIdx = src.indexOf('/complete')
-assert(completeIdx !== -1, 'complete handler exists')
-const body = src.slice(completeIdx)
+const storageDir = process.env.STORAGE_DIR
+let claimObserved = false
+let claimedKey = null
+let claimedHash = null
+const observingDb = {
+  ...realDb,
+  async runAffected(sql, params, options) {
+    const affected = await realDb.runAffected(sql, params, options)
+    if (options?.op === 'claim.upload_completion' && affected === 1) {
+      const row = await realDb.queryOne('SELECT id, status, storage_key, video_hash FROM upload_sessions WHERE id = ?', [params[3]])
+      const tempPath = path.join(storageDir, 'tmp', 'upload_sessions', row.id, 'blob')
+      const finalPath = path.join(storageDir, row.storage_key)
+      claimObserved = row.status === 'completing'
+        && Boolean(row.storage_key)
+        && Boolean(row.video_hash)
+        && fs.existsSync(tempPath)
+        && !fs.existsSync(finalPath)
+      claimedKey = row.storage_key
+      claimedHash = row.video_hash
+    }
+    return affected
+  },
+}
+const service = createResumableUploadService({ storageDir, db: observingDb, probe: null })
+const bytes = Buffer.alloc(64)
+bytes.writeUInt32BE(24, 0)
+bytes.write('ftyp', 4, 'ascii')
+bytes.write('isom', 8, 'ascii')
+bytes.write('complete-order', 12, 'ascii')
+const created = await service.createSession({ userId: 'complete-user', filename: 'complete.mp4', size: bytes.length, mime: 'video/mp4' })
+await service.appendChunk({ id: created.uploadId, userId: 'complete-user', offset: 0, chunk: bytes })
+const completed = await service.complete({ id: created.uploadId, userId: 'complete-user' })
+assert(claimObserved, 'completion intent is durable before the temp file is moved')
+assert(completed.storageKey === claimedKey, 'completed response uses the claimed storage key')
+assert(completed.videoHash === claimedHash, 'completed response uses the claimed hash')
+assert(claimedHash === crypto.createHash('sha256').update(bytes).digest('hex'), 'claimed hash matches uploaded bytes')
+assert(fs.existsSync(path.join(storageDir, completed.storageKey)), 'final file exists after completion')
 
-const useIdx = body.indexOf('video_hash: videoHash')
-const declIdx = Math.min(
-  ...['const videoHash =', 'let videoHash ='].map((s) => body.indexOf(s)).filter((i) => i !== -1),
-)
-assert(useIdx !== -1, 'updateById persists video_hash')
-assert(declIdx !== -1, 'videoHash is calculated (sha256)')
-assert(declIdx !== -1 && useIdx !== -1 && declIdx < useIdx,
-  'videoHash is declared BEFORE it is used in updateById (no TDZ)')
-
-const renameIdx = body.indexOf('rename(tmpPath')
-const hashIdx = body.indexOf("createHash('sha256')")
-const updateIdx = body.indexOf("updateById('upload_sessions'")
-assert(renameIdx !== -1 && hashIdx !== -1 && updateIdx !== -1, 'rename/hash/update steps exist')
-assert(renameIdx < hashIdx && hashIdx < updateIdx,
-  'order is rename -> sha256 -> updateById')
-
-// Response must still expose videoHash.
-assert(body.includes('videoHash,') || body.includes('videoHash:'), 'response includes videoHash')
-
-console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
-process.exit(failures === 0 ? 0 : 1)
+fs.rmSync(tmpRoot, { recursive: true, force: true })
+if (failures > 0) process.exit(1)
+console.log('ALL PASS')

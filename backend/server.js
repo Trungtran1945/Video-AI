@@ -10,6 +10,8 @@ import { initSchema } from './src/db/schema.js'
 import { seed } from './src/db/seed.js'
 import { config, isOriginAllowed } from './src/config.js'
 import { ffmpegAvailable } from './src/media/ffmpeg.js'
+import { createSafeMediaStatic } from './src/middleware/safeMediaStatic.js'
+import { resumableUploadService } from './src/services/resumableUploadService.js'
 
 import v1Router from './src/routes/v1/index.js'
 
@@ -38,7 +40,7 @@ app.use(express.json({ limit: '1mb' }))
 app.use(express.urlencoded({ extended: true, limit: '1mb' }))
 
 // Serve uploaded / generated files
-app.use('/storage', express.static(path.join(config.storageDir)))
+app.use('/storage', createSafeMediaStatic({ storageDir: config.storageDir }))
 
 app.use('/api/v1', v1Router)
 
@@ -90,6 +92,8 @@ async function start() {
   console.log('[DB] SQLite initialized')
   await initSchema()
   await seed()
+  const uploadRecovery = await resumableUploadService.recoverUploadSessions()
+  console.log(`[Upload] Startup recovery completed: ${JSON.stringify(uploadRecovery)}`)
 
   // ── Recover projects stuck in 'running' from previous crash/restart ──
   // Single shared service (see src/pipeline/recovery.js): heartbeat-based,

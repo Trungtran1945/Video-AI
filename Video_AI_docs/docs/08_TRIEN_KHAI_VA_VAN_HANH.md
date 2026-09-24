@@ -17,6 +17,8 @@ Mỗi app build thành image riêng:
 - `docker/web.Dockerfile` → `asf-web` (Node 22-alpine build Vite → nginx phục vụ tĩnh).
 - `redis:7-alpine` (BullMQ).
 - SQLite sql.js file is mounted at `/app/data/data.db` via `db_data`; `DB_PATH` is explicit and `INSTANCE_MODE=single` is required.
+- `/app/storage` phải là volume tin cậy, chỉ writer chính là API process; không cấp quyền ghi cho user/container khác trên host. Code kiểm tra symlink từng path component và không follow symlink, nhưng filesystem TOCTOU với một local attacker có quyền ghi storage vẫn nằm ngoài trust boundary.
+- Legacy multipart dùng active-file registry trong API process; cleanup chỉ xóa staging file inactive quá 7 ngày và không xóa file đang stream.
 - The optional `scale` worker is intentionally disabled (`scale-disabled`) and must not be used as a second sql.js owner.
 
 ### Dockerfile (api) [CURRENT — `docker/api.Dockerfile`]
@@ -24,9 +26,8 @@ Mỗi app build thành image riêng:
 FROM node:22-alpine AS build
 WORKDIR /app
 COPY backend/package*.json ./backend/
-RUN cd backend && npm ci --production=false
+RUN cd backend && npm ci --omit=dev
 COPY backend/ ./backend/
-RUN cd backend && npm run build 2>/dev/null || true   # không có script build → bỏ qua
 
 FROM node:22-alpine
 WORKDIR /app
@@ -57,7 +58,7 @@ CMD ["nginx", "-g", "daemon off;"]
 ```
 
 ### nginx (web)
-Phục vụ tĩnh + reverse proxy `/api` → `asf-api`, `/docs` bảo vệ auth.
+Phục vụ tĩnh + reverse proxy `/api` → `asf-api`, `/docs` bảo vệ auth. Riêng `/api/v1/upload` và `/api/v1/uploads/*`, nginx cho phép body trên 4GiB để tính multipart overhead, không prebuffer request và dùng timeout xử lý dài cho hash/FFprobe. `/storage` được API lọc theo canonical media path; nginx không tự serve storage volume.
 
 ---
 
@@ -147,7 +148,7 @@ DEFAULT_PROVIDER_MODE=live              # 'live' | 'mock' — dùng 'mock' cho C
 `.github/workflows/ci.yml`:
 1. Checkout + setup Node 22.
 2. `cd backend && npm ci` + `cd frontend && npm ci`.
-3. Backend lint + `npm test`; frontend lint/typecheck/build.
+3. Backend lint + `npm test`; frontend lint/typecheck/build; `docker compose config --quiet`.
 4. Build API/web images with `push: false` on `main`.
 5. Deployment/push remains outside the current CI workflow.
 
@@ -182,6 +183,11 @@ dung lượng lớn, hệ thống chạy 1 cron job định kỳ (mỗi giờ, q
 1. Quét `Project` có `expiresAt < now()` (mặc định `createdAt + PROJECT_RETENTION_DAYS`) và
    `status IN (SUCCESS, FAILED)` → xoá file trung gian trong `storage/tmp/{projectId}` qua
    `StorageProvider.delete`, giữ lại `Output` (video kết quả) trừ khi user xoá project hẳn.
+   Upload resumable có lifecycle riêng: `UPLOAD_SESSION_TTL_MINUTES` (mặc định 60), startup recovery
+   hoàn tất `completing`, expired `pending|completing` chỉ xóa canonical session temp directory rồi
+   chuyển `expired`; completed upload không bị cleanup xoá. Legacy staging không dùng recursive temp
+   sweep; file active được registry bảo vệ, file inactive cũ mới được xóa.
+
 - Storage/S3 lifecycle rule tương đương cũng có thể cấu hình song song ở tầng hạ tầng cho production.
 2. Với project `CANCELLED`/`FAILED` ngay sau khi huỷ (xem `01` §5.2), dọn file tạm **ngay lập tức**,
    không chờ tới chu kỳ cron.

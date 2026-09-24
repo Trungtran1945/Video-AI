@@ -92,6 +92,7 @@ export const config = {
   maxConcurrentProjectsPerUser,
   instanceMode,
   projectLeaseSeconds: positiveInt(process.env.PROJECT_LEASE_SECONDS, 1800),
+  uploadSessionTtlMinutes: positiveInt(process.env.UPLOAD_SESSION_TTL_MINUTES, 60),
   dbMaxPendingWrites: positiveInt(process.env.DB_MAX_PENDING_WRITES, 1000),
   dbSlowWriteMs: Number.isFinite(Number(process.env.DB_SLOW_WRITE_MS)) ? Number(process.env.DB_SLOW_WRITE_MS) : 1000,
   projectRetentionDays: Number(process.env.PROJECT_RETENTION_DAYS || 30),

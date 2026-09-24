@@ -1,4 +1,5 @@
 import { getDb, save } from '../db.js'
+import { config } from '../config.js'
 
 // Initialize all tables for the two-mode system (sql.js / SQLite).
 // Mirrors docs/02_THIET_KE_CO_SO_DU_LIEU.md but uses sql.js (no Prisma).
@@ -370,6 +371,8 @@ export async function initSchema() {
     status TEXT DEFAULT 'pending',
     storage_key TEXT,
     video_hash TEXT,
+    last_activity_at TEXT,
+    expires_at TEXT,
     created_date TEXT DEFAULT (datetime('now'))
   )`)
 
@@ -446,6 +449,11 @@ export async function initSchema() {
   // "no such column: video_hash" on old data.db files.
   addCol('upload_sessions', 'storage_key', 'TEXT')
   addCol('upload_sessions', 'video_hash', 'TEXT')
+  addCol('upload_sessions', 'last_activity_at', 'TEXT')
+  addCol('upload_sessions', 'expires_at', 'TEXT')
+  const uploadExpiryModifier = `+${config.uploadSessionTtlMinutes} minutes`
+  db.run(`UPDATE upload_sessions SET last_activity_at = CASE WHEN last_activity_at GLOB '????-??-??T??:??:??.???Z' THEN last_activity_at ELSE strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(created_date, 'now')) END, expires_at = CASE WHEN expires_at GLOB '????-??-??T??:??:??.???Z' THEN expires_at ELSE strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(created_date, 'now'), ?) END WHERE status IN ('pending', 'completing')`, [uploadExpiryModifier])
+  db.run(`CREATE INDEX IF NOT EXISTS idx_upload_sessions_status_expires ON upload_sessions(status, expires_at)`)
 
   save()
   console.log('[DB] Schema initialized (sql.js)')

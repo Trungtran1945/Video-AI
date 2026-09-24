@@ -5,6 +5,8 @@ import { connection, createRedisConnection, createThrottledLogger, isRedisReady,
 import { query, run } from '../../db/query.js'
 import { projectDir } from '../../pipeline/context.js'
 import { config } from '../../config.js'
+import { resumableUploadService } from '../../services/resumableUploadService.js'
+import { cleanupLegacyUploads } from '../../services/legacyUploadRegistry.js'
 
 // Throttled: a dead Redis stream emits errors continuously — log without spam.
 const logWorkerError = createThrottledLogger(30000)
@@ -15,7 +17,11 @@ const logWorkerError = createThrottledLogger(30000)
  * Xóa file trong storage/tmp/{projectId}, giữ lại Output.
  * Projects CANCELLED: dọn ngay lập tức (trong cancelProjectUseCase).
  */
-async function processCleanup(job) {
+export async function processCleanup(job) {
+  const startedAt = Date.now()
+  const uploadRecovery = await resumableUploadService.recoverUploadSessions()
+  const uploads = await resumableUploadService.cleanupExpiredUploadSessions()
+  const legacyUploads = await cleanupLegacyUploads({ root: path.join(config.storageDir, 'tmp', 'legacy_uploads'), trustedRoot: config.storageDir })
   const retentionDays = config.projectRetentionDays
   const cutoffDate = new Date()
   cutoffDate.setDate(cutoffDate.getDate() - retentionDays)
@@ -77,6 +83,7 @@ async function processCleanup(job) {
       const maxAge = 7 * 24 * 60 * 60 * 1000 // 7 days
 
       for (const entry of entries) {
+        if (entry.name === 'upload_sessions' || entry.name === 'legacy_uploads') continue
         if (entry.isDirectory()) {
           const dirPath = path.join(tmpRoot, entry.name)
           try {
@@ -93,7 +100,13 @@ async function processCleanup(job) {
     console.error('[Cleanup] Error cleaning tmp directory:', err.message)
   }
 
-  return { cleaned }
+  return {
+    cleaned,
+    uploads,
+    uploadRecovery,
+    legacyUploads,
+    durationMs: Date.now() - startedAt,
+  }
 }
 
 /**
@@ -134,9 +147,7 @@ export async function startCleanupWorker(opts = {}) {
   })
 
   worker.on('completed', (job, result) => {
-    if (result.cleaned > 0) {
-      console.log(`[Cleanup] Cleaned ${result.cleaned} expired project(s)`)
-    }
+    console.log(JSON.stringify({ event: 'cleanup_completed', ...result }))
   })
 
   return worker

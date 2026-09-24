@@ -107,11 +107,13 @@ Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 
 | Method | Path | Auth | Mô tả |
 | --- | --- | --- | --- |
-| POST | `/uploads/init` | AUTH | `{ filename, size, mime }` (size > 2GB → 413) → `{ uploadId, chunkSize }` (chunk 8MB cố định) |
-| PUT | `/uploads/:id/chunk?offset=N` | AUTH | body `application/octet-stream` (limit 16MB); idempotent theo offset; lệch → 409 `OFFSET_MISMATCH` (+ `expectedOffset`); xong → 204 + header `Upload-Offset` |
-| HEAD | `/uploads/:id` | AUTH | header `Upload-Offset` — client resume sau rớt mạng |
-| POST | `/uploads/:id/complete` | AUTH | ghép chunk → `{ storageKey, url, filename, size, videoHash }` (sha256) |
-| POST | `/upload/` | AUTH | legacy multipart single file cho tệp nhỏ (limit 4GB) → `{ key, url, filename, size, mimetype }` (EXTRA: đã cài đặt, chưa document trước đây) |
+| POST | `/uploads/init` | AUTH | `{ filename, size, mime }`; `size` phải là positive safe integer ≤2GiB. Chỉ MP4/MOV/M4V/MKV/WebM. TTL idle mặc định 60 phút. → `{ uploadId, chunkSize }` (chunk 8MiB) |
+| PUT | `/uploads/:id/chunk?offset=N` | AUTH | body `application/octet-stream`; raw parser 16MiB, chunk protocol ≤8MiB và không vượt declared remaining size. Offset phải khớp DB; request trùng offset → 409 `OFFSET_MISMATCH` (+ `expectedOffset`); xong → 204 + `Upload-Offset` |
+| HEAD | `/uploads/:id` | AUTH | header `Upload-Offset`; session không tồn tại/foreign → 404, expired → 410 |
+| POST | `/uploads/:id/complete` | AUTH | claim `pending→completing` với `storageKey` + SHA-256 trước rename; concurrent/repeated complete trả cùng `{ storageKey, url, filename, size, videoHash }` |
+| POST | `/upload/` | AUTH | legacy multipart single file (limit 4GiB), stage trong `tmp`, kiểm tra extension/MIME/signature và FFprobe nếu có → `{ key, url, filename, size, mimetype }` |
+
+State machine: `pending → completing → completed`; pending/completing hết TTL được cleanup thành `expired`. `completing` được startup/periodic recovery hoàn tất idempotently. `/storage` chỉ phục vụ đúng các shape media canonical, có `nosniff`, không follow symlink và không expose temp/private artifacts.
 
 ---
 
@@ -238,6 +240,12 @@ Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 | `PROV_002` | tất cả API key của provider đã cạn quota (429/quota-exceeded); job chuyển `retry` với lịch chờ, xem `11` §4.2 |
 | `RETRY_WAITING` | stage đang chờ quota hồi phục (`retry` + `next_retry_at` chưa tới) — [CURRENT, EXTRA] |
 | `OFFSET_MISMATCH` | chunk offset lệch — resume từ `expectedOffset` — [CURRENT, EXTRA] |
+| `INVALID_UPLOAD_SIZE` | declared upload size không phải positive safe integer |
+| `CHUNK_TOO_LARGE` | chunk vượt 8MiB protocol limit |
+| `CHUNK_EXCEEDS_REMAINING_SIZE` | chunk vượt số byte còn lại theo declared size |
+| `UPLOAD_EXPIRED` | upload session đã hết idle TTL |
+| `UNSUPPORTED_MEDIA_TYPE` | extension/MIME/signature không hợp lệ hoặc FFprobe không thấy video stream |
+| `UPLOAD_RECOVERY_FAILED` | durable completion metadata không thể reconcile với filesystem |
 | `PIPELINE_RUNNING` | pipeline đang chạy, không xoá/redub được — [CURRENT, EXTRA] |
 | `MEDIA_001` | [TARGET/FUTURE: không cài đặt — upload CURRENT giới hạn 2GB resumable / 4GB legacy, không mã này] |
 | `MEDIA_002` | [NOT IMPLEMENTED: media-consent chưa cài đặt] |

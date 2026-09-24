@@ -1,199 +1,194 @@
-import { Router } from 'express'
+import { Router, raw } from 'express'
 import multer from 'multer'
-import express from 'express'
-import path from 'path'
 import fs from 'node:fs'
-import crypto from 'node:crypto'
+import path from 'node:path'
 import { v4 as uuidv4 } from 'uuid'
 import { config } from '../../config.js'
 import { authMiddleware } from '../../middleware/auth.js'
-import { queryOne, insert, updateById } from '../../db/query.js'
-import { sendError, ERR } from '../../lib/httpError.js'
+import { sendError } from '../../lib/httpError.js'
+import { ffmpegAvailable, probe as probeMedia } from '../../media/ffmpeg.js'
+import { ensureSafeDirectory as ensureSafeStorageDirectory, findSymlinkInPath } from '../../lib/safePath.js'
+import { markLegacyUploadActive, releaseLegacyUpload } from '../../services/legacyUploadRegistry.js'
+import { assertVideoFile, MediaValidationError, validateVideoMetadata } from '../../services/mediaValidation.js'
+import { CHUNK_SIZE, MAX_SIZE, resumableUploadService, UploadServiceError } from '../../services/resumableUploadService.js'
 
-const router = Router()
-router.use(authMiddleware)
+const LEGACY_MAX_SIZE = 4 * 1024 * 1024 * 1024
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const dir = path.join(config.storageDir, 'uploads')
-    fs.mkdirSync(dir, { recursive: true })
-    cb(null, dir)
-  },
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname) || ''
-    cb(null, `${uuidv4()}${ext}`)
-  },
-})
-const upload = multer({ storage, limits: { fileSize: 4 * 1024 * 1024 * 1024 } }) // 4GB
+function asyncHandler(handler) {
+  return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next)
+}
 
-// POST /api/v1/upload  (single file — legacy multipart, dùng cho tệp nhỏ)
-router.post('/', upload.single('file'), (req, res) => {
-  if (!req.file) return sendError(res, 400, ERR.VALIDATION, 'No file uploaded', { field: 'file' })
-  const rel = `uploads/${req.file.filename}`
-  res.json({
-    key: rel,
-    url: `/storage/${rel}`,
-    filename: req.file.originalname,
-    size: req.file.size,
-    mimetype: req.file.mimetype,
+async function defaultMediaProbe(filePath) {
+  const available = await ffmpegAvailable()
+  if (!available.ok) return { available: false, codec: null }
+  return { available: true, ...(await probeMedia(filePath)) }
+}
+
+function errorPayload(error) {
+  if (error instanceof UploadServiceError || error instanceof MediaValidationError) {
+    return {
+      status: error.statusCode,
+      code: error.code,
+      message: error.message,
+      extra: error.extra || {},
+    }
+  }
+  if (error?.type === 'entity.too.large') {
+    return { status: 413, code: 'CHUNK_TOO_LARGE', message: 'Chunk exceeds the 16MB request limit', extra: {} }
+  }
+  if (error?.code === 'LIMIT_FILE_SIZE') {
+    return { status: 413, code: 'PAYLOAD_TOO_LARGE', message: 'File exceeds the 4GB upload limit', extra: {} }
+  }
+  if (error?.code === 'LIMIT_UNEXPECTED_FILE') {
+    return { status: 400, code: 'VALIDATION', message: 'Unexpected upload field', extra: { field: 'file' } }
+  }
+  return { status: 500, code: 'INTERNAL_ERROR', message: 'Internal server error', extra: {} }
+}
+
+export function createUploadRouter({
+  service = resumableUploadService,
+  mediaProbe = defaultMediaProbe,
+  legacyUuid = uuidv4,
+  legacyFileSystem = fs,
+} = {}) {
+  const router = Router()
+  const legacyRoot = path.join(config.storageDir, 'tmp', 'legacy_uploads')
+  const ensureUploadDirectory = async (relativeDirectory) => {
+    try {
+      return await ensureSafeStorageDirectory({ root: config.storageDir, relativeDirectory, fileSystem: legacyFileSystem })
+    } catch (error) {
+      if (error?.code === 'UNSAFE_STORAGE_PATH') {
+        throw new UploadServiceError(409, 'UPLOAD_PATH_UNSAFE', 'Upload directory path is unsafe')
+      }
+      throw error
+    }
+  }
+  const ensureLegacyStaging = (req, res, next) => {
+    ensureUploadDirectory(path.join('tmp', 'legacy_uploads')).then(() => next()).catch(next)
+  }
+
+  const storage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, legacyRoot),
+    filename: (req, file, cb) => {
+      const filename = `${legacyUuid()}.upload`
+      req.legacyUploadPath = path.join(legacyRoot, filename)
+      markLegacyUploadActive(req.legacyUploadPath)
+      cb(null, filename)
+    },
   })
-})
 
-// ── Resumable upload kiểu TUS (docs/06 §2.1) — video lớn ≤ 2GB ────────────
-const CHUNK_SIZE = 8 * 1024 * 1024 // 8MB
-const MAX_SIZE = 2 * 1024 * 1024 * 1024
+  const legacyUpload = multer({
+    storage,
+    limits: { fileSize: LEGACY_MAX_SIZE, files: 1 },
+    fileFilter: (req, file, cb) => {
+      try {
+        req.uploadMedia = validateVideoMetadata({ filename: file.originalname, mime: file.mimetype })
+        cb(null, true)
+      } catch (error) {
+        cb(error)
+      }
+    },
+  })
 
-function sessionDir(sessionId) {
-  const dir = path.join(config.storageDir, 'tmp', 'upload_sessions', sessionId)
-  fs.mkdirSync(dir, { recursive: true })
-  return dir
-}
+  router.use(authMiddleware)
 
-function sessionTmpPath(session) {
-  return session.tmp_path || path.join(sessionDir(session.id), 'blob.bin')
-}
+  router.post('/', ensureLegacyStaging, legacyUpload.single('file'), asyncHandler(async (req, res) => {
+    if (!req.file) return sendError(res, 400, 'VALIDATION', 'No file uploaded', { field: 'file' })
+    const stagedPath = req.file.path
+    try {
+      const media = req.uploadMedia || validateVideoMetadata({ filename: req.file.originalname, mime: req.file.mimetype })
+      const stagedStat = await legacyFileSystem.promises.lstat(stagedPath)
+      if (!stagedStat.isFile() || stagedStat.isSymbolicLink()) {
+        throw new MediaValidationError('Uploaded file is not a regular file')
+      }
+      if (stagedStat.size <= 0 || stagedStat.size > LEGACY_MAX_SIZE) {
+        throw new MediaValidationError('Uploaded file size is invalid')
+      }
+      await assertVideoFile(stagedPath, media.extension, { probe: mediaProbe })
+      const storageKey = `uploads/${legacyUuid()}${media.extension}`
+      const finalPath = path.join(config.storageDir, storageKey)
+      const relative = path.relative(config.storageDir, finalPath)
+      if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        throw new MediaValidationError('Final upload path is unsafe')
+      }
+      await ensureUploadDirectory('uploads')
+      if (await findSymlinkInPath(config.storageDir, finalPath, legacyFileSystem)) {
+        throw new UploadServiceError(409, 'UPLOAD_PATH_UNSAFE', 'Final upload path contains a symlink')
+      }
+      await legacyFileSystem.promises.rename(stagedPath, finalPath)
+      return res.json({
+        key: storageKey,
+        url: `/storage/${storageKey}`,
+        filename: media.filename,
+        size: req.file.size,
+        mimetype: media.mime,
+      })
+    } catch (error) {
+      await legacyFileSystem.promises.unlink(stagedPath).catch(() => {})
+      throw error
+    } finally {
+      releaseLegacyUpload(req.legacyUploadPath)
+    }
+  }))
 
-// POST /api/v1/uploads/init {filename,size,mime} → {uploadId, chunkSize}
-router.post('/init', async (req, res) => {
-  try {
-    const b = req.body || {}
-    if (!b.filename) return sendError(res, 400, ERR.VALIDATION, 'filename is required', { field: 'filename' })
-    const size = Number(b.size) || 0
-    if (size > MAX_SIZE) return sendError(res, 413, 'PAYLOAD_TOO_LARGE', 'File vượt quá giới hạn 2GB')
-
-    const session = await insert('upload_sessions', {
-      id: uuidv4(),
-      user_id: req.user.id,
-      filename: String(b.filename).slice(0, 255),
-      size,
-      mime: b.mime ? String(b.mime).slice(0, 100) : null,
-      tmp_path: null,
-      bytes_received: 0,
-      status: 'pending',
+  router.post('/init', asyncHandler(async (req, res) => {
+    const body = req.body || {}
+    const result = await service.createSession({
+      userId: req.user.id,
+      filename: body.filename,
+      size: body.size,
+      mime: body.mime,
     })
-    sessionDir(session.id) // tạo thư mục trước
-    res.status(201).json({ uploadId: session.id, chunkSize: CHUNK_SIZE })
-  } catch (err) {
-    console.error('Upload init error:', err)
-    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
-  }
-})
+    res.status(201).json(result)
+  }))
 
-// HEAD /api/v1/uploads/:id → header upload-offset (client resume sau rớt mạng)
-router.head('/:id', async (req, res) => {
-  const session = await queryOne('SELECT * FROM upload_sessions WHERE id = ?', [req.params.id])
-  if (!session || session.user_id !== req.user.id) return sendError(res, 404, 'NOT_FOUND', 'Session not found')
-  res.set('Upload-Offset', String(session.bytes_received || 0))
-  res.set('Cache-Control', 'no-store')
-  res.status(200).end()
-})
+  router.head('/:id', asyncHandler(async (req, res) => {
+    const session = await service.getOwnedSession({ id: req.params.id, userId: req.user.id })
+    res.set('Upload-Offset', String(Number(session.bytes_received) || 0))
+    res.set('Cache-Control', 'no-store')
+    res.status(200).end()
+  }))
 
-// PUT /api/v1/uploads/:id/chunk?offset=N (application/octet-stream, idempotent theo offset)
-const rawBody = express.raw({ type: 'application/octet-stream', limit: '16mb' })
-router.put('/:id/chunk', rawBody, async (req, res) => {
-  try {
-    const session = await queryOne('SELECT * FROM upload_sessions WHERE id = ?', [req.params.id])
-    if (!session || session.user_id !== req.user.id) return sendError(res, 404, 'NOT_FOUND', 'Session not found')
-    if (session.status === 'completed') return sendError(res, 409, 'UPLOAD_COMPLETED', 'Upload đã hoàn tất')
-
+  const rawBody = raw({ type: 'application/octet-stream', limit: '16mb' })
+  router.put('/:id/chunk', rawBody, asyncHandler(async (req, res) => {
     const offset = Number(req.query.offset)
-    if (!Number.isInteger(offset) || offset < 0) {
-      return sendError(res, 400, ERR.VALIDATION, 'offset query param is required', { field: 'offset' })
-    }
-    if (offset !== Number(session.bytes_received)) {
-      // Idempotency: offset lệch → báo client biết phải resume từ đâu (docs/07 §2.1)
-      return sendError(res, 409, 'OFFSET_MISMATCH', `Offset mismatch: server có ${session.bytes_received}, client gửi ${offset}`, {
-        expectedOffset: session.bytes_received,
-      })
-    }
-
-    const chunk = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || [])
-    if (!chunk.length) return sendError(res, 400, ERR.VALIDATION, 'Empty chunk')
-
-    const tmpPath = sessionTmpPath(session)
-    await fs.promises.appendFile(tmpPath, chunk)
-
-    const received = offset + chunk.length
-    await updateById('upload_sessions', session.id, { bytes_received: received, tmp_path: tmpPath })
-    res.set('Upload-Offset', String(received))
-    res.status(204).end()
-  } catch (err) {
-    console.error('Upload chunk error:', err)
-    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
-  }
-})
-
-// POST /api/v1/uploads/:id/complete → ghép xong, move vào storage/uploads/<uuid>.<ext>
-router.post('/:id/complete', async (req, res) => {
-  try {
-    let session = await queryOne('SELECT * FROM upload_sessions WHERE id = ?', [req.params.id])
-    if (!session || session.user_id !== req.user.id) return sendError(res, 404, 'NOT_FOUND', 'Session not found')
-
-    if (session.status === 'completed' && session.storage_key) {
-      return res.json({ storageKey: session.storage_key, url: `/storage/${session.storage_key}`, filename: session.filename, size: session.size, videoHash: session.video_hash })
-    }
-
-    const tmpPath = sessionTmpPath(session)
-    if (!fs.existsSync(tmpPath)) return sendError(res, 409, 'NO_DATA', 'Chưa có chunk nào được tải lên')
-    if (session.size && session.bytes_received !== session.size) {
-      return sendError(res, 409, 'INCOMPLETE_UPLOAD', `Chưa đủ dữ liệu: ${session.bytes_received}/${session.size} bytes`, {
-        expectedOffset: session.bytes_received,
-      })
-    }
-
-    const ext = path.extname(session.filename || '') || '.bin'
-    const finalName = `${uuidv4()}${ext}`
-    const finalAbs = path.join(config.storageDir, 'uploads', finalName)
-    await fs.promises.rename(tmpPath, finalAbs)
-
-    const rel = `uploads/${finalName}`
-    // Compute SHA-256 hash of the uploaded video BEFORE persisting it —
-    // updateById below references videoHash (TDZ if declared after).
-    let videoHash = null
-    try {
-      videoHash = await new Promise((resolve, reject) => {
-        const h = crypto.createHash('sha256')
-        const stream = fs.createReadStream(finalAbs)
-        stream.on('data', (d) => h.update(d))
-        stream.on('end', () => resolve(h.digest('hex')))
-        stream.on('error', reject)
-      })
-    } catch (hashErr) {
-      // Hash is a cache key only — never fail a successful upload for it.
-      console.warn('Upload hash error (continuing without video_hash):', hashErr.message)
-    }
-    try {
-      session = await updateById('upload_sessions', session.id, {
-        status: 'completed',
-        storage_key: rel,
-        size: session.bytes_received,
-        video_hash: videoHash,
-      })
-    } catch (updErr) {
-      // Old data.db without the video_hash migration (fixed in initSchema) —
-      // migrate inline once and retry instead of failing a successful upload.
-      if (!/no such column: video_hash/i.test(String(updErr?.message || ''))) throw updErr
-      const { run: runSql } = await import('../../db/query.js')
-      try { await runSql(`ALTER TABLE upload_sessions ADD COLUMN video_hash TEXT`) } catch (_) {}
-      session = await updateById('upload_sessions', session.id, {
-        status: 'completed',
-        storage_key: rel,
-        size: session.bytes_received,
-        video_hash: videoHash,
-      })
-    }
-
-    res.json({
-      storageKey: rel,
-      url: `/storage/${rel}`,
-      filename: session.filename,
-      size: session.bytes_received,
-      videoHash,
+    const result = await service.appendChunk({
+      id: req.params.id,
+      userId: req.user.id,
+      offset,
+      chunk: req.body,
     })
-  } catch (err) {
-    console.error('Upload complete error:', err)
-    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
-  }
-})
+    res.set('Upload-Offset', String(result.received))
+    res.status(204).end()
+  }))
 
-export default router
+  router.post('/:id/complete', asyncHandler(async (req, res) => {
+    const result = await service.complete({ id: req.params.id, userId: req.user.id })
+    res.json(result)
+  }))
+
+  router.use((error, req, res, next) => {
+    const finish = async () => {
+      if (req.legacyUploadPath) {
+        try {
+          await legacyFileSystem.promises.unlink(req.legacyUploadPath)
+        } catch (_) {
+        } finally {
+          releaseLegacyUpload(req.legacyUploadPath)
+        }
+      }
+      if (res.headersSent) return next(error)
+      const payload = errorPayload(error)
+      if (payload.status >= 500) {
+        console.error(JSON.stringify({ event: 'upload_http_failed', route: req.route?.path || req.path, code: payload.code }))
+      }
+      return sendError(res, payload.status, payload.code, payload.message, payload.extra)
+    }
+    finish().catch(next)
+  })
+
+  return router
+}
+
+export { CHUNK_SIZE, MAX_SIZE }
+export default createUploadRouter()

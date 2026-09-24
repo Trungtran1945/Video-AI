@@ -25,6 +25,7 @@ assert(!/echo "No lint/.test(ci), 'CI does not echo away missing lint')
 assert(/cd frontend && npm run lint/.test(ci), 'CI still lints frontend')
 assert(/cd frontend && npm run typecheck/.test(ci), 'CI still typechecks frontend')
 assert(/cd frontend && npm run build/.test(ci), 'CI still builds frontend')
+assert(/docker compose config --quiet/.test(ci), 'CI validates the Docker Compose deployment configuration')
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

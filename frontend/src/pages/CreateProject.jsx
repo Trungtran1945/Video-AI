@@ -9,6 +9,7 @@ import {
 } from '@/lib/constants';
 import { projectsApi } from '@/api/projects';
 import { uploadApi } from '@/api/upload';
+import { VIDEO_ACCEPT } from '@/lib/videoFiles';
 import Layout from '@/components/Layout';
 
 function FreeTierWarning({ mode, estimatedDuration }) {
@@ -236,9 +237,9 @@ export default function CreateProject() {
                   label="Tải phim cần review (2–3 tiếng)"
                   fileName={form.sourceFileName}
                   onChange={handleMovie}
-                  accept="video/*"
+                  accept={VIDEO_ACCEPT}
                   uploading={uploading}
-                  hint="Định dạng MP4, MOV, MKV..."
+                  hint="Định dạng MP4, MOV, M4V, MKV, WebM"
                 />
               )}
 
@@ -248,9 +249,9 @@ export default function CreateProject() {
                     label="Tải video cần Việt hoá (tối đa 2GB)"
                     fileName={form.sourceFileName}
                     onChange={handleMovie}
-                    accept="video/*"
+                    accept={VIDEO_ACCEPT}
                     uploading={uploading}
-                    hint="Cơ chế chunking tự động khôi phục khi mất mạng"
+                    hint="MP4, MOV, M4V, MKV, WebM · tự khôi phục khi mất mạng"
                   />
                   {uploading && (
                     <div className="space-y-1.5">

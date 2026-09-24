@@ -1,75 +1,56 @@
 import api from './client'
+import { parseUploadOffsetHeader, uploadResumableFile } from './resumableUpload'
+import { validateVideoFileSelection } from '../lib/videoFiles'
 
-const CHUNK_SIZE = 8 * 1024 * 1024 // 8MB
-export const MAX_UPLOAD_SIZE = 2 * 1024 * 1024 * 1024 // 2GB
+export { MAX_UPLOAD_SIZE } from '../lib/videoFiles'
 
-async function sliceAsBlob(file, start, end) {
-  return file.slice(start, end)
-}
-
-/**
- * Upload resumable kiểu TUS: init → PUT từng chunk (resume bằng HEAD nếu rớt) → complete.
- * Backend chưa có endpoint mới → ném lỗi để caller fallback về multipart cũ.
- */
-async function uploadResumable(file, { onProgress, signal } = {}) {
-  const initRes = await api
-    .post('/uploads/init', { filename: file.name, size: file.size, mime: file.type })
-    .then((r) => r.data)
-  const uploadId = initRes.uploadId || initRes.upload_id
-
-  let offset = 0
-  try {
-    const head = await api.head(`/uploads/${uploadId}`)
-    const received = parseInt(head.headers['upload-offset'] ?? head.headers['x-upload-offset'], 10)
-    if (!Number.isNaN(received)) offset = received
-  } catch {
-    /* backend chưa hỗ trợ HEAD → upload từ đầu */
-  }
-
-  while (offset < file.size) {
-    if (signal?.aborted) throw new DOMException('Upload aborted', 'AbortError')
-    const end = Math.min(offset + CHUNK_SIZE, file.size)
-    const blob = await sliceAsBlob(file, offset, end)
-    await api.put(`/uploads/${uploadId}/chunk`, blob, {
-      params: { offset },
-      headers: { 'Content-Type': 'application/octet-stream' },
-      signal,
-    })
-    offset = end
-    onProgress?.(Math.round((offset / file.size) * 100))
-  }
-
-  const done = await api.post(`/uploads/${uploadId}/complete`).then((r) => r.data)
-  return { key: done.storageKey || done.storage_key || done.key, url: done.url, filename: file.name, size: file.size, videoHash: done.videoHash }
-}
+const UPLOAD_REQUEST_TIMEOUT_MS = 2 * 60 * 60 * 1000
 
 function uploadMultipart(file, { onProgress, signal } = {}) {
-  const fd = new FormData()
-  fd.append('file', file)
-  return api
-    .post('/upload', fd, {
+  const form = new FormData()
+  form.append('file', file)
+  return api.post('/upload', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
       signal,
-      onUploadProgress: (e) => {
-        if (e.total) onProgress?.(Math.round((e.loaded / e.total) * 100))
-      },
-    })
-    .then((r) => r.data)
+      timeout: UPLOAD_REQUEST_TIMEOUT_MS,
+
+    onUploadProgress: (event) => {
+      if (event.total) onProgress?.(Math.round((event.loaded / event.total) * 100))
+    },
+  }).then((response) => response.data)
+}
+
+function uploadResumable(file, options = {}) {
+  return uploadResumableFile(file, {
+    ...options,
+    initSession: (metadata) => api.post('/uploads/init', metadata, { signal: options.signal, timeout: UPLOAD_REQUEST_TIMEOUT_MS }).then((response) => response.data),
+    getOffset: async (uploadId, { required } = {}) => {
+      const response = await api.head(`/uploads/${uploadId}`, { signal: options.signal, timeout: UPLOAD_REQUEST_TIMEOUT_MS })
+      const offset = parseUploadOffsetHeader(response.headers['upload-offset'] ?? response.headers['x-upload-offset'])
+      if (offset === null && required) throw new Error('Server không trả về upload offset')
+      return offset ?? 0
+    },
+    putChunk: async ({ uploadId, offset, chunk }) => {
+      const response = await api.put(`/uploads/${uploadId}/chunk`, chunk, {
+        params: { offset },
+        headers: { 'Content-Type': 'application/octet-stream' },
+        signal: options.signal,
+        timeout: UPLOAD_REQUEST_TIMEOUT_MS,
+      })
+      return { received: parseUploadOffsetHeader(response.headers['upload-offset']) ?? offset + chunk.size }
+    },
+    completeSession: (uploadId) => api.post(`/uploads/${uploadId}/complete`, null, { signal: options.signal, timeout: UPLOAD_REQUEST_TIMEOUT_MS }).then((response) => response.data),
+  })
 }
 
 export const uploadApi = {
-  upload: (file, opts = {}) => {
-    if (file.size > MAX_UPLOAD_SIZE) {
-      return Promise.reject(new Error('File vượt quá giới hạn 2GB'))
+  upload(file, options = {}) {
+    try {
+      validateVideoFileSelection(file)
+    } catch (error) {
+      return Promise.reject(error)
     }
-    // Ưu tiên resumable; lỗi (404/500 — backend chưa nâng cấp) → multipart cũ
-    if (opts.resumable === false) return uploadMultipart(file, opts)
-    return uploadResumable(file, opts).catch((err) => {
-      if (err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') throw err
-      if (file.size > 100 * 1024 * 1024 && opts.requireResumable) {
-        throw new Error('File lớn cần upload resumable nhưng backend chưa sẵn sàng')
-      }
-      return uploadMultipart(file, opts)
-    })
+    if (options.resumable === false) return uploadMultipart(file, options)
+    return uploadResumable(file, options)
   },
 }

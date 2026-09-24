@@ -43,14 +43,15 @@ assert(isOriginAllowed('https://a.example.com', { nodeEnv: 'production', corsOri
   assert(/express\.json\(\{\s*limit:\s*'1mb'\s*\}\)/.test(serverSrc), 'global JSON limit is 1mb')
 }
 
-// 5. Large video upload flow untouched (multipart + raw chunk endpoints).
+// 5. Large video upload flow preserved with enforced protocol limits.
 {
   const __dirname = path.dirname(fileURLToPath(import.meta.url))
   const uploadSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'v1', 'upload.js'), 'utf8')
+  const { CHUNK_SIZE, MAX_SIZE } = await import('../src/services/resumableUploadService.js')
   assert(uploadSrc.includes('multer'), 'legacy multipart upload preserved')
-  assert(uploadSrc.includes("express.raw({ type: 'application/octet-stream', limit: '16mb' })"),
-    'resumable chunk endpoint keeps 16mb raw limit')
-  assert(uploadSrc.includes('MAX_SIZE = 2 * 1024 * 1024 * 1024'), 'resumable max size still 2GB')
+  assert(uploadSrc.includes("raw({ type: 'application/octet-stream', limit: '16mb' })"), 'resumable chunk endpoint keeps 16mb raw limit')
+  assert(CHUNK_SIZE === 8 * 1024 * 1024, 'resumable protocol chunk size remains 8MiB')
+  assert(MAX_SIZE === 2 * 1024 * 1024 * 1024, 'resumable max size remains 2GiB')
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
