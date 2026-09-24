@@ -16,7 +16,8 @@ Mỗi app build thành image riêng:
   cả `api` và `worker` đều dùng image này — worker chỉ khác `command: ["node", "server.js"]`).
 - `docker/web.Dockerfile` → `asf-web` (Node 22-alpine build Vite → nginx phục vụ tĩnh).
 - `redis:7-alpine` (BullMQ).
-- SQLite file (`DATABASE_URL=file:./data.db`, mount qua volume `db_data`) — không có service `db`/Postgres.
+- SQLite sql.js file is mounted at `/app/data/data.db` via `db_data`; `DB_PATH` is explicit and `INSTANCE_MODE=single` is required.
+- The optional `scale` worker is intentionally disabled (`scale-disabled`) and must not be used as a second sql.js owner.
 
 ### Dockerfile (api) [CURRENT — `docker/api.Dockerfile`]
 ```dockerfile
@@ -107,7 +108,12 @@ volumes:
 Không hardcode secret. Ví dụ:
 
 ```env
-DATABASE_URL=file:./data.db         # CURRENT: SQLite file (TARGET: postgresql://asf:pass@db:5432/asf)
+DATABASE_URL=file:/app/data/data.db # CURRENT: SQLite file, single writer
+DB_PATH=/app/data/data.db           # sql.js persistence path inside db_data volume
+INSTANCE_MODE=single                # sql.js invariant; multi-process is rejected
+DB_MAX_PENDING_WRITES=1000          # bounded process-local write queue
+DB_SLOW_WRITE_MS=1000               # slow DB write telemetry threshold
+PROJECT_LEASE_SECONDS=1800          # pending/running ownership lease
 REDIS_HOST=redis                    # CURRENT: REDIS_HOST/PORT (không REDIS_URL)
 REDIS_PORT=6379
 JWT_ACCESS_SECRET=...               # CURRENT: cặp ACCESS/REFRESH (không JWT_SECRET đơn)
@@ -135,46 +141,35 @@ DEFAULT_PROVIDER_MODE=live              # 'live' | 'mock' — dùng 'mock' cho C
 
 ## 4. GitHub Actions (CI) [CURRENT — `.github/workflows/ci.yml`]
 
-> [CURRENT] Node 22, `npm ci` từng app (không pnpm). Job `lint-and-test` chạy lint backend
-> (không có script → bỏ qua) + lint/typecheck/build frontend — **không chạy `npm test`**.
-> Job `docker-build` (chỉ nhánh `main`) build 2 image với `push: false`, tags `asf-api:latest`
-> và `asf-web:latest` — build-only, không push registry.
+> [CURRENT] Node 22, `npm ci` từng app (không pnpm). Job `lint-and-test` chạy lint/test backend
+> và lint/typecheck/build frontend. Job `docker-build` build hai image với `push: false`.
 
 `.github/workflows/ci.yml`:
 1. Checkout + setup Node 22.
 2. `cd backend && npm ci` + `cd frontend && npm ci`.
-3. Lint backend (tùy nghi) + `frontend: npm run lint && npm run typecheck && npm run build`.
-4. Build image api (`docker/api.Dockerfile`, tags `asf-api:latest`) và web
-   (`docker/web.Dockerfile`, tags `asf-web:latest`) với `push: false` (chỉ nhánh `main`).
-5. [TARGET/FUTURE] Chạy test trong CI, push registry và deploy (ssh/k8s).
+3. Backend lint + `npm test`; frontend lint/typecheck/build.
+4. Build API/web images with `push: false` on `main`.
+5. Deployment/push remains outside the current CI workflow.
 
 ---
 
 ## 5. Scaling
 
-- **Worker [CURRENT]**: 1 service `worker` chung image api (profile `scale`); scale ngang
-  (`docker compose --profile scale up --scale worker=N`). BullMQ tự cân bằng.
-- **Tách worker theo loại tài nguyên [TARGET/FUTURE]** (chưa có trong compose/code):
-  - `worker-cpu` — ffmpeg (ingest, demux, mask hardsub, burn-in, mux). Render 1080p/4K ưu tiên
-    **NVENC** (`h264_nvenc`) khi host có GPU NVIDIA.
-  - `worker-gpu` — inference AI nặng: ASR/diarization, OCR frame sampling, TTS, inpainting
-    (PyTorch/ONNX Runtime/TensorRT nếu self-host).
-  - LLM translate gọi qua Provider API → không cần GPU node riêng.
-- **Auto-scale theo queue depth**: đọc `queue.getJobCounts()` (BullMQ) → hàng đợi `dub.render` /
-  `dub.ocr` ùn tắc vượt ngưỡng thì spawn thêm worker (K8s HPA/KEDA tự tạo Pod GPU mới), vãn khách
-  tự thu hồi để tiết kiệm chi phí cloud.
-- **Priority queue** (tuỳ chọn): job nhỏ / gói cao hơn được tiêu thụ trước khi burst traffic trend.
+- **Worker [CURRENT]**: no second sql.js writer is supported. The Compose `scale-disabled` profile is retained only to fail closed if someone attempts the old topology.
+- **Single writer [CURRENT]**: one `node server.js` process owns `/app/data/data.db`; API, pipeline, and Redis workers run in that process.
+- **Tách worker theo loại tài nguyên [TARGET/FUTURE]**: requires a shared transactional database and storage; it is incompatible with current sql.js in-memory state.
+- **Auto-scale theo queue depth [TARGET/FUTURE]**: requires a shared database and worker-only process model.
 - **Storage [TARGET/FUTURE]**: chuyển `STORAGE_DRIVER=s3` để chia sẻ giữa worker (bắt buộc khi scale nhiều node) — CURRENT chỉ lưu local (`storage/` + volume `storage_data`).
-- **DB [TARGET/FUTURE]**: PostgreSQL + connection pool — CURRENT là SQLite file (`db_data`).
+- **DB [TARGET/FUTURE]**: PostgreSQL hoặc native file-backed SQLite + connection/busy-timeout policy trước khi bật multi-process.
 
 ---
 
 ## 6. Giám sát & vận hành
 
 - Log tập trung (Pino → file/stdout → công cụ log hệ thống).
-- Metrics: số job/thời gian trung bình/queue depth (BullMQ Board hoặc Prometheus exporter).
+- Metrics: BullMQ counts và `/health.database`/`/health.writes` (queue depth, wait time, duration, slow-write count).
 - Cảnh báo: job FAILED quá N lần → notify admin.
-- Backup: `pg_dump` định kỳ; volume `storage/` mount persistent.
+- Backup: copy `data.db` only from the single owner during a quiesced window; do not use `pg_dump` for the current sql.js file.
 
 ### 6.1. Dọn dẹp tự động (Retention & Cleanup Cron)
 
@@ -207,10 +202,10 @@ Worker riêng nhẹ (`notify` queue, không cần GPU/CPU nặng) tiêu thụ jo
 
 | Quyết định | Lý do |
 | --- | --- |
-| Tách api & worker | worker render nặng không block API |
+| Single writer cho sql.js | `sql.js` là in-memory database theo process; mọi API/pipeline/Redis worker chạy trong một `node server.js` |
 | env qua secret Manager | bảo mật, không commit |
-| SQLite file CURRENT / Postgres TARGET | CURRENT `DATABASE_URL=file:./data.db`; nâng cấp Postgres không đổi logic app |
-| CI chạy lint+typecheck+build, không chạy test | đúng `.github/workflows/ci.yml` hiện tại (test chạy local bằng `npm test`) |
+| SQLite file CURRENT / Postgres TARGET | CURRENT `DB_PATH=/app/data/data.db`, `INSTANCE_MODE=single`; multi-process cần DB transaction thật |
+| CI chạy lint+test+typecheck+build | đúng `.github/workflows/ci.yml` hiện tại |
 | Cron `cleanup.sweep` theo `expiresAt` | Kiểm soát chi phí lưu trữ chủ động thay vì dọn thủ công (NFR-13) |
 | Notification worker tách riêng khỏi pipeline chính | Lỗi gửi mail không ảnh hưởng trạng thái project; dễ scale độc lập |
 | `DEFAULT_PROVIDER_MODE=mock` cho CI/dev | Kiểm thử luồng pipeline không phụ thuộc/tốn quota free tier bên ngoài (`11` §6) |

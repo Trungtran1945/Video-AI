@@ -1,7 +1,9 @@
 import path from 'path'
 import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne, updateById, insert, run } from '../../db/query.js'
+import { query, queryOne, updateById, insert, run, withTransaction } from '../../db/query.js'
+import { updateGenerationJobOwned, isProjectRunOwned } from '../../services/projectAdmission.js'
+import { applyGeneratedTranslations, TranscriptRevisionConflict } from '../../services/transcriptMutationService.js'
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
 import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js'
@@ -26,17 +28,40 @@ function getContextWindowSec(project) {
 // Bước 2: Nếu có style preset → LLM chỉ "viết lại" theo style (giữ nguyên nghĩa).
 // Nếu không có style preset → dùng kết quả Google Translate trực tiếp.
 export async function dubTranslate(ctx) {
-  const { project, job, setProgress, signal } = ctx
+  const { project, job, setProgress, signal, runToken } = ctx
   const params = parseParams(project.params)
 
   // Check abort signal
   if (signal?.aborted) throw new Error('Cancelled')
 
+  const currentProject = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [project.id])
+  let transcriptVersion = Number(currentProject?.transcript_version ?? project.transcript_version ?? 0)
   const segments = await query(
     'SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC',
     [project.id]
   )
   if (!segments.length) throw new Error('Không có transcript để dịch — stage dub.stt chưa chạy hoặc rỗng')
+  const generatedUpdates = []
+  let generatedPersisted = false
+  let generatedRevision = transcriptVersion
+  const persistGeneratedTranslations = async () => {
+    if (!generatedUpdates.length) return { changed: false, revision: generatedRevision }
+    if (generatedPersisted) return { changed: true, revision: generatedRevision }
+    try {
+      const result = await applyGeneratedTranslations(project.id, generatedUpdates, transcriptVersion, { runToken })
+      generatedPersisted = true
+      generatedRevision = Number(result.revision ?? transcriptVersion)
+      transcriptVersion = generatedRevision
+      return { ...result, revision: generatedRevision }
+    } catch (error) {
+      if (error instanceof TranscriptRevisionConflict) {
+        const conflict = new Error('TRANSCRIPT_CHANGED_DURING_TRANSLATE')
+        conflict.transient = true
+        throw conflict
+      }
+      throw error
+    }
+  }
 
   // Source-aware: ocrMode chỉ dịch OCR rows (visible subtitles là source of
   // truth); STT mode chỉ dịch ASR rows. Không dịch noise/rejected/out-of-mode.
@@ -53,7 +78,7 @@ export async function dubTranslate(ctx) {
     const cues = pool
       .filter((s) => s.translation)
       .map((s) => ({ start: Number(s.start_sec), end: Number(s.end_sec), text: s.translation }))
-    if (cues.length) await writeSrt(project, cues)
+    if (cues.length) await writeSrt(project, cues, runToken, transcriptVersion)
     return {
       translatedCount: pool.length,
       segmentCount: pool.length,
@@ -235,7 +260,7 @@ export async function dubTranslate(ctx) {
           targetLanguage,
         })
         if (final) {
-          await updateById('transcript_segments', seg.id, { translation: final.text })
+          generatedUpdates.push({ id: seg.id, translation: final.text })
           translations.set(seg.id, final.text)
           if (final.via === 'base') styleFallback = true
         } else if (seg.text && seg.text.trim()) {
@@ -252,7 +277,7 @@ export async function dubTranslate(ctx) {
             system,
           }, { job, projectId: project.id, userId: project.user_id }).catch(() => null)
           if (repaired) {
-            await updateById('transcript_segments', seg.id, { translation: repaired })
+            generatedUpdates.push({ id: seg.id, translation: repaired })
             translations.set(seg.id, repaired)
             styleFallback = true
             console.warn(`[dubTranslate] segment #${seg.index_num} repaired qua LLM (base+styled đều fail gate)`)
@@ -269,7 +294,7 @@ export async function dubTranslate(ctx) {
     if (!translations.size) {
       await persistTranslateReview(job, buildTranslateReviewDetails(pool, unresolved, {
         gtResults, styledAll, targetLanguage,
-      }))
+      }), runToken)
       throw new Error(
         `TRANSLATE_NEEDS_REVIEW: LLM không trả về bản dịch restyle hợp lệ nào` +
         (unresolved.length ? ` (unresolved: ${unresolved.join(',')})` : '') +
@@ -282,7 +307,8 @@ export async function dubTranslate(ctx) {
     // regenerate từ dub.translate, thay vì retry mù cùng lỗi.
     await persistTranslateReview(job, buildTranslateReviewDetails(pool, unresolved, {
       gtResults, styledAll, targetLanguage,
-    }))
+    }), runToken)
+    await persistGeneratedTranslations()
     // Restyle-down hint: group có nội dung nhưng LLM không trả styled nào
     // (quá tải/outage) → mọi câu đang dùng bản gốc/repair; báo rõ để user
     // phân biệt với lỗi dữ liệu và biết Regenerate sau cũng có thể khỏi.
@@ -296,10 +322,11 @@ export async function dubTranslate(ctx) {
       throw e
     }
     // Sinh SRT từ timing gốc + bản dịch (docs/05 FR-T6)
+    await persistGeneratedTranslations()
     const styleCues = pool
       .filter((s) => translations.has(s.id))
       .map((s) => ({ start: Number(s.start_sec), end: Number(s.end_sec), text: translations.get(s.id) }))
-    if (styleCues.length) await writeSrt(project, styleCues)
+    if (styleCues.length) await writeSrt(project, styleCues, runToken, transcriptVersion)
 
     return {
       translatedCount: translations.size,
@@ -341,7 +368,7 @@ export async function dubTranslate(ctx) {
       } else if (gate.errors?.length) {
         console.warn(`[dubTranslate] segment #${seg.index_num} soft warnings (allowed): ${(gate.errors || []).join(';')}`)
       }
-      await updateById('transcript_segments', seg.id, { translation: gtText })
+      generatedUpdates.push({ id: seg.id, translation: gtText })
       translations.set(seg.id, gtText)
     }
     setProgress(90)
@@ -353,14 +380,15 @@ export async function dubTranslate(ctx) {
   // Quarantine như nhánh style (xem trên).
   await persistTranslateReview(job, buildTranslateReviewDetails(pool, noStyleUnresolved, {
     gtResults, styledAll: null, targetLanguage,
-  }))
+  }), runToken)
+  await persistGeneratedTranslations()
   assertTranslateComplete(pool, translations, noStyleUnresolved)
 
-  // Sinh SRT từ timing gốc + bản dịch (docs/05 FR-T6)
+  await persistGeneratedTranslations()
   const cues = pool
     .filter((s) => translations.has(s.id))
     .map((s) => ({ start: Number(s.start_sec), end: Number(s.end_sec), text: translations.get(s.id) }))
-  if (cues.length) await writeSrt(project, cues)
+  if (cues.length) await writeSrt(project, cues, runToken, transcriptVersion)
 
   return {
     translatedCount: translations.size,
@@ -423,13 +451,14 @@ export function buildTranslateReviewDetails(segments, unresolved, { gtResults, s
 // Lưu quarantine details vào generation_jobs.result (best-effort, không throw).
 // failJob chỉ giữ error_message 500 ký tự nên details phải persist riêng ở đây,
 // TRƯỚC khi assertTranslateComplete throw.
-export async function persistTranslateReview(job, details) {
+export async function persistTranslateReview(job, details, runToken = null) {
   try {
     if (!job?.id || !Array.isArray(details) || !details.length) return false
-    await updateById('generation_jobs', job.id, {
-      result: JSON.stringify({ needsReview: true, unresolvedDetails: details }),
-    })
-    return true
+    const result = JSON.stringify({ needsReview: true, unresolvedDetails: details })
+    const updated = job.project_id
+      ? await updateGenerationJobOwned(job.project_id, job.id, { result }, runToken)
+      : await updateById('generation_jobs', job.id, { result })
+    return Boolean(updated)
   } catch (_) {
     return false
   }
@@ -634,8 +663,21 @@ async function restyleGroup(llm, system, groupTranslations, preset, job, project
   return collected
 }
 
-async function writeSrt(project, cues) {
+async function writeSrt(project, cues, runToken = null, expectedRevision = null) {
   if (!cues.length) return
+  if (runToken && !(await isProjectRunOwned(project.id, runToken))) {
+    const error = new Error('RUN_ABORTED')
+    error.code = 'RUN_ABORTED'
+    throw error
+  }
+  if (expectedRevision !== null && expectedRevision !== undefined) {
+    const current = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [project.id])
+    if (Number(current?.transcript_version ?? 0) !== Number(expectedRevision)) {
+      const error = new Error('TRANSCRIPT_CHANGED_DURING_TRANSLATE')
+      error.transient = true
+      throw error
+    }
+  }
   const dir = projectDir(project.id)
   fs.mkdirSync(dir, { recursive: true })
   const srtPath = path.join(dir, 'subtitles.srt')
@@ -644,15 +686,34 @@ async function writeSrt(project, cues) {
     .join('\n')
   fs.writeFileSync(srtPath, body, 'utf8')
 
-  await run(`DELETE FROM subtitles WHERE project_id = ?`, [project.id])
-  await insert('subtitles', {
+  const subtitle = {
     id: uuidv4(),
     project_id: project.id,
     format: 'srt',
     language: parseParams(project.params).targetLanguage || 'vi',
     storage_key: null,
     cues: JSON.stringify(cues),
-  })
+  }
+  if (runToken || expectedRevision !== null) {
+    const commitResult = await withTransaction(async (tx) => {
+      const owner = await tx.queryOne('SELECT status, run_token, transcript_version FROM projects WHERE id = ?', [project.id])
+      if (!owner || (runToken && (owner.status !== 'running' || owner.run_token !== runToken))) return { committed: false, reason: 'ownership' }
+      if (expectedRevision !== null && expectedRevision !== undefined && Number(owner.transcript_version ?? 0) !== Number(expectedRevision)) return { committed: false, reason: 'revision' }
+      await tx.run('DELETE FROM subtitles WHERE project_id = ?', [project.id])
+      await tx.insert('subtitles', subtitle)
+      return { committed: true }
+    }, { op: 'pipeline.translate.srt' })
+    if (!commitResult.committed) {
+      const revisionChanged = commitResult.reason === 'revision'
+      const error = new Error(revisionChanged ? 'TRANSCRIPT_CHANGED_DURING_TRANSLATE' : 'RUN_ABORTED')
+      error.code = revisionChanged ? 'TRANSCRIPT_CHANGED' : 'RUN_ABORTED'
+      error.transient = revisionChanged
+      throw error
+    }
+  } else {
+    await run('DELETE FROM subtitles WHERE project_id = ?', [project.id])
+    await insert('subtitles', subtitle)
+  }
 }
 
 // Giữ lại translateGroup làm fallback (nếu Google Translate lỗi)

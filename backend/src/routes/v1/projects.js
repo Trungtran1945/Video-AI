@@ -1,13 +1,15 @@
 import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne, insert, run, withTransaction } from '../../db/query.js'
+import { query, queryOne, run } from '../../db/query.js'
+import { createProjectWithAdmission, acquireProjectRun, updateProjectOwned } from '../../services/projectAdmission.js'
+import { copyTranscript, updateSegmentTranslation, deleteProjectTranscript, TranscriptRevisionConflict, TranscriptValidationError } from '../../services/transcriptMutationService.js'
+import { getOutputState } from '../../services/outputService.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
-import { runPipeline, isPipelineRunning, STAGES } from '../../pipeline/runner.js'
+import { runPipeline, isPipelineRunning, stagesForProject } from '../../pipeline/runner.js'
 import { deleteProjectFiles, collectProjectKeys } from '../../services/projectCleanup.js'
 import { cancelProjectUseCase } from '../../usecases/cancelProjectUseCase.js'
 import { sendError, ERR } from '../../lib/httpError.js'
-import { config } from '../../config.js'
 import { firstRunnableStage } from '../../pipeline/context.js'
 import { TRANSLATION_VERSION, isCacheCompatible, parseProjectParams } from '../../lib/cacheKey.js'
 import { hasHardTranslationError } from '../../pipeline/stages/dubTranslate.js'
@@ -46,17 +48,7 @@ router.post('/', async (req, res) => {
         { field: 'copyrightAcknowledged' })
     }
 
-    // Group 1: Concurrency limit check
-    const running = await queryOne(
-      `SELECT COUNT(*) as cnt FROM projects WHERE user_id = ? AND status = 'running'`,
-      [req.user.id]
-    )
-    const runningCount = running?.cnt || 0
-    const maxConcurrent = config.maxConcurrentProjectsPerUser
-    let status = 'pending'
-    if (runningCount >= maxConcurrent) {
-      status = 'queued'
-    }
+    // Admission is performed atomically after request validation.
 
     // Merge params phẳng của TRANSLATE_DUB vào params JSON (docs/02 Project.params)
     let params = b.params && typeof b.params === 'object' ? { ...b.params } : {}
@@ -85,29 +77,22 @@ router.post('/', async (req, res) => {
       params.translationVersion = TRANSLATION_VERSION
     }
 
-    // Calculate expires_at based on retention policy
-    const expiresAt = new Date()
-    expiresAt.setDate(expiresAt.getDate() + config.projectRetentionDays)
-    const now = new Date().toISOString()
-
-    const project = await insert('projects', {
+    const admission = await createProjectWithAdmission({
       id: uuidv4(),
-      user_id: req.user.id,
+      userId: req.user.id,
       mode,
       title: b.title.trim(),
-      status,
       language: b.language || (mode === 'TRANSLATE_DUB' ? (params.targetLanguage || 'vi') : 'vi'),
       style: b.style || (mode === 'SUMMARY' ? 'cinematic' : (params.stylePreset || null)),
-      target_duration_sec: Number(b.targetDurationSec) || (mode === 'SUMMARY' ? 1500 : 60),
-      aspect_ratio: b.aspectRatio || '16:9',
-      params: JSON.stringify(params),
-      source_video_key: b.sourceVideoKey || null,
-      template_video_key: null, // legacy STYLE_EDIT — ngừng ghi (docs/00 §2.2)
-      copyright_acknowledged: 1,
-      copyright_ack_at: now,
-      expires_at: expiresAt.toISOString(),
-      video_hash: b.videoHash || null,
+      targetDurationSec: Number(b.targetDurationSec) || (mode === 'SUMMARY' ? 1500 : 60),
+      aspectRatio: b.aspectRatio || '16:9',
+      params,
+      sourceVideoKey: b.sourceVideoKey || null,
+      videoHash: b.videoHash || null,
+      copyrightAcknowledged: true,
     })
+    const project = admission.project
+    const status = project.status
 
     // Cache lookup (Task 1 fix): SAU insert, TRƯỚC runPipeline.
     // Query completed TRANSLATE_DUB cùng user + video_hash, lọc bằng
@@ -154,29 +139,18 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Copy transcript segments — check COUNT==0 trước insert để không duplicate.
-    // cachedProjectId → copy kèm translation; transcript-only → translation=NULL.
     const copySourceId = cachedProjectId || transcriptOnlySourceId
     if (copySourceId) {
-      const existingCount = await queryOne(
-        'SELECT COUNT(*) as cnt FROM transcript_segments WHERE project_id = ?',
-        [project.id]
-      )
-      if ((existingCount?.cnt || 0) === 0) {
-        const transcriptSegments = await query('SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC', [copySourceId])
-        for (const s of transcriptSegments) {
-          await insert('transcript_segments', {
-            id: uuidv4(),
-            project_id: project.id,
-            index_num: s.index_num,
-            start_sec: s.start_sec,
-            end_sec: s.end_sec,
-            text: s.text,
-            speaker: s.speaker,
-            language: s.language,
-            translation: cachedProjectId ? s.translation : null,
-          })
-        }
+      try {
+        await copyTranscript(copySourceId, project.id, { includeTranslation: Boolean(cachedProjectId) })
+      } catch (copyError) {
+        await updateProjectOwned(project.id, admission.runToken, {
+          status: 'queued',
+          run_token: null,
+          lease_expires_at: null,
+          recovery_reason: 'cache copy failed; admission released',
+        })
+        throw copyError
       }
     }
 
@@ -184,11 +158,14 @@ router.post('/', async (req, res) => {
     // copy cache xong (tránh race: stage skip-if-exists đọc nhầm bảng rỗng
     // hoặc ghi đè song song với copy).
     if (status === 'pending') {
-      runPipeline(project.id).catch((e) => console.error('[Pipeline] start failed', e))
+      runPipeline(project.id, null, admission.runToken).catch((e) => console.error('[Pipeline] start failed', e))
     }
 
     res.status(202).json({ ...project, params, cachedProjectId })
   } catch (err) {
+    if (err?.code === 'DB_WRITE_QUEUE_FULL') {
+      return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs })
+    }
     console.error('Create project error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
@@ -235,7 +212,8 @@ router.get('/:id', async (req, res) => {
     }
     const jobs = await query('SELECT * FROM generation_jobs WHERE project_id = ? ORDER BY created_date ASC', [project.id])
     const timeline = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [project.id])
-    const latestOutput = await queryOne('SELECT * FROM outputs WHERE project_id = ? ORDER BY created_date DESC LIMIT 1', [project.id])
+    const outputState = await getOutputState(project.id)
+    const latestOutput = outputState.output
     // §1: pipeline đang chạy (pending/queued/running/generating) thì KHÔNG expose
     // output cũ — tránh user nhầm output của lần chạy trước là kết quả mới.
     // Không DELETE gì cả (non-destructive); row cũ vẫn nằm trong DB.
@@ -248,7 +226,7 @@ router.get('/:id', async (req, res) => {
     } else if (isDubMode(project.mode)) {
       // TRANSLATE_DUB mode - no extra data needed
     }
-    res.json({ ...project, params: project.params ? JSON.parse(project.params) : null, jobs, timeline, output, ...extras })
+    res.json({ ...project, params: project.params ? JSON.parse(project.params) : null, jobs, timeline, output, outputStale: outputState.outputStale, ...extras })
   } catch (err) {
     console.error('Get project error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
@@ -287,23 +265,30 @@ router.patch('/:id/segments/:segmentId/translation', requireProjectOwner, async 
     if ((gate.errors || []).length) {
       console.warn(`[Projects] manual translation segment #${seg.index_num} soft warnings (allowed): ${gate.errors.join(';')}`)
     }
-    // §8: đánh dấu sửa tay để dub.translate không overwrite trong lần chạy sau.
-    // Đồng thời bump transcript_version trong cùng transaction để outputStale
-    // và revision gate không bị bypass qua endpoint này.
-    let newRevision = null
-    await withTransaction(async (tx) => {
-      await tx.run(
-        `UPDATE transcript_segments SET translation = ?, tts_audio_id = NULL, is_translation_manually_edited = 1 WHERE id = ? AND project_id = ?`,
-        [translation, seg.id, req.project.id]
-      )
-      const cur = await tx.queryOne(`SELECT transcript_version FROM projects WHERE id = ?`, [req.project.id])
-      const current = Number(cur?.transcript_version ?? 0)
-      await tx.run(`UPDATE projects SET transcript_version = ? WHERE id = ?`, [current + 1, req.project.id])
-      newRevision = current + 1
+    const result = await updateSegmentTranslation(req.project.id, segmentId, translation, req.body?.revision)
+    const outputState = await getOutputState(req.project.id)
+    res.json({
+      ...result.segment,
+      revision: result.revision,
+      outputStale: outputState.outputStale,
+      warnings: gate.errors || [],
     })
-    const updated = await queryOne('SELECT * FROM transcript_segments WHERE id = ?', [seg.id])
-    res.json({ ...updated, revision: newRevision, warnings: gate.errors || [] })
   } catch (err) {
+    if (err instanceof TranscriptRevisionConflict) {
+      return sendError(res, 409, ERR.REVISION_CONFLICT, 'Transcript đã được cập nhật ở nơi khác — vui lòng tải lại trước khi lưu', {
+        currentRevision: err.currentRevision,
+        revision: err.currentRevision,
+      })
+    }
+    if (err instanceof TranscriptValidationError) {
+      return sendError(res, err.statusCode || 400, ERR.VALIDATION, err.message, { field: err.field })
+    }
+    if (err?.code === 'REVISION_REQUIRED') {
+      return sendError(res, 400, ERR.VALIDATION, err.message, { field: 'revision' })
+    }
+    if (err?.code === 'DB_WRITE_QUEUE_FULL') {
+      return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs })
+    }
     console.error('Update segment translation error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
@@ -332,15 +317,25 @@ router.post('/:id/regenerate', requireProjectOwner, async (req, res) => {
     `SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?`,
     [project.id]
   )
-  const r = firstRunnableStage(STAGES[project.mode] || [], jobs)
+  const r = firstRunnableStage(stagesForProject(project), jobs)
   if (r.waiting) {
     return sendError(res, 429, 'RETRY_WAITING', `Stage ${r.type} đang chờ quota hồi phục, thử lại sau ${new Date(r.nextRetryAt).toLocaleTimeString('vi-VN')}`, {
       stage: r.type,
       nextRetryAt: r.nextRetryAt,
     })
   }
-  runPipeline(project.id, r.type).catch(() => {})
-  res.json({ message: 'Pipeline restarted', status: 'running', ...(r.type ? { fromStage: r.type } : {}) })
+  if (isPipelineRunning(project.id)) {
+    return sendError(res, 409, 'PIPELINE_RUNNING', 'Pipeline đang chạy, hãy đợi hoàn tất rồi mới chạy lại')
+  }
+  const admission = await acquireProjectRun(project.id, { allowReserved: true, reclaimExpiredRunning: true })
+  if (!admission.admitted) {
+    const status = admission.reason === 'concurrency' ? 429 : 409
+    return sendError(res, status, status === 429 ? ERR.CONCURRENCY_LIMIT : 'PIPELINE_BUSY', admission.reason || 'Project is not available')
+  }
+  runPipeline(project.id, r.type, admission.runToken, {
+    forceTranscript: r.type === null || ['dub.ingest', 'dub.stt', 'dub.ocr'].includes(r.type),
+  }).catch(() => {})
+  res.json({ message: 'Pipeline restarted', status: admission.project.status, ...(r.type ? { fromStage: r.type } : {}) })
 })
 
 // DELETE /api/v1/projects/:id
@@ -362,7 +357,8 @@ router.delete('/:id', async (req, res) => {
     // keep the rows for analytics, only detach them from the deleted project.
     await run('UPDATE provider_logs SET project_id = NULL WHERE project_id = ?', [req.params.id])
     await run(`DELETE FROM youtube_uploads WHERE output_id IN (SELECT id FROM outputs WHERE project_id = ?)`, [req.params.id])
-    for (const t of ['generation_jobs', 'assets', 'scenes', 'script_segments', 'transcript_segments', 'ocr_regions', 'timeline_clips', 'audios', 'subtitles', 'outputs']) {
+    await deleteProjectTranscript(req.params.id)
+    for (const t of ['generation_jobs', 'assets', 'scenes', 'script_segments', 'ocr_regions', 'timeline_clips', 'audios', 'subtitles', 'outputs']) {
       await run(`DELETE FROM ${t} WHERE project_id = ?`, [req.params.id])
     }
     await run('DELETE FROM projects WHERE id = ?', [req.params.id])

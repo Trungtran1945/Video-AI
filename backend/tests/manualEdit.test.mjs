@@ -82,33 +82,26 @@ const assert = (c, m) => {
 
 // (d) PUT transcript trả thêm outputStale chính xác theo version
 {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'v1', 'dubData.js'), 'utf8')
-  assert(src.includes('outputStale'), '(d) dubData.js PUT trả thêm outputStale')
-  assert(
-    src.includes('FROM outputs WHERE project_id = ? ORDER BY created_date DESC LIMIT 1'),
-    '(d) PUT query outputs mới nhất đúng SQL'
-  )
-  assert(
-    src.includes('transcript_version'),
-    '(d) outputStale so theo transcript_version (không dùng !!latestOutput)'
-  )
-  assert(
-    !src.includes('outputStale: !!latestOutput'),
-    '(d) không còn outputStale = !!latestOutput sai semantics'
-  )
+  const route = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'v1', 'dubData.js'), 'utf8')
+  const service = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'transcriptMutationService.js'), 'utf8')
+  const output = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'outputService.js'), 'utf8')
+  assert(route.includes('outputStale'), '(d) dubData.js PUT trả thêm outputStale')
+  assert(output.includes('ORDER BY created_date DESC, rowid DESC'), '(d) output latest query deterministic')
+  assert(output.includes('transcript_version'), '(d) outputStale theo transcript_version')
+  assert(service.includes('transcriptRowChanged'), '(d) mutation so sánh state trước bump')
+  assert(!route.includes('outputStale: !!latestOutput'), '(d) không còn outputStale = !!latestOutput sai semantics')
 }
 
 // (e) redub dùng translation hiện tại + guard 0 translation
 {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'v1', 'generation.js'), 'utf8')
-  assert(src.includes("runPipeline(req.project.id, 'dub.ttsAlign')"), "(e) redub giữ runPipeline(id,'dub.ttsAlign')")
+  assert(src.includes("runPipeline(req.project.id, 'dub.ttsAlign', admission.runToken)"), "(e) redub giữ runPipeline dub.ttsAlign với ownership token")
   assert(
     src.includes("translation IS NOT NULL AND translation != ''"),
     '(e) redub có guard 0 segment có translation -> 400'
   )
-  // Redub block không được gọi dub.translate
   const redubIdx = src.indexOf('translate-dub/redub')
-  const redubBlock = redubIdx >= 0 ? src.slice(redubIdx, redubIdx + 1500) : ''
+  const redubBlock = redubIdx >= 0 ? src.slice(redubIdx, redubIdx + 1800) : ''
   assert(!redubBlock.includes("'dub.translate'") && !redubBlock.includes('"dub.translate"'), '(e) redub block không chạy dub.translate')
 }
 

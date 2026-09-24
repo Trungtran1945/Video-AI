@@ -12,15 +12,24 @@ import {
   probe,
 } from '../../media/mediaService.js'
 import { TRANSITION_DURATION } from '../alignService.js'
+import { createOutput } from '../../services/outputService.js'
 import { config } from '../../config.js'
+import { isProjectRunOwned } from '../../services/projectAdmission.js'
 import {
   tmpDirOf,
   ensureDir,
   resolveStorageKey,
   requireSourceFile,
   round2,
-  insertMany,
 } from '../context.js'
+
+async function assertRunOwner(projectId, runToken) {
+  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
+    const error = new Error('RUN_ABORTED')
+    error.code = 'RUN_ABORTED'
+    throw error
+  }
+}
 
 async function mapWithConcurrency(items, limit, worker) {
   const results = new Array(items.length)
@@ -36,7 +45,8 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 export async function summaryRender(ctx) {
-  const { project, setProgress, signal } = ctx
+  const { project, setProgress, signal, runToken } = ctx
+  await assertRunOwner(project.id, runToken)
   const src = requireSourceFile(project.source_video_key, 'Video nguồn (phim)')
   const clips = await query(
     'SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC',
@@ -119,6 +129,7 @@ export async function summaryRender(ctx) {
   const outId = uuidv4()
   const outputsAbs = ensureDir(path.join(config.storageDir, 'outputs'))
   const finalPath = path.join(outputsAbs, `${outId}.mp4`)
+  await assertRunOwner(project.id, runToken)
   if (srtAbs && fs.existsSync(srtAbs)) {
     await addSubtitles(mixed, srtAbs, finalPath)
   } else {
@@ -126,21 +137,23 @@ export async function summaryRender(ctx) {
   }
 
   const info = await probe(finalPath)
+  await assertRunOwner(project.id, runToken)
   const thumbRel = `outputs/thumbs/${outId}.jpg`
   try {
     await makeThumbnail(finalPath, Math.min(3, info.durationSec / 2), path.join(path.dirname(finalPath), 'thumbs', `${outId}.jpg`))
   } catch (_) {}
 
-  await insertMany('outputs', [
-    {
-      id: outId,
-      project_id: project.id,
-      storage_key: `outputs/${outId}.mp4`,
-      status: 'success',
-      duration_sec: round2(info.durationSec),
-      thumbnail_key: thumbRel,
-    },
-  ])
+  await assertRunOwner(project.id, runToken)
+  await createOutput({
+    id: outId,
+    projectId: project.id,
+    storageKey: `outputs/${outId}.mp4`,
+    status: 'success',
+    durationSec: round2(info.durationSec),
+    thumbnailKey: thumbRel,
+    transcriptVersion: null,
+    runToken,
+  })
 
   try {
     fs.rmSync(tmp, { recursive: true, force: true })

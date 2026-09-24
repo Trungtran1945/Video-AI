@@ -1,6 +1,5 @@
 import { getDb, save } from '../db.js'
 
-// sql.js returns [{ columns: [...], values: [[...]] }]
 function rowsToObjects(result) {
   if (!result || result.length === 0) return []
   const { columns, values } = result[0]
@@ -13,18 +12,93 @@ function rowsToObjects(result) {
   })
 }
 
-// Process-local write serialization for sql.js (single in-memory DB + file save).
-// Node.js interleaves async callbacks: two concurrent withTransaction() calls
-// would otherwise both BEGIN before either COMMITs, corrupting txn semantics.
-// All WRITEs (run/runAffected/insert/updateById/withTransaction) go through
-// the same Promise-tail gate so ordering is strict: WRITE A → WRITE B → TXN C.
-// SELECTs (query/queryOne/findById) stay ungated (read-only, no save()).
-// No busy-wait, no setInterval. Queue survives failures; caller errors propagate.
-let writeTail = Promise.resolve()
+function envNumber(name, fallback, minimum = 1) {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value >= minimum ? value : fallback
+}
 
-export function withWriteLock(fn) {
-  const task = writeTail.then(() => fn())
-  // Tail must never reject or the queue dies; caller still gets original result/error.
+export class WriteQueueFullError extends Error {
+  constructor(operation) {
+    super(`Database write queue is full for operation ${operation}`)
+    this.name = 'WriteQueueFullError'
+    this.code = 'DB_WRITE_QUEUE_FULL'
+    this.statusCode = 503
+    this.retryAfterMs = 100
+    this.operation = operation
+  }
+}
+
+let writeTail = Promise.resolve()
+let writeQueueDepth = 0
+let writeQueueOldestQueuedAt = 0
+let writeQueueLastOperation = null
+let writeQueueLastDurationMs = 0
+let writeQueueSlowWrites = 0
+let writeQueueConfig = {
+  maxPendingWrites: envNumber('DB_MAX_PENDING_WRITES', 1000),
+  slowWriteMs: envNumber('DB_SLOW_WRITE_MS', 1000, 0),
+  logger: console,
+}
+
+export function configureWriteQueue({ maxPendingWrites, slowWriteMs, logger } = {}) {
+  if (Number.isFinite(Number(maxPendingWrites)) && Number(maxPendingWrites) > 0) {
+    writeQueueConfig.maxPendingWrites = Math.floor(Number(maxPendingWrites))
+  }
+  if (Number.isFinite(Number(slowWriteMs)) && Number(slowWriteMs) >= 0) {
+    writeQueueConfig.slowWriteMs = Number(slowWriteMs)
+  }
+  if (logger && typeof logger.warn === 'function') writeQueueConfig.logger = logger
+  return getWriteQueueStats()
+}
+
+export function getWriteQueueStats() {
+  const now = Date.now()
+  return {
+    depth: writeQueueDepth,
+    maxPendingWrites: writeQueueConfig.maxPendingWrites,
+    oldestWaitMs: writeQueueOldestQueuedAt ? now - writeQueueOldestQueuedAt : 0,
+    lastOperation: writeQueueLastOperation,
+    lastDurationMs: writeQueueLastDurationMs,
+    slowWrites: writeQueueSlowWrites,
+  }
+}
+
+function operationName(options, fallback) {
+  const value = options && typeof options === 'object' ? options.op : null
+  const name = String(value || fallback || 'db.write')
+  return name.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 80)
+}
+
+export function withWriteLock(fn, options = {}) {
+  const operation = operationName(options, 'db.write')
+  if (writeQueueDepth >= writeQueueConfig.maxPendingWrites) {
+    return Promise.reject(new WriteQueueFullError(operation))
+  }
+
+  const enqueuedAt = Date.now()
+  writeQueueDepth += 1
+  if (!writeQueueOldestQueuedAt) writeQueueOldestQueuedAt = enqueuedAt
+
+  const task = writeTail.then(async () => {
+    const waitMs = Date.now() - enqueuedAt
+    const startedAt = Date.now()
+    try {
+      return await fn()
+    } finally {
+      const durationMs = Date.now() - startedAt
+      writeQueueLastOperation = operation
+      writeQueueLastDurationMs = durationMs
+      if (durationMs >= writeQueueConfig.slowWriteMs) {
+        writeQueueSlowWrites += 1
+        writeQueueConfig.logger.warn(
+          `[DB_WRITE] op=${operation} waitMs=${waitMs} durationMs=${durationMs} depth=${writeQueueDepth}`
+        )
+      }
+      writeQueueDepth = Math.max(0, writeQueueDepth - 1)
+      if (writeQueueDepth === 0) writeQueueOldestQueuedAt = 0
+    }
+  })
+
   writeTail = task.catch(() => {})
   return task
 }
@@ -59,20 +133,15 @@ export async function queryOne(sql, params = []) {
   return rows[0] || null
 }
 
-export async function run(sql, params = []) {
-  return withWriteLock(() => runInner(sql, params))
+export async function run(sql, params = [], options = {}) {
+  return withWriteLock(() => runInner(sql, params), { op: options.op || 'db.run' })
 }
 
-// Conditional write with affected-row count (for atomic claims).
-// sql.js exposes changes via getRowsModified() right after run().
-export async function runAffected(sql, params = []) {
-  return withWriteLock(() => runAffectedInner(sql, params))
+export async function runAffected(sql, params = [], options = {}) {
+  return withWriteLock(() => runAffectedInner(sql, params), { op: options.op || 'db.runAffected' })
 }
 
-// Insert an object; keys map to columns. Returns the inserted row (with id).
-// Whole write+read held under one gate so concurrent inserts can't steal the
-// rowid fallback read (normal path passes explicit uuid id anyway).
-export async function insert(table, obj) {
+export async function insert(table, obj, options = {}) {
   return withWriteLock(async () => {
     const cols = Object.keys(obj)
     const placeholders = cols.map(() => '?').join(', ')
@@ -80,33 +149,25 @@ export async function insert(table, obj) {
     await runInner(sql, cols.map((c) => obj[c]))
     const id = obj.id || null
     if (id) return queryOne(`SELECT * FROM ${table} WHERE id = ?`, [id])
-    // fallback: last row (for autoincrement)
     return queryOne(`SELECT * FROM ${table} ORDER BY rowid DESC LIMIT 1`)
-  })
+  }, { op: options.op || `insert.${table}` })
 }
 
-export async function updateById(table, id, obj) {
+export async function updateById(table, id, obj, options = {}) {
   return withWriteLock(async () => {
     const cols = Object.keys(obj)
     const sets = cols.map((c) => `${c} = ?`).join(', ')
     const sql = `UPDATE ${table} SET ${sets} WHERE id = ?`
     await runInner(sql, [...cols.map((c) => obj[c]), id])
     return queryOne(`SELECT * FROM ${table} WHERE id = ?`, [id])
-  })
+  }, { op: options.op || `update.${table}` })
 }
 
 export async function findById(table, id) {
   return queryOne(`SELECT * FROM ${table} WHERE id = ?`, [id])
 }
 
-// Single transaction helper for sql.js (file-backed, process-local).
-// Usage: await withTransaction(async (tx) => { await tx.run(...); ... })
-// - Serialized through withWriteLock: only one write txn active per process.
-// - BEGIN/COMMIT/ROLLBACK via db.exec; save() only once after COMMIT, never mid-txn.
-// - Inside fn MUST use tx.* (never query/run directly) to avoid mid-txn save().
-// - Rollback/throw always releases the lock; queue survives failures.
-// - No nesting: throws if already in transaction.
-export async function withTransaction(fn) {
+export async function withTransaction(fn, options = {}) {
   return withWriteLock(async () => {
     const db = await getDb()
     const txRows = (result) => rowsToObjects(result)
@@ -133,7 +194,7 @@ export async function withTransaction(fn) {
       async insert(table, obj) {
         const cols = Object.keys(obj)
         const placeholders = cols.map(() => '?').join(', ')
-        db.run(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${placeholders})`, cols.map((c) => obj[c]))
+        db.run(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${placeholders})`, cols.map((c) => obj[c]))
         if (obj.id) {
           const rows = txRows(db.exec(`SELECT * FROM ${table} WHERE id = ?`, [obj.id]))
           return rows[0] || null
@@ -161,7 +222,20 @@ export async function withTransaction(fn) {
       } catch (_) {}
       throw err
     }
-  })
+  }, { op: options.op || 'db.transaction' })
 }
 
-export default { query, queryOne, run, runAffected, insert, updateById, findById, withTransaction, withWriteLock }
+export default {
+  query,
+  queryOne,
+  run,
+  runAffected,
+  insert,
+  updateById,
+  findById,
+  withTransaction,
+  withWriteLock,
+  configureWriteQueue,
+  getWriteQueueStats,
+  WriteQueueFullError,
+}

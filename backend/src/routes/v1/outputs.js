@@ -3,6 +3,7 @@ import { query, queryOne, insert } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireOutputOwner } from '../../middleware/projectAccess.js'
 import { sendError, ERR } from '../../lib/httpError.js'
+import { outputIsStale } from '../../services/outputService.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -11,14 +12,19 @@ router.use(authMiddleware)
 router.get('/', async (req, res) => {
   try {
     const isAdmin = req.user.role === 'admin'
-    let sql = `SELECT o.*, p.user_id, p.title as project_title, p.mode
+    let sql = `SELECT o.*, p.user_id, p.title as project_title, p.mode,
+                      p.transcript_version AS project_transcript_version
                FROM outputs o JOIN projects p ON o.project_id = p.id`
     const params = []
     if (!isAdmin) { sql += ' WHERE p.user_id = ?'; params.push(req.user.id) }
     if (req.query.projectId) { sql += (params.length ? ' AND' : ' WHERE') + ' o.project_id = ?'; params.push(req.query.projectId) }
     sql += ' ORDER BY o.created_date DESC'
     const rows = await query(sql, params)
-    res.json(rows.map((r) => ({ ...r, url: r.storage_key ? `/storage/${r.storage_key}` : null })))
+    res.json(rows.map((r) => ({
+      ...r,
+      outputStale: outputIsStale(r.mode, r.project_transcript_version, r),
+      url: r.storage_key ? `/storage/${r.storage_key}` : null,
+    })))
   } catch (err) {
     console.error('List outputs error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
@@ -27,10 +33,14 @@ router.get('/', async (req, res) => {
 
 // GET /api/v1/outputs/:id
 router.get('/:id', async (req, res) => {
-  const o = await queryOne(`SELECT o.*, p.user_id FROM outputs o JOIN projects p ON o.project_id = p.id WHERE o.id = ?`, [req.params.id])
+  const o = await queryOne(`SELECT o.*, p.user_id, p.mode, p.transcript_version AS project_transcript_version FROM outputs o JOIN projects p ON o.project_id = p.id WHERE o.id = ?`, [req.params.id])
   if (!o) return sendError(res, 404, 'NOT_FOUND', 'Output not found')
   if (o.user_id !== req.user.id && req.user.role !== 'admin') return sendError(res, 403, ERR.AUTH_FORBIDDEN, 'Forbidden')
-  res.json({ ...o, url: o.storage_key ? `/storage/${o.storage_key}` : null })
+  res.json({
+    ...o,
+    outputStale: outputIsStale(o.mode, o.project_transcript_version, o),
+    url: o.storage_key ? `/storage/${o.storage_key}` : null,
+  })
 })
 
 const YOUTUBE_PRIVACY = ['private', 'unlisted', 'public']

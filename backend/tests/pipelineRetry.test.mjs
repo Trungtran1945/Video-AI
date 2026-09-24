@@ -52,6 +52,8 @@ assert(Array.isArray(RETRY_POLICY['dub.ttsAlign']?.backoffMs), 'ttsAlign has bac
   assert(src.includes('Clamped resume'), 'resume clamp is observable')
   assert(src.includes('safeAddNotify'), 'notifications isolated via safeAddNotify')
   assert(src.includes('projectId') && src.includes('category=') && src.includes('retryable='), 'failures log project/stage/category/retryable')
+  assert(src.includes('updateGenerationJobOwned'), 'stage job updates are fenced by run ownership')
+  assert(src.includes("error.code = 'RUN_ABORTED'"), 'lost run ownership is treated as an abort')
 }
 
 // 5. Never skip an incomplete predecessor (redub clamp scenario).
@@ -77,8 +79,8 @@ assert(Array.isArray(RETRY_POLICY['dub.ttsAlign']?.backoffMs), 'ttsAlign has bac
   const drainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'workers', 'drainQueued.js'), 'utf8')
   assert(drainSrc.includes('recoverStaleProjects'), 'drain uses shared recovery service')
   const recSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'pipeline', 'recovery.js'), 'utf8')
-  assert(recSrc.includes("SET status = 'queued'"), 'shared service parks stale running as queued')
-  assert(recSrc.includes("AND status = 'running'"), 'shared service recovery is conditional (idempotent)')
+  assert(recSrc.includes('status = ?') && recSrc.includes('run_token = ?'), 'shared service parks stale running as queued')
+  assert(recSrc.includes('status = ?') && recSrc.includes('tokenPredicate'), 'shared service recovery is conditional (idempotent)')
 }
 
 // 7. Strict render gates preserved (BLOCK_RENDER, 1:1 audio, no fallback).
@@ -103,6 +105,22 @@ assert(Array.isArray(RETRY_POLICY['dub.ttsAlign']?.backoffMs), 'ttsAlign has bac
   const groups = findDuplicateGroups(segs)
   assert(groups.length === 1 && groups[0].length === 2, 'verbatim adjacent dup grouped')
   assert(!groups[0].some((s) => s.id === 'c'), 'punctuation variant not merged')
+}
+
+// 9. Pipeline stages fence direct artifact writes.
+{
+  const stageRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'pipeline', 'stages')
+  const ingestSrc = fs.readFileSync(path.join(stageRoot, 'dubIngest.js'), 'utf8')
+  const translateSrc = fs.readFileSync(path.join(stageRoot, 'dubTranslate.js'), 'utf8')
+  const ttsSrc = fs.readFileSync(path.join(stageRoot, 'dubTtsAlign.js'), 'utf8')
+  const summarySrc = fs.readFileSync(path.join(stageRoot, 'summaryRender.js'), 'utf8')
+  assert(ingestSrc.includes('updateProjectOwned'), 'dub.ingest fences project metadata writes')
+  assert(translateSrc.includes('withTransaction') && translateSrc.includes('writeSrt(project, cues, runToken, transcriptVersion)'), 'dub.translate fences SRT writes')
+  assert(translateSrc.includes("reason: 'revision'") && translateSrc.includes('TRANSCRIPT_CHANGED_DURING_TRANSLATE'), 'SRT revision races are retryable')
+  const fencedReviewCalls = (translateSrc.match(/\}\), runToken\)/g) || []).length
+  assert(fencedReviewCalls === 3, 'all translate review diagnostics carry run ownership')
+  assert(ttsSrc.includes('isProjectRunOwned') && ttsSrc.includes('runProjectOwned'), 'dub.ttsAlign fences audio rows')
+  assert(summarySrc.includes('isProjectRunOwned'), 'summary render checks run ownership')
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)

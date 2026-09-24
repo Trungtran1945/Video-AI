@@ -70,7 +70,7 @@ assert(hb.last_heartbeat_at && new Date(hb.last_heartbeat_at).getTime() > now - 
   const __dirname = path.dirname(fileURLToPath(import.meta.url))
   const recSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'pipeline', 'recovery.js'), 'utf8')
   assert(recSrc.includes('last_heartbeat_at'), 'recovery uses last_heartbeat_at')
-  assert(recSrc.includes("AND status = 'running'"), 'recovery UPDATE is conditional (idempotent)')
+  assert(recSrc.includes('status = ?') && recSrc.includes('run_token = ?'), 'recovery UPDATE is conditional (idempotent)')
   assert(recSrc.includes('isPipelineRunning') || recSrc.includes('isActive'), 'recovery skips live runs')
   const drainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'workers', 'drainQueued.js'), 'utf8')
   assert(drainSrc.includes('recoverStaleProjects'), 'drain uses shared recovery service')

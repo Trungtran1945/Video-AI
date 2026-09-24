@@ -13,10 +13,11 @@ export const projectsApi = {
   retryJob: (id, type) => api.post(`/projects/${id}/jobs/${type}/retry`).then((r) => r.data),
   // Group 1: Cancel pipeline
   cancel: (id) => api.post(`/projects/${id}/cancel`).then((r) => r.data),
-  // TRANSLATE_DUB — revision optional 1 release cho client cũ, server warn + trả revision mới.
   transcript: (id) => api.get(`/projects/${id}/transcript`).then((r) => r.data),
   updateTranscript: (id, segments, revision) =>
-    api.put(`/projects/${id}/transcript`, revision === undefined || revision === null ? { segments } : { segments, revision }).then((r) => r.data),
+    api.put(`/projects/${id}/transcript`, { segments, revision }).then((r) => r.data),
+  updateSegmentTranslation: (id, segmentId, translation, revision) =>
+    api.patch(`/projects/${id}/segments/${segmentId}/translation`, { translation, revision }).then((r) => r.data),
   redub: (id) => api.post(`/projects/${id}/translate-dub/redub`).then((r) => r.data),
   // Manual/auto subtitle masks (che/làm mờ hardsub gốc)
   masks: (id) => api.get(`/projects/${id}/masks`).then((r) => r.data),

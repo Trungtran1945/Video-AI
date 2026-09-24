@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne, insert, updateById, run } from '../db/query.js'
+import { query, queryOne, run } from '../db/query.js'
 import { logProviderCall } from '../providers/tracked.js'
 import {
   projectDir,
@@ -13,6 +13,17 @@ import eventBus from './eventBus.js'
 import { safeAddNotify } from '../queue/notifyQueue.js'
 import { classifyProviderError, ERROR_KINDS } from '../lib/providerErrors.js'
 import { firstRunnableStage } from './context.js'
+import { clearTranscript, clearTtsLinks } from '../services/transcriptMutationService.js'
+import {
+  acquireProjectRun,
+  markProjectRunning,
+  updateProjectOwned,
+  updateGenerationJobOwned,
+  insertProjectOwned,
+  runProjectOwned,
+  touchProjectLease,
+  isProjectRunOwned,
+} from '../services/projectAdmission.js'
 
 function isRateLimitError(err) {
   if (err?.name === 'RateLimitExhaustedError') return true
@@ -69,29 +80,31 @@ function parseParams(raw) {
   try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
 }
 
-async function startDubSequential(project, setProgress, results, signal) {
+async function startDubSequential(project, setProgress, results, signal, runToken = null, forceTranscript = false) {
   const projectId = project.id
   const params = parseParams(project.params)
   const useOcr = Boolean(params.ocrMode)
   const firstStage = useOcr ? 'dub.ocr' : 'dub.stt'
 
-  await ensureStageJob(projectId, firstStage)
-  await ensureStageJob(projectId, 'dub.merge')
+  await ensureStageJob(projectId, firstStage, runToken)
+  await ensureStageJob(projectId, 'dub.merge', runToken)
 
   const firstJob = await loadJob(projectId, firstStage)
   const firstOk = await executeStage(
     project, firstJob, {},
     (pct) => {
       const p = Math.max(0, Math.min(99, Math.round(pct)))
-      updateById('generation_jobs', firstJob.id, { progress: p }).catch(() => {})
+      updateGenerationJobOwned(projectId, firstJob.id, { progress: p }, runToken).catch(() => {})
       eventBus.publish(projectId, { stage: firstStage, status: 'running', percent: p })
     },
     results,
     false,
-    signal
+    signal,
+    runToken,
+    forceTranscript
   )
 
-  if (firstOk === 'waiting') return 'waiting'
+  if (firstOk === 'waiting') return { status: 'waiting', stage: firstStage }
   if (!firstOk) return false
 
   const mergeJob = await loadJob(projectId, 'dub.merge')
@@ -99,13 +112,16 @@ async function startDubSequential(project, setProgress, results, signal) {
     project, mergeJob, {},
     (pct) => {
       const p = Math.max(0, Math.min(99, Math.round(pct)))
-      updateById('generation_jobs', mergeJob.id, { progress: p }).catch(() => {})
+      updateGenerationJobOwned(projectId, mergeJob.id, { progress: p }, runToken).catch(() => {})
       eventBus.publish(projectId, { stage: 'dub.merge', status: 'running', percent: p })
     },
     results,
     false,
-    signal
+    signal,
+    runToken,
+    forceTranscript
   )
+  if (mergeOk === 'waiting') return { status: 'waiting', stage: 'dub.merge' }
   return mergeOk
 }
 
@@ -131,9 +147,35 @@ export const STAGES = {
   ],
 }
 
-// Flat list for retry/validation endpoints (order preserved).
-export function flatStages(mode) {
-  return (STAGES[mode] || []).flat()
+export function stagesForProject(projectOrMode) {
+  const project = typeof projectOrMode === 'string' ? { mode: projectOrMode, params: '{}' } : (projectOrMode || {})
+  const mode = String(project.mode || '').toUpperCase().replace('-', '_')
+  if (mode !== 'TRANSLATE_DUB') return (STAGES[mode] || []).flat()
+  const params = parseParams(project.params)
+  return [
+    'dub.ingest',
+    params.ocrMode ? 'dub.ocr' : 'dub.stt',
+    'dub.merge',
+    'dub.translate',
+    'dub.ttsAlign',
+    'dub.render',
+  ]
+}
+
+function groupedStagesForProject(project) {
+  const order = stagesForProject(project)
+  if (String(project?.mode || '').toUpperCase().replace('-', '_') !== 'TRANSLATE_DUB') return order.map((stage) => [stage])
+  return [
+    ['dub.ingest'],
+    [order[1], 'dub.merge'],
+    ['dub.translate'],
+    ['dub.ttsAlign'],
+    ['dub.render'],
+  ]
+}
+
+export function flatStages(projectOrMode) {
+  return stagesForProject(projectOrMode)
 }
 
 const STAGE_IMPL = {
@@ -184,9 +226,9 @@ const RESETS = {
   'summary.subtitle': ['outputs'],
   'summary.render': ['outputs'],
   // TRANSLATE_DUB (docs/02: TranscriptSegment riêng cho từng mode)
-  'dub.ingest': ['transcriptSegments', 'audios', 'subtitles', 'outputs'],
-  'dub.stt': ['transcriptSegments', 'audios', 'subtitles', 'outputs'],
-  'dub.ocr': ['transcriptSegments', 'audios', 'subtitles', 'outputs'],
+  'dub.ingest': ['audios', 'subtitles', 'outputs'],
+  'dub.stt': ['audios', 'subtitles', 'outputs'],
+  'dub.ocr': ['audios', 'subtitles', 'outputs'],
 
   'dub.merge': [], // dub.merge chỉ kiểm tra DB, không tạo artifacts
   'dub.translate': ['audios', 'subtitles', 'outputs'],
@@ -194,36 +236,60 @@ const RESETS = {
   'dub.render': ['outputs'],
 }
 
-async function clearArtifacts(projectId, kinds) {
+async function assertRunOwner(projectId, runToken) {
+  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
+    const error = new Error('RUN_ABORTED')
+    error.code = 'RUN_ABORTED'
+    throw error
+  }
+}
+
+async function runOwnedSql(projectId, runToken, sql, params = []) {
+  const updated = await runProjectOwned(projectId, runToken, sql, params)
+  if (runToken && !updated) {
+    const error = new Error('RUN_ABORTED')
+    error.code = 'RUN_ABORTED'
+    throw error
+  }
+  return updated
+}
+
+async function clearArtifacts(projectId, kinds, runToken = null) {
   const dir = projectDir(projectId)
   for (const kind of kinds) {
+    await assertRunOwner(projectId, runToken)
     if (kind === 'transcript') {
       try { fs.unlinkSync(path.join(dir, 'transcript.json')) } catch (_) {}
     } else if (kind === 'transcriptSegments') {
-      await run(`DELETE FROM transcript_segments WHERE project_id = ?`, [projectId])
+      await clearTranscript(projectId, null, { runToken })
     } else if (kind === 'scenes') {
-      await run(`DELETE FROM scenes WHERE project_id = ?`, [projectId])
+      await runOwnedSql(projectId, runToken, `DELETE FROM scenes WHERE project_id = ?`, [projectId])
+      await assertRunOwner(projectId, runToken)
       fs.rmSync(path.join(dir, 'thumbs'), { recursive: true, force: true })
     } else if (kind === 'segments') {
-      await run(`DELETE FROM script_segments WHERE project_id = ?`, [projectId])
+      await runOwnedSql(projectId, runToken, `DELETE FROM script_segments WHERE project_id = ?`, [projectId])
     } else if (kind === 'clips') {
-      await run(`DELETE FROM timeline_clips WHERE project_id = ?`, [projectId])
+      await runOwnedSql(projectId, runToken, `DELETE FROM timeline_clips WHERE project_id = ?`, [projectId])
     } else if (kind === 'audios') {
       const rows = await query(`SELECT storage_key FROM audios WHERE project_id = ?`, [projectId])
       for (const r of rows) {
+        await assertRunOwner(projectId, runToken)
         const abs = resolveStorageKey(r.storage_key)
         if (abs && abs.startsWith(dir)) {
           try { fs.unlinkSync(abs) } catch (_) {}
         }
       }
-      await run(`DELETE FROM audios WHERE project_id = ?`, [projectId])
-      await run(`UPDATE transcript_segments SET tts_audio_id = NULL WHERE project_id = ?`, [projectId])
+      await runOwnedSql(projectId, runToken, `DELETE FROM audios WHERE project_id = ?`, [projectId])
+      await clearTtsLinks(projectId, null, { runToken })
     } else if (kind === 'subtitles') {
-      await run(`DELETE FROM subtitles WHERE project_id = ?`, [projectId])
+      await runOwnedSql(projectId, runToken, `DELETE FROM subtitles WHERE project_id = ?`, [projectId])
+      await assertRunOwner(projectId, runToken)
       try { fs.unlinkSync(path.join(dir, 'subtitles.srt')) } catch (_) {}
       try { fs.unlinkSync(path.join(dir, 'subtitles.ass')) } catch (_) {}
     } else if (kind === 'outputs') {
-      await run(
+      await runOwnedSql(
+        projectId,
+        runToken,
         `DELETE FROM youtube_uploads WHERE output_id IN (SELECT id FROM outputs WHERE project_id = ?)`,
         [projectId]
       )
@@ -232,12 +298,13 @@ async function clearArtifacts(projectId, kinds) {
         [projectId]
       )
       for (const r of rows) {
+        await assertRunOwner(projectId, runToken)
         const abs = resolveStorageKey(r.storage_key)
         if (abs && !abs.startsWith(dir)) {
           try { fs.unlinkSync(abs) } catch (_) {}
         }
       }
-      await run(`DELETE FROM outputs WHERE project_id = ?`, [projectId])
+      await runOwnedSql(projectId, runToken, `DELETE FROM outputs WHERE project_id = ?`, [projectId])
     }
   }
 }
@@ -282,15 +349,16 @@ function logStageFailure({ projectId, stage, errOrMessage, attempt, nextRetryAt 
   )
 }
 
-async function failJob(job, projectId, message) {
+async function failJob(job, projectId, message, runToken = null) {
   const attempt = (job.attempts || 0) + 1
-  logStageFailure({ projectId, stage: job.type, errOrMessage: message, attempt })
-  await updateById('generation_jobs', job.id, {
+  const updated = await updateGenerationJobOwned(projectId, job.id, {
     status: 'failed',
     step: 'error',
     progress: 0,
     error_message: String(message).slice(0, 500),
-  })
+  }, runToken)
+  if (!updated) return false
+  logStageFailure({ projectId, stage: job.type, errOrMessage: message, attempt })
   eventBus.publish(projectId, { stage: job.type, status: 'failed', percent: 0 })
   await logProviderCall({
     projectId,
@@ -300,30 +368,49 @@ async function failJob(job, projectId, message) {
     status: 'error',
     error: String(message).slice(0, 500),
   })
+  return true
 }
 
 // Park a run halted by a rate-limit cooldown: mark the project queued so
 // drainQueued (or a manual retry after next_retry_at) resumes from the
 // earliest incomplete stage. Marking it failed would mislead; advancing
 // would BLOCK_RENDER-fail downstream stages on missing artifacts.
-async function parkProjectForRetry(projectId, stageType) {
-  await updateById('projects', projectId, { status: 'queued' })
+async function parkProjectForRetry(projectId, stageType, runToken) {
+  if (runToken) {
+    const parked = await updateProjectOwned(projectId, runToken, {
+      status: 'queued',
+      run_token: null,
+      lease_expires_at: null,
+    })
+    if (!parked) return false
+  }
   eventBus.publish(projectId, { stage: stageType, status: 'retry', percent: 0 })
+  return true
 }
 
-async function ensureStageJob(projectId, type) {
+async function ensureStageJob(projectId, type, runToken = null) {
+  await assertRunOwner(projectId, runToken)
   const existing = await queryOne(
-    'SELECT id FROM generation_jobs WHERE project_id = ? AND type = ?',
+    'SELECT id, payload FROM generation_jobs WHERE project_id = ? AND type = ?',
     [projectId, type]
   )
+  const payload = runToken ? JSON.stringify({ runToken }) : null
   if (!existing) {
-    await insert('generation_jobs', {
+    const created = await insertProjectOwned(projectId, runToken, 'generation_jobs', {
       id: uuidv4(),
       project_id: projectId,
       type,
       status: 'pending',
       attempts: 0,
+      payload,
     })
+    if (runToken && !created) {
+      const error = new Error('RUN_ABORTED')
+      error.code = 'RUN_ABORTED'
+      throw error
+    }
+  } else if (runToken && existing.payload !== payload) {
+    await updateGenerationJobOwned(projectId, existing.id, { payload }, runToken)
   }
 }
 
@@ -360,9 +447,10 @@ const DEFAULT_STAGE_TIMEOUT = 15 * 60 * 1000
 
 // Execute ONE stage end-to-end (reset → running → impl → success/fail).
 // Trả về true nếu thành công/skip, false nếu thất bại.
-async function executeStage(project, job, settings, setProgress, results, isFirstExecutedStage, signal) {
+async function executeStage(project, job, settings, setProgress, results, isFirstExecutedStage, signal, runToken = null, forceTranscript = false) {
   const projectId = project.id
   try {
+    if (runToken && !(await isProjectRunOwned(projectId, runToken))) return false
     // Check if this is a retry-stage waiting for cooldown.
     // Return the 'waiting' sentinel (NOT true): the caller must halt the run,
     // otherwise it would advance to downstream stages that BLOCK_RENDER-fail
@@ -374,17 +462,18 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       }
     }
 
-    await clearArtifacts(projectId, RESETS[job.type] || [])
-
     if (job.status !== 'pending' && job.status !== 'retry') {
-      await updateById('generation_jobs', job.id, { status: 'pending', error_message: null })
+      const resetUpdated = await updateGenerationJobOwned(projectId, job.id, { status: 'pending', error_message: null }, runToken)
+      if (!resetUpdated) return false
     }
-    await updateById('generation_jobs', job.id, {
+    const startedUpdated = await updateGenerationJobOwned(projectId, job.id, {
       status: 'running',
       step: 'processing',
       attempts: (job.attempts || 0) + 1,
       progress: 0,
-    })
+    }, runToken)
+    if (!startedUpdated) return false
+    await clearArtifacts(projectId, RESETS[job.type] || [], runToken)
     eventBus.publish(projectId, { stage: job.type, status: 'running', percent: 0 })
 
     if (isFirstExecutedStage) {
@@ -402,7 +491,8 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       // DUPLICATE_SUBTITLE cho project đang kẹt (dub.merge đã success nên
       // Regenerate từ dub.render sẽ không chạy lại stage đó). Best-effort.
       try {
-        await dedupeTranscriptSegments(projectId)
+        const currentVersion = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [projectId])
+        await dedupeTranscriptSegments(projectId, Number(currentVersion?.transcript_version ?? project.transcript_version ?? 0), { runToken })
       } catch (e) {
         console.warn(`[RenderValidation] auto-merge bỏ qua: ${String(e?.message || e).slice(0, 160)}`)
       }
@@ -417,7 +507,7 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
           : ''
         const errorMsg = `BLOCK_RENDER: ${validation.errors.map(e => e.message).join('; ')}${dupHint}` +
           ` — sửa segment lỗi rồi Regenerate/Retry (tự chạy lại từ stage lỗi earliest; bản dịch sửa tay qua PATCH /projects/:id/segments/:segmentId/translation, chi tiết ở dub.translate job.result.unresolvedDetails)`
-        await failJob(job, projectId, errorMsg)
+        await failJob(job, projectId, errorMsg, runToken)
         return false
       }
     }
@@ -425,26 +515,36 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
     const impl = STAGE_IMPL[job.type]
     if (!impl) throw new Error(`Stage không được hỗ trợ: ${job.type}`)
     const stageTimeout = STAGE_TIMEOUTS[job.type] || DEFAULT_STAGE_TIMEOUT
+    let transcriptVersion = null
+    if (job.type === 'dub.render') {
+      const current = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [projectId])
+      transcriptVersion = Number(current?.transcript_version ?? project.transcript_version ?? 0)
+      await updateGenerationJobOwned(projectId, job.id, {
+        payload: JSON.stringify({ runToken, transcriptVersion }),
+      }, runToken)
+    }
     const result = await withTimeout(
-      impl({ project, job, settings, setProgress, results, signal }),
+      impl({ project, job, settings, setProgress, results, signal, runToken, transcriptVersion, forceTranscript }),
       stageTimeout,
       job.type
     )
     results[job.type] = result
 
-    await updateById('generation_jobs', job.id, {
+    const updated = await updateGenerationJobOwned(projectId, job.id, {
       status: 'success',
       step: 'done',
       progress: 100,
       result: JSON.stringify(result || {}),
-    })
+    }, runToken)
+    if (!updated) return false
     eventBus.publish(projectId, { stage: job.type, status: 'success', percent: 100 })
     return true
   } catch (err) {
+    if (err?.code === 'RUN_ABORTED') return false
     // Validation fail fast trước mọi xử lý retry: lỗi dữ liệu không tự khỏi
     // theo thời gian, retry cùng input chỉ spam log (từng lặp 5x BLOCK_RENDER).
     if (isValidationError(err)) {
-      await failJob(job, projectId, err.message)
+      await failJob(job, projectId, err.message, runToken)
       return false
     }
     if (isRateLimitError(err)) {
@@ -453,7 +553,7 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       const attempts = (job.attempts || 0) + 1
 
       if (attempts >= MAX_RATE_LIMIT_RETRIES) {
-        await failJob(job, projectId, `PROV_002: Tất cả key cho provider đã hết quota sau ${attempts} lần retry`)
+        await failJob(job, projectId, `PROV_002: Tất cả key cho provider đã hết quota sau ${attempts} lần retry`, runToken)
         return false
       }
 
@@ -462,13 +562,14 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
         ? new Date(Date.now() + retryAfter * 1000).toISOString()
         : await getNextRetryAt(STAGE_PROVIDER[job.type] || 'unknown')
 
-      await updateById('generation_jobs', job.id, {
+      const retryUpdated = await updateGenerationJobOwned(projectId, job.id, {
         status: 'retry',
         step: 'rate_limited',
         attempts,
         next_retry_at: nextRetryAt,
         error_message: `Rate limited: ${err.message}`,
-      })
+      }, runToken)
+      if (!retryUpdated) return false
       eventBus.publish(projectId, {
         stage: job.type,
         status: 'retry',
@@ -485,23 +586,26 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
     // fail fast (retrying cannot help). Validation already handled above.
     // 'Cancelled' never retries.
     if (String(err?.message || '') !== 'Cancelled') {
-      let kind = null
-      try {
-        kind = classifyProviderError(err).kind
-      } catch (_) {}
+      let kind = err?.transient || err?.code === 'DB_WRITE_QUEUE_FULL' ? ERROR_KINDS.TRANSIENT : null
+      if (!kind) {
+        try {
+          kind = classifyProviderError(err).kind
+        } catch (_) {}
+      }
       if (kind === ERROR_KINDS.TRANSIENT) {
         const policy = RETRY_POLICY[job.type] || { maxRetries: 2, backoffMs: [10_000, 30_000] }
         const attempts = (job.attempts || 0) + 1
         if (attempts <= policy.maxRetries) {
           const delayMs = policy.backoffMs[Math.min(attempts - 1, policy.backoffMs.length - 1)]
           const nextRetryAt = new Date(Date.now() + delayMs).toISOString()
-          await updateById('generation_jobs', job.id, {
+          const retryUpdated = await updateGenerationJobOwned(projectId, job.id, {
             status: 'retry',
             step: 'transient',
             attempts,
             next_retry_at: nextRetryAt,
             error_message: `Transient: ${String(err.message).slice(0, 400)}`,
-          })
+          }, runToken)
+          if (!retryUpdated) return false
           eventBus.publish(projectId, {
             stage: job.type,
             status: 'retry',
@@ -514,7 +618,7 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       }
     }
 
-    await failJob(job, projectId, err.message)
+    await failJob(job, projectId, err.message, runToken)
     return false
   }
 }
@@ -533,11 +637,14 @@ function nowIso() {
 // Heartbeat: marks a running pipeline as alive so unified recovery never
 // mistakes a long-but-healthy run for a stale one. Conditional on
 // status='running' so a cancelled/failed project is never resurrected.
-export async function touchHeartbeat(projectId) {
+export async function touchHeartbeat(projectId, runToken = null) {
   try {
-    await run(
+    const token = runToken || (await queryOne('SELECT run_token FROM projects WHERE id = ? AND status = ?', [projectId, 'running']))?.run_token
+    if (token) await touchProjectLease(projectId, token)
+    else await run(
       `UPDATE projects SET last_heartbeat_at = ? WHERE id = ? AND status = 'running'`,
-      [nowIso(), projectId]
+      [nowIso(), projectId],
+      { op: 'project.heartbeat' }
     )
   } catch (_) {}
 }
@@ -547,48 +654,35 @@ export function abortPipeline(projectId) {
   if (ac) ac.abort()
 }
 
-export async function runPipeline(projectId, fromStage = null) {
-  if (activeRuns.has(projectId)) return
-  const project = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
-  if (!project) return
+const startingRuns = new Set()
 
-  // Distributed guard: DB says 'running' with a FRESH heartbeat means another
-  // process owns this run — do not double-start. Only a stale 'running'
-  // (heartbeat older than timeout, i.e. previous crash) may be taken over.
-  if (project.status === 'running') {
-    const hb = project.last_heartbeat_at || project.started_at || null
-    let stale = true
-    if (hb) {
-      try {
-        const { config: cfg } = await import('../config.js')
-        const timeoutMin = Number(cfg.recoveryStaleMinutes || 10)
-        stale = new Date(hb).getTime() < Date.now() - timeoutMin * 60 * 1000
-      } catch (_) {
-        stale = false
-      }
-    }
-    if (!stale) return // owned by a live run elsewhere
-    console.warn(`[Pipeline] Project ${projectId} was stale 'running' — resetting to pending`)
-    await updateById('projects', projectId, { status: 'pending' })
-    project.status = 'pending'
+export async function runPipeline(projectId, fromStage = null, admissionToken = null, options = {}) {
+  if (activeRuns.has(projectId) || startingRuns.has(projectId)) return
+  startingRuns.add(projectId)
+  try {
+    return await runPipelineOwned(projectId, fromStage, admissionToken, options)
+  } finally {
+    startingRuns.delete(projectId)
   }
+}
 
-  // Per-user concurrency enforcement at the single choke point every caller
-  // flows through (create, regenerate, retry, redub, drain). DB-counted so
-  // it holds across processes; parks excess starts as queued for later drain.
-  if (project.status !== 'running') {
-    try {
-      const { config: cfg } = await import('../config.js')
-      const maxConcurrent = Number(cfg.maxConcurrentProjectsPerUser || 2)
-      const running = await queryOne(
-        `SELECT COUNT(*) as cnt FROM projects WHERE user_id = ? AND status = 'running'`,
-        [project.user_id]
-      )
-      if ((running?.cnt || 0) >= maxConcurrent) {
-        await updateById('projects', projectId, { status: 'queued' })
-        return
-      }
-    } catch (_) {}
+async function runPipelineOwned(projectId, fromStage = null, admissionToken = null, options = {}) {
+  if (activeRuns.has(projectId)) return
+  let runToken = admissionToken
+  if (!runToken) {
+    const admission = await acquireProjectRun(projectId, { allowReserved: true })
+    if (!admission.admitted) return admission
+    runToken = admission.runToken
+  }
+  let project = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
+  if (!project || project.run_token !== runToken || project.status !== 'pending') return { admitted: false, reason: 'not-owner' }
+
+  const started = await markProjectRunning(projectId, runToken)
+  if (!started) return { admitted: false, reason: 'not-owner' }
+  project = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
+  if (!project) {
+    await updateProjectOwned(projectId, runToken, { status: 'queued', run_token: null, lease_expires_at: null })
+    return
   }
 
   activeRuns.add(projectId)
@@ -597,12 +691,16 @@ export async function runPipeline(projectId, fromStage = null) {
   const abortController = new AbortController()
   abortControllers.set(projectId, abortController)
   const { signal } = abortController
+  const heartbeatTimer = setInterval(() => {
+    touchHeartbeat(projectId, runToken)
+  }, 30_000)
+  if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref()
 
   try {
-    const stageGroups = STAGES[project.mode] || []
+    const stageGroups = groupedStagesForProject(project)
     for (const group of stageGroups) {
       const list = Array.isArray(group) ? group : [group]
-      for (const type of list) await ensureStageJob(projectId, type)
+      for (const type of list) await ensureStageJob(projectId, type, runToken)
     }
 
     // Clamp fromStage to the earliest incomplete stage in pipeline order.
@@ -616,9 +714,9 @@ export async function runPipeline(projectId, fromStage = null) {
           'SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?',
           [projectId]
         )
-        const r = firstRunnableStage(STAGES[project.mode] || [], allJobs)
+        const r = firstRunnableStage(stagesForProject(project), allJobs)
         if (r.waiting) {
-          await parkProjectForRetry(projectId, r.type)
+          await parkProjectForRetry(projectId, r.type, runToken)
           return
         }
         if (r.type && r.type !== effectiveFrom) {
@@ -628,8 +726,7 @@ export async function runPipeline(projectId, fromStage = null) {
       } catch (_) {}
     }
 
-    const startedAt = nowIso()
-    await updateById('projects', projectId, { status: 'running', progress: 0, started_at: startedAt, last_heartbeat_at: startedAt })
+    await updateProjectOwned(projectId, runToken, { progress: 0, last_heartbeat_at: nowIso() })
     eventBus.publish(projectId, { stage: '__project__', status: 'running', percent: 0 })
 
     let started = !effectiveFrom
@@ -663,16 +760,18 @@ export async function runPipeline(projectId, fromStage = null) {
           currentProject, job, settings,
           (pct) => {
             const p = Math.max(0, Math.min(99, Math.round(pct)))
-            updateById('generation_jobs', job.id, { progress: p }).catch(() => {})
+            updateGenerationJobOwned(projectId, job.id, { progress: p }, runToken).catch(() => {})
             eventBus.publish(projectId, { stage: job.type, status: 'running', percent: p })
           },
           results,
           isFirstExecutedStage,
-          signal
+          signal,
+          runToken,
+          options.forceTranscript === true
         )
         isFirstExecutedStage = false
         if (ok === 'waiting') {
-          await parkProjectForRetry(projectId, types[0])
+          await parkProjectForRetry(projectId, types[0], runToken)
           return
         }
         if (!ok) groupFailed = true
@@ -685,27 +784,30 @@ export async function runPipeline(projectId, fromStage = null) {
             eventBus.publish(projectId, { stage: '__sequential__', status: 'running', percent: p })
           },
           results,
-          signal
+          signal,
+          runToken,
+          options.forceTranscript === true
         )
         isFirstExecutedStage = false
-        if (ok === 'waiting') {
-          await parkProjectForRetry(projectId, 'dub.stt')
+        if (ok === 'waiting' || ok?.status === 'waiting') {
+          await parkProjectForRetry(projectId, ok?.stage || 'dub.stt', runToken)
           return
         }
         if (!ok) groupFailed = true
       }
 
       if (groupFailed) {
-        await updateById('projects', projectId, { status: 'failed' })
-        eventBus.publish(projectId, { stage: '__project__', status: 'failed', percent: done / total * 100 })
+        const failedUpdated = await updateProjectOwned(projectId, runToken, { status: 'failed', run_token: null, lease_expires_at: null })
+        if (failedUpdated) eventBus.publish(projectId, { stage: '__project__', status: 'failed', percent: done / total * 100 })
         return
       }
 
       done++
-      await updateById('projects', projectId, {
+      const progressed = await updateProjectOwned(projectId, runToken, {
         progress: Math.round((done / total) * 100),
         last_heartbeat_at: nowIso(),
       })
+      if (!progressed) return
       eventBus.publish(projectId, {
         stage: '__project__',
         status: done >= total ? 'completed' : 'running',
@@ -714,7 +816,8 @@ export async function runPipeline(projectId, fromStage = null) {
       currentProject = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId]) || currentProject
     }
 
-    await updateById('projects', projectId, { status: 'completed', progress: 100 })
+    const completedUpdated = await updateProjectOwned(projectId, runToken, { status: 'completed', progress: 100, run_token: null, lease_expires_at: null })
+    if (!completedUpdated) return
     eventBus.publish(projectId, { stage: '__project__', status: 'completed', percent: 100 })
 
     // Isolated: queue failure must never fail a successful video pipeline.
@@ -735,8 +838,10 @@ export async function runPipeline(projectId, fromStage = null) {
       console.error('[Pipeline] Notification failed:', notifyErr.message)
     }
   } catch (err) {
+    if (err?.code === 'RUN_ABORTED') return
     console.error('[Pipeline] lỗi:', err)
-    await updateById('projects', projectId, { status: 'failed' })
+    const failedUpdated = await updateProjectOwned(projectId, runToken, { status: 'failed', run_token: null, lease_expires_at: null })
+    if (!failedUpdated) return
     eventBus.publish(projectId, { stage: '__project__', status: 'failed', percent: 0 })
 
     // Isolated: queue failure must never corrupt pipeline failure handling.
@@ -755,9 +860,10 @@ export async function runPipeline(projectId, fromStage = null) {
       console.error('[Pipeline] Notification failed:', notifyErr.message)
     }
   } finally {
+    clearInterval(heartbeatTimer)
     activeRuns.delete(projectId)
     abortControllers.delete(projectId)
   }
 }
 
-export default { runPipeline, STAGES, flatStages }
+export default { runPipeline, STAGES, flatStages, stagesForProject }

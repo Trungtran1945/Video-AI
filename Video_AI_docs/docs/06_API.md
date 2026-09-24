@@ -74,15 +74,10 @@ Chạy sau khi `dub.translate` xong, trước khi enqueue `dub.ttsAlign`/`dub.re
 ### GET `/projects` — danh sách (phân trang, filter `?mode=`) [CURRENT: trả array trực tiếp]
 ### GET `/projects/:id` — chi tiết (kèm stages, timeline/transcript, output) [CURRENT: trả object trực tiếp]
 ### GET `/projects/:id/timeline` — `TimelineClip[]` (SUMMARY) [CURRENT: array trực tiếp]
-### GET `/projects/:id/transcript` — `TranscriptSegment[]` + bản dịch (TRANSLATE_DUB) [CURRENT: array trực tiếp]
-### PUT `/projects/:id/transcript` — lưu bản dịch/timing user chỉnh [CURRENT, EXTRA: đã cài đặt
-(`dubData.js:53-179`), chưa document trước đây; body `{ segments: [{ id, translation?, startSec?, endSec? }] }`,
-overlap → 400 `VAL_002`, trả `{ updated, adjustedSegments, outputStale, segments }`]
-### PATCH `/projects/:id/segments/:segmentId/translation` — sửa tay 1 segment khi
-`dub.translate` fail `TRANSLATE_NEEDS_REVIEW` [CURRENT, EXTRA: `projects.js:264-292`; gate hard → 422,
-soft warnings cho qua; giữ bản sửa khi regenerate]
-### POST `/projects/:id/translate-dub/redub` — chạy lại chỉ `dub.ttsAlign → dub.render` dùng bản dịch
-hiện tại [CURRENT, EXTRA: `generation.js:31-49`; guard cần ≥1 segment có translation; 409 nếu pipeline đang chạy]
+### GET `/projects/:id/transcript` — `{ revision, segments, outputStale }` (TRANSLATE_DUB) [CURRENT]
+### PUT `/projects/:id/transcript` — body `{ revision, segments: [{ id, text?, translation?, startSec?, endSec? }] }`; `revision` bắt buộc, thiếu → 400, stale → 409 `CONFLICT_001`; trả `{ updated, revision, adjustedSegments, outputStale, segments }`
+### PATCH `/projects/:id/segments/:segmentId/translation` — body `{ revision, translation }`; revision bắt buộc, gate hard → 422, stale → 409, trả segment + revision + outputStale
+`transcript_version` là revision của source-of-truth `transcript_segments`. User PUT/PATCH và generated translation/dedupe chỉ bump khi state thực sự đổi; initial STT/OCR/cache import giữ revision khởi tạo; TTS linkage là derived metadata và không bump. Dub render stamp snapshot revision, Summary output dùng `null`.
 ### DELETE `/projects/:id` — xoá project + file [CURRENT, EXTRA: `projects.js:329-362`; 409 nếu pipeline đang chạy]
 ### GET/PUT `/projects/:id/mask-regions` — [NOT IMPLEMENTED: không route nào cài đặt] —
 `OcrRegion[]`; PUT nhận region user chỉnh trên Canvas (`source='MANUAL'`)
@@ -163,8 +158,8 @@ Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 
 | Method | Path | Auth | Mô tả |
 | --- | --- | --- | --- |
-| GET | `/outputs` | AUTH | thư viện video (`?projectId=`; array trực tiếp, mỗi row kèm `url`) [CURRENT] |
-| GET | `/outputs/:id` | AUTH (+owner/admin) | chi tiết + URL download (signed) [CURRENT: object trực tiếp] |
+| GET | `/outputs` | AUTH | thư viện video (`?projectId=`; mỗi row kèm `url` và `outputStale`) [CURRENT] |
+| GET | `/outputs/:id` | AUTH (+owner/admin) | chi tiết + URL download + `outputStale` [CURRENT] |
 | POST | `/outputs/:id/youtube` | AUTH+OWNER | `{ privacy }` → stub hàng đợi `youtube_uploads` `pending` (upload thật chưa gắn; idempotent) [CURRENT] |
 | GET | `/outputs/:id/youtube` | AUTH+OWNER | trạng thái upload (row mới nhất hoặc `{ status: 'none' }`) [CURRENT] |
 

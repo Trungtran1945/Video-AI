@@ -129,15 +129,17 @@ async function commitTranscript(projectId, expectedRevisionOrNull, newTranslatio
   await run(`DELETE FROM projects WHERE id = ?`, [pid])
 }
 
-// 8. route source: gate inside transaction, precise stale, 409 contract.
+// 8. route/service source: gate inside transaction, precise stale, 409 contract.
 {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'v1', 'dubData.js'), 'utf8')
-  assert(src.includes('WHERE transcript_version = ?') || src.includes('AND transcript_version'), 'revision check inside transaction (conditional UPDATE)')
-  assert(src.includes('409'), 'conflict returns HTTP 409')
-  assert(src.includes('REVISION_CONFLICT'), 'uses REVISION_CONFLICT code')
-  assert(src.includes('revision'), 'request/response carry revision')
-  assert(!src.includes('outputStale: !!latestOutput'), 'no bare !!latestOutput stale semantics')
-  assert(src.includes('transcript_version') && src.includes('outputStale'), 'outputStale derived from transcript_version')
+  const route = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'v1', 'dubData.js'), 'utf8')
+  const service = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'transcriptMutationService.js'), 'utf8')
+  const output = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'outputService.js'), 'utf8')
+  assert(service.includes('WHERE transcript_version = ?') || service.includes('AND transcript_version'), 'revision check inside transaction (conditional UPDATE)')
+  assert(route.includes('409'), 'conflict returns HTTP 409')
+  assert(route.includes('REVISION_CONFLICT'), 'uses REVISION_CONFLICT code')
+  assert(route.includes('revision'), 'request/response carry revision')
+  assert(!route.includes('outputStale: !!latestOutput'), 'no bare !!latestOutput stale semantics')
+  assert(output.includes('outputIsStale') && output.includes('transcript_version'), 'outputStale derived from transcript_version')
 }
 
 try { fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}

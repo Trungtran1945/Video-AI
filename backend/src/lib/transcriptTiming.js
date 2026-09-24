@@ -36,11 +36,15 @@ export function applyTextTranslation(orig, patch = {}) {
       newTranslationEdited = 0
     } else {
       newTranslation = typeof patch.translation === 'string' ? patch.translation : null
-      newTranslationEdited = newTranslation !== null ? 1 : 0
+      newTranslationEdited = newTranslation === orig.translation
+        ? orig.is_translation_manually_edited
+        : (typeof newTranslation === 'string' && newTranslation.trim() ? 1 : 0)
     }
   } else if (hasTranslationKey) {
     newTranslation = typeof patch.translation === 'string' ? patch.translation : null
-    newTranslationEdited = newTranslation !== null ? 1 : 0
+    newTranslationEdited = newTranslation === orig.translation
+      ? orig.is_translation_manually_edited
+      : (typeof newTranslation === 'string' && newTranslation.trim() ? 1 : 0)
   } else {
     newTranslation = orig.translation
   }
@@ -117,10 +121,14 @@ export function computeProposedState(allSegments, incoming, { gap = TIMING_GAP, 
         errors.push({ code: 'INVALID_TIMING', segmentId: id, message: `end phải > start (got ${ns}→${ne})` })
         continue
       }
+      const timingChanged = ns !== row.start_sec || ne !== row.end_sec
       row.start_sec = ns
       row.end_sec = ne
-      row.is_time_manually_adjusted = 1
-      hasExplicitTiming.add(id)
+      if (timingChanged) {
+        row.is_time_manually_adjusted = 1
+        ttsInvalidate.push(id)
+        hasExplicitTiming.add(id)
+      }
     }
   }
   if (errors.length || conflicts.length) {

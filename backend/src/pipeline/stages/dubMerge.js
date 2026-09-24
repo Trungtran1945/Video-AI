@@ -1,89 +1,20 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { query, run } from '../../db/query.js'
+import { query } from '../../db/query.js'
 import { logProviderCall } from '../../providers/tracked.js'
 import { hasHardTranslationError } from './dubTranslate.js'
+import { dedupeTranscriptSegments as mutateDedupeTranscriptSegments, findDuplicateGroups } from '../../services/transcriptMutationService.js'
 import { validateNoOverlap } from '../forcedAlignService.js'
 import { projectDir } from '../context.js'
-
-function truncate80(s) {
-  return String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, 80)
-}
 
 function parseParams(raw) {
   try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
 }
 
-// Chuẩn hoá text để phát hiện câu lặp của STT. Giữ nguyên tắc của validator
-// (trim chính xác, phân biệt hoa/thường và dấu câu) — chỉ gộp câu lặp
-// nguyên văn, KHÔNG gộp paraphrase ("Cold water bottle." vs "...?").
-function normalizeDupText(s) {
-  return String(s ?? '').trim()
-}
+export { findDuplicateGroups }
 
-// Tìm các nhóm segment liên tiếp trùng text nguyên văn (đã sort theo start_sec).
-// Điều kiện khớp hệt validator DUPLICATE_SUBTITLE: text trim bằng nhau và
-// gap = start - prev_end < 1.0s. Trả về mảng các nhóm (mỗi nhóm >= 2 segment).
-export function findDuplicateGroups(sortedSegments) {
-  const groups = []
-  let cur = []
-  for (const s of sortedSegments || []) {
-    const prev = cur.length ? cur[cur.length - 1] : null
-    const t = normalizeDupText(s.text)
-    if (
-      prev &&
-      t &&
-      t === normalizeDupText(prev.text) &&
-      Math.abs(Number(s.start_sec) - Number(prev.end_sec)) < 1.0
-    ) {
-      cur.push(s)
-    } else {
-      if (cur.length >= 2) groups.push(cur)
-      cur = [s]
-    }
-  }
-  if (cur.length >= 2) groups.push(cur)
-  return groups
-}
-
-// Tự gộp các segment STT lặp nguyên văn liên tiếp trong DB.
-// Keeper = segment đầu nhóm (giữ start_sec + translation của nó); end_sec nới
-// tới end xa nhất trong nhóm để giữ phủ timeline. Nếu keeper chưa có
-// translation mà bản trùng có, copy bản dịch đầu tiên còn dùng được để tránh
-// lỗi UNTRANSLATED sau gộp. Xoá các bản trùng, giữ nguyên index_num của keeper
-// (không đánh lại số — nhiều nơi ORDER BY index_num, gap là hợp lệ).
-// Idempotent: chạy lại khi không còn trùng thì no-op.
-// @returns {{mergedGroups:number, removedCount:number, removedIds:Array}}
-export async function dedupeTranscriptSegments(projectId) {
-  const rows = await query(
-    'SELECT id, start_sec, end_sec, text, translation FROM transcript_segments WHERE project_id = ? ORDER BY start_sec ASC',
-    [projectId]
-  )
-  const groups = findDuplicateGroups(rows)
-  let removedCount = 0
-  const removedIds = []
-  for (const g of groups) {
-    const keeper = g[0]
-    const newEnd = Math.max(...g.map((s) => Number(s.end_sec) || 0))
-    let newTranslation = keeper.translation
-    if (!newTranslation || !String(newTranslation).trim()) {
-      const donor = g.find((s) => s.translation && String(s.translation).trim())
-      if (donor) newTranslation = donor.translation
-    }
-    await run(
-      'UPDATE transcript_segments SET end_sec = ?, translation = ? WHERE id = ?',
-      [newEnd, newTranslation || null, keeper.id]
-    )
-    for (const dup of g.slice(1)) {
-      await run('DELETE FROM transcript_segments WHERE id = ?', [dup.id])
-      removedIds.push(dup.id)
-      removedCount++
-    }
-  }
-  if (removedCount > 0) {
-    console.log(`[dubMerge] auto-merge ${removedCount} segment STT lặp nguyên văn (${groups.length} nhóm) cho project ${projectId}`)
-  }
-  return { mergedGroups: groups.length, removedCount, removedIds }
+export async function dedupeTranscriptSegments(projectId, expectedRevision = null, options = {}) {
+  return mutateDedupeTranscriptSegments(projectId, expectedRevision, options)
 }
 
 // Chọn pool segment theo mode dịch: ocrMode → rows OCR (visible subtitles là
@@ -155,7 +86,7 @@ export async function validateForRender(projectId) {
         details: untranslated.map((s) => ({ id: s.id, index: s.index_num, errors: ['missing translation'], sourceLanguage, targetLanguage })),
       })
       for (const s of untranslated) {
-        console.warn(`[RenderValidation] segment #${s.index_num} warning: errors=missing translation sourceLanguage=${sourceLanguage} targetLanguage=${targetLanguage} src="${truncate80(s.text)}" tgt="${truncate80(s.translation)}"`)
+        console.warn(`[RenderValidation] segment #${s.index_num} warning: errors=missing translation sourceLanguage=${sourceLanguage} targetLanguage=${targetLanguage}`)
       }
     }
   }
@@ -201,11 +132,11 @@ export async function validateForRender(projectId) {
     if (r.hard) {
       semanticHard.push(s)
       semanticHardDetails.push({ id: s.id, index: s.index_num, errors: r.errors, sourceLanguage, targetLanguage })
-      console.log(`[RenderValidation] segment #${s.index_num} BLOCK: errors=${r.errors.join('|')} sourceLanguage=${sourceLanguage} targetLanguage=${targetLanguage} src="${truncate80(s.text)}" tgt="${truncate80(s.translation)}"`)
+      console.log(`[RenderValidation] segment #${s.index_num} BLOCK: errors=${r.errors.join('|')} sourceLanguage=${sourceLanguage} targetLanguage=${targetLanguage}`)
     } else if (r.errors.length > 0) {
       semanticSoft.push(s)
       semanticSoftDetails.push({ id: s.id, index: s.index_num, errors: r.errors, sourceLanguage, targetLanguage })
-      console.warn(`[RenderValidation] segment #${s.index_num} warning: errors=${r.errors.join('|')} sourceLanguage=${sourceLanguage} targetLanguage=${targetLanguage} src="${truncate80(s.text)}" tgt="${truncate80(s.translation)}"`)
+      console.warn(`[RenderValidation] segment #${s.index_num} warning: errors=${r.errors.join('|')} sourceLanguage=${sourceLanguage} targetLanguage=${targetLanguage}`)
     }
   }
   if (semanticHard.length > 0) {
@@ -298,7 +229,7 @@ export async function validateForRender(projectId) {
  * NOTE: This stage runs BEFORE dub.translate, so translations do NOT
  * exist yet. Only check STT output + language config + duration validity.
  */
-export default async function dubMerge({ project, job, setProgress }) {
+export default async function dubMerge({ project, job, setProgress, runToken }) {
   const projectId = project.id
   const params = parseParams(project.params)
   const ocrMode = !!params.ocrMode
@@ -350,7 +281,8 @@ export default async function dubMerge({ project, job, setProgress }) {
   // best-effort, không throw: còn sót sẽ bị validateForRender chặn ở dub.render.
   let deduped = 0
   try {
-    const r = await dedupeTranscriptSegments(projectId)
+    const current = await query('SELECT transcript_version FROM projects WHERE id = ?', [projectId])
+    const r = await dedupeTranscriptSegments(projectId, Number(current?.[0]?.transcript_version ?? 0), { runToken })
     deduped = r.removedCount
   } catch (e) {
     console.warn(`[dubMerge] auto-merge bỏ qua: ${String(e?.message || e).slice(0, 160)}`)

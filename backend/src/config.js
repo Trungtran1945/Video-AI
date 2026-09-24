@@ -61,6 +61,14 @@ const masterKey = process.env.MASTER_KEY || (nodeEnv === 'production' ? '' : DEV
 // Fail-fast in production (no dev-secret boot). Never logs secret values.
 assertProductionSecrets({ nodeEnv, jwtAccessSecret, jwtRefreshSecret, masterKey })
 
+function positiveInt(value, fallback) {
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
+}
+
+const instanceMode = String(process.env.INSTANCE_MODE || 'single').toLowerCase()
+const maxConcurrentProjectsPerUser = positiveInt(process.env.MAX_CONCURRENT_PROJECTS_PER_USER, 2)
+
 export const config = {
   port: Number(process.env.PORT || 3001),
   nodeEnv,
@@ -81,8 +89,11 @@ export const config = {
     port: Number(process.env.REDIS_PORT || 6379),
   },
   // Group 1: Concurrency limit
-  maxConcurrentProjectsPerUser: Number(process.env.MAX_CONCURRENT_PROJECTS_PER_USER || 2),
-  // Group 1: Retention
+  maxConcurrentProjectsPerUser,
+  instanceMode,
+  projectLeaseSeconds: positiveInt(process.env.PROJECT_LEASE_SECONDS, 1800),
+  dbMaxPendingWrites: positiveInt(process.env.DB_MAX_PENDING_WRITES, 1000),
+  dbSlowWriteMs: Number.isFinite(Number(process.env.DB_SLOW_WRITE_MS)) ? Number(process.env.DB_SLOW_WRITE_MS) : 1000,
   projectRetentionDays: Number(process.env.PROJECT_RETENTION_DAYS || 30),
   // Group 1: SMTP notification
   smtp: {
@@ -113,6 +124,10 @@ export const config = {
 export function isOriginAllowed(origin, { nodeEnv: env = nodeEnv, corsOrigins = config.corsOrigins } = {}) {
   if (!origin) return true // same-origin / curl / non-browser
   return corsOrigins.includes(origin)
+}
+
+if (config.instanceMode !== 'single') {
+  throw new Error(`[Config] sql.js requires INSTANCE_MODE=single (got ${config.instanceMode})`)
 }
 
 // Ensure storage sub-directories exist

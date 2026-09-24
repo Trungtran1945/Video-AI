@@ -10,27 +10,29 @@ const assert = (c, m) => { if (c) console.log('PASS:', m); else { failures++; co
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const runnerSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'pipeline', 'runner.js'), 'utf8')
 const drainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'workers', 'drainQueued.js'), 'utf8')
-const claimSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'claim.js'), 'utf8')
 
-// 1. Single pipeline per project: in-process guard + distributed fresh-heartbeat guard.
+// 1. Single pipeline ownership: active/start guards + conditional run token.
+const admissionSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'projectAdmission.js'), 'utf8')
 assert(runnerSrc.includes('activeRuns.has(projectId)'), 'runner keeps in-process single-run guard')
-assert(runnerSrc.includes('last_heartbeat_at'), 'runner checks DB heartbeat before take-over')
-assert(runnerSrc.includes('owned by a live run'), 'runner refuses to double-start a live run')
+assert(runnerSrc.includes('startingRuns.has(projectId)'), 'runner serializes concurrent starts')
+assert(runnerSrc.includes('markProjectRunning'), 'runner requires a conditional running transition')
+assert(runnerSrc.includes('run_token'), 'runner fences lifecycle writes by run token')
+assert(admissionSrc.includes("status IN ('pending', 'running')"), 'admission counts reserved and running slots')
 
-// 2. Per-user cap enforced at the single choke point (covers create,
-// regenerate, retry, redub, drain — not just one route).
-assert(runnerSrc.includes('maxConcurrentProjectsPerUser'), 'runner enforces per-user cap')
-assert(runnerSrc.includes("{ status: 'queued' }"), 'runner parks excess starts as queued')
-assert(claimSrc.includes('maxConcurrentProjectsPerUser'), 'claim re-checks per-user cap after winning')
+// 2. Per-user cap is enforced by the shared admission service.
+assert(admissionSrc.includes('maxConcurrentProjectsPerUser'), 'admission enforces per-user cap')
+assert(admissionSrc.includes("status = 'queued'"), 'admission parks excess projects as queued')
+assert(admissionSrc.includes('run_token'), 'admission creates a run ownership token')
 
-// 3. Drain still scopes by user with a slot check (no cross-user starvation).
+// 3. Drain scopes by user and does not bypass the shared claim.
 assert(drainSrc.includes('GROUP BY user_id'), 'drain lists all queued users')
-assert(drainSrc.includes("status = 'running'"), 'drain counts running per user')
+assert(drainSrc.includes("status IN ('pending', 'running')"), 'drain counts active reservations')
+assert(drainSrc.includes('claimQueuedProject'), 'drain uses shared atomic claim')
 
 // 4. No caller bypasses the guards with an unconditional status flip.
 assert(!/UPDATE projects SET status = 'pending' WHERE id = \?`/.test(drainSrc),
   'drain has no unconditional pending flip')
-assert(claimSrc.includes("AND status = 'queued'"), 'only conditional claim flips queued->pending')
+assert(admissionSrc.includes("AND status = 'queued'"), 'only conditional claim flips queued->pending')
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

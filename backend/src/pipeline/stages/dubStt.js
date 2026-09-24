@@ -1,7 +1,8 @@
 import path from 'path'
 import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
-import { insert, query } from '../../db/query.js'
+import { query, queryOne } from '../../db/query.js'
+import { replaceTranscript } from '../../services/transcriptMutationService.js'
 import { extractAudio, sliceAudio, probe, compressAudioForUpload } from '../../media/mediaService.js'
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
@@ -12,7 +13,7 @@ const CHUNK_SEC = 600
 // dub.stt (docs/05 §B.2): ASR trên audio đã normalize LUFS → transcript_segments.
 // Speaker diarization: cột speaker để NULL ở v1 (Whisper API không trả speaker).
 export async function dubStt(ctx) {
-  const { project, job, setProgress, results, signal } = ctx
+  const { project, job, setProgress, results, signal, runToken } = ctx
   const ingest = results['dub.ingest'] || {}
   const src = requireSourceFile(project.source_video_key, 'Video nguồn')
   const tmp = ensureDir(tmpDirOf(project.id))
@@ -21,12 +22,15 @@ export async function dubStt(ctx) {
   // Check abort signal
   if (signal?.aborted) throw new Error('Cancelled')
 
+  const current = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [project.id])
+  const transcriptVersion = Number(current?.transcript_version ?? project.transcript_version ?? 0)
+
   // Skip STT if segments already exist (video hash cache — copied from duplicate project)
   const existing = await query(
     'SELECT COUNT(*) as cnt FROM transcript_segments WHERE project_id = ?',
     [project.id]
   )
-  if (existing[0]?.cnt > 0) {
+  if (existing[0]?.cnt > 0 && !ctx.forceTranscript) {
     return { segmentCount: existing[0].cnt, skipped: true, reason: 'cached' }
   }
 
@@ -98,10 +102,10 @@ export async function dubStt(ctx) {
     setProgress(15 + Math.round(((i + 1) / chunks.length) * 82))
   }
 
-  // Ghi DB (docs/02: TranscriptSegment) — chèn tuần tự để giữ thứ tự index
-  for (const seg of segments) {
-    await insert('transcript_segments', seg)
-  }
+  await replaceTranscript(project.id, segments, {
+    expectedRevision: transcriptVersion,
+    runToken,
+  })
 
   // Dọn chunk trung gian (giữ lại normalized wav cho TTS mixing nếu cần)
   for (const c of chunks) {

@@ -32,6 +32,7 @@ const stageIcons = {
   'summary.subtitle': Captions,
   'summary.render': Video,
   'dub.ingest': FileAudio,
+  'dub.ocr': FileText,
   'dub.stt': Mic,
   'dub.translate': Languages,
   'dub.ttsAlign': AudioLines,
@@ -40,7 +41,7 @@ const stageIcons = {
 
 const SUMMARY_STAGES = ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'];
 
-const DUB_STAGES_ALL = ['dub.ingest', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
+const DUB_STAGES_ALL = ['dub.ingest', 'dub.ocr', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
 
 const ACTIVE_STATUSES = ['pending', 'queued', 'generating', 'running'];
 
@@ -88,10 +89,11 @@ export default function ProjectDetail() {
   const [duration, setDuration] = useState(0);
   const [targetLanguage, setTargetLanguage] = useState('vi');
   const videoRef = useRef(null);
-  const lastOutputIdRef = useRef(null);
   // Optimistic concurrency (§4.6): revision server cấp, seq chống stale response.
-  const transcriptRevisionRef = useRef(0);
+  const transcriptRevisionRef = useRef(null);
   const transcriptSaveSeqRef = useRef(0);
+  const transcriptLoadSeqRef = useRef(0);
+  const transcriptSaveInFlightRef = useRef(false);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -108,6 +110,8 @@ export default function ProjectDetail() {
   const isOutputAvailable =
     project?.status === 'completed' &&
     !!project?.output?.storage_key &&
+    !outputStale &&
+    project?.outputStale !== true &&
     (project?.output?.status === 'success' || !project?.output?.status);
   const outputUrl = isOutputAvailable ? `/storage/${project.output.storage_key}?v=${project.output.id}` : null;
   const isVideoOutput = /\.(mp4|webm|mov|m4v|mkv)$/i.test(project?.output?.storage_key || '');
@@ -253,13 +257,8 @@ export default function ProjectDetail() {
   const load = useCallback(async () => {
     try {
       const p = await projectsApi.get(id);
-      const prevOutputId = lastOutputIdRef.current;
-      const nextOutputId = p?.output?.id;
-      if (p?.status === 'completed' && nextOutputId && prevOutputId && nextOutputId !== prevOutputId) {
-        setOutputStale(false);
-      }
-      if (nextOutputId) lastOutputIdRef.current = nextOutputId;
-      setProject(p);
+       if (p?.outputStale !== undefined) setOutputStale(p.outputStale === true);
+       setProject(p);
       setJobs(p.jobs || []);
       setScenes(p.mode === 'SUMMARY' ? (p.scenes || []) : []);
       return p;
@@ -269,15 +268,22 @@ export default function ProjectDetail() {
     }
   }, [id]);
 
-  const loadDubData = useCallback(async () => {
+  const loadDubData = useCallback(async ({ force = false } = {}) => {
+    if (transcriptSaveInFlightRef.current && !force) return;
+    const seq = transcriptLoadSeqRef.current + 1;
+    transcriptLoadSeqRef.current = seq;
     try {
       const segs = await projectsApi.transcript(id);
+      if (seq !== transcriptLoadSeqRef.current || (transcriptSaveInFlightRef.current && !force)) return;
       // Server trả { revision, segments }; giữ tương thích array legacy.
       const revision = Array.isArray(segs) ? null : segs?.revision;
       const list = Array.isArray(segs) ? segs : segs?.segments || [];
       if (revision !== null && revision !== undefined && Number.isInteger(Number(revision))) {
         transcriptRevisionRef.current = Number(revision);
+      } else {
+        transcriptRevisionRef.current = null;
       }
+      if (!Array.isArray(segs) && segs?.outputStale !== undefined) setOutputStale(segs.outputStale === true);
       setTranscript(list.map(normSegment));
     } catch {
       /* endpoint chưa có — để trống */
@@ -414,8 +420,14 @@ export default function ProjectDetail() {
 
   const handleSaveTranscript = async (edits) => {
     if (savingTranscript) return null;
+    if (!Number.isInteger(transcriptRevisionRef.current)) {
+      setTranscriptError('Chưa tải được revision transcript — tải lại dự án rồi thử lại.');
+      return null;
+    }
     setSavingTranscript(true);
     setTranscriptError('');
+    transcriptSaveInFlightRef.current = true;
+    transcriptLoadSeqRef.current += 1;
     // Sequence guard: response cũ về sau KHÔNG được overwrite state mới (A→B, B trước A sau).
     const seq = transcriptSaveSeqRef.current + 1;
     transcriptSaveSeqRef.current = seq;
@@ -430,7 +442,7 @@ export default function ProjectDetail() {
       if (Array.isArray(res.segments)) {
         setTranscript(res.segments.map(normSegment));
       }
-      if (res?.outputStale === true) setOutputStale(true);
+       if (res?.outputStale !== undefined) setOutputStale(res.outputStale === true);
       toast({ title: 'Đã lưu chỉnh sửa', description: `${res.updated || edits.length} câu đã cập nhật.` });
       return res;
     } catch (e) {
@@ -446,7 +458,7 @@ export default function ProjectDetail() {
           transcriptRevisionRef.current = Number(currentRevision);
         }
         try {
-          await loadDubData();
+          await loadDubData({ force: true });
         } catch { /* giữ local edits nếu refetch fail */ }
         const msg = 'Transcript đã được cập nhật ở tab/phiên khác — đã tải bản mới nhất, vui lòng đối chiếu trước khi lưu lại. Bài sửa hiện tại của bạn vẫn được giữ.';
         setTranscriptError(msg);
@@ -456,7 +468,10 @@ export default function ProjectDetail() {
       setTranscriptError('Chưa lưu được: ' + (e?.response?.data?.message || e.message));
       return null;
     } finally {
-      if (seq === transcriptSaveSeqRef.current) setSavingTranscript(false);
+      if (seq === transcriptSaveSeqRef.current) {
+        transcriptSaveInFlightRef.current = false;
+        setSavingTranscript(false);
+      }
     }
   };
 
@@ -466,7 +481,6 @@ export default function ProjectDetail() {
     setTranscriptError('');
     try {
       await projectsApi.redub(id);
-      setOutputStale(false);
       toast({ title: 'Đang lồng tiếng lại', description: 'Video sẽ được cập nhật sau khi hoàn tất.' });
       await load();
     } catch (e) {
@@ -500,8 +514,13 @@ export default function ProjectDetail() {
 
   const params = project.params || {};
   const enableDubbing = params.enableDubbing ?? params.enable_dubbing ?? false;
+  const transcriptStage = params.ocrMode ? 'dub.ocr' : 'dub.stt';
   const stages = isDub
-    ? DUB_STAGES_ALL.filter((s) => s !== 'dub.ttsAlign' || enableDubbing)
+    ? DUB_STAGES_ALL.filter((s) => {
+      if (s === 'dub.ttsAlign' && !enableDubbing) return false;
+      if (s === 'dub.ocr' || s === 'dub.stt') return s === transcriptStage;
+      return true;
+    })
     : SUMMARY_STAGES;
   const timeline = project.timeline || [];
 
@@ -1141,10 +1160,11 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
         setLocalError(err);
         return;
       }
-      await onSave(payload);
+      const saved = await onSave(payload);
+      if (saved === null) return;
     }
     setEdits({});
-    onRedub();
+    await onRedub();
   };
 
   // Compact mode for2-panel layout

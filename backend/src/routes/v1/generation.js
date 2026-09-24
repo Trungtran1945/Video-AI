@@ -2,7 +2,8 @@ import { Router } from 'express'
 import { query, queryOne } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
-import { runPipeline, flatStages, isPipelineRunning, STAGES } from '../../pipeline/runner.js'
+import { runPipeline, flatStages, isPipelineRunning, stagesForProject } from '../../pipeline/runner.js'
+import { acquireProjectRun } from '../../services/projectAdmission.js'
 import { firstRunnableStage } from '../../pipeline/context.js'
 import { sendError, ERR } from '../../lib/httpError.js'
 
@@ -12,8 +13,14 @@ router.use(authMiddleware)
 // POST /api/v1/projects/:id/summary/start
 router.post('/:id/summary/start', requireProjectOwner, async (req, res) => {
   if (req.project.mode !== 'SUMMARY') return sendError(res, 400, ERR.VALIDATION, 'Not a SUMMARY project', { field: 'mode' })
-  runPipeline(req.project.id).catch(() => {})
-  res.json({ message: 'Started', status: 'running' })
+  if (isPipelineRunning(req.project.id)) return sendError(res, 409, 'PIPELINE_RUNNING', 'Pipeline đang chạy, hãy đợi hoàn tất rồi mới chạy lại')
+  const admission = await acquireProjectRun(req.project.id, { allowReserved: true, reclaimExpiredRunning: true })
+  if (!admission.admitted) {
+    const status = admission.reason === 'concurrency' ? 429 : 409
+    return sendError(res, status, status === 429 ? ERR.CONCURRENCY_LIMIT : 'PIPELINE_BUSY', admission.reason || 'Project is not available')
+  }
+  runPipeline(req.project.id, null, admission.runToken).catch(() => {})
+  res.json({ message: 'Started', status: admission.project.status })
 })
 
 // POST /api/v1/projects/:id/translate-dub/start (docs/06 §3)
@@ -21,8 +28,14 @@ router.post('/:id/translate-dub/start', requireProjectOwner, async (req, res) =>
   if (String(req.project.mode).toUpperCase().replace('-', '_') !== 'TRANSLATE_DUB') {
     return sendError(res, 400, ERR.VALIDATION, 'Not a TRANSLATE_DUB project', { field: 'mode' })
   }
-  runPipeline(req.project.id).catch(() => {})
-  res.json({ message: 'Started', status: 'running' })
+  if (isPipelineRunning(req.project.id)) return sendError(res, 409, 'PIPELINE_RUNNING', 'Pipeline đang chạy, hãy đợi hoàn tất rồi mới chạy lại')
+  const admission = await acquireProjectRun(req.project.id, { allowReserved: true, reclaimExpiredRunning: true })
+  if (!admission.admitted) {
+    const status = admission.reason === 'concurrency' ? 429 : 409
+    return sendError(res, status, status === 429 ? ERR.CONCURRENCY_LIMIT : 'PIPELINE_BUSY', admission.reason || 'Project is not available')
+  }
+  runPipeline(req.project.id, null, admission.runToken).catch(() => {})
+  res.json({ message: 'Started', status: admission.project.status })
 })
 
 // POST /api/v1/projects/:id/translate-dub/redub
@@ -44,8 +57,13 @@ router.post('/:id/translate-dub/redub', requireProjectOwner, async (req, res) =>
   if (!translated || !translated.c) {
     return sendError(res, 400, ERR.VALIDATION, 'Không có bản dịch nào để lồng tiếng', { field: 'translation' })
   }
-  runPipeline(req.project.id, 'dub.ttsAlign').catch(() => {})
-  res.json({ message: 'Re-dub started', status: 'running' })
+  const admission = await acquireProjectRun(req.project.id, { allowReserved: true, reclaimExpiredRunning: true })
+  if (!admission.admitted) {
+    const status = admission.reason === 'concurrency' ? 429 : 409
+    return sendError(res, status, status === 429 ? ERR.CONCURRENCY_LIMIT : 'PIPELINE_BUSY', admission.reason || 'Project is not available')
+  }
+  runPipeline(req.project.id, 'dub.ttsAlign', admission.runToken).catch(() => {})
+  res.json({ message: 'Re-dub started', status: admission.project.status })
 })
 
 // GET /api/v1/projects/:id/jobs
@@ -68,8 +86,11 @@ router.get('/:id/jobs', requireProjectOwner, async (req, res) => {
 // still pending would only BLOCK_RENDER-fail again, so the chain runs from the
 // real gap. When predecessors are healthy this still runs just the one job.
 router.post('/:id/jobs/:type/retry', requireProjectOwner, async (req, res) => {
+  if (isPipelineRunning(req.project.id)) {
+    return sendError(res, 409, 'PIPELINE_RUNNING', 'Pipeline đang chạy, hãy đợi hoàn tất rồi mới chạy lại')
+  }
   const { type } = req.params
-  const stages = flatStages(String(req.project.mode).toUpperCase().replace('-', '_'))
+  const stages = flatStages(req.project)
   if (!stages.includes(type)) {
     return sendError(res, 400, ERR.VALIDATION, `Unknown stage '${type}' for mode ${req.project.mode}`, { field: 'type' })
   }
@@ -79,7 +100,7 @@ router.post('/:id/jobs/:type/retry', requireProjectOwner, async (req, res) => {
     return sendError(res, 409, ERR.JOB_NOT_RETRYABLE, `Job is ${job.status}; only failed jobs can be retried`)
   }
   const jobs = await query('SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?', [req.project.id])
-  const r = firstRunnableStage(STAGES[req.project.mode] || [], jobs)
+  const r = firstRunnableStage(stagesForProject(req.project), jobs)
   if (r.waiting) {
     return sendError(res, 429, 'RETRY_WAITING', `Stage ${r.type} đang chờ quota hồi phục, thử lại sau ${new Date(r.nextRetryAt).toLocaleTimeString('vi-VN')}`, {
       stage: r.type,
@@ -87,8 +108,15 @@ router.post('/:id/jobs/:type/retry', requireProjectOwner, async (req, res) => {
     })
   }
   const fromStage = r.type || type
-  runPipeline(req.project.id, fromStage).catch(() => {})
-  res.json({ message: 'Retrying', status: 'running', fromStage })
+  const admission = await acquireProjectRun(req.project.id, { allowReserved: true, reclaimExpiredRunning: true })
+  if (!admission.admitted) {
+    const status = admission.reason === 'concurrency' ? 429 : 409
+    return sendError(res, status, status === 429 ? ERR.CONCURRENCY_LIMIT : 'PIPELINE_BUSY', admission.reason || 'Project is not available')
+  }
+  runPipeline(req.project.id, fromStage, admission.runToken, {
+    forceTranscript: ['dub.ingest', 'dub.stt', 'dub.ocr'].includes(fromStage),
+  }).catch(() => {})
+  res.json({ message: 'Retrying', status: admission.project.status, fromStage })
 })
 
 export default router

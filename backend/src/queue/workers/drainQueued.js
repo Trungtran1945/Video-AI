@@ -51,7 +51,7 @@ async function processDrainQueued(job) {
 
     // Count running projects for this user
     const running = await queryOne(
-      `SELECT COUNT(*) as cnt FROM projects WHERE user_id = ? AND status = 'running'`,
+      `SELECT COUNT(*) as cnt FROM projects WHERE user_id = ? AND status IN ('pending', 'running')`,
       [userId]
     )
     const runningCount = running?.cnt || 0
@@ -68,7 +68,7 @@ async function processDrainQueued(job) {
         // Losers get claimed:false and must NOT call runPipeline().
         const claim = await claimQueuedProject(oldest.id)
         if (!claim.claimed) continue
-        runPipeline(oldest.id).catch((e) => console.error('[DrainQueued] start failed', e))
+        runPipeline(oldest.id, null, claim.runToken).catch((e) => console.error('[DrainQueued] start failed', e))
         drained++
       }
     }

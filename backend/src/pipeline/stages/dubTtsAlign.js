@@ -1,7 +1,9 @@
 import path from 'path'
 import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne, updateById, insert } from '../../db/query.js'
+import { query, queryOne } from '../../db/query.js'
+import { attachTtsAudio, TranscriptRevisionConflict } from '../../services/transcriptMutationService.js'
+import { isProjectRunOwned, runProjectOwned, insertProjectOwned } from '../../services/projectAdmission.js'
 import {
   applyTempoAudio,
   probe,
@@ -37,21 +39,32 @@ function sleepMs(ms) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+async function assertRunOwner(projectId, runToken) {
+  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
+    const error = new Error('RUN_ABORTED')
+    error.code = 'RUN_ABORTED'
+    throw error
+  }
+}
+
 // dub.ttsAlign (docs/05 §B.5 — KHÓ NHẤT): TTS + Forced Alignment ép khớp slot gốc.
 // Partial success handling (transflow doc 15 §8.3): mỗi segment xử lý độc lập,
 // lỗi 1 segment không làm dừng toàn bộ, thu thập partial results.
 export async function dubTtsAlign(ctx) {
-  const { project, job, setProgress, signal } = ctx
+  const { project, job, setProgress, signal, runToken } = ctx
   const params = parseParams(project.params)
   const targetLanguage = params.targetLanguage || 'vi'
 
   // Check abort signal
   if (signal?.aborted) throw new Error('Cancelled')
+  await assertRunOwner(project.id, runToken)
 
   if (!params.enableDubbing) {
     return { skipped: true, reason: 'enableDubbing=false' }
   }
 
+  const currentProject = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [project.id])
+  const transcriptVersion = Number(currentProject?.transcript_version ?? project.transcript_version ?? 0)
   const segments = await query(
     `SELECT * FROM transcript_segments WHERE project_id = ? AND translation IS NOT NULL AND translation != ''
      ORDER BY start_sec ASC`,
@@ -211,7 +224,8 @@ export async function dubTtsAlign(ctx) {
   // Ghi audios rows + cập nhật tts_audio_id
   for (let i = 0; i < fitted.length; i++) {
     const f = fitted[i]
-    const audioRow = await insert('audios', {
+    await assertRunOwner(project.id, runToken)
+    const audioRow = await insertProjectOwned(project.id, runToken, 'audios', {
       id: uuidv4(),
       project_id: project.id,
       kind: 'voice',
@@ -219,7 +233,22 @@ export async function dubTtsAlign(ctx) {
       duration_sec: round3(f.effectiveDurSec),
       provider: tts.id,
     })
-    await updateById('transcript_segments', f.segmentId, { tts_audio_id: audioRow.id })
+    if (!audioRow) {
+      const error = new Error('RUN_ABORTED')
+      error.code = 'RUN_ABORTED'
+      throw error
+    }
+    try {
+      await attachTtsAudio(project.id, f.segmentId, audioRow.id, transcriptVersion, runToken)
+    } catch (error) {
+      await runProjectOwned(project.id, runToken, 'DELETE FROM audios WHERE id = ?', [audioRow.id])
+      if (error instanceof TranscriptRevisionConflict) {
+        const conflict = new Error('TRANSCRIPT_CHANGED_DURING_TTS')
+        conflict.transient = true
+        throw conflict
+      }
+      throw error
+    }
     f.audioId = audioRow.id
     f.startAtSec = sequenced[i].startAtSec
     f.endAtSec = sequenced[i].endAtSec

@@ -1,14 +1,15 @@
 import path from 'path'
 import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
-import { insert, query } from '../../db/query.js'
+import { query, queryOne } from '../../db/query.js'
+import { replaceTranscript } from '../../services/transcriptMutationService.js'
 import { sampleFrames, probe } from '../../media/mediaService.js'
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
 import { tmpDirOf, ensureDir, requireSourceFile, round2 } from '../context.js'
 
 export async function dubOcr(ctx) {
-  const { project, job, setProgress, results, signal } = ctx
+  const { project, job, setProgress, results, signal, runToken } = ctx
   const ingest = results['dub.ingest'] || {}
   const src = requireSourceFile(project.source_video_key, 'Video nguồn')
   const tmp = ensureDir(tmpDirOf(project.id))
@@ -16,12 +17,15 @@ export async function dubOcr(ctx) {
 
   if (signal?.aborted) throw new Error('Cancelled')
 
+  const current = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [project.id])
+  const transcriptVersion = Number(current?.transcript_version ?? project.transcript_version ?? 0)
+
   // Skip if segments already exist (cached from duplicate project)
   const existing = await query(
     'SELECT COUNT(*) as cnt FROM transcript_segments WHERE project_id = ?',
     [project.id]
   )
-  if (existing[0]?.cnt > 0) {
+  if (existing[0]?.cnt > 0 && !ctx.forceTranscript) {
     return { segmentCount: existing[0].cnt, skipped: true, reason: 'cached' }
   }
 
@@ -92,28 +96,24 @@ export async function dubOcr(ctx) {
     if (fp.height > 0) frameH = fp.height
   } catch (_) {}
 
-  // Write to transcript_segments (whitelist cột DB — bbox/confidence/frameCount
-  // là evidence nội bộ của aggregate, chỉ persist field schema cho phép).
-  for (const seg of segments) {
-    seg.project_id = project.id
-    const row = {
-      id: seg.id,
-      project_id: project.id,
-      index_num: seg.index_num,
-      start_sec: seg.start_sec,
-      end_sec: seg.end_sec,
-      text: seg.text,
-      speaker: null,
-      language: null,
-      source: 'ocr',
-      confidence: Number.isFinite(Number(seg.confidence)) ? Number(seg.confidence) : null,
-      ratio_x: ratioOf(seg.bbox?.x, frameW),
-      ratio_y: ratioOf(seg.bbox?.y, frameH),
-      ratio_w: ratioOf(seg.bbox?.width, frameW),
-      ratio_h: ratioOf(seg.bbox?.height, frameH),
-    }
-    await insert('transcript_segments', row)
-  }
+  await replaceTranscript(project.id, segments.map((seg) => ({
+    id: seg.id,
+    index_num: seg.index_num,
+    start_sec: seg.start_sec,
+    end_sec: seg.end_sec,
+    text: seg.text,
+    speaker: null,
+    language: null,
+    source: 'ocr',
+    confidence: Number.isFinite(Number(seg.confidence)) ? Number(seg.confidence) : null,
+    ratio_x: ratioOf(seg.bbox?.x, frameW),
+    ratio_y: ratioOf(seg.bbox?.y, frameH),
+    ratio_w: ratioOf(seg.bbox?.width, frameW),
+    ratio_h: ratioOf(seg.bbox?.height, frameH),
+  })), {
+    expectedRevision: transcriptVersion,
+    runToken,
+  })
 
   // Cleanup frame files
   try { fs.rmSync(framesDir, { recursive: true, force: true }) } catch {}

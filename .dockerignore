@@ -1,0 +1,14 @@
+.git
+.gitignore
+**/.git
+**/.env
+**/.env.*
+**/node_modules
+**/dist
+**/storage
+**/data.db
+**/*.db
+**/*.db.backup
+**/*.db.writer.lock
+transflow
+Video_AI_docs/background.mp4

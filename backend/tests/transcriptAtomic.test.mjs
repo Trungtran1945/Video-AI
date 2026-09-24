@@ -121,16 +121,20 @@ function seg(id, idx, s, e, extra = {}) {
   await run(`DELETE FROM projects WHERE id = ?`, [pid])
 }
 
-// 9. dubData route dùng transaction + proposed-state (không còn UPDATE trong loop cũ)
+// 9. transcript route delegates proposed-state transaction to the service
 {
   const fs = await import('node:fs')
   const { fileURLToPath } = await import('node:url')
   const __d = path.dirname(fileURLToPath(import.meta.url))
-  const src = fs.readFileSync(path.join(__d, '..', 'src', 'routes', 'v1', 'dubData.js'), 'utf8')
-  assert(src.includes('withTransaction'), 'dubData dùng withTransaction')
-  assert(src.includes('computeProposedState'), 'dubData dùng computeProposedState')
-  assert(!src.includes('delta > 0'), 'không còn điều kiện delta > 0 đáng nghi')
-  assert(!src.includes('start_sec = start_sec + ?'), 'không còn UPDATE push trực tiếp trong loop')
+  const route = fs.readFileSync(path.join(__d, '..', 'src', 'routes', 'v1', 'dubData.js'), 'utf8')
+  const service = fs.readFileSync(path.join(__d, '..', 'src', 'services', 'transcriptMutationService.js'), 'utf8')
+  const timing = fs.readFileSync(path.join(__d, '..', 'src', 'lib', 'transcriptTiming.js'), 'utf8')
+  assert(route.includes('applyTranscriptEdits'), 'dubData delegates to transcript mutation service')
+  assert(service.includes('withTransaction'), 'transcript service owns the transaction')
+  assert(service.includes('computeProposedState'), 'transcript service owns proposed-state computation')
+  assert(timing.includes('ttsInvalidate.push(id)'), 'timing changes invalidate TTS')
+  assert(!route.includes('delta > 0'), 'không còn điều kiện delta > 0 đáng nghi')
+  assert(!route.includes('start_sec = start_sec + ?'), 'không còn UPDATE push trực tiếp trong loop')
 }
 
 try { const fs = await import('node:fs'); fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}

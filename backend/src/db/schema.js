@@ -92,6 +92,8 @@ export async function initSchema() {
     template_video_key TEXT,
     progress INTEGER DEFAULT 0,
     transcript_version INTEGER DEFAULT 0,
+    run_token TEXT,
+    lease_expires_at TEXT,
     created_date TEXT DEFAULT (datetime('now'))
   )`)
 
@@ -115,6 +117,8 @@ export async function initSchema() {
   // Optimistic concurrency for transcript edits (§4.4): incremented on every
   // successful PUT/PATCH; outputs stamp the version they were rendered from.
   try { db.run(`ALTER TABLE projects ADD COLUMN transcript_version INTEGER DEFAULT 0`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN run_token TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN lease_expires_at TEXT`) } catch (_) {}
   try { db.run(`UPDATE projects SET transcript_version = 0 WHERE transcript_version IS NULL`) } catch (_) {}
   try { db.run(`ALTER TABLE outputs ADD COLUMN transcript_version INTEGER`) } catch (_) {}
 

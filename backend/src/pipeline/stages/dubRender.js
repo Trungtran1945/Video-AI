@@ -1,7 +1,9 @@
 import path from 'path'
 import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne, insert } from '../../db/query.js'
+import { query, queryOne } from '../../db/query.js'
+import { createOutput } from '../../services/outputService.js'
+import { isProjectRunOwned } from '../../services/projectAdmission.js'
 import {
   burnSubtitlesStyled,
   applySubtitleMasks,
@@ -22,8 +24,17 @@ const BURN_TIMEOUT = 20 * 60 * 1000
 const MASK_TIMEOUT = 20 * 60 * 1000
 const DUB_TRACK_TIMEOUT = 15 * 60 * 1000
 
+async function assertRunOwner(projectId, runToken) {
+  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
+    const error = new Error('RUN_ABORTED')
+    error.code = 'RUN_ABORTED'
+    throw error
+  }
+}
+
 export async function dubRender(ctx) {
-  const { project, setProgress, signal } = ctx
+  const { project, setProgress, signal, runToken } = ctx
+  await assertRunOwner(project.id, runToken)
   const params = parseParams(project.params)
   const src = requireSourceFile(project.source_video_key, 'Video nguồn')
   const dir = ensureDir(projectDir(project.id))
@@ -32,6 +43,7 @@ export async function dubRender(ctx) {
   if (signal?.aborted) throw new Error('Cancelled')
 
   const info = await probe(src)
+  await assertRunOwner(project.id, runToken)
   const totalSec = round3(info.durationSec || project.target_duration_sec || 0)
 
   let workingFile = src
@@ -45,6 +57,7 @@ export async function dubRender(ctx) {
   // loadSubtitleRegions đã lọc APPROVED-only (+AUTO legacy); giữ check phòng thủ.
   const activeMasks = regions.filter((r) => (r.status === 'APPROVED' || r.source === 'AUTO') && r.enabled !== 0)
   if (activeMasks.length) {
+    await assertRunOwner(project.id, runToken)
     console.log(`[dub.render] Burning ${activeMasks.length} APPROVED mask(s) vào video trước ASS`)
     const maskedFile = path.join(dir, 'masked.mp4')
     await applySubtitleMasks(workingFile, activeMasks, {
@@ -67,6 +80,7 @@ export async function dubRender(ctx) {
     [project.id]
   )
   if (segments.length) {
+    await assertRunOwner(project.id, runToken)
     // Minimal plumbing: đọc ocr_regions nếu tồn tại (scale-invariant ratio 0..1),
     // normalize snake_case → camelCase, truyền đúng vào buildAss. Rỗng → fallback đáy.
     const assPath = buildAss(dir, segments, regions, {
@@ -86,6 +100,7 @@ export async function dubRender(ctx) {
 
   // ── 3. Audio mix + mux (docs/05 §B.7, transflow doc 15 §5.3) ──────────
   const enableDubbing = !!params.enableDubbing
+  await assertRunOwner(project.id, runToken)
   const ext = params.outputFormat === 'mkv' ? '.mkv' : '.mp4'
   const finalFile = path.join(dir, `final${ext}`)
   let fallbackToOriginal = 0
@@ -186,6 +201,7 @@ export async function dubRender(ctx) {
   setProgress(85)
 
   // ── 4. Thumbnail + outputs row ─────────────────────────────────────────
+  await assertRunOwner(project.id, runToken)
   const thumbPath = path.join(dir, 'thumb.jpg')
   await makeThumbnail(finalFile, Math.max(0, Math.min(totalSec / 2, totalSec - 0.5)), thumbPath)
   setProgress(90)
@@ -193,6 +209,7 @@ export async function dubRender(ctx) {
   const outputKey = toStorageKey(finalFile)
   const thumbKey = toStorageKey(thumbPath)
   const finalInfo = await probe(finalFile)
+  await assertRunOwner(project.id, runToken)
   // §3 verification: final file phải tồn tại với duration hợp lệ — nếu không,
   // BLOCK_RENDER thay vì ghi outputs row giả.
   if (!Number.isFinite(Number(finalInfo?.durationSec)) || Number(finalInfo.durationSec) <= 0) {
@@ -200,16 +217,19 @@ export async function dubRender(ctx) {
   }
   setProgress(95)
 
-  await insert('outputs', {
+  await assertRunOwner(project.id, runToken)
+  const transcriptVersion = ctx.transcriptVersion === null || ctx.transcriptVersion === undefined
+    ? Number((await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [project.id]))?.transcript_version ?? 0)
+    : Number(ctx.transcriptVersion)
+  await createOutput({
     id: uuidv4(),
-    project_id: project.id,
-    storage_key: outputKey,
+    projectId: project.id,
+    storageKey: outputKey,
     status: 'success',
-    duration_sec: round3(finalInfo.durationSec),
-    thumbnail_key: thumbKey,
-    // Version stamp: output này render từ transcript revision hiện tại.
-    // Transcript PUT sau đó bump revision → outputStale = mismatch.
-    transcript_version: Number((await queryOne(`SELECT transcript_version FROM projects WHERE id = ?`, [project.id]))?.transcript_version ?? 0),
+    durationSec: round3(finalInfo.durationSec),
+    thumbnailKey: thumbKey,
+    transcriptVersion,
+    runToken: ctx.runToken,
   })
   setProgress(100)
 

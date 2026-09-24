@@ -4,7 +4,8 @@ import cors from 'cors'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'node:fs'
-import { getDb } from './src/db.js'
+import { getDb, getDbPersistenceStats } from './src/db.js'
+import { getWriteQueueStats } from './src/db/query.js'
 import { initSchema } from './src/db/schema.js'
 import { seed } from './src/db/seed.js'
 import { config, isOriginAllowed } from './src/config.js'
@@ -47,10 +48,14 @@ app.get('/health', async (req, res) => {
     const { isRedisReady } = await import('./src/queue/connection.js')
     redisOk = isRedisReady()
   } catch (_) {}
+  const persistence = getDbPersistenceStats()
+  const writes = getWriteQueueStats()
   res.json({
-    status: 'ok',
+    status: persistence.lastSaveError ? 'degraded' : 'ok',
     redis: redisOk ? 'connected' : 'disconnected',
     queueSystem: redisOk ? 'available' : 'unavailable — notifications and cleanup disabled',
+    database: persistence,
+    writes,
   })
 })
 
@@ -113,6 +118,8 @@ async function start() {
       const drainMod = await import('./src/queue/workers/drainQueued.js')
       const startDrain = drainMod.startDrainQueuedWorker || drainMod.default
       drainQueuedWorker = await startDrain()
+      const { safeAddDrainSweep } = await import('./src/queue/drainQueue.js')
+      await safeAddDrainSweep()
       console.log('[Queue] DrainQueued worker started')
     } catch (e) {
       console.warn('[Queue] DrainQueued worker failed to start:', e.message)

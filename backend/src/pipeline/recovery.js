@@ -1,4 +1,4 @@
-import { query, runAffected, run } from '../db/query.js'
+import { query, withTransaction } from '../db/query.js'
 import { isPipelineRunning } from './runner.js'
 import { config } from '../config.js'
 
@@ -9,24 +9,10 @@ function cutoffIso(timeoutMin, nowMs) {
   return new Date(nowMs - timeoutMin * 60 * 1000).toISOString()
 }
 
-function heartbeatOf(p) {
-  return p.last_heartbeat_at || p.started_at || null
+function heartbeatOf(project) {
+  return project.last_heartbeat_at || project.started_at || null
 }
 
-/**
- * recoverStaleProjects — the single shared recovery implementation.
- * Used by both server.js startup and the periodic drain worker.
- *
- * Rules:
- * - Only status='running' candidates.
- * - Stale only when heartbeat (last_heartbeat_at → started_at) is older
- *   than timeoutMin. Legacy rows with neither timestamp fall back to
- *   created_date so old DBs still recover.
- * - Never touches projects with a live in-process run (isPipelineRunning).
- * - Conditional UPDATE (WHERE status='running') makes restarts idempotent:
- *   the second restart affects 0 rows.
- * - Preserves artifacts; parks generation_jobs running/pending → pending/queued.
- */
 export async function recoverStaleProjects({
   timeoutMin = config.recoveryStaleMinutes,
   nowMs = Date.now(),
@@ -34,40 +20,52 @@ export async function recoverStaleProjects({
   isActive = isPipelineRunning,
 } = {}) {
   const cutoff = cutoffIso(timeoutMin, nowMs)
+  const force = timeoutMin === 0
   const candidates = await query(
-    `SELECT id, title, user_id, created_date, started_at, last_heartbeat_at, status
-     FROM projects WHERE status = 'running'`
+    `SELECT id, title, user_id, created_date, started_at, last_heartbeat_at, lease_expires_at,
+            run_token, status
+     FROM projects WHERE status = 'running' OR status = 'pending'`
   )
   let recovered = 0
   let skippedActive = 0
   const recoveredIds = []
 
-  for (const p of candidates) {
+  for (const project of candidates) {
     try {
-      if (isActive(p.id)) {
-        skippedActive++
+      if (isActive(project.id)) {
+        skippedActive += 1
         continue
       }
     } catch (_) {}
 
-    const hb = heartbeatOf(p)
-    // No heartbeat at all (legacy DB): fall back to created_date so a
-    // project stuck since before the heartbeat migration still recovers.
-    const ageRef = hb || p.created_date
-    if (ageRef && ageRef >= cutoff) continue // fresh heartbeat → not stale
+    const leaseFresh = project.lease_expires_at && new Date(project.lease_expires_at).getTime() > nowMs
+    const ageReference = heartbeatOf(project) || project.created_date
+    if (!force && leaseFresh) continue
+    if (!force && ageReference && ageReference >= cutoff) continue
 
-    const affected = await runAffected(
-      `UPDATE projects SET status = 'queued', recovery_reason = ? WHERE id = ? AND status = 'running'`,
-      [`${reason} (last activity: ${ageRef || 'unknown'})`, p.id]
-    )
-    if (affected !== 1) continue // lost race with another recoverer → idempotent
-    await run(
-      `UPDATE generation_jobs SET status = 'pending', step = 'queued', error_message = ?
-       WHERE project_id = ? AND status IN ('running', 'pending')`,
-      [reason, p.id]
-    )
-    recovered++
-    recoveredIds.push(p.id)
+    const reasonText = project.status === 'pending'
+      ? `${reason} (pending lease expired)`
+      : `${reason} (last activity: ${ageReference || 'unknown'})`
+    const changed = await withTransaction(async (tx) => {
+      const tokenPredicate = project.run_token ? 'AND run_token = ?' : 'AND run_token IS NULL'
+      const affected = await tx.runAffected(
+        `UPDATE projects SET status = ?, run_token = ?, lease_expires_at = NULL, recovery_reason = ?
+         WHERE id = ? AND status = ? ${tokenPredicate}`,
+        project.status === 'pending'
+          ? ['queued', null, reasonText, project.id, 'pending', ...(project.run_token ? [project.run_token] : [])]
+          : ['queued', null, reasonText, project.id, 'running', ...(project.run_token ? [project.run_token] : [])]
+      )
+      if (affected !== 1) return false
+      await tx.run(
+        `UPDATE generation_jobs SET status = 'pending', step = 'queued', error_message = ?
+         WHERE project_id = ? AND status IN ('running', 'pending')`,
+        [reason, project.id]
+      )
+      return true
+    }, { op: 'project.recovery' })
+    if (!changed) continue
+    recovered += 1
+    recoveredIds.push(project.id)
   }
 
   return { recovered, skippedActive, recoveredIds }

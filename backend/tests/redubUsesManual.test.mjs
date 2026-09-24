@@ -85,7 +85,7 @@ const assert = (c, m) => {
 // (c) redub route chỉ chạy dub.ttsAlign, không chạy dub.translate
 {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'v1', 'generation.js'), 'utf8')
-  assert(src.includes("runPipeline(req.project.id, 'dub.ttsAlign')"), "(c) redub chứa runPipeline(id,'dub.ttsAlign')")
+  assert(src.includes("runPipeline(req.project.id, 'dub.ttsAlign', admission.runToken)"), "(c) redub chứa runPipeline dub.ttsAlign với ownership token")
   const redubIdx = src.indexOf('translate-dub/redub')
   assert(redubIdx >= 0, '(c) tìm thấy handler translate-dub/redub')
   const redubBlock = redubIdx >= 0 ? src.slice(redubIdx, redubIdx + 2000) : ''

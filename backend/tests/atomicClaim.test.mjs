@@ -57,9 +57,9 @@ assert(parked.status === 'queued', 'over-limit claim rolls back to queued')
 // 6. Implementation contract: conditional UPDATE + rows-affected check.
 {
   const __dirname = path.dirname(fileURLToPath(import.meta.url))
-  const claimSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'claim.js'), 'utf8')
-  assert(claimSrc.includes("AND status = 'queued'"), 'claim UPDATE is conditional on queued')
-  assert(claimSrc.includes('runAffected'), 'claim checks rows affected')
+  const admissionSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'services', 'projectAdmission.js'), 'utf8')
+  assert(admissionSrc.includes("AND status = 'queued'"), 'claim UPDATE is conditional on queued')
+  assert(admissionSrc.includes('tx.runAffected'), 'claim checks rows affected')
   const drainSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'queue', 'workers', 'drainQueued.js'), 'utf8')
   assert(drainSrc.includes('claimQueuedProject'), 'drain uses claimQueuedProject helper')
   assert(!/UPDATE projects SET status = 'pending' WHERE id = \?`/.test(drainSrc),

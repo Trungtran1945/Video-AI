@@ -1,12 +1,22 @@
 import path from 'path'
 import fs from 'node:fs'
 import { updateById } from '../../db/query.js'
+import { updateProjectOwned, isProjectRunOwned } from '../../services/projectAdmission.js'
 import { probe, extractAudio, normalizeLoudness } from '../../media/mediaService.js'
 import { projectDir, tmpDirOf, ensureDir, requireSourceFile, toStorageKey } from '../context.js'
 
+async function assertRunOwner(projectId, runToken) {
+  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
+    const error = new Error('RUN_ABORTED')
+    error.code = 'RUN_ABORTED'
+    throw error
+  }
+}
+
 // dub.ingest (docs/05 §B.1): demux + chuẩn hoá LUFS cho STT.
 export async function dubIngest(ctx) {
-  const { project, setProgress, signal } = ctx
+  const { project, setProgress, signal, runToken } = ctx
+  await assertRunOwner(project.id, runToken)
   const src = requireSourceFile(project.source_video_key, 'Video nguồn')
   const tmp = ensureDir(tmpDirOf(project.id))
   const dir = ensureDir(projectDir(project.id))
@@ -19,17 +29,24 @@ export async function dubIngest(ctx) {
   if (!info.durationSec) throw new Error('Không đọc được thời lượng video nguồn')
 
   // Cập nhật duration thật của dự án (docs/02: TRANSLATE_DUB target = duration nguồn)
-  await updateById('projects', project.id, { target_duration_sec: Math.round(info.durationSec) })
+  if (runToken) {
+    const updated = await updateProjectOwned(project.id, runToken, { target_duration_sec: Math.round(info.durationSec) })
+    if (!updated) throw Object.assign(new Error('RUN_ABORTED'), { code: 'RUN_ABORTED' })
+  } else {
+    await updateById('projects', project.id, { target_duration_sec: Math.round(info.durationSec) })
+  }
   setProgress(15)
 
   // Tách audio 16kHz mono cho ASR
   const rawWav = path.join(tmp, `dub_raw_${project.id}.wav`)
+  await assertRunOwner(project.id, runToken)
   await extractAudio(src, rawWav)
   setProgress(45)
 
   // Chuẩn hoá −16 LUFS (docs/07 §2.12) → STT chính xác hơn.
   // Lưu ở project dir để các stage sau resolve được qua storage key.
   const normWav = path.join(dir, 'source_norm.wav')
+  await assertRunOwner(project.id, runToken)
   try {
     await normalizeLoudness(rawWav, normWav)
   } catch (err) {
@@ -37,6 +54,7 @@ export async function dubIngest(ctx) {
     fs.copyFileSync(rawWav, normWav)
   }
   try { fs.unlinkSync(rawWav) } catch (_) {}
+  await assertRunOwner(project.id, runToken)
   setProgress(90)
 
   return {

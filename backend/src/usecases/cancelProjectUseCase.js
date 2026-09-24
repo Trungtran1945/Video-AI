@@ -1,7 +1,6 @@
 import { queryOne, run } from '../db/query.js'
-import { projectDir } from '../pipeline/context.js'
+import { projectDir, tmpDirOf } from '../pipeline/context.js'
 import fs from 'node:fs'
-import path from 'path'
 import { abortPipeline } from '../pipeline/runner.js'
 import { safeAddNotify } from '../queue/notifyQueue.js'
 
@@ -23,7 +22,8 @@ export async function cancelProjectUseCase(projectId) {
 
   // Set project status to cancelled
   await run(
-    `UPDATE projects SET status = 'cancelled', cancelled_at = ? WHERE id = ?`,
+    `UPDATE projects SET status = 'cancelled', cancelled_at = ?, run_token = NULL, lease_expires_at = NULL
+     WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')`,
     [now, projectId]
   )
 
@@ -38,12 +38,13 @@ export async function cancelProjectUseCase(projectId) {
   abortPipeline(projectId)
 
   // Clean up temp files in storage/tmp/{projectId}
-  const tmpDir = path.join(projectDir(projectId))
-  try {
-    if (fs.existsSync(tmpDir)) {
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    }
-  } catch (_) {}
+  const projectStorageDir = projectDir(projectId)
+  const temporaryDir = tmpDirOf(projectId)
+  for (const dir of [projectStorageDir, temporaryDir]) {
+    try {
+      if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true })
+    } catch (_) {}
+  }
 
   // Send notification on cancel (isolated — never fail cancel when Redis is down)
   try {
