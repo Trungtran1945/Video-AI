@@ -15,6 +15,10 @@ export const SSE_TICKET_TTL_MS = 60 * 1000
 // POST /api/v1/projects/:id/sse-ticket — cấp ticket single-use TTL 60s cho SSE.
 // Frontend gọi bằng Bearer (axios), sau đó mở EventSource với ?ticket= (không để
 // JWT dài hạn trong URL). Ticket gắn user+project, single-use, không log.
+// Lifecycle: consume-at-auth (DELETE ngay khi SSE auth thành công) + retry của
+// frontend xin ticket MỚI khi connect fail. Cleanup expired = bounded batch một
+// statement mỗi lần cấp ticket (không dùng periodic timer để tránh duplicate
+// timer khi module import nhiều lần và leak trong test).
 router.post('/projects/:id/sse-ticket', authMiddleware, requireProjectOwner, async (req, res) => {
   try {
     const ticket = crypto.randomBytes(32).toString('hex')

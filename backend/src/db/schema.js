@@ -91,6 +91,7 @@ export async function initSchema() {
     template_video_id TEXT,
     template_video_key TEXT,
     progress INTEGER DEFAULT 0,
+    transcript_version INTEGER DEFAULT 0,
     created_date TEXT DEFAULT (datetime('now'))
   )`)
 
@@ -111,6 +112,11 @@ export async function initSchema() {
   try { db.run(`ALTER TABLE projects ADD COLUMN started_at TEXT`) } catch (_) {}
   try { db.run(`ALTER TABLE projects ADD COLUMN last_heartbeat_at TEXT`) } catch (_) {}
   try { db.run(`ALTER TABLE projects ADD COLUMN recovery_reason TEXT`) } catch (_) {}
+  // Optimistic concurrency for transcript edits (§4.4): incremented on every
+  // successful PUT/PATCH; outputs stamp the version they were rendered from.
+  try { db.run(`ALTER TABLE projects ADD COLUMN transcript_version INTEGER DEFAULT 0`) } catch (_) {}
+  try { db.run(`UPDATE projects SET transcript_version = 0 WHERE transcript_version IS NULL`) } catch (_) {}
+  try { db.run(`ALTER TABLE outputs ADD COLUMN transcript_version INTEGER`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS assets (
     id TEXT PRIMARY KEY,
@@ -204,6 +210,7 @@ export async function initSchema() {
     status TEXT DEFAULT 'success',
     duration_sec REAL,
     thumbnail_key TEXT,
+    transcript_version INTEGER,
     created_date TEXT DEFAULT (datetime('now'))
   )`)
 

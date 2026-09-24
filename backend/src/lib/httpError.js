@@ -9,6 +9,7 @@ export const ERR = {
   CONCURRENCY_LIMIT: 'LIMIT_001', // đạt giới hạn concurrency
   COPYRIGHT_MISSING: 'COPYRIGHT_001', // thiếu xác nhận bản quyền
   PROJECT_NOT_FOUND: 'PROJ_001', // project không tồn tại
+  REVISION_CONFLICT: 'CONFLICT_001', // optimistic concurrency: revision đã cũ
   PROVIDER: 'PROV_001',          // provider lỗi (xem ProviderLog)
   JOB_NOT_RETRYABLE: 'JOB_001',  // job thất bại không thể retry
 }

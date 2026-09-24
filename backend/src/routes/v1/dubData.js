@@ -25,6 +25,8 @@ router.get('/style-presets', async (req, res) => {
 })
 
 // GET /api/v1/projects/:id/transcript — TranscriptSegment[] + bản dịch (docs/06 §2).
+// Trả { revision, segments } để client làm optimistic concurrency (§4.4).
+// revision = projects.transcript_version (tăng mỗi PUT/PATCH thành công).
 router.get('/projects/:id/transcript', requireProjectOwner, async (req, res) => {
   try {
     if (!isDubMode(req.project.mode)) {
@@ -37,8 +39,9 @@ router.get('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
        ORDER BY index_num ASC`,
       [req.project.id]
     )
+    const revision = Number(req.project?.transcript_version ?? 0)
     // Trả song song camelCase (contract frontend) lẫn snake_case (legacy)
-    res.json(rows.map((r) => ({
+    const segments = rows.map((r) => ({
       ...r,
       index: r.index_num,
       startSec: r.start_sec,
@@ -46,7 +49,8 @@ router.get('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
       isTimeManuallyAdjusted: !!r.is_time_manually_adjusted,
       isTextManuallyEdited: !!r.is_text_manually_edited,
       isTranslationManuallyEdited: !!r.is_translation_manually_edited,
-    })))
+    }))
+    res.json({ revision, segments })
   } catch (err) {
     console.error('Transcript error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
@@ -55,7 +59,10 @@ router.get('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
 
 // PUT /api/v1/projects/:id/transcript — lưu bản chỉnh sửa của user (source of truth §8).
 // Hỗ trợ chỉnh sửa source text + translation + timing với overlap detection (docs/03 §3, VAL_002).
-// Body: { segments: [{ id, text?, translation?, startSec?, endSec? }] }
+// Body: { revision?, segments: [{ id, text?, translation?, startSec?, endSec? }] }
+// Optimistic concurrency (§4.4-4.5): client gửi revision đã GET; server verify
+// revision TRONG transaction + bump có điều kiện. Sai revision → 409, KHÔNG ghi DB.
+// revision optional 1 release cho client cũ (warn + vẫn trả revision mới).
 // - text đổi mà payload không kèm translation → translation=NULL + flag tay reset
 //   (bản dịch cũ đã stale, dub.translate sẽ dịch lại; không overwrite ngầm).
 // - translation kèm theo → flag is_translation_manually_edited=1 (AI không ghi đè).
@@ -69,6 +76,13 @@ router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
     }
     const incoming = Array.isArray(req.body?.segments) ? req.body.segments : []
     if (!incoming.length) return sendError(res, 400, ERR.VALIDATION, 'segments rỗng', { field: 'segments' })
+    const hasRevision = req.body?.revision !== undefined && req.body?.revision !== null
+    const reqRevision = hasRevision ? Number(req.body.revision) : null
+    if (!hasRevision) {
+      console.warn('[Transcript] PUT without revision (deprecated legacy client — proceeding without optimistic gate)')
+    } else if (!Number.isInteger(reqRevision)) {
+      return sendError(res, 400, ERR.VALIDATION, 'revision phải là số nguyên', { field: 'revision' })
+    }
 
     // Load all segments ordered by index_num for proposed-state computation
     const allSegments = await query(
@@ -110,8 +124,19 @@ router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
     const ttsInvalidate = new Set(computed.ttsInvalidate || [])
 
     // 7-9. Commit toàn bộ trong một transaction duy nhất; fail → rollback hết.
+    // Revision check + bump NẰM TRONG transaction: hai concurrent PUT cùng revision
+    // chỉ một bump thành công (conditional UPDATE … WHERE transcript_version=?).
+    let newRevision = null
     try {
       await withTransaction(async (tx) => {
+        const cur = await tx.queryOne(`SELECT transcript_version FROM projects WHERE id = ?`, [req.project.id])
+        const current = Number(cur?.transcript_version ?? 0)
+        if (hasRevision && reqRevision !== current) {
+          const e = new Error('Transcript đã bị sửa ở nơi khác')
+          e.code = 'REVISION_CONFLICT'
+          e.currentRevision = current
+          throw e
+        }
         for (const id of dirtyIds) {
           const row = computed.proposed.get(id)
           if (!row) continue
@@ -121,8 +146,27 @@ router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
             [row.text, row.translation, row.start_sec, row.end_sec, row.is_time_manually_adjusted, row.is_text_manually_edited, row.is_translation_manually_edited, id, req.project.id]
           )
         }
+        const bumped = await tx.runAffected(
+          `UPDATE projects SET transcript_version = transcript_version + 1 WHERE id = ? AND transcript_version = ?`,
+          [req.project.id, current]
+        )
+        if (!bumped) {
+          const e = new Error('Transcript đã bị sửa ở nơi khác')
+          e.code = 'REVISION_CONFLICT'
+          e.currentRevision = current
+          throw e
+        }
+        newRevision = current + 1
       })
     } catch (txErr) {
+      if (txErr?.code === 'REVISION_CONFLICT') {
+        const fresh = await queryOne(`SELECT transcript_version FROM projects WHERE id = ?`, [req.project.id])
+        const currentRevision = Number(txErr.currentRevision ?? fresh?.transcript_version ?? 0)
+        return sendError(res, 409, ERR.REVISION_CONFLICT, 'Transcript đã được cập nhật ở nơi khác — vui lòng tải lại trước khi lưu', {
+          currentRevision,
+          revision: currentRevision,
+        })
+      }
       console.error('Transcript PUT transaction failed:', txErr)
       return sendError(res, 500, 'INTERNAL_ERROR', 'Không lưu được transcript (transaction rollback)')
     }
@@ -133,16 +177,22 @@ router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
        FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC`,
       [req.project.id]
     )
-    // PUT không trigger TTS/render — chỉ đánh dấu output hiện tại đã stale
-    // để frontend hiển thị "cần redub".
+    // PUT không trigger TTS/render — outputStale chính xác theo version:
+    // stale = output.transcript_version !== current transcript_version.
+    // Output legacy (transcript_version NULL) coi là stale nếu đã có output.
     const latestOutput = await queryOne(
-      `SELECT * FROM outputs WHERE project_id = ? ORDER BY created_date DESC LIMIT 1`,
+      `SELECT transcript_version FROM outputs WHERE project_id = ? ORDER BY created_date DESC LIMIT 1`,
       [req.project.id]
     )
+    const currentRevision = Number(newRevision ?? (await queryOne(`SELECT transcript_version FROM projects WHERE id = ?`, [req.project.id]))?.transcript_version ?? 0)
+    const outputStale = latestOutput
+      ? (latestOutput.transcript_version == null || Number(latestOutput.transcript_version) !== currentRevision)
+      : false
     res.json({
       updated,
+      revision: currentRevision,
       adjustedSegments,
-      outputStale: !!latestOutput,
+      outputStale,
       segments: rows.map((r) => ({
         ...r,
         index: r.index_num,

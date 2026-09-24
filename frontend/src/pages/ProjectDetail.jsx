@@ -89,6 +89,9 @@ export default function ProjectDetail() {
   const [targetLanguage, setTargetLanguage] = useState('vi');
   const videoRef = useRef(null);
   const lastOutputIdRef = useRef(null);
+  // Optimistic concurrency (§4.6): revision server cấp, seq chống stale response.
+  const transcriptRevisionRef = useRef(0);
+  const transcriptSaveSeqRef = useRef(0);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -269,7 +272,12 @@ export default function ProjectDetail() {
   const loadDubData = useCallback(async () => {
     try {
       const segs = await projectsApi.transcript(id);
+      // Server trả { revision, segments }; giữ tương thích array legacy.
+      const revision = Array.isArray(segs) ? null : segs?.revision;
       const list = Array.isArray(segs) ? segs : segs?.segments || [];
+      if (revision !== null && revision !== undefined && Number.isInteger(Number(revision))) {
+        transcriptRevisionRef.current = Number(revision);
+      }
       setTranscript(list.map(normSegment));
     } catch {
       /* endpoint chưa có — để trống */
@@ -408,8 +416,17 @@ export default function ProjectDetail() {
     if (savingTranscript) return null;
     setSavingTranscript(true);
     setTranscriptError('');
+    // Sequence guard: response cũ về sau KHÔNG được overwrite state mới (A→B, B trước A sau).
+    const seq = transcriptSaveSeqRef.current + 1;
+    transcriptSaveSeqRef.current = seq;
+    const sentRevision = transcriptRevisionRef.current;
     try {
-      const res = await projectsApi.updateTranscript(id, edits);
+      const res = await projectsApi.updateTranscript(id, edits, sentRevision);
+      // Stale response — bỏ qua, giữ state của request mới nhất.
+      if (seq !== transcriptSaveSeqRef.current) return null;
+      if (res?.revision !== undefined && res?.revision !== null && Number.isInteger(Number(res.revision))) {
+        transcriptRevisionRef.current = Number(res.revision);
+      }
       if (Array.isArray(res.segments)) {
         setTranscript(res.segments.map(normSegment));
       }
@@ -417,10 +434,29 @@ export default function ProjectDetail() {
       toast({ title: 'Đã lưu chỉnh sửa', description: `${res.updated || edits.length} câu đã cập nhật.` });
       return res;
     } catch (e) {
+      // Stale response lỗi cũng bỏ qua.
+      if (seq !== transcriptSaveSeqRef.current) return null;
+      const status = e?.response?.status;
+      const code = e?.response?.data?.code || e?.response?.data?.error?.code;
+      // 409: KHÔNG overwrite local edits bằng server response, refetch bản mới,
+      // giữ user edits và báo cần đối chiếu.
+      if (status === 409 || code === 'CONFLICT_001') {
+        const currentRevision = e?.response?.data?.currentRevision ?? e?.response?.data?.revision;
+        if (currentRevision !== undefined && Number.isInteger(Number(currentRevision))) {
+          transcriptRevisionRef.current = Number(currentRevision);
+        }
+        try {
+          await loadDubData();
+        } catch { /* giữ local edits nếu refetch fail */ }
+        const msg = 'Transcript đã được cập nhật ở tab/phiên khác — đã tải bản mới nhất, vui lòng đối chiếu trước khi lưu lại. Bài sửa hiện tại của bạn vẫn được giữ.';
+        setTranscriptError(msg);
+        toast({ variant: 'destructive', title: 'Xung đột chỉnh sửa', description: msg });
+        return null;
+      }
       setTranscriptError('Chưa lưu được: ' + (e?.response?.data?.message || e.message));
       return null;
     } finally {
-      setSavingTranscript(false);
+      if (seq === transcriptSaveSeqRef.current) setSavingTranscript(false);
     }
   };
 

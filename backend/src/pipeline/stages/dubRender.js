@@ -1,7 +1,7 @@
 import path from 'path'
 import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
-import { query, insert } from '../../db/query.js'
+import { query, queryOne, insert } from '../../db/query.js'
 import {
   burnSubtitlesStyled,
   applySubtitleMasks,
@@ -207,6 +207,9 @@ export async function dubRender(ctx) {
     status: 'success',
     duration_sec: round3(finalInfo.durationSec),
     thumbnail_key: thumbKey,
+    // Version stamp: output này render từ transcript revision hiện tại.
+    // Transcript PUT sau đó bump revision → outputStale = mismatch.
+    transcript_version: Number((await queryOne(`SELECT transcript_version FROM projects WHERE id = ?`, [project.id]))?.transcript_version ?? 0),
   })
   setProgress(100)
 

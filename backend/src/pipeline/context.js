@@ -2,7 +2,7 @@ import path from 'path'
 import fs from 'node:fs'
 import { config } from '../config.js'
 import { getDb, save } from '../db.js'
-import { queryOne, run } from '../db/query.js'
+import { queryOne, run, withWriteLock } from '../db/query.js'
 
 export function projectDir(projectId) {
   return path.join(config.storageDir, 'projects', projectId)
@@ -84,16 +84,18 @@ export async function getUserSettings(userId) {
 
 export async function insertMany(table, objects) {
   if (!objects.length) return
-  const db = await getDb()
-  const cols = Object.keys(objects[0])
-  const placeholderRow = `(${cols.map(() => '?').join(',')})`
-  const sql = `INSERT INTO ${table} (${cols.join(',')}) VALUES ${objects.map(() => placeholderRow).join(',')}`
-  const params = []
-  for (const obj of objects) {
-    for (const c of cols) params.push(obj[c] ?? null)
-  }
-  db.run(sql, params)
-  save()
+  return withWriteLock(async () => {
+    const db = await getDb()
+    const cols = Object.keys(objects[0])
+    const placeholderRow = `(${cols.map(() => '?').join(',')})`
+    const sql = `INSERT INTO ${table} (${cols.join(',')}) VALUES ${objects.map(() => placeholderRow).join(',')}`
+    const params = []
+    for (const obj of objects) {
+      for (const c of cols) params.push(obj[c] ?? null)
+    }
+    db.run(sql, params)
+    save()
+  })
 }
 
 export function clamp(n, min, max) {

@@ -90,7 +90,9 @@ export async function sseAuthMiddleware(req, res, next) {
       }
       const user = await queryOne(`SELECT id, email, role FROM users WHERE id = ?`, [row.user_id])
       if (!user) return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid ticket user')
-      // Single-use: consume ngay để không reuse vô hạn.
+      // Single-use: consume ngay tại auth để không reuse vô hạn.
+      // Nếu SSE connect fail sau auth, ticket đã mất — frontend phải xin ticket
+      // mới và retry với backoff giới hạn (xem useJobEvents), không reuse.
       try { await run(`DELETE FROM sse_tickets WHERE ticket_hash = ?`, [sha256(ticket)]) } catch (_) {}
       req.user = { id: user.id, email: user.email, role: user.role }
       req.sseTicket = true

@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne, insert, updateById, run } from '../../db/query.js'
+import { query, queryOne, insert, run, withTransaction } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { runPipeline, isPipelineRunning, STAGES } from '../../pipeline/runner.js'
@@ -288,9 +288,21 @@ router.patch('/:id/segments/:segmentId/translation', requireProjectOwner, async 
       console.warn(`[Projects] manual translation segment #${seg.index_num} soft warnings (allowed): ${gate.errors.join(';')}`)
     }
     // §8: đánh dấu sửa tay để dub.translate không overwrite trong lần chạy sau.
-    await updateById('transcript_segments', seg.id, { translation, tts_audio_id: null, is_translation_manually_edited: 1 })
+    // Đồng thời bump transcript_version trong cùng transaction để outputStale
+    // và revision gate không bị bypass qua endpoint này.
+    let newRevision = null
+    await withTransaction(async (tx) => {
+      await tx.run(
+        `UPDATE transcript_segments SET translation = ?, tts_audio_id = NULL, is_translation_manually_edited = 1 WHERE id = ? AND project_id = ?`,
+        [translation, seg.id, req.project.id]
+      )
+      const cur = await tx.queryOne(`SELECT transcript_version FROM projects WHERE id = ?`, [req.project.id])
+      const current = Number(cur?.transcript_version ?? 0)
+      await tx.run(`UPDATE projects SET transcript_version = ? WHERE id = ?`, [current + 1, req.project.id])
+      newRevision = current + 1
+    })
     const updated = await queryOne('SELECT * FROM transcript_segments WHERE id = ?', [seg.id])
-    res.json({ ...updated, warnings: gate.errors || [] })
+    res.json({ ...updated, revision: newRevision, warnings: gate.errors || [] })
   } catch (err) {
     console.error('Update segment translation error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')

@@ -7,7 +7,9 @@ const API_BASE = import.meta.env.VITE_API_BASE || '/api/v1'
  * Lắng nghe tiến trình pipeline realtime qua SSE GET /projects/:id/events.
  * Auth: fetch POST /sse-ticket (Bearer) rồi mở EventSource với ?ticket=
  * (single-use, TTL 60s) — KHÔNG để JWT dài hạn trong URL.
- * Ticket fetch lỗi → sseAvailable=false để caller fallback polling (DB truth).
+ * Ticket single-use nên mỗi retry phải xin ticket MỚI (không reuse).
+ * Retry giới hạn với backoff [1s, 2s, 5s] rồi fallback polling (DB truth).
+ * Không để polling và SSE tạo request storm: chỉ 1 EventSource tại 1 thời điểm.
  * Trả về: { events, lastEvent, sseAvailable, streamClosed }
  *  - events: map stage → { status, percent }
  *  - done chỉ nghĩa stream closed — KHÔNG tự suy diễn completed, caller phải
@@ -19,6 +21,7 @@ export function useJobEvents(projectId, enabled = true) {
   const [sseAvailable, setSseAvailable] = useState(true)
   const [streamClosed, setStreamClosed] = useState(false)
   const sourceRef = useRef(null)
+  const timersRef = useRef([])
 
   useEffect(() => {
     if (!projectId || !enabled) return undefined
@@ -51,37 +54,59 @@ export function useJobEvents(projectId, enabled = true) {
       }
     }
 
-    const openWithTicket = async () => {
+    const SSE_RETRY_BACKOFF_MS = [1000, 2000, 5000]
+
+    const openWithTicket = async (attempt = 0) => {
+      if (cancelled) return
       let url = null
       try {
+        // Mỗi attempt xin ticket mới (single-use, không reuse ticket cũ).
         const { data } = await apiClient.post(`/projects/${projectId}/sse-ticket`)
         if (cancelled) return
         if (data?.ticket) {
           url = `${API_BASE}/projects/${projectId}/events?ticket=${encodeURIComponent(data.ticket)}`
         }
       } catch {
-        /* ticket không lấy được → fallback polling, không để JWT vào URL */
+        /* ticket không lấy được → retry với ticket mới hoặc fallback polling */
       }
       if (cancelled) return
       if (!url) {
+        if (attempt < SSE_RETRY_BACKOFF_MS.length) {
+          const t = setTimeout(() => { if (!cancelled) openWithTicket(attempt + 1) }, SSE_RETRY_BACKOFF_MS[attempt])
+          timersRef.current.push(t)
+          return
+        }
         setSseAvailable(false)
         return
       }
       const es = new EventSource(url)
       sourceRef.current = es
-      es.onmessage = (e) => applyEvent(e.data)
-      es.addEventListener('progress', (e) => applyEvent(e.data))
+      let connected = false
+      es.onmessage = (e) => { connected = true; applyEvent(e.data) }
+      es.addEventListener('progress', (e) => { connected = true; applyEvent(e.data) })
       // done = stream closed (backend đã gửi terminal progress trước đó nếu có).
       // Không tự tạo completed — caller fetch DB để lấy truth.
       es.addEventListener('done', () => {
         setStreamClosed(true)
         try { es.close() } catch { /* noop */ }
-        sourceRef.current = null
+        if (sourceRef.current === es) sourceRef.current = null
       })
       es.onerror = () => {
-        setSseAvailable(false)
         try { es.close() } catch { /* noop */ }
-        sourceRef.current = null
+        if (sourceRef.current === es) sourceRef.current = null
+        if (cancelled || connected) {
+          // Đã từng connect rồi mất kết nối đột ngột → coi như SSE gãy, fallback polling.
+          // Không retry vô hạn để tránh request storm.
+          if (!cancelled && connected) setSseAvailable(false)
+          return
+        }
+        // Chưa connect được (ticket hết hạn / auth fail) → retry ticket mới với backoff giới hạn.
+        if (attempt < SSE_RETRY_BACKOFF_MS.length) {
+          const t = setTimeout(() => { if (!cancelled) openWithTicket(attempt + 1) }, SSE_RETRY_BACKOFF_MS[attempt])
+          timersRef.current.push(t)
+          return
+        }
+        setSseAvailable(false)
       }
     }
 
@@ -89,6 +114,8 @@ export function useJobEvents(projectId, enabled = true) {
 
     return () => {
       cancelled = true
+      for (const t of timersRef.current) clearTimeout(t)
+      timersRef.current = []
       try { sourceRef.current?.close() } catch { /* noop */ }
       sourceRef.current = null
     }

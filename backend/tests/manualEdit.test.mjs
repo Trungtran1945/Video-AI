@@ -80,13 +80,21 @@ const assert = (c, m) => {
   }
 }
 
-// (d) PUT transcript trả thêm outputStale
+// (d) PUT transcript trả thêm outputStale chính xác theo version
 {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'v1', 'dubData.js'), 'utf8')
   assert(src.includes('outputStale'), '(d) dubData.js PUT trả thêm outputStale')
   assert(
-    src.includes('SELECT * FROM outputs WHERE project_id = ? ORDER BY created_date DESC LIMIT 1'),
+    src.includes('FROM outputs WHERE project_id = ? ORDER BY created_date DESC LIMIT 1'),
     '(d) PUT query outputs mới nhất đúng SQL'
+  )
+  assert(
+    src.includes('transcript_version'),
+    '(d) outputStale so theo transcript_version (không dùng !!latestOutput)'
+  )
+  assert(
+    !src.includes('outputStale: !!latestOutput'),
+    '(d) không còn outputStale = !!latestOutput sai semantics'
   )
 }
 
