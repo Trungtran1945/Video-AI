@@ -86,12 +86,22 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-primary/60 ring-offset-2 ring-offset-background;
+  }
+
+  html {
+    color-scheme: light dark;
+    -webkit-tap-highlight-color: transparent;
   }
 
   body {
     @apply bg-background text-foreground font-body antialiased;
     min-height: 100vh;
+    text-rendering: optimizeLegibility;
   }
 
   /* Custom scrollbar matching active theme */
@@ -108,6 +118,11 @@
   }
   ::-webkit-scrollbar-thumb:hover {
     background: hsl(var(--muted-foreground) / 0.4);
+  }
+
+  /* Interactive touch target baseline */
+  button, a, input, select, textarea {
+    touch-action: manipulation;
   }
 
   /* Timeline & Layout utilities */
@@ -129,10 +144,10 @@
     transition: all 0.15s ease;
   }
   .timeline-segment:hover {
-    filter: brightness(1.2);
+    filter: brightness(1.15);
   }
   .timeline-segment.active {
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5);
+    box-shadow: 0 0 0 2px hsl(var(--primary));
   }
 }
 

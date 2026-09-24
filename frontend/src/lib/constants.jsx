@@ -1,18 +1,18 @@
 export const STATUS_LABELS = {
-    draft: { label: 'Bản nháp', color: 'bg-muted text-muted-foreground border border-border/80' },
-    queued: { label: 'Đang chờ', color: 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/20' },
-    generating: { label: 'Đang tạo', color: 'bg-blue-500/15 text-blue-700 dark:text-blue-400 border border-blue-500/20' },
-    completed: { label: 'Hoàn thành', color: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20' },
-    failed: { label: 'Lỗi', color: 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/20' },
-    cancelled: { label: 'Đã hủy', color: 'bg-muted text-muted-foreground border border-border/80' },
-    pending: { label: 'Chờ xử lý', color: 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/20' },
-    running: { label: 'Đang chạy', color: 'bg-blue-500/15 text-blue-700 dark:text-blue-400 border border-blue-500/20' },
-    retrying: { label: 'Đang thử lại', color: 'bg-orange-500/15 text-orange-700 dark:text-orange-400 border border-orange-500/20' },
-    retry: { label: 'Đang chờ retry', color: 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/20' },
-    success: { label: 'Thành công', color: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20' },
-    error: { label: 'Lỗi', color: 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/20' },
-    timeout: { label: 'Quá hạn', color: 'bg-orange-500/15 text-orange-700 dark:text-orange-400 border border-orange-500/20' },
-  };
+  draft: { label: 'Bản nháp', color: 'bg-muted text-muted-foreground border-border/80', dot: 'bg-muted-foreground/60' },
+  queued: { label: 'Đang chờ', color: 'bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-500/25', dot: 'bg-amber-500' },
+  generating: { label: 'Đang tạo', color: 'bg-primary/10 text-primary dark:text-blue-300 border-primary/25', dot: 'bg-primary animate-pulse' },
+  completed: { label: 'Hoàn thành', color: 'bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 border-emerald-500/25', dot: 'bg-emerald-500' },
+  failed: { label: 'Lỗi', color: 'bg-destructive/10 text-destructive dark:text-rose-300 border-destructive/25', dot: 'bg-destructive' },
+  cancelled: { label: 'Đã hủy', color: 'bg-muted text-muted-foreground border-border/80', dot: 'bg-muted-foreground/60' },
+  pending: { label: 'Chờ xử lý', color: 'bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-500/25', dot: 'bg-amber-500' },
+  running: { label: 'Đang chạy', color: 'bg-primary/10 text-primary dark:text-blue-300 border-primary/25', dot: 'bg-primary animate-pulse' },
+  retrying: { label: 'Đang thử lại', color: 'bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-500/25', dot: 'bg-amber-500 animate-pulse' },
+  retry: { label: 'Đang chờ retry', color: 'bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-500/25', dot: 'bg-amber-500' },
+  success: { label: 'Thành công', color: 'bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 border-emerald-500/25', dot: 'bg-emerald-500' },
+  error: { label: 'Lỗi', color: 'bg-destructive/10 text-destructive dark:text-rose-300 border-destructive/25', dot: 'bg-destructive' },
+  timeout: { label: 'Quá hạn', color: 'bg-orange-500/10 text-orange-800 dark:text-orange-300 border-orange-500/25', dot: 'bg-orange-500' },
+};
   
   export const STAGE_LABELS = {
     // SUMMARY pipeline
@@ -114,11 +114,19 @@ export const STATUS_LABELS = {
   export const VOICE_PROVIDERS = ['edge_tts', 'elevenlabs', 'google_tts', 'azure_speech', 'openai_tts'];
   export const SUBTITLE_PROVIDERS = ['whisper', 'openai_whisper', 'faster_whisper'];
   
-  export function StatusBadge({ status }) {
-    const cfg = STATUS_LABELS[status] || { label: status, color: 'bg-slate-500/15 text-slate-400' };
+  export function StatusBadge({ status, className = '' }) {
+    const cfg = STATUS_LABELS[status] || {
+      label: status || 'Chưa rõ',
+      color: 'bg-muted text-muted-foreground border-border',
+      dot: 'bg-muted-foreground/60',
+    };
     return (
-      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${cfg.color}`}>
-        {cfg.label}
+      <span
+        role="status"
+        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${cfg.color} ${className}`}
+      >
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cfg.dot}`} aria-hidden="true" />
+        <span>{cfg.label}</span>
       </span>
     );
   }

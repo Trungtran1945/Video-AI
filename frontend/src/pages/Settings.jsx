@@ -103,7 +103,7 @@ export default function Settings() {
             <button
               onClick={handleSave}
               disabled={saving}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition-all shadow-md shadow-primary/20 disabled:opacity-50"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition shadow-xs disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
             >
               {saving ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -121,10 +121,10 @@ export default function Settings() {
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+          className="rounded-xl bg-card border border-border p-6 shadow-xs"
         >
           <div className="flex items-center gap-2.5 mb-5">
-            <div className="w-8 h-8 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
               <Moon className="w-4 h-4" />
             </div>
             <div>
@@ -133,7 +133,7 @@ export default function Settings() {
             </div>
           </div>
 
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-muted/40 border border-border/60">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-lg bg-muted/40 border border-border/60">
             <div>
               <div className="text-sm font-medium text-foreground">Chế độ giao diện</div>
               <div className="text-xs text-muted-foreground mt-0.5">
@@ -149,10 +149,10 @@ export default function Settings() {
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.05 }}
-          className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+          className="rounded-xl bg-card border border-border p-6 shadow-xs"
         >
           <div className="flex items-center gap-2.5 mb-5">
-            <div className="w-8 h-8 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
               <Sliders className="w-4 h-4" />
             </div>
             <div>
@@ -167,7 +167,7 @@ export default function Settings() {
               <select
                 value={form.default_language || 'vi'}
                 onChange={e => update('default_language', e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                className="w-full px-3 py-2 rounded-lg bg-background border border-input text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
               >
                 <option value="vi">Tiếng Việt</option>
                 <option value="en">Tiếng Anh</option>
@@ -182,7 +182,7 @@ export default function Settings() {
                 type="number"
                 value={form.default_duration || 60}
                 onChange={e => update('default_duration', parseInt(e.target.value) || 60)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                className="w-full px-3 py-2 rounded-lg bg-background border border-input text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
               />
             </div>
 
@@ -191,7 +191,7 @@ export default function Settings() {
               <select
                 value={form.default_style || 'cinematic'}
                 onChange={e => update('default_style', e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                className="w-full px-3 py-2 rounded-lg bg-background border border-input text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
               >
                 <option value="cinematic">Điện ảnh (Cinematic)</option>
                 <option value="anime">Anime</option>
@@ -208,7 +208,7 @@ export default function Settings() {
                 max="10"
                 value={form.max_retries || 3}
                 onChange={e => update('max_retries', parseInt(e.target.value) || 3)}
-                className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                className="w-full px-3 py-2 rounded-lg bg-background border border-input text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
               />
             </div>
           </div>
@@ -219,7 +219,7 @@ export default function Settings() {
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+          className="rounded-xl bg-card border border-border p-6 shadow-xs"
         >
           <h3 className="text-sm font-semibold text-foreground mb-2">Tùy Chọn Mở Rộng</h3>
           <div className="divide-y divide-border/60">

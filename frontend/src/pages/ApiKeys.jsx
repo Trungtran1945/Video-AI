@@ -137,7 +137,7 @@ export default function ApiKeys() {
           action={
             <button
               onClick={() => setShowAdd(!showAdd)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition shadow-md shadow-primary/20"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
             >
               <Plus className="w-4 h-4" />
               <span>Thêm Khóa Mới</span>
@@ -149,7 +149,7 @@ export default function ApiKeys() {
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
-            className="rounded-2xl bg-card border border-primary/30 p-6 shadow-md overflow-hidden"
+            className="rounded-xl bg-card border border-primary/30 p-6 shadow-sm overflow-hidden"
           >
             <div className="flex items-center gap-2 mb-4 text-primary font-semibold text-sm">
               <ShieldCheck className="w-4 h-4" />
@@ -162,7 +162,7 @@ export default function ApiKeys() {
                 <select
                   value={form.provider}
                   onChange={e => setForm(f => ({ ...f, provider: e.target.value }))}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="w-full px-3 py-2 rounded-lg bg-background border border-input text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                 >
                   {providers.map(p => <option key={p} value={p}>{providerLabels[p]}</option>)}
                 </select>
@@ -173,7 +173,7 @@ export default function ApiKeys() {
                 <select
                   value={form.category}
                   onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="w-full px-3 py-2 rounded-lg bg-background border border-input text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                 >
                   {categories.map(c => <option key={c} value={c}>{c.toUpperCase()}</option>)}
                 </select>
@@ -187,7 +187,7 @@ export default function ApiKeys() {
                 value={form.api_key_encrypted}
                 onChange={e => setForm(f => ({ ...f, api_key_encrypted: e.target.value }))}
                 placeholder="sk-... hoặc dán mã khóa vào đây"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring font-mono"
+                className="w-full px-3 py-2 rounded-lg bg-background border border-input text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 font-mono"
               />
             </div>
 
@@ -197,7 +197,7 @@ export default function ApiKeys() {
                 <select
                   value={form.tier}
                   onChange={e => setForm(f => ({ ...f, tier: e.target.value }))}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="w-full px-3 py-2 rounded-lg bg-background border border-input text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                 >
                   {TIER_OPTIONS.map(t => <option key={t.value} value={t.value}>{t.label} — {t.desc}</option>)}
                 </select>
@@ -210,7 +210,7 @@ export default function ApiKeys() {
                   max="100"
                   value={form.priority}
                   onChange={e => setForm(f => ({ ...f, priority: e.target.value }))}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                  className="w-full px-3 py-2 rounded-lg bg-background border border-input text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                 />
               </div>
             </div>
@@ -218,13 +218,13 @@ export default function ApiKeys() {
             <div className="flex items-center gap-2.5">
               <button
                 onClick={handleAdd}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition shadow-sm shadow-primary/25"
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
               >
                 Lưu Khóa
               </button>
               <button
                 onClick={() => setShowAdd(false)}
-                className="px-4 py-2.5 rounded-xl text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                className="px-4 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
               >
                 Hủy
               </button>
@@ -248,7 +248,7 @@ export default function ApiKeys() {
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.03 }}
-                className="flex flex-col sm:flex-row sm:items-center gap-4 p-4 sm:p-5 rounded-2xl bg-card border border-border shadow-xs hover:border-primary/30 transition-all"
+                className="flex flex-col sm:flex-row sm:items-center gap-4 p-4 sm:p-5 rounded-xl bg-card border border-border shadow-xs hover:border-primary/30 transition-all"
               >
                 <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center shrink-0">
                   <KeyRound className="w-5 h-5" />

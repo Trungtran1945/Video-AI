@@ -52,13 +52,14 @@ export default function Layout({ children }) {
       <Link
         to={item.path}
         onClick={() => setMobileOpen(false)}
-        className={`relative flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 ${
+        aria-current={active ? 'page' : undefined}
+        className={`relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar ${
           active
-            ? 'bg-primary/10 text-primary font-semibold shadow-xs'
+            ? 'bg-primary/10 text-primary font-semibold'
             : 'text-sidebar-foreground/75 hover:text-sidebar-foreground hover:bg-sidebar-accent'
         }`}
       >
-        <Icon className={`w-[18px] h-[18px] shrink-0 ${active ? 'text-primary' : 'text-muted-foreground'}`} />
+        <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-primary' : 'text-muted-foreground'}`} />
         <span className="truncate">{item.label}</span>
         {active && (
           <motion.div
@@ -125,8 +126,8 @@ export default function Layout({ children }) {
       {/* User profile & Logout */}
       <div className="p-3 border-t border-sidebar-border shrink-0 space-y-2">
         {user && (
-          <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-sidebar-accent/50 text-xs">
-            <div className="w-7 h-7 rounded-lg bg-primary/10 text-primary flex items-center justify-center font-bold">
+          <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-sidebar-accent/50 text-xs">
+            <div className="w-7 h-7 rounded-md bg-primary/10 text-primary flex items-center justify-center font-bold">
               {user.email ? user.email[0].toUpperCase() : <User className="w-3.5 h-3.5" />}
             </div>
             <div className="min-w-0 flex-1">
@@ -139,7 +140,7 @@ export default function Layout({ children }) {
           <ThemeToggle variant="quick" className="shrink-0" />
           <button
             onClick={handleLogout}
-            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive"
           >
             <LogOut className="w-3.5 h-3.5" />
             <span>Đăng Xuất</span>
@@ -185,20 +186,20 @@ export default function Layout({ children }) {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Top Header Bar */}
-        <header className="h-16 px-4 lg:px-8 border-b border-border bg-card/60 backdrop-blur-md flex items-center justify-between shrink-0 z-10">
+        <header className="h-14 lg:h-16 px-4 lg:px-8 border-b border-border bg-card/75 backdrop-blur-md flex items-center justify-between shrink-0 z-10">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setMobileOpen(true)}
-              className="lg:hidden p-2 rounded-xl border border-border text-foreground hover:bg-accent"
-              aria-label="Mở menu"
+              className="lg:hidden p-2 rounded-lg border border-border text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-primary"
+              aria-label="Mở menu điều hướng"
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div className="hidden sm:block">
-              <span className="text-xs text-muted-foreground">AI Shorts Studio</span>
-              <span className="text-xs text-muted-foreground mx-2">/</span>
-              <span className="text-sm font-semibold text-foreground">{currentRoute.label}</span>
-            </div>
+            <nav aria-label="Đường dẫn trang" className="hidden sm:flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground font-medium">Video AI Studio</span>
+              <span className="text-muted-foreground/60">/</span>
+              <span className="font-semibold text-foreground">{currentRoute.label}</span>
+            </nav>
             <div className="sm:hidden flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-primary" />
               <span className="text-sm font-bold text-foreground">{currentRoute.label}</span>

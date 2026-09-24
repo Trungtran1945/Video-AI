@@ -47,7 +47,7 @@ export default function Logs() {
             <button
               key={f.id}
               onClick={() => setFilter(f.id)}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
                 filter === f.id
                   ? 'bg-primary text-primary-foreground shadow-xs'
                   : 'bg-card border border-border text-muted-foreground hover:text-foreground hover:bg-muted'
@@ -74,7 +74,7 @@ export default function Logs() {
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.02 }}
-                className="flex items-start justify-between gap-4 p-4 rounded-2xl bg-card border border-border hover:border-primary/30 transition-all shadow-xs"
+                className="flex items-start justify-between gap-4 p-4 rounded-xl bg-card border border-border hover:border-primary/30 transition-all shadow-xs"
               >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">

@@ -76,11 +76,11 @@ export default function Projects() {
       <div className="p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
         <PageHeader
           title="Dự Án"
-          subtitle={`${projects.length} dự án trong kho lưu trữ`}
+          subtitle={`${projects.length} dự án trong kho lưu trữ studio`}
           action={
             <Link
               to="/projects/new"
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition shadow-md shadow-primary/20"
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <Plus className="w-4 h-4" />
               <span>Tạo Dự Án Mới</span>
@@ -91,15 +91,15 @@ export default function Projects() {
         {/* Search & Filters */}
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
               placeholder="Tìm dự án theo tên hoặc chủ đề..."
-              className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-card border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              className="w-full pl-9 pr-4 py-2 rounded-lg bg-card border border-border text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
-          <div className="flex items-center gap-1 rounded-xl bg-card border border-border p-1">
+          <div className="flex items-center gap-1 rounded-lg bg-muted/50 border border-border p-1 shrink-0">
             {[
               { key: 'ALL', label: 'Tất cả' },
               { key: 'SUMMARY', label: MODE_LABELS.SUMMARY },
@@ -107,10 +107,11 @@ export default function Projects() {
             ].map((m) => (
               <button
                 key={m.key}
+                type="button"
                 onClick={() => setModeFilter(m.key)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
                   modeFilter === m.key
-                    ? 'bg-primary text-primary-foreground shadow-xs font-semibold'
+                    ? 'bg-card text-foreground font-semibold shadow-xs border border-border/60'
                     : 'text-muted-foreground hover:text-foreground hover:bg-muted'
                 }`}
               >
@@ -135,7 +136,7 @@ export default function Projects() {
             action={
               <Link
                 to="/projects/new"
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition shadow-md shadow-primary/20"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Plus className="w-4 h-4" />
                 <span>Tạo Dự Án</span>
@@ -147,14 +148,14 @@ export default function Projects() {
             {filtered.map((p, i) => (
               <motion.div
                 key={p.id}
-                initial={{ opacity: 0, y: 12 }}
+                initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.04 }}
+                transition={{ delay: i * 0.03, duration: 0.2 }}
               >
-                <div className="relative rounded-2xl bg-card border border-border hover:border-primary/40 p-5 transition-all hover:shadow-md group flex flex-col justify-between h-full">
+                <div className="relative rounded-xl bg-card border border-border hover:border-border/90 p-5 transition-colors hover:shadow-xs group flex flex-col justify-between h-full">
                   <Link
                     to={`/projects/${p.id}`}
-                    className="absolute inset-0 z-0 rounded-2xl"
+                    className="absolute inset-0 z-10 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                     aria-label={`Mở dự án ${p.title}`}
                   >
                     <span className="sr-only">{p.title}</span>
@@ -162,27 +163,30 @@ export default function Projects() {
 
                   <div>
                     <div className="flex items-start justify-between mb-3.5">
-                      <div className="w-10 h-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
-                        {isDubMode(p.mode) ? <Languages className="w-5 h-5" /> : <Film className="w-5 h-5" />}
+                      <div className="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
+                        {isDubMode(p.mode) ? <Languages className="w-4 h-4" /> : <Film className="w-4 h-4" />}
                       </div>
-                      <div className="relative z-10 flex items-center gap-1.5">
+                      <div className="relative z-20 flex items-center gap-1.5">
                         <StatusBadge status={p.status} />
                         <button
+                          type="button"
                           onClick={() => setDeleteTarget(p)}
                           aria-label={`Xoá dự án ${p.title}`}
                           title="Xoá dự án"
-                          className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                          className="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors focus-visible:ring-2 focus-visible:ring-destructive"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
                     </div>
 
-                    <h3 className="font-bold text-foreground text-base truncate group-hover:text-primary transition-colors">
-                      {p.title}
+                    <h3 className="font-semibold text-foreground text-sm sm:text-base truncate group-hover:text-primary transition-colors">
+                      <Link to={`/projects/${p.id}`} className="relative z-20 hover:underline">
+                        {p.title}
+                      </Link>
                     </h3>
 
-                    <div className="flex flex-wrap gap-1.5 mt-3">
+                    <div className="flex flex-wrap gap-1.5 mt-2.5">
                       <span className="px-2 py-0.5 rounded-md bg-muted text-[11px] font-medium text-foreground">
                         {MODE_LABELS[p.mode] || p.mode}
                       </span>
@@ -209,15 +213,15 @@ export default function Projects() {
                   <div className="mt-5 pt-3 border-t border-border/60">
                     <div className="flex items-center justify-between text-xs text-muted-foreground mb-1.5 font-medium">
                       <span>Tiến độ hoàn thành</span>
-                      <span>{p.progress || 0}%</span>
+                      <span className="font-mono">{p.progress || 0}%</span>
                     </div>
                     <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden">
                       <div
-                        className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-all"
+                        className="h-full bg-primary rounded-full transition-all"
                         style={{ width: `${p.progress || 0}%` }}
                       />
                     </div>
-                    <div className="text-[11px] text-muted-foreground mt-3 font-medium">
+                    <div className="text-[11px] text-muted-foreground mt-2.5 font-mono">
                       {formatDate(p.created_date)}
                     </div>
                   </div>

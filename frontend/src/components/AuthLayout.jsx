@@ -47,8 +47,8 @@ export default function AuthLayout({
 
       {/* Auth Card Container */}
       <div className="w-full max-w-md z-20 relative">
-        {/* Subtle Back link inside card area for mobile clarity */}
-        <div className="mb-3">
+        {/* Back link for mobile viewports */}
+        <div className="mb-3 sm:hidden">
           <Link
             to="/"
             className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-primary transition-colors group"
@@ -69,8 +69,8 @@ export default function AuthLayout({
           )}
         </div>
 
-        {/* Glassmorphic Form Card */}
-        <div className="bg-card/90 dark:bg-card/85 rounded-3xl shadow-2xl border border-border/90 dark:border-white/10 p-6 sm:p-8 backdrop-blur-2xl transition-colors">
+        {/* Form Card */}
+        <div className="bg-card/95 rounded-2xl shadow-xl border border-border/80 p-6 sm:p-8 backdrop-blur-xl transition-colors">
           {children}
         </div>
 

@@ -484,27 +484,30 @@ export default function CreateProject() {
         {/* Action buttons */}
         <div className="flex items-center justify-between mt-6">
           <button
+            type="button"
             onClick={() => (step > 0 ? setStep(step - 1) : update('mode', null))}
             disabled={creating || uploading}
-            className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 transition-colors"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ChevronLeft className="w-4 h-4" />
             <span>{step === 0 ? 'Chọn lại chế độ' : 'Quay lại'}</span>
           </button>
           {step < steps.length - 1 ? (
             <button
+              type="button"
               onClick={() => canNext() && setStep(step + 1)}
               disabled={!canNext() || uploading}
-              className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition-all disabled:opacity-40 shadow-sm shadow-primary/20"
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-semibold transition-colors disabled:opacity-40 shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <span>Tiếp tục</span>
               <ChevronRight className="w-4 h-4" />
             </button>
           ) : (
             <button
+              type="button"
               onClick={handleCreate}
               disabled={creating || uploading || !copyrightAck}
-              className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-sm font-semibold transition-all shadow-md shadow-primary/25 disabled:opacity-50"
+              className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-semibold transition-colors shadow-xs disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {creating ? (
                 <>
@@ -528,15 +531,15 @@ export default function CreateProject() {
 // ── Shared Subcomponents ──
 function StepIndicator({ steps, step }) {
   return (
-    <div className="flex items-center justify-center gap-1 mb-8 overflow-x-auto pb-2">
+    <div className="flex items-center justify-center gap-1 mb-6 sm:mb-8 overflow-x-auto pb-2">
       {steps.map((s, i) => (
         <div key={s.key} className="flex items-center gap-1 shrink-0">
           <div
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold transition-colors ${
               i === step
                 ? 'bg-primary text-primary-foreground shadow-xs'
                 : i < step
-                ? 'bg-primary/15 text-primary'
+                ? 'bg-primary/10 text-primary'
                 : 'bg-muted text-muted-foreground'
             }`}
           >
@@ -555,16 +558,16 @@ function OptionCard({ selected, onClick, title, desc, children }) {
     <button
       type="button"
       onClick={onClick}
-      className={`text-left p-4 rounded-xl border transition-all w-full ${
+      className={`text-left p-3.5 rounded-lg border transition-colors w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
         selected
-          ? 'border-primary bg-primary/10 shadow-xs'
-          : 'border-border bg-card hover:bg-muted/40 hover:border-primary/30'
+          ? 'border-primary bg-primary/10 text-foreground font-semibold shadow-xs'
+          : 'border-border bg-card hover:bg-muted/40 hover:border-border/90'
       }`}
     >
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-sm font-semibold text-foreground">{title}</div>
-          {desc && <div className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{desc}</div>}
+          <div className="text-xs sm:text-sm font-semibold text-foreground">{title}</div>
+          {desc && <div className="text-xs text-muted-foreground mt-0.5 leading-relaxed font-normal">{desc}</div>}
         </div>
         {selected && <Check className="w-4 h-4 text-primary shrink-0 ml-2" />}
       </div>
@@ -578,13 +581,13 @@ function ModeCard({ onClick, icon: Icon, title, desc }) {
     <button
       type="button"
       onClick={onClick}
-      className="text-left p-6 rounded-2xl border border-border bg-card hover:border-primary/40 hover:bg-primary/5 transition-all group shadow-sm hover:shadow-md"
+      className="text-left p-5 sm:p-6 rounded-xl border border-border bg-card hover:border-primary/50 hover:bg-primary/[0.03] transition-all group shadow-xs hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <div className="w-12 h-12 rounded-xl bg-primary/10 text-primary flex items-center justify-center mb-4 group-hover:scale-105 transition-transform">
-        <Icon className="w-6 h-6" />
+      <div className="w-10 h-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center mb-3.5 group-hover:scale-105 transition-transform">
+        <Icon className="w-5 h-5" />
       </div>
-      <div className="text-lg font-bold text-foreground group-hover:text-primary transition-colors">{title}</div>
-      <p className="text-sm text-muted-foreground mt-2 leading-relaxed">{desc}</p>
+      <div className="text-base sm:text-lg font-bold text-foreground group-hover:text-primary transition-colors">{title}</div>
+      <p className="text-xs sm:text-sm text-muted-foreground mt-1.5 leading-relaxed">{desc}</p>
     </button>
   );
 }
@@ -592,19 +595,19 @@ function ModeCard({ onClick, icon: Icon, title, desc }) {
 function UploadBlock({ label, fileName, onChange, accept, multiple, uploading, hint }) {
   return (
     <div>
-      <label className="text-sm font-semibold text-foreground mb-2 block">{label}</label>
+      <label className="text-xs sm:text-sm font-semibold text-foreground mb-2 block">{label}</label>
       <label
-        className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-2xl py-10 transition-all ${
+        className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl py-8 sm:py-10 transition-colors ${
           uploading ? 'pointer-events-none opacity-60' : 'cursor-pointer'
         } ${
           fileName
             ? 'border-primary/50 bg-primary/5'
-            : 'border-border hover:border-primary/40 bg-muted/20'
+            : 'border-border hover:border-border/90 bg-muted/20'
         }`}
       >
-        <Upload className="w-8 h-8 text-primary/70" />
-        <span className="text-sm font-semibold text-foreground">{fileName || 'Nhấn hoặc kéo thả tệp video vào đây'}</span>
-        {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
+        <Upload className="w-7 h-7 text-primary/70" />
+        <span className="text-xs sm:text-sm font-semibold text-foreground text-center px-4">{fileName || 'Nhấn hoặc kéo thả tệp video vào đây'}</span>
+        {hint && <span className="text-xs text-muted-foreground text-center px-4">{hint}</span>}
         {uploading && <Loader2 className="w-5 h-5 animate-spin text-primary mt-2" />}
         <input type="file" accept={accept} multiple={multiple} onChange={onChange} className="hidden" />
       </label>
@@ -616,7 +619,7 @@ function VoiceStep({ form, update, optional }) {
   return (
     <div className="space-y-4">
       <div>
-        <label className="text-sm font-semibold text-foreground mb-2 block">
+        <label className="text-xs sm:text-sm font-semibold text-foreground mb-2 block">
           {optional ? 'Giọng đọc (tuỳ chọn)' : 'Nhà cung cấp giọng đọc AI'}
         </label>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -631,12 +634,12 @@ function VoiceStep({ form, update, optional }) {
         </div>
       </div>
       <div>
-        <label className="text-sm font-semibold text-foreground mb-2 block">Tên giọng / Voice ID (tuỳ chọn)</label>
+        <label className="text-xs sm:text-sm font-semibold text-foreground mb-2 block">Tên giọng / Voice ID (tuỳ chọn)</label>
         <input
           value={form.voiceName}
           onChange={(e) => update('voiceName', e.target.value)}
           placeholder="VD: Rachel, Adam, Josh..."
-          className="w-full px-4 py-2.5 rounded-xl bg-background border border-input text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          className="w-full px-3.5 py-2 rounded-lg bg-background border border-input text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
         />
       </div>
     </div>

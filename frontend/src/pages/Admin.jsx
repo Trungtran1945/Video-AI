@@ -61,10 +61,10 @@ export default function Admin() {
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+            className="rounded-xl bg-card border border-border p-6 shadow-xs"
           >
             <div className="flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
                 <Users className="w-4 h-4" />
               </div>
               <div>
@@ -77,9 +77,9 @@ export default function Admin() {
               {users.slice(0, 8).map(u => (
                 <div
                   key={u.id}
-                  className="flex items-center gap-3 p-3 rounded-xl bg-muted/30 hover:bg-muted/60 border border-border/50 transition-colors"
+                  className="flex items-center gap-3 p-3 rounded-lg bg-muted/30 hover:bg-muted/60 border border-border/50 transition-colors"
                 >
-                  <div className="w-8 h-8 rounded-xl bg-primary/15 text-primary flex items-center justify-center text-xs font-bold shrink-0">
+                  <div className="w-8 h-8 rounded-lg bg-primary/15 text-primary flex items-center justify-center text-xs font-bold shrink-0">
                     {(u.name || u.email || '?')[0].toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
@@ -102,10 +102,10 @@ export default function Admin() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.08 }}
-            className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+            className="rounded-xl bg-card border border-border p-6 shadow-xs"
           >
             <div className="flex items-center gap-2 mb-4">
-              <div className="w-8 h-8 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+              <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
                 <ShieldCheck className="w-4 h-4" />
               </div>
               <div>
@@ -123,7 +123,7 @@ export default function Admin() {
               ].map(item => (
                 <div
                   key={item.label}
-                  className="flex items-center justify-between p-3 rounded-xl bg-muted/30 border border-border/50 text-xs sm:text-sm"
+                  className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/50 text-xs sm:text-sm"
                 >
                   <span className="font-medium text-foreground">{item.label}</span>
                   <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">

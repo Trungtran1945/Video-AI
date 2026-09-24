@@ -68,10 +68,10 @@ export default function ProviderSettings() {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: ci * 0.04 }}
-              className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+              className="rounded-xl bg-card border border-border p-6 shadow-xs"
             >
               <div className="flex items-center gap-2.5 mb-4">
-                <div className="w-8 h-8 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+                <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
                   <Cpu className="w-4 h-4" />
                 </div>
                 <h3 className="text-sm font-semibold text-foreground">{cat.label}</h3>
@@ -86,7 +86,7 @@ export default function ProviderSettings() {
                       key={p}
                       type="button"
                       onClick={() => selectProvider(cat.key, p)}
-                      className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl border text-xs sm:text-sm font-medium transition-all ${
+                      className={`flex items-center justify-between px-3.5 py-2.5 rounded-lg border text-xs sm:text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${
                         selected
                           ? 'border-primary bg-primary/10 text-primary shadow-xs font-semibold'
                           : 'border-border bg-muted/30 text-foreground hover:border-primary/40 hover:bg-muted/60'

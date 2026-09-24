@@ -72,6 +72,8 @@ const AuthenticatedApp = () => {
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/settings/providers" element={<ProviderSettings />} />
         <Route path="/settings/api-keys" element={<ApiKeys />} />
+        <Route path="/providers" element={<Navigate to="/settings/providers" replace />} />
+        <Route path="/api-keys" element={<Navigate to="/settings/api-keys" replace />} />
         <Route path="/logs" element={<Logs />} />
         <Route path="/admin" element={<Admin />} />
       </Route>

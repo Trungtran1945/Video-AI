@@ -553,28 +553,47 @@ export default function ProjectDetail() {
                 <StatusBadge status={project.status} />
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <button onClick={() => setConfirmDelete(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-destructive/30 text-destructive hover:bg-destructive/10 text-xs font-medium transition">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-destructive/30 text-destructive hover:bg-destructive/10 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive"
+                >
                   <Trash2 className="w-3.5 h-3.5" /> Xoá
                 </button>
                 {canCancel && (
-                  <button onClick={handleCancel}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 text-xs font-medium transition">
+                  <button
+                    type="button"
+                    onClick={handleCancel}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                  >
                     <XCircle className="w-3.5 h-3.5" /> Huỷ
                   </button>
                 )}
                 {canRegenerate && (
-                  <button onClick={handleRegenerate} disabled={regenerating}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 text-xs font-medium transition disabled:opacity-50">
+                  <button
+                    type="button"
+                    onClick={handleRegenerate}
+                    disabled={regenerating}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 text-xs font-semibold transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  >
                     {regenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />} Chạy lại
                   </button>
                 )}
                 {outputUrl && (
                   <>
-                    <a href={outputUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold transition">
+                    <a
+                      href={outputUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold transition shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
                       <Play className="w-3.5 h-3.5" /> Xem
                     </a>
-                    <a href={outputUrl} download className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-foreground text-xs font-medium transition">
+                    <a
+                      href={outputUrl}
+                      download
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-foreground text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
                       <Download className="w-3.5 h-3.5" /> Tải
                     </a>
                   </>
@@ -582,28 +601,28 @@ export default function ProjectDetail() {
               </div>
             </div>
             {error && (
-              <div className="mt-2 flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2">
+              <div className="mt-2.5 flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2">
                 <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {error}
               </div>
             )}
           </div>
 
           {/* 2. Pipeline Progress - Full width near top */}
-          <div className="shrink-0 px-4 py-2 bg-card/70 border-b border-border">
+          <div className="shrink-0 px-4 py-2.5 bg-card border-b border-border">
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2 shrink-0">
-                <span className="text-[10px] font-semibold text-foreground">Pipeline</span>
+                <span className="text-[11px] font-bold text-foreground">Pipeline</span>
                 {isActive && (
-                  <span className="inline-flex items-center gap-1 text-[10px] text-primary">
+                  <span className="inline-flex items-center gap-1 text-[11px] text-primary font-semibold">
                     <Loader2 className="w-2.5 h-2.5 animate-spin" /> {sseAvailable ? 'SSE' : 'Polling'}
                   </span>
                 )}
               </div>
               {typeof project.progress === 'number' && (
                 <div className="flex-1 max-w-xs">
-                  <div className="h-1 rounded-full bg-white/5 overflow-hidden">
+                  <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                     <motion.div
-                      className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500"
+                      className="h-full rounded-full bg-primary"
                       initial={{ width: 0 }}
                       animate={{ width: `${Math.min(100, Math.max(0, project.progress))}%` }}
                       transition={{ duration: 0.4 }}
@@ -611,7 +630,7 @@ export default function ProjectDetail() {
                   </div>
                 </div>
               )}
-              <div className="flex-1 flex flex-wrap gap-1">
+              <div className="flex-1 flex flex-wrap gap-1.5">
                 {stages.map((stageKey) => {
                   const stage = STAGE_LABELS[stageKey];
                   const Icon = stageIcons[stageKey] || Circle;
@@ -623,20 +642,20 @@ export default function ProjectDetail() {
                   return (
                     <div
                       key={stageKey}
-                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] ${
-                        isCurrent ? 'bg-blue-500/10 text-blue-400' :
-                        isDone ? 'bg-emerald-500/10 text-emerald-400' :
-                        isError ? 'bg-red-500/10 text-red-400' :
-                        isRetry ? 'bg-amber-500/10 text-amber-400' :
-                        'bg-white/5 text-slate-500'
+                      className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium border transition-colors ${
+                        isCurrent ? 'bg-primary/10 text-primary border-primary/30' :
+                        isDone ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/25' :
+                        isError ? 'bg-destructive/10 text-destructive dark:text-rose-300 border-destructive/25' :
+                        isRetry ? 'bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-500/25' :
+                        'bg-muted/50 text-muted-foreground border-border/60'
                       }`}
                     >
-                      {isDone ? <CheckCircle className="w-2 h-2" /> :
-                       isError ? <AlertCircle className="w-2 h-2" /> :
-                       isRetry ? <Clock className="w-2 h-2" /> :
-                       isCurrent ? <Loader2 className="w-2 h-2 animate-spin" /> :
-                       <Icon className="w-2 h-2" />}
-                      <span className="truncate max-w-[60px]">{stage?.label || stageKey.split('.').pop()}</span>
+                      {isDone ? <CheckCircle className="w-2.5 h-2.5" /> :
+                       isError ? <AlertCircle className="w-2.5 h-2.5" /> :
+                       isRetry ? <Clock className="w-2.5 h-2.5" /> :
+                       isCurrent ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> :
+                       <Icon className="w-2.5 h-2.5" />}
+                      <span className="truncate max-w-[80px]">{stage?.label || stageKey.split('.').pop()}</span>
                     </div>
                   );
                 })}
@@ -647,7 +666,7 @@ export default function ProjectDetail() {
           {/* 3. Main Workspace: Transcript + Video */}
           <div className="flex-1 flex min-h-0">
             {/* Left Panel: Transcript Editor (dominant) */}
-            <div className="w-[58%] flex flex-col min-h-0 border-r border-white/5">
+            <div className="w-[58%] flex flex-col min-h-0 border-r border-border">
               {outputStale && !isActive && (
                 <div className="shrink-0 mx-3 mt-3 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">
                   <AlertCircle className="w-4 h-4 shrink-0" /> Video hiện tại chưa phản ánh bản chỉnh sửa — nhấn Lồng tiếng lại để cập nhật.
@@ -871,11 +890,11 @@ export default function ProjectDetail() {
         <InfoGrid project={project} isDub={isDub} params={params} />
 
         {/* Pipeline progress */}
-        <div className="rounded-2xl bg-card border border-border p-6 mb-6 shadow-sm">
-          <div className="flex items-center justify-between mb-5">
-            <h3 className="text-base font-semibold text-foreground">Tiến trình Pipeline</h3>
+        <div className="rounded-xl bg-card border border-border p-5 sm:p-6 mb-6 shadow-xs">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm sm:text-base font-semibold text-foreground">Tiến trình Pipeline</h3>
             {isActive && (
-              <span className="inline-flex items-center gap-1.5 text-xs text-primary font-medium">
+              <span className="inline-flex items-center gap-1.5 text-xs text-primary font-semibold">
                 <Loader2 className="w-3 h-3 animate-spin" />
                 {sseAvailable ? 'Cập nhật real-time (SSE)' : 'Tự động cập nhật'}
               </span>
@@ -884,19 +903,19 @@ export default function ProjectDetail() {
 
           {typeof project.progress === 'number' && (
             <div className="mb-5">
-              <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+              <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                 <motion.div
-                  className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500"
+                  className="h-full rounded-full bg-primary"
                   initial={{ width: 0 }}
                   animate={{ width: `${Math.min(100, Math.max(0, project.progress))}%` }}
                   transition={{ duration: 0.4 }}
                 />
               </div>
-              <div className="text-xs text-slate-500 mt-1.5 text-right">{project.progress}%</div>
+              <div className="text-xs font-mono text-muted-foreground mt-1.5 text-right">{project.progress}%</div>
             </div>
           )}
 
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             {stages.map((stageKey, i) => {
               const stage = STAGE_LABELS[stageKey];
               const Icon = stageIcons[stageKey] || Circle;
@@ -909,17 +928,22 @@ export default function ProjectDetail() {
               return (
                 <motion.div
                   key={stageKey}
-                  initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.05 }}
-                  className={`flex items-center gap-4 p-3 rounded-xl transition ${
-                    isCurrent ? 'bg-blue-500/10 border border-blue-500/20' : 'border border-transparent'
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: i * 0.04 }}
+                  className={`flex items-center gap-3.5 p-3 rounded-lg border transition-colors ${
+                    isCurrent
+                      ? 'bg-primary/10 border-primary/30'
+                      : isDone
+                      ? 'bg-card border-border/70'
+                      : 'bg-muted/30 border-border/50'
                   }`}
                 >
-                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
-                    isDone ? 'bg-emerald-500/15 text-emerald-400' :
-                    isError ? 'bg-red-500/15 text-red-400' :
-                    isRetry ? 'bg-amber-500/15 text-amber-400' :
-                    isCurrent ? 'bg-blue-500/15 text-blue-400' : 'bg-white/5 text-slate-500'
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                    isDone ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' :
+                    isError ? 'bg-destructive/15 text-destructive' :
+                    isRetry ? 'bg-amber-500/15 text-amber-700 dark:text-amber-400' :
+                    isCurrent ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'
                   }`}>
                     {isDone ? <CheckCircle className="w-4 h-4" /> :
                      isError ? <AlertCircle className="w-4 h-4" /> :
@@ -928,16 +952,16 @@ export default function ProjectDetail() {
                      <Icon className="w-4 h-4" />}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-slate-200">{stage?.label || stageKey}</div>
+                    <div className="text-sm font-semibold text-foreground">{stage?.label || stageKey}</div>
                     {isRetry && job?.next_retry_at && (
-                      <div className="text-xs text-amber-400 flex items-center gap-1 mt-0.5">
+                      <div className="text-xs text-amber-700 dark:text-amber-400 font-medium flex items-center gap-1 mt-0.5">
                         <Clock className="w-3 h-3" /> Đang chờ quota hồi phục lúc {new Date(job.next_retry_at).toLocaleTimeString('vi-VN')}
                       </div>
                     )}
-                    {job?.error_message && <div className="text-xs text-red-400 truncate">{job.error_message}</div>}
-                    {job && <div className="text-xs text-slate-500">{formatDate(job.created_date)}{job.attempts > 1 ? ` • ${job.attempts} lần thử` : ''}</div>}
+                    {job?.error_message && <div className="text-xs text-destructive truncate mt-0.5 font-medium">{job.error_message}</div>}
+                    {job && <div className="text-xs text-muted-foreground mt-0.5 font-mono">{formatDate(job.created_date)}{job.attempts > 1 ? ` • ${job.attempts} lần thử` : ''}</div>}
                   </div>
-                  {!job && !isCurrent && !isDone && <Circle className="w-4 h-4 text-slate-700" />}
+                  {!job && !isCurrent && !isDone && <Circle className="w-4 h-4 text-muted-foreground/30" />}
                 </motion.div>
               );
             })}
@@ -1167,34 +1191,34 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
     await onRedub();
   };
 
-  // Compact mode for2-panel layout
+  // Compact mode for 2-panel layout
   if (compact) {
     if (!transcript.length) {
       return (
-        <div className="h-full flex flex-col items-center justify-center p-4 text-center">
-          <p className="text-xs text-slate-500">
-            Chưa có lời thoại. Hãy chạy pipeline.
+        <div className="h-full flex flex-col items-center justify-center p-6 text-center">
+          <p className="text-xs text-muted-foreground">
+            Chưa có lời thoại. Hãy chạy pipeline để nhận dạng.
           </p>
         </div>
       );
     }
 
     return (
-      <div className="h-full flex flex-col">
+      <div className="h-full flex flex-col bg-card">
         {/* Header */}
-        <div className="shrink-0 p-3 border-b border-border">
-          <div className="flex items-center justify-between gap-2 mb-1">
-            <h3 className="text-xs font-semibold text-foreground">Lời thoại</h3>
-            <span className="text-[10px] text-muted-foreground">{translatedCount}/{transcript.length}</span>
+        <div className="shrink-0 p-3 border-b border-border bg-card">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h3 className="text-xs font-semibold text-foreground">Lời thoại song ngữ</h3>
+            <span className="text-[10px] font-mono text-muted-foreground">{translatedCount}/{transcript.length}</span>
           </div>
           {/* Language Selector */}
-          <div className="flex items-center gap-1.5 mb-2">
-            <Languages className="w-3 h-3 text-muted-foreground shrink-0" />
+          <div className="flex items-center gap-1.5 mb-2.5">
+            <Languages className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
             <select
               value={targetLanguage}
               onChange={(e) => onLanguageChange?.(e.target.value)}
               disabled={disabled}
-              className="flex-1 bg-background border border-input rounded px-2 py-0.5 text-[10px] text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
+              className="flex-1 bg-background border border-input rounded-md px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
             >
               <option value="vi">Tiếng Việt</option>
               <option value="en">Tiếng Anh</option>
@@ -1204,19 +1228,27 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
             </select>
           </div>
           {error && (
-            <div className="mb-2 flex items-center gap-1 text-[10px] text-destructive bg-destructive/10 rounded px-2 py-1">
-              <AlertCircle className="w-2.5 h-2.5 shrink-0" /> {error}
+            <div className="mb-2 flex items-center gap-1.5 text-[11px] text-destructive bg-destructive/10 rounded-md px-2 py-1">
+              <AlertCircle className="w-3 h-3 shrink-0" /> {error}
             </div>
           )}
-          <div className="flex gap-1">
-            <button onClick={handleSave} disabled={saving || disabled || dirtyCount === 0}
-              className="flex items-center gap-1 px-2 py-1 rounded border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 text-[10px] font-medium transition disabled:opacity-50">
-              {saving ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <CheckCircle className="w-2.5 h-2.5" />}
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving || disabled || dirtyCount === 0}
+              className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/10 text-xs font-semibold transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
               Lưu{dirtyCount > 0 ? ` (${dirtyCount})` : ''}
             </button>
-            <button onClick={handleRedub} disabled={redubbing || disabled}
-              className="flex items-center gap-1 px-2 py-1 rounded border border-primary/30 text-primary hover:bg-primary/10 text-[10px] font-medium transition disabled:opacity-50">
-              {redubbing ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <AudioLines className="w-2.5 h-2.5" />}
+            <button
+              type="button"
+              onClick={handleRedub}
+              disabled={redubbing || disabled}
+              className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md border border-primary/30 text-primary hover:bg-primary/10 text-xs font-semibold transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {redubbing ? <Loader2 className="w-3 h-3 animate-spin" /> : <AudioLines className="w-3 h-3" />}
               Lồng tiếng
             </button>
           </div>
@@ -1331,65 +1363,74 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
 // §7: thẻ subtitle chỉnh trực tiếp 4 trường (Original / Translation / Start / End).
 // Không kéo-thả, không draggable/dataTransfer.
 function SegmentCard({ seg, compact = false, isDirty, getField, onField, onSeek, hasVideo, disabled }) {
-  const numCls = compact
-    ? 'w-full bg-background border border-input rounded px-1.5 py-0.5 text-[11px] text-foreground tabular-nums focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60'
-    : 'w-full bg-background border border-input rounded-lg px-2 py-1 text-xs text-foreground tabular-nums focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60';
+  const numCls = 'w-full bg-background border border-input rounded-md px-2 py-1 text-xs text-foreground tabular-nums focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60 font-mono';
   const areaCls = compact
-    ? 'w-full resize-none rounded bg-background border border-input px-2 py-1 text-[11px] text-foreground leading-snug focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60'
-    : 'w-full resize-y rounded-lg bg-background border border-input px-3 py-1.5 text-sm text-foreground leading-snug focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60';
+    ? 'w-full resize-none rounded-md bg-background border border-input px-2.5 py-1 text-xs text-foreground leading-snug focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60'
+    : 'w-full resize-y rounded-md bg-background border border-input px-3 py-1.5 text-xs sm:text-sm text-foreground leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60';
+
   return (
-    <div className={compact
-      ? `p-2 rounded-lg border transition ${isDirty ? 'bg-amber-500/10 border-amber-500/30' : 'bg-muted/25 border-border/70'}`
-      : 'p-3 rounded-xl bg-muted/30 border border-border/70'}>
-      <div className="flex items-center justify-between gap-2 mb-1.5">
-        <button onClick={() => onSeek(Number(getField(seg, 'startSec')))} disabled={!hasVideo}
-          className="text-[10px] text-muted-foreground hover:text-primary transition disabled:cursor-default tabular-nums">
-          {fmtSec(getField(seg, 'startSec'))} → {fmtSec(getField(seg, 'endSec'))}
+    <div className={`p-3 rounded-lg border transition-colors ${
+      isDirty ? 'bg-amber-500/10 border-amber-500/30' : 'bg-card border-border hover:border-border/90'
+    }`}>
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <button
+          type="button"
+          onClick={() => onSeek(Number(getField(seg, 'startSec')))}
+          disabled={!hasVideo}
+          className="text-xs font-semibold text-muted-foreground hover:text-primary transition-colors disabled:cursor-default tabular-nums font-mono inline-flex items-center gap-1"
+        >
+          <span>{fmtSec(getField(seg, 'startSec'))}</span>
+          <span>→</span>
+          <span>{fmtSec(getField(seg, 'endSec'))}</span>
         </button>
         <span className="flex items-center gap-1.5">
           {seg.speaker && (
-            <span className="text-[9px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-700 dark:text-violet-300">{seg.speaker}</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-primary/10 text-primary">{seg.speaker}</span>
           )}
           {isDirty && (
-            <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 font-medium">đã sửa</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-800 dark:text-amber-300">đã sửa</span>
           )}
         </span>
       </div>
-      <label className="block text-[10px] text-muted-foreground mb-0.5">Original</label>
-      <textarea
-        value={getField(seg, 'text') ?? ''}
-        onChange={(e) => onField(seg, 'text', e.target.value)}
-        disabled={disabled}
-        rows={compact ? 1 : 2}
-        placeholder="Câu gốc (OCR/STT)"
-        className={areaCls}
-      />
-      <label className="block text-[10px] text-muted-foreground mt-1.5 mb-0.5">Translation</label>
-      <textarea
-        value={getField(seg, 'translation') ?? ''}
-        onChange={(e) => onField(seg, 'translation', e.target.value)}
-        disabled={disabled}
-        rows={compact ? 1 : 2}
-        placeholder="Bản dịch — sửa tay được giữ nguyên khi chạy lại"
-        className={areaCls}
-      />
-      <div className="grid grid-cols-2 gap-1.5 mt-1.5">
-        <label className="block text-[10px] text-muted-foreground">Start (s)
+      <div>
+        <label className="block text-[11px] font-semibold text-muted-foreground mb-1">Original (Câu gốc)</label>
+        <textarea
+          value={getField(seg, 'text') ?? ''}
+          onChange={(e) => onField(seg, 'text', e.target.value)}
+          disabled={disabled}
+          rows={compact ? 1 : 2}
+          placeholder="Câu gốc (OCR/STT)"
+          className={areaCls}
+        />
+      </div>
+      <div className="mt-2">
+        <label className="block text-[11px] font-semibold text-muted-foreground mb-1">Translation (Bản dịch)</label>
+        <textarea
+          value={getField(seg, 'translation') ?? ''}
+          onChange={(e) => onField(seg, 'translation', e.target.value)}
+          disabled={disabled}
+          rows={compact ? 1 : 2}
+          placeholder="Bản dịch — sửa tay được giữ nguyên khi chạy lại"
+          className={areaCls}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-2 mt-2">
+        <label className="block text-[11px] font-semibold text-muted-foreground">Start (giây)
           <input
             type="number" step={0.1} min={0}
             value={getField(seg, 'startSec') ?? 0}
             onChange={(e) => onField(seg, 'startSec', Number(e.target.value))}
             disabled={disabled}
-            className={numCls}
+            className={`mt-1 ${numCls}`}
           />
         </label>
-        <label className="block text-[10px] text-muted-foreground">End (s)
+        <label className="block text-[11px] font-semibold text-muted-foreground">End (giây)
           <input
             type="number" step={0.1} min={0}
             value={getField(seg, 'endSec') ?? 0}
             onChange={(e) => onField(seg, 'endSec', Number(e.target.value))}
             disabled={disabled}
-            className={numCls}
+            className={`mt-1 ${numCls}`}
           />
         </label>
       </div>

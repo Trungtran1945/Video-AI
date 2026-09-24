@@ -82,7 +82,7 @@ export default function Analytics() {
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+            className="rounded-xl bg-card border border-border p-6 shadow-xs"
           >
             <h3 className="text-base font-semibold text-foreground mb-1">Video tạo theo ngày (7 ngày qua)</h3>
             <p className="text-xs text-muted-foreground mb-6">Số lượng video bắt đầu quy trình tạo mỗi ngày</p>
@@ -94,7 +94,7 @@ export default function Analytics() {
                       initial={{ height: 0 }}
                       animate={{ height: `${(d.count / maxDaily) * 100}%` }}
                       transition={{ delay: i * 0.06, duration: 0.35 }}
-                      className="w-full rounded-t-lg bg-gradient-to-t from-blue-600 to-indigo-500 min-h-[4px]"
+                      className="w-full rounded-t-md bg-primary hover:bg-primary/90 transition-colors min-h-[4px]"
                     />
                   </div>
                   <div className="text-[11px] text-muted-foreground font-medium">{d.day}</div>
@@ -109,7 +109,7 @@ export default function Analytics() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.08 }}
-            className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+            className="rounded-xl bg-card border border-border p-6 shadow-xs"
           >
             <h3 className="text-base font-semibold text-foreground mb-1">Sử dụng theo nhà cung cấp</h3>
             <p className="text-xs text-muted-foreground mb-6">Tần suất gọi API và chi phí tương ứng</p>
@@ -128,7 +128,7 @@ export default function Analytics() {
                         initial={{ width: 0 }}
                         animate={{ width: `${(data.count / maxCount) * 100}%` }}
                         transition={{ duration: 0.5 }}
-                        className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500"
+                        className="h-full rounded-full bg-primary"
                       />
                     </div>
                   </div>
@@ -142,7 +142,7 @@ export default function Analytics() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.12 }}
-            className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+            className="rounded-xl bg-card border border-border p-6 shadow-xs"
           >
             <h3 className="text-base font-semibold text-foreground mb-1">Phân bổ trạng thái dự án</h3>
             <p className="text-xs text-muted-foreground mb-6">Tỉ lệ hoàn thành, lỗi hoặc đang xử lý</p>
@@ -177,7 +177,7 @@ export default function Analytics() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.16 }}
-            className="rounded-2xl bg-card border border-border p-6 shadow-sm"
+            className="rounded-xl bg-card border border-border p-6 shadow-xs"
           >
             <h3 className="text-base font-semibold text-foreground mb-1">Thống kê tác vụ (Jobs)</h3>
             <p className="text-xs text-muted-foreground mb-6">Tổng kết hiệu suất thực thi của worker queue</p>

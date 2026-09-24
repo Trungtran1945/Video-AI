@@ -276,7 +276,8 @@ export default function VideoTimeline({
             type="button"
             onClick={() => handleSeek(0)}
             title="Jump to Start"
-            className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors"
+            aria-label="Về đầu video"
+            className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <RotateCcw size={13} />
           </button>
@@ -285,7 +286,8 @@ export default function VideoTimeline({
             type="button"
             onClick={() => handleSeek(Math.max(0, activeCurrentTime - 5))}
             title="Seek Backward 5s"
-            className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors"
+            aria-label="Lùi lại 5 giây"
+            className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <SkipBack size={13} />
           </button>
@@ -294,10 +296,11 @@ export default function VideoTimeline({
             type="button"
             onClick={handleTogglePlay}
             title={activeIsPlaying ? 'Pause (Space)' : 'Play (Space)'}
-            className={`px-3 py-1 rounded-lg flex items-center gap-1 font-medium text-xs transition-all shadow-md active:scale-95 ${
+            aria-label={activeIsPlaying ? 'Tạm dừng video' : 'Phát video'}
+            className={`px-3 py-1 rounded-lg flex items-center gap-1 font-semibold text-xs transition-all shadow-xs active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
               activeIsPlaying
-                ? 'bg-amber-500 hover:bg-amber-400 text-black font-semibold'
-                : 'bg-primary hover:bg-primary/90 text-primary-foreground font-semibold'
+                ? 'bg-amber-500 hover:bg-amber-400 text-black'
+                : 'bg-primary hover:bg-primary/90 text-primary-foreground'
             }`}
           >
             {activeIsPlaying ? <Pause size={12} /> : <Play size={12} className="fill-current" />}
@@ -308,7 +311,8 @@ export default function VideoTimeline({
             type="button"
             onClick={() => handleSeek(Math.min(activeCurrentTime + 5, propDuration || totalDuration))}
             title="Seek Forward 5s"
-            className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors"
+            aria-label="Tiến tới 5 giây"
+            className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <SkipForward size={13} />
           </button>
@@ -321,13 +325,14 @@ export default function VideoTimeline({
               type="button"
               onClick={toggleSnapping}
               title="Toggle snapping to time anchors"
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
+              aria-label="Bật tắt tính năng hít dính mốc thời gian"
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
                 snappingEnabled
-                  ? 'bg-blue-500/15 border-blue-500/40 text-blue-600 dark:text-blue-400 shadow-sm'
+                  ? 'bg-primary/10 border-primary/40 text-primary shadow-xs'
                   : 'bg-background hover:bg-muted border-border/60 text-muted-foreground hover:text-foreground'
               }`}
             >
-              <Magnet size={12} className={snappingEnabled ? 'text-blue-600 dark:text-blue-400' : ''} />
+              <Magnet size={12} className={snappingEnabled ? 'text-primary' : ''} />
               <span>Snapping: {snappingEnabled ? 'ON' : 'OFF'}</span>
             </button>
           </div>
@@ -341,7 +346,8 @@ export default function VideoTimeline({
                 type="button"
                 onClick={() => setZoomLevel(zoomLevel - 10)}
                 title="Zoom Out"
-                className="text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Thu nhỏ timeline"
+                className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <ZoomOut size={14} />
               </button>
@@ -352,6 +358,7 @@ export default function VideoTimeline({
                 max={150}
                 value={zoomLevel}
                 onChange={(e) => setZoomLevel(Number(e.target.value))}
+                aria-label="Mức độ thu phóng timeline"
                 className="w-20 h-1.5 bg-muted dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-primary"
                 title={`Zoom: ${zoomLevel}px/sec`}
               />
@@ -360,7 +367,8 @@ export default function VideoTimeline({
                 type="button"
                 onClick={() => setZoomLevel(zoomLevel + 10)}
                 title="Zoom In"
-                className="text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Phóng to timeline"
+                className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <ZoomIn size={14} />
               </button>
@@ -369,13 +377,14 @@ export default function VideoTimeline({
                 {Math.round((zoomLevel / 50) * 100)}%
               </span>
 
-              <div className="h-4 w-px bg-border/80 mx-1" />
+              <div className="h-4 w-px bg-border mx-1" />
 
               <button
                 type="button"
                 onClick={toggleMinimize}
                 title="Thu gọn Timeline (ẩn track dựng)"
-                className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors flex items-center gap-1 text-xs"
+                aria-label="Thu gọn timeline"
+                className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors flex items-center gap-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <ChevronDown size={14} />
                 <span className="text-[11px] font-medium hidden sm:inline">Thu gọn</span>
@@ -388,7 +397,8 @@ export default function VideoTimeline({
                 type="button"
                 onClick={toggleMinimize}
                 title="Mở rộng Timeline"
-                className="px-2.5 py-1 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 transition-colors flex items-center gap-1.5 text-xs font-medium"
+                aria-label="Mở rộng timeline"
+                className="px-2.5 py-1 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 transition-colors flex items-center gap-1.5 text-xs font-semibold focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <ChevronUp size={14} />
                 <span>Mở rộng Timeline</span>
