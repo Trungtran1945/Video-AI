@@ -1,4 +1,4 @@
-import { getDb, save } from '../db.js'
+import { getDb, captureMemorySnapshot, persistOrRollback } from '../db.js'
 import { config } from '../config.js'
 
 // Initialize all tables for the two-mode system (sql.js / SQLite).
@@ -13,6 +13,10 @@ import { config } from '../config.js'
 // - users.credits column is legacy/inert — never exposed through the API.
 export async function initSchema() {
   const db = await getDb()
+  // Schema initialization is a mutation too: if persisting it fails, memory is
+  // rolled back to the pre-init image instead of keeping tables the disk never
+  // received (startup then fails loudly instead of diverging silently).
+  const snapshot = captureMemorySnapshot()
 
   db.run(`CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -455,7 +459,7 @@ export async function initSchema() {
   db.run(`UPDATE upload_sessions SET last_activity_at = CASE WHEN last_activity_at GLOB '????-??-??T??:??:??.???Z' THEN last_activity_at ELSE strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(created_date, 'now')) END, expires_at = CASE WHEN expires_at GLOB '????-??-??T??:??:??.???Z' THEN expires_at ELSE strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(created_date, 'now'), ?) END WHERE status IN ('pending', 'completing')`, [uploadExpiryModifier])
   db.run(`CREATE INDEX IF NOT EXISTS idx_upload_sessions_status_expires ON upload_sessions(status, expires_at)`)
 
-  save()
+  persistOrRollback(snapshot)
   console.log('[DB] Schema initialized (sql.js)')
 }
 

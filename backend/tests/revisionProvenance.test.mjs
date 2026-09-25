@@ -180,6 +180,52 @@ const readSrc = (...parts) => fs.readFileSync(path.join(__dirname, '..', 'src', 
   await run('DELETE FROM generation_jobs WHERE project_id = ?', [projectId])
 }
 
+// ── 4b. Strict snapshot semantics: LEGACY_GENERATION falls back, a declared
+//        but unusable snapshot never silently becomes the current revision ──
+{
+  const projectId = 'prov-strict'
+  await insert('projects', {
+    id: projectId,
+    user_id: 'prov-user',
+    mode: 'TRANSLATE_DUB',
+    title: 'strict snapshot',
+    params: JSON.stringify({}),
+    transcript_version: 12,
+  })
+  const project = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
+  await insert('generation_jobs', {
+    id: 'prov-strict-job',
+    project_id: projectId,
+    type: 'dub.ttsAlign',
+    status: 'success',
+    result: JSON.stringify({ dubbedCount: 1, transcriptVersionSnapshot: 'not-a-number' }),
+  })
+
+  let err = null
+  try { await resolveGenerationSnapshot(projectId, 'dub.render', project) } catch (e) { err = e }
+  assert(err && err.message.includes('GenerationProvenance'),
+    `corrupt snapshot refuses a silent fallback (got: ${String(err?.message).slice(0, 90)})`)
+
+  await run('UPDATE generation_jobs SET result = ? WHERE id = ?',
+    [JSON.stringify({ dubbedCount: 1, transcriptVersionSnapshot: 2.5 }), 'prov-strict-job'])
+  err = null
+  try { await resolveGenerationSnapshot(projectId, 'dub.render', project) } catch (e) { err = e }
+  assert(err !== null, 'a non-integer persisted snapshot refuses a silent fallback')
+
+  await run('UPDATE generation_jobs SET result = ? WHERE id = ?',
+    [JSON.stringify({ dubbedCount: 1 }), 'prov-strict-job'])
+  const legacy = await resolveGenerationSnapshot(projectId, 'dub.render', project)
+  assert(legacy === 12, `LEGACY_GENERATION (no snapshot key at all) still falls back to current (got ${legacy})`)
+
+  await run('UPDATE generation_jobs SET result = ? WHERE id = ?',
+    [JSON.stringify({ dubbedCount: 1, transcriptVersionSnapshot: 11 }), 'prov-strict-job'])
+  const frozen = await resolveGenerationSnapshot(projectId, 'dub.render', project)
+  assert(frozen === 11, `a usable frozen snapshot always wins over the current revision (got ${frozen})`)
+
+  await run('DELETE FROM generation_jobs WHERE project_id = ?', [projectId])
+  await run('DELETE FROM projects WHERE id = ?', [projectId])
+}
+
 // ── 5. Source fences: no mid-generation re-reads ──
 {
   const renderSrc = readSrc('pipeline', 'stages', 'dubRender.js')
@@ -191,6 +237,8 @@ const readSrc = (...parts) => fs.readFileSync(path.join(__dirname, '..', 'src', 
   const runnerSrc = readSrc('pipeline', 'runner.js')
   assert(runnerSrc.includes('resolveGenerationSnapshot'), 'runner resolves the snapshot at the generation boundary')
   assert(runnerSrc.includes('transcriptVersionSnapshot: generation.transcriptVersionSnapshot'), 'runner hands the generation snapshot to every stage')
+  assert(runnerSrc.includes('LEGACY_GENERATION'), 'runner labels the legacy fallback instead of failing silently')
+  assert(runnerSrc.includes('idx_generation_jobs_project_type'), 'runner documents the one-current-job-per-stage generation identity')
 }
 
 await run('DELETE FROM projects WHERE id IN (?, ?, ?)', ['prov-skip', 'prov-resume', 'prov-out'])

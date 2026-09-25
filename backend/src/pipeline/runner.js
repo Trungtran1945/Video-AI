@@ -97,15 +97,31 @@ async function readCurrentTranscriptVersion(projectId) {
 }
 
 // Snapshot persisted by dub.ttsAlign in its job result when it succeeded.
+// Generation identity (§4.11): generation_jobs has UNIQUE(project_id, type)
+// (idx_generation_jobs_project_type in db/schema.js), i.e. exactly ONE current
+// job per project+stage — so this (project, type) lookup IS the identity of the
+// current generation's ttsAlign job. There is no run history table, hence no
+// extra generation/run column is needed today.
+//
+// state:
+//   'frozen'  → current generation recorded a usable transcriptVersionSnapshot
+//   'legacy'  → successful job from before provenance tracking (no snapshot
+//               key at all) — the ONLY case allowed to fall back
+//   'corrupt' → snapshot key present but unusable — never substitute silently
+//   'absent'  → no successful ttsAlign (job missing or not success)
 async function readFrozenTtsSnapshot(projectId) {
   const job = await queryOne(
     `SELECT status, result FROM generation_jobs WHERE project_id = ? AND type = 'dub.ttsAlign'`,
     [projectId]
   )
-  if (!job || job.status !== 'success') return null
+  if (!job || job.status !== 'success') return { state: 'absent', snapshot: null }
   const parsed = parseJsonSafe(job.result)
-  const snapshot = Number(parsed?.transcriptVersionSnapshot)
-  return Number.isInteger(snapshot) && snapshot >= 0 ? snapshot : null
+  if (!parsed || parsed.transcriptVersionSnapshot === null || parsed.transcriptVersionSnapshot === undefined) {
+    return { state: 'legacy', snapshot: null }
+  }
+  const snapshot = Number(parsed.transcriptVersionSnapshot)
+  if (!Number.isInteger(snapshot) || snapshot < 0) return { state: 'corrupt', snapshot: null }
+  return { state: 'frozen', snapshot }
 }
 
 // Resolve the transcript revision this generation will use (one per generation).
@@ -114,6 +130,10 @@ async function readFrozenTtsSnapshot(projectId) {
 // - When only dub.render re-runs (resume after a successful ttsAlign) → reuse
 //   the snapshot ttsAlign actually synthesized audio from, so audio and output
 //   provenance can never reference two different revisions.
+// The frozen snapshot is mandatory for a current generation: a missing-but-
+// declared snapshot is provenance corruption and fails the run instead of
+// silently relabeling the output. Only LEGACY_GENERATION jobs (written before
+// snapshot tracking existed) may fall back to the current revision.
 // Exported for provenance tests.
 export async function resolveGenerationSnapshot(projectId, effectiveFrom, project) {
   const stageOrder = stagesForProject(project)
@@ -122,8 +142,18 @@ export async function resolveGenerationSnapshot(projectId, effectiveFrom, projec
   const current = await readCurrentTranscriptVersion(projectId)
   if (ttsIndex < 0 || fromIndex <= ttsIndex) return current
   const frozen = await readFrozenTtsSnapshot(projectId)
-  if (frozen !== null) return frozen
-  console.warn(`[Pipeline] project=${projectId}: dub.ttsAlign has no persisted snapshot — falling back to current transcript revision ${current}`)
+  if (frozen.state === 'frozen') return frozen.snapshot
+  if (frozen.state === 'corrupt') {
+    throw new Error(
+      `[GenerationProvenance] project=${projectId}: dub.ttsAlign persisted an unusable transcriptVersionSnapshot — ` +
+      'the current generation has no usable transcript provenance. Re-run the generation from dub.ttsAlign to freeze a new snapshot.'
+    )
+  }
+  if (frozen.state === 'legacy') {
+    console.warn(`[GenerationProvenance] project=${projectId}: LEGACY_GENERATION — dub.ttsAlign result predates snapshot tracking; falling back to current transcript revision ${current}`)
+    return current
+  }
+  console.warn(`[GenerationProvenance] project=${projectId}: dub.ttsAlign has no frozen snapshot (state=absent) — falling back to current transcript revision ${current}`)
   return current
 }
 

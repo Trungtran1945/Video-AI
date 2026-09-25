@@ -1,7 +1,7 @@
 import path from 'path'
 import fs from 'node:fs'
 import { config } from '../config.js'
-import { getDb, save } from '../db.js'
+import { getDb, captureMemorySnapshot, persistOrRollback } from '../db.js'
 import { queryOne, run, withWriteLock } from '../db/query.js'
 import { resolveSafePath, isPathInside, UnsafeStoragePathError } from '../lib/safePath.js'
 
@@ -107,6 +107,7 @@ export async function insertMany(table, objects) {
   if (!objects.length) return
   return withWriteLock(async () => {
     const db = await getDb()
+    const snapshot = captureMemorySnapshot()
     const cols = Object.keys(objects[0])
     const placeholderRow = `(${cols.map(() => '?').join(',')})`
     const sql = `INSERT INTO ${table} (${cols.join(',')}) VALUES ${objects.map(() => placeholderRow).join(',')}`
@@ -115,7 +116,9 @@ export async function insertMany(table, objects) {
       for (const c of cols) params.push(obj[c] ?? null)
     }
     db.run(sql, params)
-    save()
+    // Atomic: a failed save rolls the whole bulk insert back instead of
+    // leaving rows that a later recovery save would silently persist.
+    persistOrRollback(snapshot)
   })
 }
 

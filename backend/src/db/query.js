@@ -1,4 +1,4 @@
-import { getDb, save, getDbPersistenceHealth, PERSISTENCE_STATES } from '../db.js'
+import { getDb, save, captureMemorySnapshot, persistOrRollback, restoreMemorySnapshot, getDbPersistenceHealth, PERSISTENCE_STATES } from '../db.js'
 
 function rowsToObjects(result) {
   if (!result || result.length === 0) return []
@@ -87,6 +87,11 @@ function operationName(options, fallback) {
 // while persistence is WRITE_BLOCKED. When this is the only pending write, one
 // probe save() is attempted so a recovered disk unblocks writes immediately
 // instead of waiting for an external reset.
+// The probe is safe: every mutation path snapshots memory and rolls back on
+// save failure (captureMemorySnapshot/persistOrRollback below), so memory only
+// ever holds writes the caller already observed as SUCCESSFUL — the probe can
+// never resurrect a rejected mutation. backend/tests/persistenceAtomicity
+// asserts this invariant against the persisted bytes.
 async function assertWritable(operation) {
   const health = getDbPersistenceHealth()
   if (health.state !== PERSISTENCE_STATES.WRITE_BLOCKED) return
@@ -136,15 +141,20 @@ export function withWriteLock(fn, options = {}) {
   return task
 }
 
+// One statement + persistence as a single atomic unit: success means the
+// mutation is on disk, a save() failure rolls memory back to the pre-mutation
+// snapshot and rethrows the persistence error (no phantom in-memory rows).
 async function runInner(sql, params = []) {
   const db = await getDb()
+  const snapshot = captureMemorySnapshot()
   db.run(sql, params)
-  save()
+  persistOrRollback(snapshot)
   return true
 }
 
 async function runAffectedInner(sql, params = []) {
   const db = await getDb()
+  const snapshot = captureMemorySnapshot()
   db.run(sql, params)
   let affected = 0
   try {
@@ -152,7 +162,7 @@ async function runAffectedInner(sql, params = []) {
   } catch (_) {
     affected = 0
   }
-  save()
+  persistOrRollback(snapshot)
   return affected
 }
 
@@ -203,6 +213,9 @@ export async function findById(table, id) {
 export async function withTransaction(fn, options = {}) {
   return withWriteLock(async () => {
     const db = await getDb()
+    // Pre-transaction image: the restore point if persistence fails after the
+    // in-memory COMMIT, or if SQL ROLLBACK cannot undo the work.
+    const snapshot = captureMemorySnapshot()
     const txRows = (result) => rowsToObjects(result)
     const tx = {
       async query(sql, params = []) {
@@ -243,18 +256,27 @@ export async function withTransaction(fn, options = {}) {
         return rows[0] || null
       },
     }
+    let out
     db.exec('BEGIN')
     try {
-      const out = await fn(tx)
+      out = await fn(tx)
       db.exec('COMMIT')
-      save()
-      return out
     } catch (err) {
       try {
         db.exec('ROLLBACK')
-      } catch (_) {}
+      } catch (_) {
+        // SQL ROLLBACK was unavailable (e.g. the failure happened after
+        // COMMIT): rebuild memory from the pre-transaction image so no part of
+        // a transaction the caller is told failed can survive.
+        try { restoreMemorySnapshot(snapshot) } catch (_) {}
+      }
       throw err
     }
+    // The in-memory transaction committed — persistence must agree before the
+    // caller may observe success. A save() failure restores the pre-tx image,
+    // so memory and disk both stay BEFORE the transaction.
+    persistOrRollback(snapshot)
+    return out
   }, { op: options.op || 'db.transaction' })
 }
 

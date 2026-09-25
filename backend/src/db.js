@@ -28,6 +28,7 @@ export const PERSISTENCE_STATES = Object.freeze({
   WRITE_BLOCKED: 'WRITE_BLOCKED',
 })
 let db = null
+let sqlModule = null
 let dbInitPromise = null
 let writerLockFd = null
 let writerLockHeartbeat = null
@@ -189,6 +190,7 @@ export async function getDb() {
     try {
       recoverPersistedDatabase()
       const SQL = await initSqlJs()
+      sqlModule = SQL
       if (fs.existsSync(DB_PATH)) {
         const buffer = fs.readFileSync(DB_PATH)
         db = new SQL.Database(buffer)
@@ -239,6 +241,53 @@ export function save() {
     try { fs.rmSync(tempPath, { force: true }) } catch (_) {}
     throw error
   }
+}
+
+// ── Application persistence boundary ─────────────────────────────────────
+// sql.js keeps the whole database in memory and save() writes that memory
+// image to disk, so every write has TWO steps: (1) the in-memory mutation,
+// (2) persistence. Callers may only observe a write as committed when BOTH
+// succeeded — otherwise a rejected write would keep living in memory and a
+// later (recovery/probe) save() would silently persist it, turning an API
+// failure into a duplicate on retry.
+//
+//   const snapshot = captureMemorySnapshot()   // pre-mutation memory image
+//   db.run(...) // in-memory mutation
+//   persistOrRollback(snapshot)                 // save() or restore + rethrow
+//
+// On save failure the in-memory database is rebuilt from the snapshot, so:
+//   memory = BEFORE the mutation, disk = BEFORE the mutation, API = ERROR.
+// Health accounting (HEALTHY/DEGRADED/WRITE_BLOCKED, DB_MAX_SAVE_FAILURES)
+// lives entirely inside save() and is untouched by the rollback.
+export function captureMemorySnapshot() {
+  if (!db) throw new Error('[DB] database is not initialized')
+  return db.export()
+}
+
+export function persistOrRollback(snapshot) {
+  try {
+    save()
+  } catch (error) {
+    try {
+      restoreMemorySnapshot(snapshot)
+    } catch (restoreError) {
+      console.error('[DB] CRITICAL: memory rollback after failed save did not apply:', restoreError?.message || restoreError)
+    }
+    throw error
+  }
+}
+
+// Rebuild the in-memory database from a snapshot taken before a mutation.
+// The old handle is closed so nothing can keep reading the discarded state.
+export function restoreMemorySnapshot(snapshot) {
+  if (!sqlModule) throw new Error('[DB] sql.js module is not initialized')
+  const previous = db
+  db = new sqlModule.Database(snapshot)
+  db.run('PRAGMA foreign_keys = ON')
+  if (previous && previous !== db) {
+    try { previous.close() } catch (_) {}
+  }
+  return db
 }
 
 process.once('exit', releaseWriterLock)
