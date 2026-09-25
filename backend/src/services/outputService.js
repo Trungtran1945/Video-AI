@@ -15,6 +15,33 @@ function normalizeVersion(value) {
   return Number.isInteger(version) && version >= 0 ? version : null
 }
 
+// Provenance contract: outputs.transcript_version is the revision the
+// GENERATION used (captured at dub.ttsAlign and persisted in its job result),
+// never the current project revision at insertion time. When the generation
+// recorded a snapshot, publishing anything else is rejected.
+async function assertOutputProvenance(tx, projectId, version) {
+  const job = await tx.queryOne(
+    `SELECT status, result FROM generation_jobs WHERE project_id = ? AND type = 'dub.ttsAlign'`,
+    [projectId]
+  )
+  if (!job || job.status !== 'success') return
+  let snapshot = null
+  try {
+    const parsed = JSON.parse(job.result || '{}')
+    if (parsed && parsed.transcriptVersionSnapshot !== null && parsed.transcriptVersionSnapshot !== undefined) {
+      snapshot = normalizeVersion(parsed.transcriptVersionSnapshot)
+    }
+  } catch (_) {
+    return
+  }
+  if (snapshot === null) return // legacy generation without a persisted snapshot
+  if (snapshot !== version) {
+    throw new Error(
+      `Output transcript version ${version} does not match the generation snapshot ${snapshot}`
+    )
+  }
+}
+
 export function outputIsStale(mode, currentTranscriptVersion, output) {
   if (!output || String(mode).toUpperCase() !== 'TRANSLATE_DUB') return false
   const outputVersion = normalizeVersion(output.transcript_version)
@@ -32,6 +59,9 @@ async function insertOutput(tx, input) {
   }
   if (String(project.mode).toUpperCase() === 'TRANSLATE_DUB' && (input.transcriptVersion === undefined || version === null)) {
     throw new Error('Dub output requires a valid transcript version snapshot')
+  }
+  if (String(project.mode).toUpperCase() === 'TRANSLATE_DUB' && version !== null) {
+    await assertOutputProvenance(tx, projectId, version)
   }
   return tx.insert('outputs', {
     id: input.id,

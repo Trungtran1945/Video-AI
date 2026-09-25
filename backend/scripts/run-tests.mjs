@@ -1,4 +1,5 @@
-// Test runner: executes every backend/tests/*.test.mjs sequentially, fails fast on first failure.
+// Test runner: executes every backend/tests/*.test.mjs sequentially, runs ALL
+// files and aggregates failures (exit 1 if any file failed — never masked).
 // Run: npm test (from backend/)
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'

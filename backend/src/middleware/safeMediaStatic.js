@@ -1,7 +1,7 @@
 import express from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
-import { findSymlinkInPath } from '../lib/safePath.js'
+import { findSymlinkInPath, isPathInside } from '../lib/safePath.js'
 
 const SAFE_ID = '[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
 const VIDEO_EXTENSIONS = 'mp4|m4v|mov|mkv|webm'
@@ -57,8 +57,7 @@ export function createSafeMediaStatic({ storageDir, fileSystem = fs } = {}) {
     const relative = safeRelativePath(req.path)
     if (!relative) return res.status(404).end()
     const absolute = path.resolve(root, ...relative.split('/'))
-    const containment = path.relative(root, absolute)
-    if (!containment || containment.startsWith('..') || path.isAbsolute(containment)) {
+    if (absolute === root || !isPathInside(root, absolute)) {
       return res.status(404).end()
     }
     try {

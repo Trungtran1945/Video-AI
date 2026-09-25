@@ -18,6 +18,15 @@ const DB_BACKUP_PATH = `${DB_PATH}.backup`
 const WRITER_LOCK_PATH = `${DB_PATH}.writer.lock`
 const WRITER_LOCK_HEARTBEAT_MS = 5000
 const FOREIGN_LOCK_STALE_MS = 5 * 60 * 1000
+const MAX_SAVE_FAILURES = (() => {
+  const value = Number(process.env.DB_MAX_SAVE_FAILURES)
+  return Number.isInteger(value) && value >= 1 ? value : 5
+})()
+export const PERSISTENCE_STATES = Object.freeze({
+  HEALTHY: 'HEALTHY',
+  DEGRADED: 'DEGRADED',
+  WRITE_BLOCKED: 'WRITE_BLOCKED',
+})
 let db = null
 let dbInitPromise = null
 let writerLockFd = null
@@ -25,6 +34,9 @@ let writerLockHeartbeat = null
 let lastSaveAt = null
 let lastSaveDurationMs = 0
 let lastSaveError = null
+let lastSuccessfulSaveAt = null
+let consecutiveSaveFailures = 0
+let persistenceState = PERSISTENCE_STATES.HEALTHY
 
 function readWriterLock() {
   try {
@@ -155,6 +167,20 @@ export function getDbPersistenceStats() {
   }
 }
 
+// Persistence health: HEALTHY → DEGRADED (some consecutive save failures)
+// → WRITE_BLOCKED (threshold reached; mutations must be rejected).
+// Any successful save resets the counter and returns to HEALTHY.
+export function getDbPersistenceHealth() {
+  return {
+    state: persistenceState,
+    consecutiveSaveFailures,
+    lastSaveError: lastSaveError ? (lastSaveError.name || 'save_failed') : null,
+    lastSuccessfulSaveAt,
+    lastSaveDurationMs,
+    maxSaveFailures: MAX_SAVE_FAILURES,
+  }
+}
+
 export async function getDb() {
   if (db) return db
   if (dbInitPromise) return dbInitPromise
@@ -195,8 +221,21 @@ export function save() {
     lastSaveAt = new Date().toISOString()
     lastSaveDurationMs = Date.now() - startedAt
     lastSaveError = null
+    lastSuccessfulSaveAt = lastSaveAt
+    consecutiveSaveFailures = 0
+    if (persistenceState !== PERSISTENCE_STATES.HEALTHY) {
+      console.warn(`[DB] persistence recovered → ${PERSISTENCE_STATES.HEALTHY}`)
+    }
+    persistenceState = PERSISTENCE_STATES.HEALTHY
   } catch (error) {
     lastSaveError = error
+    consecutiveSaveFailures += 1
+    persistenceState = consecutiveSaveFailures >= MAX_SAVE_FAILURES
+      ? PERSISTENCE_STATES.WRITE_BLOCKED
+      : PERSISTENCE_STATES.DEGRADED
+    if (persistenceState === PERSISTENCE_STATES.WRITE_BLOCKED && consecutiveSaveFailures === MAX_SAVE_FAILURES) {
+      console.error(`[DB] persistence WRITE_BLOCKED after ${consecutiveSaveFailures} consecutive save failures`)
+    }
     try { fs.rmSync(tempPath, { force: true }) } catch (_) {}
     throw error
   }

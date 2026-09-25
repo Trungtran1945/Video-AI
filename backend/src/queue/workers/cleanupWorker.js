@@ -5,6 +5,7 @@ import { connection, createRedisConnection, createThrottledLogger, isRedisReady,
 import { query, run } from '../../db/query.js'
 import { projectDir } from '../../pipeline/context.js'
 import { config } from '../../config.js'
+import { isPathInside } from '../../lib/safePath.js'
 import { resumableUploadService } from '../../services/resumableUploadService.js'
 import { cleanupLegacyUploads } from '../../services/legacyUploadRegistry.js'
 
@@ -37,10 +38,12 @@ export async function processCleanup(job) {
 
   for (const project of expiredProjects) {
     const dir = projectDir(project.id)
+    // Trusted-root invariant: recursive deletes may only touch storage/projects/.
+    const trusted = isPathInside(path.join(config.storageDir, 'projects'), dir)
 
     // Clean up intermediate files (keep outputs)
     try {
-      if (fs.existsSync(dir)) {
+      if (trusted && fs.existsSync(dir)) {
         // Remove tmp directory contents
         const tmpDir = path.join(dir, 'tmp')
         if (fs.existsSync(tmpDir)) {
@@ -86,6 +89,7 @@ export async function processCleanup(job) {
         if (entry.name === 'upload_sessions' || entry.name === 'legacy_uploads') continue
         if (entry.isDirectory()) {
           const dirPath = path.join(tmpRoot, entry.name)
+          if (!isPathInside(tmpRoot, dirPath)) continue
           try {
             const stat = fs.statSync(dirPath)
             if (now - stat.mtimeMs > maxAge) {

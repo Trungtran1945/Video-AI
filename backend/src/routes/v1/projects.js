@@ -163,7 +163,7 @@ router.post('/', async (req, res) => {
 
     res.status(202).json({ ...project, params, cachedProjectId })
   } catch (err) {
-    if (err?.code === 'DB_WRITE_QUEUE_FULL') {
+    if (err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED') {
       return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs })
     }
     console.error('Create project error:', err)
@@ -286,7 +286,7 @@ router.patch('/:id/segments/:segmentId/translation', requireProjectOwner, async 
     if (err?.code === 'REVISION_REQUIRED') {
       return sendError(res, 400, ERR.VALIDATION, err.message, { field: 'revision' })
     }
-    if (err?.code === 'DB_WRITE_QUEUE_FULL') {
+    if (err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED') {
       return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs })
     }
     console.error('Update segment translation error:', err)

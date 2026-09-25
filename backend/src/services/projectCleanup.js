@@ -1,6 +1,8 @@
 import fs from 'node:fs'
+import { config } from '../config.js'
 import { query } from '../db/query.js'
 import { projectDir, tmpDirOf, resolveStorageKey } from '../pipeline/context.js'
+import { isPathInside } from '../lib/safePath.js'
 
 // Every (table, column) pair that can hold a storage_key pointing into storage/.
 // projects uses `id` instead of `project_id` as its scope column.
@@ -60,6 +62,12 @@ export async function deleteProjectFiles(project, ownKeys = []) {
   }
 
   for (const dir of [projectDir(project.id), tmpDirOf(project.id)]) {
+    // Trusted-root invariant: recursive deletes may only touch storage/.
+    if (!isPathInside(config.storageDir, dir)) {
+      failed++
+      console.error(`[Cleanup] bỏ qua thư mục ngoài storage: ${dir}`)
+      continue
+    }
     try {
       fs.rmSync(dir, { recursive: true, force: true })
     } catch (err) {

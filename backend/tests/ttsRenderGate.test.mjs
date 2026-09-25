@@ -42,7 +42,16 @@ async function makeProject({ segs, enableDubbing = true }) {
     }
   }
   const project = (await query('SELECT * FROM projects WHERE id = ?', [projectId]))[0]
-  return { project, ctx: { project, job: { id: `jobt${n}` }, setProgress: () => {}, signal: undefined } }
+  return {
+    project,
+    ctx: {
+      project,
+      job: { id: `jobt${n}` },
+      setProgress: () => {},
+      signal: undefined,
+      transcriptVersionSnapshot: Number(project.transcript_version ?? 0),
+    },
+  }
 }
 
 // 7. TTS partial failure -> stage FAILED strict (not COMPLETED), bounded retry

@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { config } from '../config.js'
 import { query, queryOne, insert, run, runAffected } from '../db/query.js'
 import { ffmpegAvailable, probe as probeMedia } from '../media/ffmpeg.js'
-import { ensureSafeDirectory, findSymlinkInPath } from '../lib/safePath.js'
+import { ensureSafeDirectory, findSymlinkInPath, isPathInside } from '../lib/safePath.js'
 import { assertVideoFile, MediaValidationError, validateVideoMetadata } from './mediaValidation.js'
 
 export const CHUNK_SIZE = 8 * 1024 * 1024
@@ -58,8 +58,7 @@ function assertPending(session) {
 }
 
 function containedPath(root, target) {
-  const relative = path.relative(root, target)
-  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative)
+  return isPathInside(root, target)
 }
 
 async function defaultHashFile(filePath) {

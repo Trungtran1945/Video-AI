@@ -9,9 +9,31 @@ export class UnsafeStoragePathError extends Error {
   }
 }
 
-export function isPathInside(root, target) {
-  const relative = path.relative(root, target)
-  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative)
+// Canonical filesystem containment check — the ONLY sanctioned way to decide
+// "is target inside root" in this codebase.
+// Invariants:
+// - both sides are canonicalized with path.resolve()
+// - containment is decided with path.relative(), never startsWith(root)
+//   (startsWith lets a sibling like /app/storage_backup pass for root /app/storage)
+// - root === target counts as inside only when { allowRoot: true }
+// - symlinks are NOT resolved here; use findSymlinkInPath() when link escape matters
+export function isPathInside(root, target, { allowRoot = false } = {}) {
+  const absoluteRoot = path.resolve(root)
+  const absoluteTarget = path.resolve(target)
+  const relative = path.relative(absoluteRoot, absoluteTarget)
+  if (relative === '') return allowRoot
+  if (path.isAbsolute(relative)) return false
+  return relative !== '..' && !relative.startsWith(`..${path.sep}`)
+}
+
+// Resolve a (relative) path against root and reject anything that escapes it.
+// Returns the canonical absolute path, or null when the path is unsafe
+// (traversal with ../, absolute external path, sibling-prefix, empty input).
+export function resolveSafePath(root, relativePath) {
+  if (typeof relativePath !== 'string' || !relativePath) return null
+  const absoluteRoot = path.resolve(root)
+  const absolute = path.resolve(absoluteRoot, relativePath)
+  return isPathInside(absoluteRoot, absolute) ? absolute : null
 }
 
 export async function ensureSafeDirectory({ root, relativeDirectory, fileSystem = fs }) {

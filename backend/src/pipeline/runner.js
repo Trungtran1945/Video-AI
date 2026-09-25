@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne, run } from '../db/query.js'
+import { config } from '../config.js'
+import { isPathInside } from '../lib/safePath.js'
 import { logProviderCall } from '../providers/tracked.js'
 import {
   projectDir,
@@ -80,7 +82,52 @@ function parseParams(raw) {
   try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
 }
 
-async function startDubSequential(project, setProgress, results, signal, runToken = null, forceTranscript = false) {
+function isDubProject(project) {
+  return String(project?.mode || '').toUpperCase().replace('-', '_') === 'TRANSLATE_DUB'
+}
+
+// Stages that (re)produce the transcript. The generation snapshot follows their
+// output, but only BEFORE the consumption side (dub.ttsAlign/dub.render) runs.
+const DUB_TRANSCRIPT_PRODUCERS = new Set(['dub.ingest', 'dub.stt', 'dub.ocr', 'dub.merge', 'dub.translate'])
+
+async function readCurrentTranscriptVersion(projectId) {
+  const row = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [projectId])
+  const value = Number(row?.transcript_version ?? 0)
+  return Number.isInteger(value) && value >= 0 ? value : 0
+}
+
+// Snapshot persisted by dub.ttsAlign in its job result when it succeeded.
+async function readFrozenTtsSnapshot(projectId) {
+  const job = await queryOne(
+    `SELECT status, result FROM generation_jobs WHERE project_id = ? AND type = 'dub.ttsAlign'`,
+    [projectId]
+  )
+  if (!job || job.status !== 'success') return null
+  const parsed = parseJsonSafe(job.result)
+  const snapshot = Number(parsed?.transcriptVersionSnapshot)
+  return Number.isInteger(snapshot) && snapshot >= 0 ? snapshot : null
+}
+
+// Resolve the transcript revision this generation will use (one per generation).
+// - When dub.ttsAlign re-runs in this generation → capture the current revision
+//   at the generation boundary (producers below may still refresh it).
+// - When only dub.render re-runs (resume after a successful ttsAlign) → reuse
+//   the snapshot ttsAlign actually synthesized audio from, so audio and output
+//   provenance can never reference two different revisions.
+// Exported for provenance tests.
+export async function resolveGenerationSnapshot(projectId, effectiveFrom, project) {
+  const stageOrder = stagesForProject(project)
+  const ttsIndex = stageOrder.indexOf('dub.ttsAlign')
+  const fromIndex = effectiveFrom ? Math.max(0, stageOrder.indexOf(effectiveFrom)) : 0
+  const current = await readCurrentTranscriptVersion(projectId)
+  if (ttsIndex < 0 || fromIndex <= ttsIndex) return current
+  const frozen = await readFrozenTtsSnapshot(projectId)
+  if (frozen !== null) return frozen
+  console.warn(`[Pipeline] project=${projectId}: dub.ttsAlign has no persisted snapshot — falling back to current transcript revision ${current}`)
+  return current
+}
+
+async function startDubSequential(project, setProgress, results, signal, runToken = null, forceTranscript = false, generation = { transcriptVersionSnapshot: null }) {
   const projectId = project.id
   const params = parseParams(project.params)
   const useOcr = Boolean(params.ocrMode)
@@ -101,7 +148,8 @@ async function startDubSequential(project, setProgress, results, signal, runToke
     false,
     signal,
     runToken,
-    forceTranscript
+    forceTranscript,
+    generation
   )
 
   if (firstOk === 'waiting') return { status: 'waiting', stage: firstStage }
@@ -119,7 +167,8 @@ async function startDubSequential(project, setProgress, results, signal, runToke
     false,
     signal,
     runToken,
-    forceTranscript
+    forceTranscript,
+    generation
   )
   if (mergeOk === 'waiting') return { status: 'waiting', stage: 'dub.merge' }
   return mergeOk
@@ -275,7 +324,9 @@ async function clearArtifacts(projectId, kinds, runToken = null) {
       for (const r of rows) {
         await assertRunOwner(projectId, runToken)
         const abs = resolveStorageKey(r.storage_key)
-        if (abs && abs.startsWith(dir)) {
+        // Only files inside THIS project's directory are ours to delete —
+        // canonical containment, so project 'abc' never touches sibling 'abc2'.
+        if (abs && isPathInside(dir, abs)) {
           try { fs.unlinkSync(abs) } catch (_) {}
         }
       }
@@ -293,6 +344,7 @@ async function clearArtifacts(projectId, kinds, runToken = null) {
         `DELETE FROM youtube_uploads WHERE output_id IN (SELECT id FROM outputs WHERE project_id = ?)`,
         [projectId]
       )
+      const outputsRoot = path.join(config.storageDir, 'outputs')
       const rows = await query(
         `SELECT storage_key FROM outputs WHERE project_id = ? AND storage_key IS NOT NULL`,
         [projectId]
@@ -300,7 +352,10 @@ async function clearArtifacts(projectId, kinds, runToken = null) {
       for (const r of rows) {
         await assertRunOwner(projectId, runToken)
         const abs = resolveStorageKey(r.storage_key)
-        if (abs && !abs.startsWith(dir)) {
+        // Output files live either in storage/outputs/ (deleted here) or in the
+        // project directory (kept until the project itself is cleaned up).
+        // A key pointing at another project's directory is never ours to delete.
+        if (abs && !isPathInside(dir, abs) && isPathInside(outputsRoot, abs)) {
           try { fs.unlinkSync(abs) } catch (_) {}
         }
       }
@@ -447,7 +502,7 @@ const DEFAULT_STAGE_TIMEOUT = 15 * 60 * 1000
 
 // Execute ONE stage end-to-end (reset → running → impl → success/fail).
 // Trả về true nếu thành công/skip, false nếu thất bại.
-async function executeStage(project, job, settings, setProgress, results, isFirstExecutedStage, signal, runToken = null, forceTranscript = false) {
+async function executeStage(project, job, settings, setProgress, results, isFirstExecutedStage, signal, runToken = null, forceTranscript = false, generation = { transcriptVersionSnapshot: null }) {
   const projectId = project.id
   try {
     if (runToken && !(await isProjectRunOwned(projectId, runToken))) return false
@@ -490,9 +545,11 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       // Auto-merge câu STT lặp nguyên văn trước khi validate để gỡ BLOCK
       // DUPLICATE_SUBTITLE cho project đang kẹt (dub.merge đã success nên
       // Regenerate từ dub.render sẽ không chạy lại stage đó). Best-effort.
+      // Fenced with the GENERATION snapshot: if the transcript moved on since
+      // the audio was synthesized, the conflict is surfaced instead of merging
+      // rows this generation never produced audio for.
       try {
-        const currentVersion = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [projectId])
-        await dedupeTranscriptSegments(projectId, Number(currentVersion?.transcript_version ?? project.transcript_version ?? 0), { runToken })
+        await dedupeTranscriptSegments(projectId, generation.transcriptVersionSnapshot, { runToken })
       } catch (e) {
         console.warn(`[RenderValidation] auto-merge bỏ qua: ${String(e?.message || e).slice(0, 160)}`)
       }
@@ -515,16 +572,15 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
     const impl = STAGE_IMPL[job.type]
     if (!impl) throw new Error(`Stage không được hỗ trợ: ${job.type}`)
     const stageTimeout = STAGE_TIMEOUTS[job.type] || DEFAULT_STAGE_TIMEOUT
-    let transcriptVersion = null
     if (job.type === 'dub.render') {
-      const current = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [projectId])
-      transcriptVersion = Number(current?.transcript_version ?? project.transcript_version ?? 0)
+      // Diagnostic payload: the generation snapshot the output is attributed to
+      // (never a re-read of the current project revision).
       await updateGenerationJobOwned(projectId, job.id, {
-        payload: JSON.stringify({ runToken, transcriptVersion }),
+        payload: JSON.stringify({ runToken, transcriptVersion: generation.transcriptVersionSnapshot }),
       }, runToken)
     }
     const result = await withTimeout(
-      impl({ project, job, settings, setProgress, results, signal, runToken, transcriptVersion, forceTranscript }),
+      impl({ project, job, settings, setProgress, results, signal, runToken, transcriptVersionSnapshot: generation.transcriptVersionSnapshot, forceTranscript }),
       stageTimeout,
       job.type
     )
@@ -537,6 +593,11 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       result: JSON.stringify(result || {}),
     }, runToken)
     if (!updated) return false
+    // Transcript-producing stages may bump projects.transcript_version — keep
+    // the generation snapshot tracking their output until dub.ttsAlign freezes it.
+    if (DUB_TRANSCRIPT_PRODUCERS.has(job.type) && isDubProject(project)) {
+      generation.transcriptVersionSnapshot = await readCurrentTranscriptVersion(projectId)
+    }
     eventBus.publish(projectId, { stage: job.type, status: 'success', percent: 100 })
     return true
   } catch (err) {
@@ -586,7 +647,7 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
     // fail fast (retrying cannot help). Validation already handled above.
     // 'Cancelled' never retries.
     if (String(err?.message || '') !== 'Cancelled') {
-      let kind = err?.transient || err?.code === 'DB_WRITE_QUEUE_FULL' ? ERROR_KINDS.TRANSIENT : null
+      let kind = err?.transient || err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED' ? ERROR_KINDS.TRANSIENT : null
       if (!kind) {
         try {
           kind = classifyProviderError(err).kind
@@ -726,6 +787,16 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
       } catch (_) {}
     }
 
+    // Generation boundary: ONE transcript revision snapshot per TRANSLATE_DUB
+    // generation. Captured here, refreshed only while transcript-producing
+    // stages run, frozen once dub.ttsAlign starts — shared by ttsAlign,
+    // render and the published output (provenance).
+    const generation = {
+      transcriptVersionSnapshot: isDubProject(project)
+        ? await resolveGenerationSnapshot(projectId, effectiveFrom, project)
+        : null,
+    }
+
     await updateProjectOwned(projectId, runToken, { progress: 0, last_heartbeat_at: nowIso() })
     eventBus.publish(projectId, { stage: '__project__', status: 'running', percent: 0 })
 
@@ -767,7 +838,8 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
           isFirstExecutedStage,
           signal,
           runToken,
-          options.forceTranscript === true
+          options.forceTranscript === true,
+          generation
         )
         isFirstExecutedStage = false
         if (ok === 'waiting') {
@@ -786,7 +858,8 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
           results,
           signal,
           runToken,
-          options.forceTranscript === true
+          options.forceTranscript === true,
+          generation
         )
         isFirstExecutedStage = false
         if (ok === 'waiting' || ok?.status === 'waiting') {
@@ -840,9 +913,16 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
   } catch (err) {
     if (err?.code === 'RUN_ABORTED') return
     console.error('[Pipeline] lỗi:', err)
-    const failedUpdated = await updateProjectOwned(projectId, runToken, { status: 'failed', run_token: null, lease_expires_at: null })
-    if (!failedUpdated) return
-    eventBus.publish(projectId, { stage: '__project__', status: 'failed', percent: 0 })
+    // While persistence is WRITE_BLOCKED even this final write is rejected —
+    // log and exit the run instead of letting the rejection escape.
+    try {
+      const failedUpdated = await updateProjectOwned(projectId, runToken, { status: 'failed', run_token: null, lease_expires_at: null })
+      if (!failedUpdated) return
+      eventBus.publish(projectId, { stage: '__project__', status: 'failed', percent: 0 })
+    } catch (persistErr) {
+      console.error('[Pipeline] Không thể đánh dấu failed (persistence):', persistErr?.code || persistErr?.message)
+      return
+    }
 
     // Isolated: queue failure must never corrupt pipeline failure handling.
     try {

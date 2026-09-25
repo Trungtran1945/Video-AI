@@ -64,9 +64,12 @@ Phục vụ tĩnh + reverse proxy `/api` → `asf-api`, `/docs` bảo vệ auth.
 
 ## 2. docker-compose.yml [CURRENT]
 
-> [CURRENT] 4 service: `redis` (7-alpine) + `api` + `worker` (chung `docker/api.Dockerfile`) +
-> `web`. SQLite file, không Postgres (không service `db`, không `pgdata`). Worker-per-stage
-> (`worker-cpu`/`worker-gpu`, `docker/worker.Dockerfile`) là [TARGET/FUTURE].
+> [CURRENT] 3 service: `redis` (7-alpine) + `api` + `web`. SQLite file, không Postgres
+> (không service `db`, không `pgdata`). Không có service `worker` riêng: API chạy queue
+> workers in-process (`server.js`, `INSTANCE_MODE=single`) — container thứ hai dùng chung
+> sql.js volume sẽ không giành được writer lock và crash-loop. Muốn scale worker phải
+> thay sql.js bằng database client/server thật. Worker-per-stage (`worker-cpu`/`worker-gpu`,
+> `docker/worker.Dockerfile`) là [TARGET/FUTURE].
 
 ```yaml
 services:
@@ -78,17 +81,13 @@ services:
       DATABASE_URL: file:./data.db  # CURRENT: SQLite file, không postgres
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change-me-in-production}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-me-in-production}
-      MASTER_KEY: ${MASTER_KEY:-change-me-in-production}
+      INSTANCE_MODE: single         # CURRENT: single-writer invariant
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-}       # CURRENT: không secret mặc định —
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-}     # production fail-fast nếu thiếu
+      MASTER_KEY: ${MASTER_KEY:-}
     volumes: [storage_data:/app/storage, db_data:/app/data]
     depends_on: [redis]              # condition: service_healthy
-  worker:
-    build: { context: ., dockerfile: docker/api.Dockerfile }  # CURRENT: chung image api
-    command: ["node", "server.js"]
-    environment: *api_env (REDIS_HOST/PORT, DATABASE_URL=file:./data.db, ...)
-    depends_on: [redis, api]
-    profiles: [scale]                # CURRENT: worker nằm trong profile `scale`
+    healthcheck: [wget --spider http://localhost:3001/health]
   web:
     build: { context: ., dockerfile: docker/web.Dockerfile }
     ports: ["80:80"]

@@ -59,12 +59,22 @@ export async function dubTtsAlign(ctx) {
   if (signal?.aborted) throw new Error('Cancelled')
   await assertRunOwner(project.id, runToken)
 
-  if (!params.enableDubbing) {
-    return { skipped: true, reason: 'enableDubbing=false' }
+  // Generation transcript snapshot: the runner captured ONE revision for this
+  // whole generation and hands it to ttsAlign, render and createOutput. Never
+  // re-read projects.transcript_version here — a user edit mid-generation must
+  // not change which revision this audio (and its output) is attributed to.
+  const transcriptVersion = Number(ctx.transcriptVersionSnapshot)
+  if (ctx.transcriptVersionSnapshot === null || ctx.transcriptVersionSnapshot === undefined
+    || !Number.isInteger(transcriptVersion) || transcriptVersion < 0) {
+    const error = new Error('TRANSCRIPT_SNAPSHOT_MISSING: dub.ttsAlign cần generation transcript snapshot từ pipeline runner')
+    error.code = 'TRANSCRIPT_SNAPSHOT_MISSING'
+    throw error
   }
 
-  const currentProject = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [project.id])
-  const transcriptVersion = Number(currentProject?.transcript_version ?? project.transcript_version ?? 0)
+  if (!params.enableDubbing) {
+    return { skipped: true, reason: 'enableDubbing=false', transcriptVersionSnapshot: transcriptVersion }
+  }
+
   const segments = await query(
     `SELECT * FROM transcript_segments WHERE project_id = ? AND translation IS NOT NULL AND translation != ''
      ORDER BY start_sec ASC`,
@@ -77,7 +87,10 @@ export async function dubTtsAlign(ctx) {
   const segDir = ensureDir(path.join(projectDir(project.id), 'audio_segments'))
   setProgress(3)
 
-  // Xoá audio segment cũ trước khi tạo lại (RESETS['dub.ttsAlign'] đã xoá audios rows)
+  // Full-regeneration semantics: mỗi lần dub.ttsAlign chạy (kể cả retry sau
+  // partial fail) chỉ xoá audio_segments CỦA PROJECT NÀY rồi synth lại toàn bộ.
+  // Nguồn/outputs không bị đụng tới; reuse file cũ không thực hiện vì timing/
+  // bản dịch đã đổi thì file cũ sẽ lệch transcript một cách im lặng.
   try { fs.rmSync(segDir, { recursive: true, force: true }); fs.mkdirSync(segDir, { recursive: true }) } catch (_) {}
 
   // Provider hỗ trợ tốc độ native (Edge/OpenAI) → synthesize đúng tốc độ,
@@ -259,6 +272,9 @@ export async function dubTtsAlign(ctx) {
     dubbedCount: fitted.length,
     skippedCount: (await countAll(project.id)) - fitted.length,
     errorCount,
+    // Persisted with this job's success — the frozen generation revision that
+    // dub.render (and output provenance) reuses on resume.
+    transcriptVersionSnapshot: transcriptVersion,
     errors: errors.length > 0 ? errors : undefined,
     alignments: fitted.map((f) => ({
       segmentId: f.segmentId,

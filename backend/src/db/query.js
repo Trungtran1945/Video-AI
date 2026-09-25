@@ -1,4 +1,4 @@
-import { getDb, save } from '../db.js'
+import { getDb, save, getDbPersistenceHealth, PERSISTENCE_STATES } from '../db.js'
 
 function rowsToObjects(result) {
   if (!result || result.length === 0) return []
@@ -24,6 +24,20 @@ export class WriteQueueFullError extends Error {
     this.code = 'DB_WRITE_QUEUE_FULL'
     this.statusCode = 503
     this.retryAfterMs = 100
+    this.operation = operation
+  }
+}
+
+// Persistence policy: consecutive save() failures reach the threshold
+// (DB_MAX_SAVE_FAILURES, default 5) → all mutations are rejected until a
+// save succeeds again. Reads are never blocked by this.
+export class PersistenceBlockedError extends Error {
+  constructor(operation) {
+    super(`Database persistence is WRITE_BLOCKED for operation ${operation}`)
+    this.name = 'PersistenceBlockedError'
+    this.code = 'DB_PERSISTENCE_BLOCKED'
+    this.statusCode = 503
+    this.retryAfterMs = 1000
     this.operation = operation
   }
 }
@@ -69,6 +83,24 @@ function operationName(options, fallback) {
   return name.replace(/[^A-Za-z0-9_.:-]/g, '_').slice(0, 80)
 }
 
+// Runs inside the serialized write queue (single writer): rejects the mutation
+// while persistence is WRITE_BLOCKED. When this is the only pending write, one
+// probe save() is attempted so a recovered disk unblocks writes immediately
+// instead of waiting for an external reset.
+async function assertWritable(operation) {
+  const health = getDbPersistenceHealth()
+  if (health.state !== PERSISTENCE_STATES.WRITE_BLOCKED) return
+  if (writeQueueDepth > 1) throw new PersistenceBlockedError(operation)
+  try {
+    save()
+  } catch (_) {
+    throw new PersistenceBlockedError(operation)
+  }
+  if (getDbPersistenceHealth().state === PERSISTENCE_STATES.WRITE_BLOCKED) {
+    throw new PersistenceBlockedError(operation)
+  }
+}
+
 export function withWriteLock(fn, options = {}) {
   const operation = operationName(options, 'db.write')
   if (writeQueueDepth >= writeQueueConfig.maxPendingWrites) {
@@ -83,6 +115,7 @@ export function withWriteLock(fn, options = {}) {
     const waitMs = Date.now() - enqueuedAt
     const startedAt = Date.now()
     try {
+      await assertWritable(operation)
       return await fn()
     } finally {
       const durationMs = Date.now() - startedAt
@@ -238,4 +271,5 @@ export default {
   configureWriteQueue,
   getWriteQueueStats,
   WriteQueueFullError,
+  PersistenceBlockedError,
 }

@@ -18,8 +18,10 @@ const assert = (condition, message) => {
 const compose = fs.readFileSync(path.join(root, '..', 'docker-compose.yml'), 'utf8')
 assert(compose.includes('DB_PATH=/app/data/data.db'), 'Compose persists the sql.js file inside the mounted volume')
 assert(compose.includes('INSTANCE_MODE=single'), 'Compose API declares the single-writer invariant')
-assert(compose.includes('INSTANCE_MODE=multi'), 'Compose scale worker is explicitly blocked from sql.js ownership')
-assert(compose.includes('- scale-disabled'), 'unsafe scale worker is not in the default scale profile')
+assert(!compose.includes('INSTANCE_MODE=multi'), 'Compose never declares a multi-writer service')
+assert(!compose.includes('scale-disabled') && !/^\s{2}worker:/m.test(compose), 'Compose has no crash-loop placeholder worker service')
+assert(!compose.includes('change-me-in-production'), 'Compose never injects placeholder secrets (fail-fast instead)')
+assert(compose.includes('JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:-}'), 'Compose passes the JWT secret through without a default')
 assert(compose.includes('UPLOAD_SESSION_TTL_MINUTES=${UPLOAD_SESSION_TTL_MINUTES:-60}'), 'Compose configures the upload session TTL')
 
 const result = spawnSync(process.execPath, ['-e', "process.env.INSTANCE_MODE='multi'; import('./src/config.js')"], {

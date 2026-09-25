@@ -44,7 +44,7 @@ function handleTranscriptError(res, error) {
   if (error?.code === 'REVISION_REQUIRED') {
     return sendError(res, 400, ERR.VALIDATION, error.message, { field: 'revision' })
   }
-  if (error?.code === 'DB_WRITE_QUEUE_FULL') {
+  if (error?.code === 'DB_WRITE_QUEUE_FULL' || error?.code === 'DB_PERSISTENCE_BLOCKED') {
     return sendError(res, 503, error.code, 'Database write queue is busy', { retryAfterMs: error.retryAfterMs })
   }
   console.error('Transcript error:', error)

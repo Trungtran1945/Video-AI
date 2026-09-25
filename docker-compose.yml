@@ -30,9 +30,9 @@ services:
       - DB_SLOW_WRITE_MS=${DB_SLOW_WRITE_MS:-1000}
       - PROJECT_LEASE_SECONDS=${PROJECT_LEASE_SECONDS:-1800}
       - UPLOAD_SESSION_TTL_MINUTES=${UPLOAD_SESSION_TTL_MINUTES:-60}
-      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:-change-me-in-production}
-      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-change-me-in-production}
-      - MASTER_KEY=${MASTER_KEY:-change-me-in-production}
+      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:-}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-}
+      - MASTER_KEY=${MASTER_KEY:-}
       - MAX_CONCURRENT_PROJECTS_PER_USER=${MAX_CONCURRENT_PROJECTS_PER_USER:-2}
       - PROJECT_RETENTION_DAYS=${PROJECT_RETENTION_DAYS:-30}
       - SMTP_HOST=${SMTP_HOST:-}
@@ -55,43 +55,11 @@ services:
       timeout: 10s
       retries: 3
 
-  worker:
-    build:
-      context: .
-      dockerfile: docker/api.Dockerfile
-    command: ["node", "server.js"]
-    environment:
-      - NODE_ENV=production
-      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:-change-me-in-production}
-      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-change-me-in-production}
-      - MASTER_KEY=${MASTER_KEY:-change-me-in-production}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - DATABASE_URL=file:/app/data/data.db
-      - DB_PATH=/app/data/data.db
-      - INSTANCE_MODE=multi
-      - DB_MAX_PENDING_WRITES=${DB_MAX_PENDING_WRITES:-1000}
-      - DB_SLOW_WRITE_MS=${DB_SLOW_WRITE_MS:-1000}
-      - PROJECT_LEASE_SECONDS=${PROJECT_LEASE_SECONDS:-1800}
-      - MAX_CONCURRENT_PROJECTS_PER_USER=${MAX_CONCURRENT_PROJECTS_PER_USER:-2}
-      - PROJECT_RETENTION_DAYS=${PROJECT_RETENTION_DAYS:-30}
-      - SMTP_HOST=${SMTP_HOST:-}
-      - SMTP_USER=${SMTP_USER:-}
-      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
-      - NOTIFY_FROM_EMAIL=${NOTIFY_FROM_EMAIL:-noreply@asf.local}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
-    volumes:
-      - storage_data:/app/storage
-      - db_data:/app/data
-    depends_on:
-      redis:
-        condition: service_healthy
-      api:
-        condition: service_healthy
-    profiles:
-      - scale-disabled
+  # NOTE: there is deliberately NO separate `worker` service. The API service
+  # runs queue workers in-process (server.js, INSTANCE_MODE=single) — a second
+  # container sharing the sql.js volume cannot take writer ownership, so it
+  # would crash-loop. Scale workers by running more API containers only after
+  # replacing sql.js with a real client/server database.
 
   web:
     build:

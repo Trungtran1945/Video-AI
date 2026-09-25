@@ -3,13 +3,25 @@ import fs from 'node:fs'
 import { config } from '../config.js'
 import { getDb, save } from '../db.js'
 import { queryOne, run, withWriteLock } from '../db/query.js'
+import { resolveSafePath, isPathInside, UnsafeStoragePathError } from '../lib/safePath.js'
+
+// Storage sub-paths are always storage/<bucket>/<single-segment-id>.
+// Rejecting separators/'..' here keeps every helper below (projectDir,
+// tmpDirOf, and the recursive deletes built on them) inside the storage root.
+function storageChild(bucket, id) {
+  const segment = String(id ?? '')
+  if (!segment || segment === '.' || segment === '..' || /[\\/]/.test(segment) || path.isAbsolute(segment)) {
+    throw new UnsafeStoragePathError(`Invalid storage path segment for ${bucket}`)
+  }
+  return path.join(config.storageDir, bucket, segment)
+}
 
 export function projectDir(projectId) {
-  return path.join(config.storageDir, 'projects', projectId)
+  return storageChild('projects', projectId)
 }
 
 export function tmpDirOf(projectId) {
-  return path.join(config.storageDir, 'tmp', projectId)
+  return storageChild('tmp', projectId)
 }
 
 export function ensureDir(dir) {
@@ -17,14 +29,23 @@ export function ensureDir(dir) {
   return dir
 }
 
+// Storage key → absolute path. Rejects traversal (../), absolute external
+// paths and sibling-prefix escapes (storage_backup vs storage) — returns null
+// instead of a path outside the storage root.
 export function resolveStorageKey(storageKey) {
   if (!storageKey) return null
-  const abs = path.resolve(config.storageDir, storageKey)
-  return abs.startsWith(path.resolve(config.storageDir)) ? abs : null
+  return resolveSafePath(config.storageDir, storageKey)
 }
 
+// Absolute path → storage key. Throws UnsafeStoragePathError for any path
+// outside the storage root — never silently produces a '../' key.
 export function toStorageKey(absPath) {
-  return path.relative(config.storageDir, absPath).split(path.sep).join('/')
+  const root = path.resolve(config.storageDir)
+  const absolute = path.resolve(String(absPath ?? ''))
+  if (!isPathInside(root, absolute)) {
+    throw new UnsafeStoragePathError('Path is outside the storage root')
+  }
+  return path.relative(root, absolute).split(path.sep).join('/')
 }
 
 export function requireSourceFile(storageKey, label = 'Tệp nguồn') {

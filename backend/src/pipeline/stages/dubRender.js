@@ -1,7 +1,7 @@
 import path from 'path'
 import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne } from '../../db/query.js'
+import { query } from '../../db/query.js'
 import { createOutput } from '../../services/outputService.js'
 import { isProjectRunOwned } from '../../services/projectAdmission.js'
 import {
@@ -34,6 +34,17 @@ async function assertRunOwner(projectId, runToken) {
 
 export async function dubRender(ctx) {
   const { project, setProgress, signal, runToken } = ctx
+  // Generation snapshot MUST arrive from the runner. Reading the current
+  // project revision here (or right before createOutput) is what produced
+  // audio@vN / metadata@vN+1 provenance races — fail fast instead.
+  const rawSnapshot = ctx.transcriptVersionSnapshot
+  const transcriptVersion = Number(rawSnapshot)
+  if (rawSnapshot === null || rawSnapshot === undefined
+    || !Number.isInteger(transcriptVersion) || transcriptVersion < 0) {
+    const error = new Error('GENERATION_SNAPSHOT_MISSING: dub.render cần generation transcript snapshot từ pipeline runner')
+    error.code = 'GENERATION_SNAPSHOT_MISSING'
+    throw error
+  }
   await assertRunOwner(project.id, runToken)
   const params = parseParams(project.params)
   const src = requireSourceFile(project.source_video_key, 'Video nguồn')
@@ -218,9 +229,8 @@ export async function dubRender(ctx) {
   setProgress(95)
 
   await assertRunOwner(project.id, runToken)
-  const transcriptVersion = ctx.transcriptVersion === null || ctx.transcriptVersion === undefined
-    ? Number((await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [project.id]))?.transcript_version ?? 0)
-    : Number(ctx.transcriptVersion)
+  // Provenance: outputs.transcript_version = the revision this generation
+  // synthesized audio from (captured at stage start), never the current one.
   await createOutput({
     id: uuidv4(),
     projectId: project.id,

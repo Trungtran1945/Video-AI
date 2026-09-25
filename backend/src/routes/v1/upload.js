@@ -7,7 +7,7 @@ import { config } from '../../config.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { sendError } from '../../lib/httpError.js'
 import { ffmpegAvailable, probe as probeMedia } from '../../media/ffmpeg.js'
-import { ensureSafeDirectory as ensureSafeStorageDirectory, findSymlinkInPath } from '../../lib/safePath.js'
+import { ensureSafeDirectory as ensureSafeStorageDirectory, findSymlinkInPath, isPathInside } from '../../lib/safePath.js'
 import { markLegacyUploadActive, releaseLegacyUpload } from '../../services/legacyUploadRegistry.js'
 import { assertVideoFile, MediaValidationError, validateVideoMetadata } from '../../services/mediaValidation.js'
 import { CHUNK_SIZE, MAX_SIZE, resumableUploadService, UploadServiceError } from '../../services/resumableUploadService.js'
@@ -107,8 +107,7 @@ export function createUploadRouter({
       await assertVideoFile(stagedPath, media.extension, { probe: mediaProbe })
       const storageKey = `uploads/${legacyUuid()}${media.extension}`
       const finalPath = path.join(config.storageDir, storageKey)
-      const relative = path.relative(config.storageDir, finalPath)
-      if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+      if (!isPathInside(config.storageDir, finalPath)) {
         throw new MediaValidationError('Final upload path is unsafe')
       }
       await ensureUploadDirectory('uploads')
