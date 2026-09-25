@@ -1,8 +1,17 @@
 // Test that shortenTranslation enforces semantic validation and clean output
 // Run: node backend/tests/shortenTranslationGate.test.mjs
+import path from 'node:path'
+import os from 'node:os'
 
-import { shortenTranslation } from '../src/pipeline/stages/dubTtsAlign.js'
-import { run } from '../src/db/query.js'
+// Hermetic DB: fresh checkout (CI) has no data.db, so create the schema on a
+// temp database instead of relying on a developer's existing one.
+process.env.DB_PATH = path.join(os.tmpdir(), `vidai_shorten_${Date.now()}.db`)
+
+const { initSchema } = await import('../src/db/schema.js')
+const { shortenTranslation } = await import('../src/pipeline/stages/dubTtsAlign.js')
+const { run } = await import('../src/db/query.js')
+
+await initSchema()
 
 let failures = 0
 const assert = (c, m) => {
