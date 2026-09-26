@@ -1,8 +1,8 @@
 import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne, run } from '../../db/query.js'
+import { query, queryOne, withTransaction } from '../../db/query.js'
 import { createProjectWithAdmission, acquireProjectRun, updateProjectOwned } from '../../services/projectAdmission.js'
-import { copyTranscript, updateSegmentTranslation, deleteProjectTranscript, TranscriptRevisionConflict, TranscriptValidationError } from '../../services/transcriptMutationService.js'
+import { copyTranscript, updateSegmentTranslation, TranscriptRevisionConflict, TranscriptValidationError } from '../../services/transcriptMutationService.js'
 import { getOutputState } from '../../services/outputService.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
@@ -353,20 +353,33 @@ router.delete('/:id', async (req, res) => {
     // Collect file references BEFORE wiping rows — afterwards the queries
     // would find nothing and uploads/outputs files would be orphaned.
     const fileKeys = await collectProjectKeys(project)
-    // ProviderLog is independent of the project lifecycle (docs/02 §5):
-    // keep the rows for analytics, only detach them from the deleted project.
-    await run('UPDATE provider_logs SET project_id = NULL WHERE project_id = ?', [req.params.id])
-    await run(`DELETE FROM youtube_uploads WHERE output_id IN (SELECT id FROM outputs WHERE project_id = ?)`, [req.params.id])
-    await deleteProjectTranscript(req.params.id)
-    for (const t of ['generation_jobs', 'assets', 'scenes', 'script_segments', 'ocr_regions', 'timeline_clips', 'audios', 'subtitles', 'outputs']) {
-      await run(`DELETE FROM ${t} WHERE project_id = ?`, [req.params.id])
-    }
-    await run('DELETE FROM projects WHERE id = ?', [req.params.id])
-    // DB rows are gone — now free the files. Best-effort: a stuck file handle
-    // should not fail an already-committed deletion, orphan files are logged.
-    const cleanup = await deleteProjectFiles(project, fileKeys)
-    if (cleanup.filesFailed > 0) {
-      console.warn(`[Projects] xoá ${req.params.id}: ${cleanup.filesFailed} tệp không xoá được khỏi storage`)
+    // The whole DB wipe commits as ONE transaction: a mid-wipe failure can no
+    // longer leave a partially deleted project on disk, and a retry after a
+    // rejected DELETE starts from a complete state (no duplicate/partial work).
+    await withTransaction(async (tx) => {
+      // ProviderLog is independent of the project lifecycle (docs/02 §5):
+      // keep the rows for analytics, only detach them from the deleted project.
+      await tx.run('UPDATE provider_logs SET project_id = NULL WHERE project_id = ?', [req.params.id])
+      await tx.run(`DELETE FROM youtube_uploads WHERE output_id IN (SELECT id FROM outputs WHERE project_id = ?)`, [req.params.id])
+      // Same rows deleteProjectTranscript() would remove — inlined because a
+      // nested withTransaction would deadlock on the single-writer queue.
+      await tx.runAffected('DELETE FROM transcript_segments WHERE project_id = ?', [req.params.id])
+      for (const t of ['generation_jobs', 'assets', 'scenes', 'script_segments', 'ocr_regions', 'timeline_clips', 'audios', 'subtitles', 'outputs']) {
+        await tx.run(`DELETE FROM ${t} WHERE project_id = ?`, [req.params.id])
+      }
+      await tx.run('DELETE FROM projects WHERE id = ?', [req.params.id])
+    }, { op: 'project.delete' })
+    // DB rows are gone — now free the files. Post-commit side effect:
+    // best-effort inside its own try/catch — a stuck file handle or cleanup
+    // read error must NOT fail an already-committed deletion (orphan files
+    // are logged instead).
+    try {
+      const cleanup = await deleteProjectFiles(project, fileKeys)
+      if (cleanup.filesFailed > 0) {
+        console.warn(`[Projects] xoá ${req.params.id}: ${cleanup.filesFailed} tệp không xoá được khỏi storage`)
+      }
+    } catch (cleanupErr) {
+      console.error(`[Projects] xoá tệp ${req.params.id} thất bại sau khi DB đã commit:`, cleanupErr?.message || cleanupErr)
     }
     res.json({ message: 'Deleted' })
   } catch (err) {

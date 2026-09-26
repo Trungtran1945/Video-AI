@@ -107,20 +107,25 @@ router.get('/me', authMiddleware, async (req, res) => {
   res.json(publicUser(user))
 })
 
-// POST /api/v1/auth/forgot-password  (no real email in dev; token is returned/logged)
+// POST /api/v1/auth/forgot-password  (no real email in dev; raw token may be
+// echoed only when AUTH_DEV_RESET_TOKEN_IN_RESPONSE=true — never logged, never
+// stored: the DB keeps only sha256(token))
 router.post('/forgot-password', async (req, res) => {
   try {
     const { email } = req.body
     if (!email) return sendError(res, 400, ERR.VALIDATION, 'Email is required', { field: 'email' })
     const user = await queryOne(`SELECT id FROM users WHERE email = ?`, [email])
+    const out = { message: 'Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.' }
     if (user) {
+      const { sha256 } = await import('../../lib/crypto.js')
+      const { config } = await import('../../config.js')
       const token = uuidv4() + uuidv4().replace(/-/g, '')
       const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString()
-      await insert('reset_tokens', { email, token, expires_at: expires, used: 0 })
-      console.log(`[dev] password reset token for ${email}: ${token}`)
+      await insert('reset_tokens', { email, token: sha256(token), expires_at: expires, used: 0 })
+      if (config.authDevResetTokenInResponse) out.devToken = token
     }
     // Always return the same message to avoid leaking account existence
-    res.json({ message: 'Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.' })
+    res.json(out)
   } catch (err) {
     console.error('Forgot password error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
@@ -132,14 +137,16 @@ router.post('/reset-password', async (req, res) => {
   try {
     const { token, newPassword } = req.body
     if (!token || !newPassword) return sendError(res, 400, ERR.VALIDATION, 'Token and new password are required', { field: 'token,newPassword' })
-    const row = await queryOne(`SELECT * FROM reset_tokens WHERE token = ?`, [token])
+    const { sha256 } = await import('../../lib/crypto.js')
+    const tokenHash = sha256(token)
+    const row = await queryOne(`SELECT * FROM reset_tokens WHERE token = ?`, [tokenHash])
     if (!row || row.used) return sendError(res, 400, 'INVALID_TOKEN', 'Invalid or used reset token')
     if (new Date(row.expires_at) < new Date()) return sendError(res, 400, 'INVALID_TOKEN', 'Reset token expired')
     const user = await queryOne(`SELECT id FROM users WHERE email = ?`, [row.email])
     if (!user) return sendError(res, 400, 'INVALID_TOKEN', 'Invalid reset token')
     const hashed = await bcrypt.hash(newPassword, 10)
     await updateById('users', user.id, { password: hashed })
-    await run(`UPDATE reset_tokens SET used = 1 WHERE token = ?`, [token])
+    await run(`UPDATE reset_tokens SET used = 1 WHERE token = ?`, [tokenHash])
     res.json({ message: 'Mật khẩu đã được cập nhật.' })
   } catch (err) {
     console.error('Reset password error:', err)

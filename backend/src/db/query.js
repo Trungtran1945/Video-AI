@@ -184,25 +184,74 @@ export async function runAffected(sql, params = [], options = {}) {
   return withWriteLock(() => runAffectedInner(sql, params), { op: options.op || 'db.runAffected' })
 }
 
+// Mutation + result read as ONE atomic unit: the result row is read in memory
+// BEFORE persisting, so a caller can never observe "failed" for a mutation
+// already committed to disk (no post-commit SELECT after persistOrRollback).
+export async function runReturningOne(sql, params = [], selectSql, selectParams = [], options = {}) {
+  return withWriteLock(async () => {
+    const db = await getDb()
+    const snapshot = captureMemorySnapshot()
+    let row
+    try {
+      db.run(sql, params)
+      const rows = rowsToObjects(db.exec(selectSql, selectParams))
+      row = rows[0] || null
+    } catch (err) {
+      try { restoreMemorySnapshot(snapshot) } catch (_) {}
+      throw err
+    }
+    persistOrRollback(snapshot)
+    return row
+  }, { op: options.op || 'db.runReturningOne' })
+}
+
 export async function insert(table, obj, options = {}) {
   return withWriteLock(async () => {
+    const db = await getDb()
+    const snapshot = captureMemorySnapshot()
     const cols = Object.keys(obj)
     const placeholders = cols.map(() => '?').join(', ')
     const sql = `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${placeholders})`
-    await runInner(sql, cols.map((c) => obj[c]))
-    const id = obj.id || null
-    if (id) return queryOne(`SELECT * FROM ${table} WHERE id = ?`, [id])
-    return queryOne(`SELECT * FROM ${table} ORDER BY rowid DESC LIMIT 1`)
+    let row
+    try {
+      db.run(sql, cols.map((c) => obj[c]))
+      // Read the result row IN MEMORY before persisting: the row returned to
+      // the caller is computed pre-commit, so no fallible read can make the
+      // API report failure for a mutation already written to disk.
+      const rows = rowsToObjects(obj.id
+        ? db.exec(`SELECT * FROM ${table} WHERE id = ?`, [obj.id])
+        : db.exec(`SELECT * FROM ${table} ORDER BY rowid DESC LIMIT 1`))
+      row = rows[0] || null
+      if (!row) throw new Error(`[DB] insert(${table}): row not visible after insert`)
+    } catch (err) {
+      // Failed before persist → discard the in-memory mutation, so rejection
+      // always means "not persisted" and a retry cannot duplicate.
+      try { restoreMemorySnapshot(snapshot) } catch (_) {}
+      throw err
+    }
+    persistOrRollback(snapshot)
+    return row
   }, { op: options.op || `insert.${table}` })
 }
 
 export async function updateById(table, id, obj, options = {}) {
   return withWriteLock(async () => {
+    const db = await getDb()
+    const snapshot = captureMemorySnapshot()
     const cols = Object.keys(obj)
     const sets = cols.map((c) => `${c} = ?`).join(', ')
     const sql = `UPDATE ${table} SET ${sets} WHERE id = ?`
-    await runInner(sql, [...cols.map((c) => obj[c]), id])
-    return queryOne(`SELECT * FROM ${table} WHERE id = ?`, [id])
+    let row
+    try {
+      db.run(sql, [...cols.map((c) => obj[c]), id])
+      const rows = rowsToObjects(db.exec(`SELECT * FROM ${table} WHERE id = ?`, [id]))
+      row = rows[0] || null
+    } catch (err) {
+      try { restoreMemorySnapshot(snapshot) } catch (_) {}
+      throw err
+    }
+    persistOrRollback(snapshot)
+    return row
   }, { op: options.op || `update.${table}` })
 }
 
@@ -285,6 +334,7 @@ export default {
   queryOne,
   run,
   runAffected,
+  runReturningOne,
   insert,
   updateById,
   findById,

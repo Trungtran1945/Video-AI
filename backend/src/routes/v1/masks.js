@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne, run, insert } from '../../db/query.js'
+import { query, queryOne, run, insert, runReturningOne } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { sendError, ERR } from '../../lib/httpError.js'
@@ -265,11 +265,18 @@ router.patch('/projects/:id/masks/:maskId', requireProjectOwner, async (req, res
     if (!(Number(endSec) > Number(startSec)) || Number(startSec) < 0) {
       return sendError(res, 400, ERR.VALIDATION, 'Timing mask không hợp lệ (0<=start<end)', { field: 'endSec' })
     }
+    let updated = row
     if (Object.keys(patch).length) {
       const sets = Object.keys(patch).map((c) => `${c} = ?`).join(', ')
-      await run(`UPDATE ocr_regions SET ${sets} WHERE id = ?`, [...Object.values(patch), row.id])
+      // Mutation + response read as one atomic unit (no post-commit SELECT).
+      updated = await runReturningOne(
+        `UPDATE ocr_regions SET ${sets} WHERE id = ?`,
+        [...Object.values(patch), row.id],
+        'SELECT * FROM ocr_regions WHERE id = ?',
+        [row.id],
+        { op: 'update.ocr_regions' }
+      )
     }
-    const updated = await queryOne('SELECT * FROM ocr_regions WHERE id = ?', [row.id])
     res.json(toMaskJson(updated))
   } catch (err) {
     console.error('Masks PATCH error:', err)

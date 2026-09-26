@@ -118,6 +118,10 @@ export const config = {
     : parseOrigins(process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3000,http://localhost:4173'),
   // Stale heartbeat timeout (minutes) for running projects without activity.
   recoveryStaleMinutes: Number(process.env.RECOVERY_STALE_MINUTES || 10),
+  // Opt-in dev echo of the raw password-reset token in the forgot-password
+  // response (dev has no real SMTP). Forced off in production regardless of env.
+  authDevResetTokenInResponse:
+    nodeEnv !== 'production' && process.env.AUTH_DEV_RESET_TOKEN_IN_RESPONSE === 'true',
 }
 
 // Pure CORS check (unit-testable). Non-production allows localhost defaults;

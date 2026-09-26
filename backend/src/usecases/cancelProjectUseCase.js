@@ -1,4 +1,4 @@
-import { queryOne, run } from '../db/query.js'
+import { queryOne, withTransaction } from '../db/query.js'
 import { projectDir, tmpDirOf } from '../pipeline/context.js'
 import fs from 'node:fs'
 import { abortPipeline } from '../pipeline/runner.js'
@@ -8,8 +8,15 @@ import { safeAddNotify } from '../queue/notifyQueue.js'
  * CancelProjectUseCase — FR-J1
  * Cancel all PENDING/RUNNING jobs for a project, set status to 'cancelled',
  * clean up temp files. Idempotent: calling on finished project returns current status.
+ *
+ * Commit boundary: the project + job status updates commit as ONE transaction.
+ * Everything after the commit (abort, fs cleanup, notification) is a post-commit
+ * side effect — it may fail, but it can never flip an already-committed
+ * cancellation into an API failure. `deps` exists so tests can inject failing
+ * side effects.
  */
-export async function cancelProjectUseCase(projectId) {
+export async function cancelProjectUseCase(projectId, deps = {}) {
+  const abort = deps.abort || abortPipeline
   const project = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
   if (!project) throw new Error('Project not found')
 
@@ -20,22 +27,27 @@ export async function cancelProjectUseCase(projectId) {
 
   const now = new Date().toISOString()
 
-  // Set project status to cancelled
-  await run(
-    `UPDATE projects SET status = 'cancelled', cancelled_at = ?, run_token = NULL, lease_expires_at = NULL
-     WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')`,
-    [now, projectId]
-  )
+  // One atomic commit: project status + job cancellations succeed or fail together.
+  await withTransaction(async (tx) => {
+    await tx.run(
+      `UPDATE projects SET status = 'cancelled', cancelled_at = ?, run_token = NULL, lease_expires_at = NULL
+       WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')`,
+      [now, projectId]
+    )
+    await tx.run(
+      `UPDATE generation_jobs SET status = 'cancelled', cancelled_at = ?, step = 'cancelled'
+       WHERE project_id = ? AND status IN ('pending', 'running')`,
+      [now, projectId]
+    )
+  }, { op: 'project.cancel' })
 
-  // Mark all pending/running jobs as cancelled
-  await run(
-    `UPDATE generation_jobs SET status = 'cancelled', cancelled_at = ?, step = 'cancelled'
-     WHERE project_id = ? AND status IN ('pending', 'running')`,
-    [now, projectId]
-  )
-
+  // ── Post-commit side effects: best-effort, never fail the request ──
   // Abort any running pipeline stages
-  abortPipeline(projectId)
+  try {
+    abort(projectId)
+  } catch (abortErr) {
+    console.error('[CancelProject] abort failed after commit:', abortErr?.message || abortErr)
+  }
 
   // Clean up temp files in storage/tmp/{projectId}
   const projectStorageDir = projectDir(projectId)
@@ -62,8 +74,22 @@ export async function cancelProjectUseCase(projectId) {
     console.error('[CancelProject] Notification failed:', notifyErr.message)
   }
 
-  // Return updated project
-  return queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
+  // Return updated project. The read happens after commit — if it somehow
+  // fails, fall back to the committed state we already know instead of
+  // reporting failure for a cancellation that IS persisted.
+  try {
+    const updated = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
+    if (updated) return updated
+  } catch (readErr) {
+    console.error('[CancelProject] post-commit read failed:', readErr?.message || readErr)
+  }
+  return {
+    ...project,
+    status: 'cancelled',
+    cancelled_at: now,
+    run_token: null,
+    lease_expires_at: null,
+  }
 }
 
 export default cancelProjectUseCase

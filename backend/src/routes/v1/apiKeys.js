@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne, insert, run } from '../../db/query.js'
+import { query, queryOne, insert, run, runReturningOne } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { encrypt, decrypt } from '../../lib/crypto.js'
 import { sendError, ERR } from '../../lib/httpError.js'
@@ -55,11 +55,15 @@ router.put('/:id', async (req, res) => {
   if (typeof req.body?.label === 'string') patch.label = req.body.label
   if (typeof req.body?.tier === 'string') patch.tier = req.body.tier
   if (typeof req.body?.priority === 'number') patch.priority = req.body.priority
-  await run(
+  // Mutation + response read as one atomic unit: no post-commit SELECT can
+  // report failure for an UPDATE already persisted to disk.
+  const updated = await runReturningOne(
     'UPDATE api_keys SET is_active = ?, label = ?, tier = ?, priority = ? WHERE id = ?',
-    [patch.is_active ?? row.is_active, patch.label ?? row.label, patch.tier ?? row.tier, patch.priority ?? row.priority, req.params.id]
+    [patch.is_active ?? row.is_active, patch.label ?? row.label, patch.tier ?? row.tier, patch.priority ?? row.priority, req.params.id],
+    'SELECT id, provider, label, is_active, tier, priority FROM api_keys WHERE id = ?',
+    [req.params.id],
+    { op: 'update.api_keys' }
   )
-  const updated = await queryOne('SELECT id, provider, label, is_active, tier, priority FROM api_keys WHERE id = ?', [req.params.id])
   res.json(updated)
 })
 

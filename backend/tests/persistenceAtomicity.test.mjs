@@ -21,7 +21,7 @@ process.env.DB_MAX_SAVE_FAILURES = '5'
 const { initSchema } = await import('../src/db/schema.js')
 const { getDbPersistenceHealth, PERSISTENCE_STATES } = await import('../src/db.js')
 const {
-  run, runAffected, insert, updateById, queryOne, withTransaction, PersistenceBlockedError,
+  run, runAffected, insert, updateById, queryOne, withTransaction, runReturningOne, PersistenceBlockedError,
 } = await import('../src/db/query.js')
 const initSqlJs = (await import('sql.js')).default
 
@@ -234,7 +234,80 @@ await scenario('probeSafety', async () => {
   await run("DELETE FROM settings WHERE user_id LIKE 'pa-%'")
 })
 
-// ── 7. Source fences: the persistence boundary stays wired ──
+// ── 7. Post-commit semantics: nothing fallible runs after persist ──
+// The API must never report "mutation failed" for a mutation already on disk.
+// insert()/updateById() therefore read their result row IN MEMORY, persist,
+// and return the already-computed row — there is no post-commit SELECT.
+await scenario('postCommitSemantics', async () => {
+  const row = await insert('projects', { id: 'pa-pc', user_id: 'pa-user', mode: 'SUMMARY', title: 'T1' })
+  assert(row?.title === 'T1', 'insert returns the computed row')
+  assert(diskValue('projects', 'id', 'pa-pc', 'title') === 'T1', 'returned insert row is the persisted row')
+
+  const urow = await updateById('projects', 'pa-pc', { title: 'T2' })
+  assert(urow?.title === 'T2', 'updateById returns the updated row')
+  assert(diskValue('projects', 'id', 'pa-pc', 'title') === 'T2', 'returned updateById row is the persisted row')
+
+  // A mutation whose result row cannot be read must fail BEFORE persist, so
+  // rejection still means "not persisted" (no misleading post-commit failure).
+  await run('CREATE TABLE pa_base (id TEXT PRIMARY KEY, v TEXT)')
+  await run('CREATE VIEW pa_view AS SELECT id, v FROM pa_base')
+  await run('CREATE TRIGGER pa_ins INSTEAD OF INSERT ON pa_view BEGIN SELECT 1; END')
+  let visibleError = null
+  try { await insert('pa_view', { id: 'pa-ghost', v: 'a' }) } catch (e) { visibleError = e }
+  assert(visibleError !== null && visibleError.message.includes('not visible'),
+    `insert without a visible result row rejects (got ${visibleError?.message})`)
+  assert(await queryOne('SELECT id FROM pa_base WHERE id = ?', ['pa-ghost']) === null,
+    'rejected insert left no row in memory')
+  assert(diskCount('pa_base', 'id', 'pa-ghost') === 0, 'rejected insert is not on disk')
+
+  await run('DROP TRIGGER pa_ins')
+  await run('DROP VIEW pa_view')
+  await run('DROP TABLE pa_base')
+  await run('DELETE FROM projects WHERE id = ?', ['pa-pc'])
+})
+
+// ── 7b. runReturningOne: mutation + result read as one atomic unit ──
+await scenario('runReturningOne', async () => {
+  // success: the returned row is read BEFORE persist, so API success == disk
+  const row = await runReturningOne(
+    'INSERT INTO settings (user_id, default_language) VALUES (?, ?)',
+    ['pa-ret', 'de'],
+    'SELECT * FROM settings WHERE user_id = ?', ['pa-ret'], { op: 'test.insertReturning' })
+  assert(row?.default_language === 'de', `runReturningOne returns the inserted row (got ${row?.default_language})`)
+  assert(diskValue('settings', 'user_id', 'pa-ret', 'default_language') === 'de', 'returned row is on disk')
+
+  const updated = await runReturningOne(
+    'UPDATE settings SET default_language = ? WHERE user_id = ?',
+    ['ja', 'pa-ret'],
+    'SELECT * FROM settings WHERE user_id = ?', ['pa-ret'], { op: 'test.updateReturning' })
+  assert(updated?.default_language === 'ja', 'runReturningOne returns the updated row')
+
+  // failure before persist: rejects and changes nothing (memory + disk)
+  const error = await rejectedWhileDiskBroken(() => runReturningOne(
+    'UPDATE settings SET default_language = ? WHERE user_id = ?',
+    ['ko', 'pa-ret'],
+    'SELECT * FROM settings WHERE user_id = ?', ['pa-ret'], { op: 'test.updateReturning' }))
+  assert(error?.code === 'EACCES', `runReturningOne save failure rejects with the disk error (got ${error?.code})`)
+  assert(diskValue('settings', 'user_id', 'pa-ret', 'default_language') === 'ja',
+    'failed runReturningOne is not persisted')
+  const mem = await queryOne('SELECT default_language FROM settings WHERE user_id = ?', ['pa-ret'])
+  assert(mem?.default_language === 'ja', 'failed runReturningOne leaves memory unchanged')
+
+  // source fence: no fallible step after persist inside runReturningOne
+  const qsrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'db', 'query.js'), 'utf8')
+  const body = qsrc.slice(qsrc.indexOf('export async function runReturningOne'),
+    qsrc.indexOf('export async function insert'))
+  const marker = 'persistOrRollback(snapshot)'
+  const at = body.indexOf(marker)
+  assert(at > 0, 'runReturningOne persists through the atomic boundary')
+  const afterPersist = at > 0 ? body.slice(at + marker.length) : ''
+  assert(!afterPersist.includes('rowsToObjects') && !afterPersist.includes('await'),
+    'runReturningOne: no fallible read/await after persist')
+
+  await run("DELETE FROM settings WHERE user_id = 'pa-ret'")
+})
+
+// ── 8. Source fences: the persistence boundary stays wired ──
 {
   const readSrc = (...parts) => fs.readFileSync(path.join(__dirname, '..', 'src', ...parts), 'utf8')
   const querySrc = readSrc('db', 'query.js')
@@ -243,6 +316,25 @@ await scenario('probeSafety', async () => {
   const dbSrc = readSrc('db.js')
   assert(dbSrc.includes('captureMemorySnapshot') && dbSrc.includes('restoreMemorySnapshot'),
     'db.js exposes snapshot capture and rollback')
+
+  // No fallible step (read/await) after the persist call inside insert/updateById:
+  // a rejection can therefore only originate BEFORE the commit boundary.
+  const bodies = {
+    insert: querySrc.slice(querySrc.indexOf('export async function insert'),
+      querySrc.indexOf('export async function updateById')),
+    updateById: querySrc.slice(querySrc.indexOf('export async function updateById'),
+      querySrc.indexOf('export async function findById')),
+  }
+  for (const [name, body] of Object.entries(bodies)) {
+    const marker = 'persistOrRollback(snapshot)'
+    const at = body.indexOf(marker)
+    assert(at > 0, `${name} persists through the atomic boundary`)
+    const afterPersist = at > 0 ? body.slice(at + marker.length) : ''
+    assert(!afterPersist.includes('queryOne') && !afterPersist.includes('await'),
+      `${name}: no fallible read/await after persist (no misleading post-commit failure)`)
+    assert(body.indexOf('db.run(') > -1 && body.indexOf('db.run(') < at,
+      `${name}: mutation happens before persist`)
+  }
 }
 
 restoreDisk()

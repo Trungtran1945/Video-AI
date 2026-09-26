@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { queryOne, run } from '../../db/query.js'
+import { queryOne, runReturningOne } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { sendError } from '../../lib/httpError.js'
 
@@ -29,9 +29,16 @@ async function getOrCreateSettings(userId) {
   let s = await queryOne('SELECT * FROM settings WHERE user_id = ?', [userId])
   if (!s) {
     // INSERT OR IGNORE avoids the rowid-race of the generic insert() helper;
-    // two concurrent GETs then both re-SELECT the single canonical row.
-    await run('INSERT OR IGNORE INTO settings (user_id) VALUES (?)', [userId])
-    s = await queryOne('SELECT * FROM settings WHERE user_id = ?', [userId])
+    // two concurrent GETs then both land on the single canonical row. The
+    // result row is read in the same write-lock slot BEFORE persisting, so a
+    // rejection here can never mean "inserted but reported failed".
+    s = await runReturningOne(
+      'INSERT OR IGNORE INTO settings (user_id) VALUES (?)',
+      [userId],
+      'SELECT * FROM settings WHERE user_id = ?',
+      [userId],
+      { op: 'insert.settings' }
+    )
   }
   return s
 }
@@ -64,8 +71,16 @@ router.put('/', async (req, res) => {
     const cols = Object.keys(patch)
     if (!cols.length) return res.json(await getOrCreateSettings(req.user.id))
     const sql = `UPDATE settings SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE user_id = ?`
-    await run(sql, [...cols.map((c) => patch[c]), req.user.id])
-    res.json(await getOrCreateSettings(req.user.id))
+    // Response row read in the same write-lock slot BEFORE persisting.
+    let s = await runReturningOne(
+      sql,
+      [...cols.map((c) => patch[c]), req.user.id],
+      'SELECT * FROM settings WHERE user_id = ?',
+      [req.user.id],
+      { op: 'update.settings' }
+    )
+    if (!s) s = await getOrCreateSettings(req.user.id)
+    res.json(s)
   } catch (err) {
     console.error('Update settings error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
