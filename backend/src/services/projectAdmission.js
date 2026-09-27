@@ -44,7 +44,28 @@ function projectValues(data, status, runToken) {
 
 export async function createProjectWithAdmission(data, options = {}) {
   const maxConcurrent = limitFrom(options)
+  const idemKey = options.idempotencyKey || null
+  if (idemKey && !data.id) data.id = uuidv4()
   return withTransaction(async (tx) => {
+    // Idempotency claim: INSERT OR IGNORE cùng transaction với project insert.
+    // Request song song cùng key: người thắng commit cả 2; người thua affected=0
+    // → rollback (project chưa kịp insert) → IDEMPOTENT_REPLAY.
+    if (idemKey) {
+      const claimed = await tx.runAffected(
+        `INSERT OR IGNORE INTO project_idempotency (user_id, idem_key, project_id) VALUES (?, ?, ?)`,
+        [data.userId || data.user_id, idemKey, data.id]
+      )
+      if (claimed !== 1) {
+        const dup = await tx.queryOne(
+          `SELECT project_id FROM project_idempotency WHERE user_id = ? AND idem_key = ?`,
+          [data.userId || data.user_id, idemKey]
+        )
+        const err = new Error('Idempotency key already used')
+        err.code = 'IDEMPOTENT_REPLAY'
+        err.projectId = dup?.project_id || null
+        throw err
+      }
+    }
     const active = await tx.queryOne(
       `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN ('pending', 'running')`,
       [data.userId || data.user_id]

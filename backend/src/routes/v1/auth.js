@@ -1,21 +1,59 @@
 import { Router } from 'express'
 import bcrypt from 'bcryptjs'
 import { v4 as uuidv4 } from 'uuid'
-import { queryOne, insert, updateById, run } from '../../db/query.js'
+import { queryOne, insert, withTransaction } from '../../db/query.js'
 import {
   generateAccessToken,
   generateRefreshToken,
   storeRefreshToken,
   clearRefreshToken,
+  rotateRefreshToken,
   authMiddleware,
+  extractBearerToken,
+  verifyAccessToken,
 } from '../../middleware/auth.js'
 import { sendError, ERR } from '../../lib/httpError.js'
+import { config } from '../../config.js'
 
 const router = Router()
 
 function publicUser(u) {
   // users.credits is a legacy column — no longer exposed (hệ Xu đã bỏ, docs/00 §2.2)
   return { id: u.id, email: u.email, role: u.role, name: u.name || '' }
+}
+
+const REFRESH_COOKIE = 'refresh_token'
+const REFRESH_COOKIE_PATH = '/api/v1/auth'
+
+function readRefreshCookie(req) {
+  const header = req.headers.cookie
+  if (!header) return null
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    if (part.slice(0, eq).trim() !== REFRESH_COOKIE) continue
+    try { return decodeURIComponent(part.slice(eq + 1).trim()) } catch (_) { return null }
+  }
+  return null
+}
+
+function setRefreshCookie(res, token) {
+  res.cookie(REFRESH_COOKIE, token, {
+    httpOnly: true, secure: config.cookieSecure, sameSite: 'lax',
+    path: REFRESH_COOKIE_PATH, maxAge: 7 * 24 * 60 * 60 * 1000,
+  })
+}
+
+function clearRefreshCookie(res) {
+  res.clearCookie(REFRESH_COOKIE, {
+    httpOnly: true, secure: config.cookieSecure, sameSite: 'lax', path: REFRESH_COOKIE_PATH,
+  })
+}
+
+// Cookie là nguồn chính; body/x-refresh-token là fallback DEPRECATED
+// (giữ 2 release cho client không phải trình duyệt — xem README, sẽ bỏ).
+function readRefreshToken(req) {
+  return readRefreshCookie(req) || req.body?.refreshToken || req.headers['x-refresh-token'] || null
 }
 
 // POST /api/v1/auth/register
@@ -40,7 +78,8 @@ router.post('/register', async (req, res) => {
     const accessToken = generateAccessToken(user)
     const refreshToken = generateRefreshToken(user)
     await storeRefreshToken(user.id, refreshToken)
-    res.json({ accessToken, refreshToken, user: publicUser(user) })
+    setRefreshCookie(res, refreshToken)
+    res.json({ accessToken, user: publicUser(user) })
   } catch (err) {
     console.error('Register error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
@@ -61,25 +100,30 @@ router.post('/login', async (req, res) => {
     const accessToken = generateAccessToken(user)
     const refreshToken = generateRefreshToken(user)
     await storeRefreshToken(user.id, refreshToken)
-    res.json({ accessToken, refreshToken, user: publicUser(user) })
+    setRefreshCookie(res, refreshToken)
+    res.json({ accessToken, user: publicUser(user) })
   } catch (err) {
     console.error('Login error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })
 
-// POST /api/v1/auth/refresh
+// POST /api/v1/auth/refresh — atomic CAS rotation (xem rotateRefreshToken).
 router.post('/refresh', async (req, res) => {
   try {
-    const token = req.body?.refreshToken || req.headers['x-refresh-token']
+    const token = readRefreshToken(req)
     if (!token) return sendError(res, 401, ERR.AUTH_TOKEN, 'Refresh token required')
-    // Verify + rotate
     const jwt = (await import('jsonwebtoken')).default
-    const { config } = await import('../../config.js')
-    const decoded = jwt.verify(token, config.jwtRefreshSecret)
-    const user = await queryOne(`SELECT * FROM users WHERE id = ?`, [decoded.id])
     const { sha256 } = await import('../../lib/crypto.js')
-    if (!user || user.refresh_token !== sha256(token)) {
+    let decoded
+    try {
+      decoded = jwt.verify(token, config.jwtRefreshSecret)
+    } catch (_) {
+      return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid refresh token')
+    }
+    const user = await queryOne(`SELECT * FROM users WHERE id = ?`, [decoded.id])
+    const oldHash = sha256(token)
+    if (!user || user.refresh_token !== oldHash) {
       return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid refresh token')
     }
     if (user.refresh_expires && new Date(user.refresh_expires) < new Date()) {
@@ -87,17 +131,41 @@ router.post('/refresh', async (req, res) => {
     }
     const accessToken = generateAccessToken(user)
     const newRefresh = generateRefreshToken(user)
-    await storeRefreshToken(user.id, newRefresh)
-    res.json({ accessToken, refreshToken: newRefresh, user: publicUser(user) })
+    const rotated = await rotateRefreshToken(user.id, oldHash, newRefresh)
+    if (!rotated) return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid refresh token')
+    setRefreshCookie(res, newRefresh)
+    res.json({ accessToken, user: publicUser(user) })
   } catch (err) {
+    // DB bận KHÔNG được trả 401 (sẽ logout oan client) → 503 retryable.
+    if (err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED') {
+      return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs })
+    }
     return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid refresh token')
   }
 })
 
-// POST /api/v1/auth/logout
-router.post('/logout', authMiddleware, async (req, res) => {
-  await clearRefreshToken(req.user.id)
-  res.json({ message: 'Logged out' })
+// POST /api/v1/auth/logout — không bắt buộc access token còn hạn:
+// browser chỉ cần xóa được cookie; xác thực bằng Bearer hoặc chính refresh cookie.
+router.post('/logout', async (req, res) => {
+  try {
+    const cookieToken = readRefreshCookie(req)
+    let userId = null
+    const bearer = extractBearerToken(req)
+    if (bearer) {
+      try { userId = verifyAccessToken(bearer).id } catch (_) {}
+    }
+    if (!userId && cookieToken) {
+      const jwt = (await import('jsonwebtoken')).default
+      try { userId = jwt.verify(cookieToken, config.jwtRefreshSecret).id } catch (_) {}
+    }
+    if (userId) await clearRefreshToken(userId)
+    clearRefreshCookie(res)
+    res.json({ message: 'Logged out' })
+  } catch (err) {
+    console.error('Logout error:', err)
+    clearRefreshCookie(res)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
 })
 
 // GET /api/v1/auth/me
@@ -132,21 +200,48 @@ router.post('/forgot-password', async (req, res) => {
   }
 })
 
-// POST /api/v1/auth/reset-password
+// POST /api/v1/auth/reset-password — one-time atomic consume:
+// claim (UPDATE ... used=1 WHERE used=0 AND expires_at>now) quyết định đúng 1
+// người thắng; password update trong CÙNG transaction → fail là ROLLBACK (token
+// không bị cháy). Đổi mật khẩu đồng thời thu hồi refresh token hiện tại.
 router.post('/reset-password', async (req, res) => {
   try {
     const { token, newPassword } = req.body
-    if (!token || !newPassword) return sendError(res, 400, ERR.VALIDATION, 'Token and new password are required', { field: 'token,newPassword' })
+    if (!token || !newPassword) {
+      return sendError(res, 400, ERR.VALIDATION, 'Token and new password are required', { field: 'token,newPassword' })
+    }
     const { sha256 } = await import('../../lib/crypto.js')
     const tokenHash = sha256(token)
-    const row = await queryOne(`SELECT * FROM reset_tokens WHERE token = ?`, [tokenHash])
-    if (!row || row.used) return sendError(res, 400, 'INVALID_TOKEN', 'Invalid or used reset token')
-    if (new Date(row.expires_at) < new Date()) return sendError(res, 400, 'INVALID_TOKEN', 'Reset token expired')
-    const user = await queryOne(`SELECT id FROM users WHERE email = ?`, [row.email])
-    if (!user) return sendError(res, 400, 'INVALID_TOKEN', 'Invalid reset token')
     const hashed = await bcrypt.hash(newPassword, 10)
-    await updateById('users', user.id, { password: hashed })
-    await run(`UPDATE reset_tokens SET used = 1 WHERE token = ?`, [tokenHash])
+    try {
+      await withTransaction(async (tx) => {
+        const claimed = await tx.runAffected(
+          `UPDATE reset_tokens SET used = 1 WHERE token = ? AND used = 0 AND expires_at > ?`,
+          [tokenHash, new Date().toISOString()],
+          { op: 'auth.reset.claim' }
+        )
+        if (claimed !== 1) {
+          // Phân biệt message cho client (read-only, không ảnh hưởng tính nguyên tử)
+          const row = await tx.queryOne(`SELECT expires_at, used FROM reset_tokens WHERE token = ?`, [tokenHash])
+          const expired = !!row && !row.used && new Date(row.expires_at) < new Date()
+          const err = new Error(expired ? 'Reset token expired' : 'Invalid or used reset token')
+          err.code = 'INVALID_TOKEN'
+          throw err
+        }
+        const row = await tx.queryOne(`SELECT email FROM reset_tokens WHERE token = ?`, [tokenHash])
+        const user = row ? await tx.queryOne(`SELECT id FROM users WHERE email = ?`, [row.email]) : null
+        if (!user) {
+          const err = new Error('Invalid reset token'); err.code = 'INVALID_TOKEN'; throw err
+        }
+        await tx.run(
+          `UPDATE users SET password = ?, refresh_token = NULL, refresh_expires = NULL WHERE id = ?`,
+          [hashed, user.id]
+        )
+      }, { op: 'auth.password.reset' })
+    } catch (e) {
+      if (e?.code === 'INVALID_TOKEN') return sendError(res, 400, 'INVALID_TOKEN', e.message)
+      throw e
+    }
     res.json({ message: 'Mật khẩu đã được cập nhật.' })
   } catch (err) {
     console.error('Reset password error:', err)

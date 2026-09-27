@@ -12,6 +12,7 @@ import { config, isOriginAllowed } from './src/config.js'
 import { ffmpegAvailable } from './src/media/ffmpeg.js'
 import { createSafeMediaStatic } from './src/middleware/safeMediaStatic.js'
 import { resumableUploadService } from './src/services/resumableUploadService.js'
+import { sweepProjectCleanupTasks } from './src/services/projectCleanup.js'
 
 import v1Router from './src/routes/v1/index.js'
 
@@ -109,6 +110,16 @@ async function start() {
   } catch (e) {
     console.warn('[Server] Stale project recovery failed:', e.message)
   }
+
+  // Durable cleanup retry (không phụ thuộc Redis): quét task đến hạn mỗi 60s
+  // + một lần ngay khi boot (task sót từ lần chạy trước/crash giữa chừng).
+  // INSTANCE_MODE=single nên một interval in-process là đủ ngay cả khi Redis
+  // down; BullMQ hourly sweep (cleanupWorker + safeAddCleanup) giữ nguyên.
+  sweepProjectCleanupTasks().catch((e) => console.error('[Cleanup] boot sweep lỗi:', e?.message || e))
+  const cleanupSweepTimer = setInterval(() => {
+    sweepProjectCleanupTasks().catch((e) => console.error('[Cleanup] sweep lỗi:', e?.message || e))
+  }, 60_000)
+  if (typeof cleanupSweepTimer.unref === 'function') cleanupSweepTimer.unref()
 
   // Group 1: Start queue workers (graceful fallback if Redis unavailable).
   // Workers are only constructed once the Redis stream is writable — this

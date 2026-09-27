@@ -1,37 +1,50 @@
 import axios from 'axios'
+import { getAccessToken, setAccessToken, clearAccessToken } from '../lib/tokenStore'
+import { createSingleFlight } from './refreshFlight'
 
 const BASE = import.meta.env.VITE_API_BASE || '/api/v1'
 
 export const apiClient = axios.create({
   baseURL: BASE,
   headers: { 'Content-Type': 'application/json' },
+  withCredentials: true, // gửi/nhận HttpOnly refresh cookie (cross-origin deploy)
 })
 
 apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token')
+  const token = getAccessToken()
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })
 
-// Auto refresh on 401
+const refreshOnce = createSingleFlight()
+
+// Refresh bằng cookie HttpOnly (không còn body refreshToken). Single-flight:
+// nhiều 401 đồng thời → 1 POST /auth/refresh. Trả về { accessToken, user }.
+export function refreshSession() {
+  return refreshOnce(async () => {
+    const { data } = await axios.post(`${BASE}/auth/refresh`, null, { withCredentials: true })
+    setAccessToken(data.accessToken)
+    return data
+  })
+}
+
 apiClient.interceptors.response.use(
   (res) => res,
   async (error) => {
     const original = error.config
     if (error.response?.status === 401 && !original._retry) {
       original._retry = true
-      const refreshToken = localStorage.getItem('refresh_token')
-      if (refreshToken) {
+      const hadSession = Boolean(getAccessToken())
+      // Khách vãng lai (không token, không refresh đang chạy) → reject như cũ,
+      // không gọi refresh vô ích.
+      if (hadSession || refreshOnce.pending()) {
         try {
-          const { data } = await axios.post(`${BASE}/auth/refresh`, { refreshToken })
-          localStorage.setItem('access_token', data.accessToken)
-          localStorage.setItem('refresh_token', data.refreshToken)
+          const data = await refreshSession()
           original.headers.Authorization = `Bearer ${data.accessToken}`
-          return apiClient(original)
+          return apiClient(original) // retry đúng 1 lần (đã _retry) — không loop
         } catch (e) {
-          localStorage.removeItem('access_token')
-          localStorage.removeItem('refresh_token')
-          window.location.href = '/login'
+          clearAccessToken()
+          if (hadSession) window.location.href = '/login'
           return Promise.reject(error)
         }
       }

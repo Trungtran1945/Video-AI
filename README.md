@@ -150,7 +150,7 @@ Video_AI/
 │   │   ├── usecases/         # Luồng nghiệp vụ đặc thù (hủy project, v.v.)
 │   │   ├── config.js         # Quản lý biến môi trường tập trung
 │   │   └── server.js         # Điểm khởi chạy backend & worker
-│   ├── tests/                # Bộ kiểm thử tích hợp & hồi quy (76 test files)
+ │   ├── tests/                # Bộ kiểm thử tích hợp & hồi quy (84 test files)
 │   └── package.json
 ├── frontend/                 # Giao diện người dùng (React 18 + Vite 6)
 │   ├── src/
@@ -203,6 +203,12 @@ NODE_ENV=development
 STORAGE_DIR=./storage
 REDIS_HOST=127.0.0.1
 REDIS_PORT=6379
+COOKIE_SECURE=false
+
+# Production bắt buộc (mỗi giá trị ≥32 ký tự — không dùng placeholder dưới đây):
+# JWT_ACCESS_SECRET=...
+# JWT_REFRESH_SECRET=...
+# MASTER_KEY=...
 
 # Cấu hình AI Provider Keys (điền key bạn có hoặc sử dụng mock)
 GEMINI_API_KEY=your_gemini_api_key
@@ -212,6 +218,20 @@ ELEVENLABS_API_KEY=your_elevenlabs_api_key
 # Tùy chọn dịch thuật Google Apps Script (nếu có)
 GOOGLE_TRANSLATE_SCRIPT_URL=
 ```
+
+#### Biến môi trường bắt buộc (production)
+
+| Biến | Mô tả |
+|---|---|
+| `JWT_ACCESS_SECRET` | Bí mật JWT access token (≥32 ký tự) |
+| `JWT_REFRESH_SECRET` | Bí mật JWT refresh token (≥32 ký tự) |
+| `MASTER_KEY` | Khối master cho dữ liệu nhạy cảm (≥32 ký tự) |
+| `REDIS_HOST` / `REDIS_PORT` | Redis cho BullMQ (bắt buộc ở production — server exit(1) nếu không kết nối được) |
+| `STORAGE_DIR` | Gốc storage (mọi path cleanup bị khoá trong đây) |
+| `DB_PATH` | Đường dẫn SQLite (mặc định `backend/data.db`; hoặc `DATABASE_URL=file:...`) |
+| `COOKIE_SECURE` | Tuỳ chọn: `true|false`, mặc định `true` khi `NODE_ENV=production` |
+
+> Production fail-fast khi thiếu secret (`assertProductionSecrets` trong `backend/src/config.js` từ chối boot với secret thiếu/ngắn/dạng placeholder). Không ghi secret thật vào README hay git.
 
 Kiểm tra kết nối Redis:
 ```bash
@@ -259,7 +279,7 @@ Truy cập ứng dụng tại `http://localhost`.
 Hệ thống tuân thủ nghiêm ngặt quy trình kiểm thử trước khi bàn giao:
 
 ### Backend Tests (Regression Gate)
-Chạy toàn bộ 76 file kiểm thử tích hợp (bao gồm kiểm tra upload resumable, tính toàn vẹn database, SSE, pipeline admission, logic kiểm tra ngôn ngữ, bảo mật đường dẫn và khôi phục lỗi):
+Chạy toàn bộ 84 file kiểm thử tích hợp (bao gồm kiểm tra upload resumable, tính toàn vẹn database, SSE, pipeline admission, logic kiểm tra ngôn ngữ, bảo mật đường dẫn và khôi phục lỗi):
 ```bash
 cd backend
 npm test
@@ -293,6 +313,13 @@ Toàn bộ các API được định tuyến dưới tiền tố `/api/v1`:
 - `GET /auth/me`: Lấy thông tin tài khoản hiện tại.
 - `POST /auth/forgot-password` & `POST /auth/reset-password`: Quy trình khôi phục mật khẩu qua email token.
 
+#### Xác thực
+- Access token (JWT 15 phút): client giữ **trong bộ nhớ RAM** (không localStorage).
+- Refresh token (7 ngày): **HttpOnly cookie** `refresh_token`, `Path=/api/v1/auth`, `SameSite=Lax`, `Secure` khi production. Rotation nguyên tử: mỗi `POST /auth/refresh` chỉ thành công đúng 1 lần cho mỗi token cũ (CAS).
+- `POST /auth/refresh` vẫn nhận `refreshToken` trong body / header `x-refresh-token` như **fallback deprecated** — sẽ bị gỡ sau 2 release. Deploy cross-origin phải cùng-site hoặc dùng fallback này trong thời gian chuyển đổi.
+- `POST /auth/logout` không yêu cầu access token còn hạn (xác thực bằng Bearer hoặc chính refresh cookie) — luôn xóa được cookie.
+- `POST /auth/reset-password`: token một lần nguyên tử (claim trong transaction); đổi mật khẩu đồng thời thu hồi refresh token hiện tại.
+
 ### 8.2. Quản lý Dự án (`/projects`)
 - `POST /projects`: Khởi tạo dự án mới (`SUMMARY` hoặc `TRANSLATE_DUB`).
 - `GET /projects`: Danh sách dự án kèm trạng thái, tiến độ và phân trang.
@@ -301,6 +328,10 @@ Toàn bộ các API được định tuyến dưới tiền tố `/api/v1`:
 - `POST /projects/:id/cancel`: Hủy thực thi pipeline đang chạy.
 - `POST /projects/:id/regenerate`: Chạy lại dự án từ công đoạn lỗi sớm nhất.
 - `DELETE /projects/:id`: Xóa dự án và các tệp tin lưu trữ liên quan.
+- `POST /api/v1/projects`: header tùy chọn `Idempotency-Key` (1-128 ký tự, unique per user) — retry không tạo duplicate project, lần retry trả `idempotentReplay: true` cùng project id. Lỗi copy transcript cache → **202** với `transcriptCopyFailed: true` (project đã tồn tại, chạy `queued`).
+- `DELETE /api/v1/projects/:id`: DB xóa nguyên tử + ghi task `project_cleanup_tasks` trong cùng transaction; file được dọn post-commit, thất bại → sweep mỗi 60s (backoff mũ, tối đa 10 lần, sau đó log ALERT). Không phụ thuộc Redis.
+- `POST /api/v1/projects/:id/cancel`: cooperative — commit `cancelled` + hủy job trong 1 transaction, pipeline dừng ở ranh giới stage (không giết giữa chừng); gọi lại trên project đã xong là idempotent. `DELETE` khi pipeline đang chạy → `409`.
+- `GET /health` → `{ status, redis, queueSystem, database, writes }` — dùng cho readiness probe.
 
 ### 8.3. Thực thi Pipeline (`/projects`)
 - `POST /projects/:id/summary/start`: Kích hoạt pipeline cho dự án Review phim.

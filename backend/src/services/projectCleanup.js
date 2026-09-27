@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import { config } from '../config.js'
-import { query } from '../db/query.js'
+import { query, run } from '../db/query.js'
 import { projectDir, tmpDirOf, resolveStorageKey } from '../pipeline/context.js'
 import { isPathInside } from '../lib/safePath.js'
 
@@ -79,4 +79,54 @@ export async function deleteProjectFiles(project, ownKeys = []) {
   return { filesRemoved: removed, filesFailed: failed }
 }
 
-export default { collectProjectKeys, deleteProjectFiles }
+const MAX_CLEANUP_ATTEMPTS = 10
+
+function cleanupBackoffMs(attempts) {
+  return Math.min(30_000 * 2 ** Math.max(0, attempts - 1), 60 * 60 * 1000)
+}
+
+// Idempotent: file đã gone → existsSync skip; UPDATE khoá `AND status='pending'`
+// nên 2 worker song song không thể cùng đánh dấu. Không bao giờ ra ngoài
+// storage (deleteProjectFiles giữ nguyên isPathInside/resolveStorageKey guard).
+export async function runCleanupTask(task) {
+  let keys = []
+  try { keys = JSON.parse(task.keys_json || '[]') } catch (_) { keys = [] }
+  keys = keys.filter((k) => typeof k === 'string' && k)
+  const result = await deleteProjectFiles({ id: task.project_id }, keys)
+  const attempts = (Number(task.attempts) || 0) + 1
+  const done = result.filesFailed === 0
+  const status = done ? 'done' : (attempts >= MAX_CLEANUP_ATTEMPTS ? 'failed' : 'pending')
+  const nextAt = new Date(Date.now() + cleanupBackoffMs(attempts)).toISOString()
+  await run(
+    `UPDATE project_cleanup_tasks
+     SET status = ?, attempts = ?, next_attempt_at = ?, last_error = ?, updated_date = ?
+     WHERE id = ? AND status = 'pending'`,
+    [status, attempts, nextAt, done ? null : `filesFailed=${result.filesFailed}`, new Date().toISOString(), task.id],
+    { op: 'project.cleanup.task' }
+  )
+  if (status === 'failed') {
+    console.error(`[Cleanup] ALERT: project_cleanup_tasks id=${task.id} project=${task.project_id} FAILED sau ${attempts} lần retry — cần can thiệp thủ công`)
+  }
+  return { status, attempts, ...result }
+}
+
+export async function sweepProjectCleanupTasks({ limit = 10 } = {}) {
+  const now = new Date().toISOString()
+  const due = await query(
+    `SELECT * FROM project_cleanup_tasks WHERE status = 'pending' AND next_attempt_at <= ?
+     ORDER BY next_attempt_at LIMIT ?`,
+    [now, limit]
+  )
+  let processed = 0
+  for (const task of due) {
+    try {
+      await runCleanupTask(task)
+      processed++
+    } catch (e) {
+      console.error(`[Cleanup] task ${task.id} retry lỗi:`, e?.message || e)
+    }
+  }
+  return { processed }
+}
+
+export default { collectProjectKeys, deleteProjectFiles, runCleanupTask, sweepProjectCleanupTasks }

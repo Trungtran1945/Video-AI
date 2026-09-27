@@ -23,6 +23,7 @@ process.env.AUTH_DEV_RESET_TOKEN_IN_RESPONSE = 'true'
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, queryOne, run } = await import('../src/db/query.js')
 const { sha256 } = await import('../src/lib/crypto.js')
+const { generateRefreshToken, storeRefreshToken } = await import('../src/middleware/auth.js')
 const authRouter = (await import('../src/routes/v1/auth.js')).default
 const bcrypt = (await import('bcryptjs')).default
 
@@ -77,10 +78,14 @@ let devToken = null
 
 // 3. reset flow: raw token accepted, password re-hashed, token single-use
 {
+  const pre = await queryOne('SELECT * FROM users WHERE id = ?', ['rp-u1'])
+  await storeRefreshToken(pre.id, generateRefreshToken(pre))
   const res = await post('/reset-password', { token: devToken, newPassword: 'NewPass!234' })
   assert(res.status === 200, `reset-password accepts the raw token (got ${res.status})`)
   const u = await queryOne('SELECT password FROM users WHERE id = ?', ['rp-u1'])
   assert(await bcrypt.compare('NewPass!234', u.password), 'password was updated to the new bcrypt hash')
+  const after = await queryOne('SELECT refresh_token FROM users WHERE id = ?', ['rp-u1'])
+  assert(after.refresh_token == null, 'reset revokes the stored refresh token (users.refresh_token is NULL)')
 
   const reuse = await post('/reset-password', { token: devToken, newPassword: 'Another!234' })
   assert(reuse.status === 400, `used token cannot be reused (got ${reuse.status})`)

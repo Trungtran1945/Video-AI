@@ -122,6 +122,12 @@ export const config = {
   // response (dev has no real SMTP). Forced off in production regardless of env.
   authDevResetTokenInResponse:
     nodeEnv !== 'production' && process.env.AUTH_DEV_RESET_TOKEN_IN_RESPONSE === 'true',
+  // Refresh cookie: Secure ở production (RFC: cookie Secure chỉ gửi qua HTTPS;
+  // localhost được browser miễn trừ). Ghi đè bằng COOKIE_SECURE=true|false.
+  cookieSecure:
+    process.env.COOKIE_SECURE !== undefined && process.env.COOKIE_SECURE !== ''
+      ? String(process.env.COOKIE_SECURE).toLowerCase() === 'true'
+      : nodeEnv === 'production',
 }
 
 // Pure CORS check (unit-testable). Non-production allows localhost defaults;

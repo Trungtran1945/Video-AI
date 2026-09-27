@@ -363,6 +363,31 @@ export async function initSchema() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_sse_tickets_hash ON sse_tickets(ticket_hash)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_sse_tickets_expires ON sse_tickets(expires_at)`)
 
+  // Idempotency-Key cho POST /projects: retry cùng key KHÔNG tạo duplicate.
+  // Claim (INSERT OR IGNORE) xảy ra trong CÙNG transaction với project insert.
+  db.run(`CREATE TABLE IF NOT EXISTS project_idempotency (
+    user_id TEXT NOT NULL,
+    idem_key TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    created_date TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, idem_key)
+  )`)
+
+  // Durable file cleanup sau DELETE project: row này commit CÙNG transaction
+  // với DB wipe (outbox) — fs thất bại không bao giờ mất task, chỉ retry.
+  db.run(`CREATE TABLE IF NOT EXISTS project_cleanup_tasks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    keys_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    last_error TEXT,
+    created_date TEXT DEFAULT (datetime('now')),
+    updated_date TEXT
+  )`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_due ON project_cleanup_tasks(status, next_attempt_at)`)
+
   // Resumable upload sessions (TUS-style, docs/06 §2.1)
   db.run(`CREATE TABLE IF NOT EXISTS upload_sessions (
     id TEXT PRIMARY KEY,

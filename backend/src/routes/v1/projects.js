@@ -7,7 +7,7 @@ import { getOutputState } from '../../services/outputService.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { runPipeline, isPipelineRunning, stagesForProject } from '../../pipeline/runner.js'
-import { deleteProjectFiles, collectProjectKeys } from '../../services/projectCleanup.js'
+import { collectProjectKeys, runCleanupTask } from '../../services/projectCleanup.js'
 import { cancelProjectUseCase } from '../../usecases/cancelProjectUseCase.js'
 import { sendError, ERR } from '../../lib/httpError.js'
 import { firstRunnableStage } from '../../pipeline/context.js'
@@ -16,6 +16,10 @@ import { hasHardTranslationError } from '../../pipeline/stages/dubTranslate.js'
 
 const router = Router()
 router.use(authMiddleware)
+
+// Test seam (post-commit side effects injectable — cùng pattern deps của
+// cancelProjectUseCase). Production không đổi hành vi; test thay bằng fake.
+export const createProjectPostDeps = { copyTranscript, runPipeline }
 
 const MODES = ['SUMMARY', 'TRANSLATE_DUB']
 
@@ -27,6 +31,7 @@ const isDubMode = (mode) => {
 
 // POST /api/v1/projects
 router.post('/', async (req, res) => {
+  let createdProjectId = null
   try {
     const b = req.body || {}
     // Chuẩn hoá mode về UPPERCASE, chấp nhận lowercase ('translate_dub') từ client cũ
@@ -77,21 +82,39 @@ router.post('/', async (req, res) => {
       params.translationVersion = TRANSLATION_VERSION
     }
 
-    const admission = await createProjectWithAdmission({
-      id: uuidv4(),
-      userId: req.user.id,
-      mode,
-      title: b.title.trim(),
-      language: b.language || (mode === 'TRANSLATE_DUB' ? (params.targetLanguage || 'vi') : 'vi'),
-      style: b.style || (mode === 'SUMMARY' ? 'cinematic' : (params.stylePreset || null)),
-      targetDurationSec: Number(b.targetDurationSec) || (mode === 'SUMMARY' ? 1500 : 60),
-      aspectRatio: b.aspectRatio || '16:9',
-      params,
-      sourceVideoKey: b.sourceVideoKey || null,
-      videoHash: b.videoHash || null,
-      copyrightAcknowledged: true,
-    })
+    let idempotencyKey = null
+    const rawKey = req.headers['idempotency-key']
+    if (rawKey !== undefined) {
+      if (typeof rawKey !== 'string' || !rawKey.trim() || rawKey.length > 128) {
+        return sendError(res, 400, ERR.VALIDATION, 'Idempotency-Key must be 1-128 characters', { field: 'Idempotency-Key' })
+      }
+      idempotencyKey = rawKey.trim()
+    }
+
+    let admission
+    try {
+      admission = await createProjectWithAdmission({
+        id: uuidv4(),
+        userId: req.user.id,
+        mode,
+        title: b.title.trim(),
+        language: b.language || (mode === 'TRANSLATE_DUB' ? (params.targetLanguage || 'vi') : 'vi'),
+        style: b.style || (mode === 'SUMMARY' ? 'cinematic' : (params.stylePreset || null)),
+        targetDurationSec: Number(b.targetDurationSec) || (mode === 'SUMMARY' ? 1500 : 60),
+        aspectRatio: b.aspectRatio || '16:9',
+        params,
+        sourceVideoKey: b.sourceVideoKey || null,
+        videoHash: b.videoHash || null,
+        copyrightAcknowledged: true,
+      }, { idempotencyKey })
+    } catch (admErr) {
+      if (admErr?.code !== 'IDEMPOTENT_REPLAY') throw admErr
+      const existing = admErr.projectId ? await queryOne('SELECT * FROM projects WHERE id = ?', [admErr.projectId]) : null
+      if (!existing) throw admErr
+      return res.status(202).json({ ...existing, params, cachedProjectId: null, idempotentReplay: true })
+    }
     const project = admission.project
+    createdProjectId = project.id
     const status = project.status
 
     // Cache lookup (Task 1 fix): SAU insert, TRƯỚC runPipeline.
@@ -139,35 +162,49 @@ router.post('/', async (req, res) => {
       }
     }
 
+    let transcriptCopyFailed = false
     const copySourceId = cachedProjectId || transcriptOnlySourceId
     if (copySourceId) {
       try {
-        await copyTranscript(copySourceId, project.id, { includeTranslation: Boolean(cachedProjectId) })
+        await createProjectPostDeps.copyTranscript(copySourceId, project.id, { includeTranslation: Boolean(cachedProjectId) })
       } catch (copyError) {
-        await updateProjectOwned(project.id, admission.runToken, {
-          status: 'queued',
-          run_token: null,
-          lease_expires_at: null,
-          recovery_reason: 'cache copy failed; admission released',
-        })
-        throw copyError
+        // Project ĐÃ tồn tại (commit trước đó) — không 500 để client hiểu nhầm
+        // "chưa tạo". Release admission → queued; drainQueued sẽ chạy lại
+        // (re-transcribe nếu cache copy lỗi — degraded nhưng đúng).
+        transcriptCopyFailed = true
+        console.warn(`[Projects] copyTranscript thất bại cho ${project.id}:`, copyError?.message || copyError)
+        try {
+          await updateProjectOwned(project.id, admission.runToken, {
+            status: 'queued', run_token: null, lease_expires_at: null,
+            recovery_reason: 'cache copy failed; admission released',
+          })
+        } catch (releaseErr) {
+          console.error(`[Projects] release admission thất bại cho ${project.id}:`, releaseErr?.message || releaseErr)
+          throw releaseErr
+        }
       }
     }
 
     // Kick off the real pipeline asynchronously — LUÔN CUỐI CÙNG, sau khi
     // copy cache xong (tránh race: stage skip-if-exists đọc nhầm bảng rỗng
-    // hoặc ghi đè song song với copy).
-    if (status === 'pending') {
-      runPipeline(project.id, null, admission.runToken).catch((e) => console.error('[Pipeline] start failed', e))
+    // hoặc ghi đè song song với copy). Bỏ qua khi copy lỗi (project đã về
+    // queued, drainQueued nhận chạy lại khi có slot).
+    if (status === 'pending' && !transcriptCopyFailed) {
+      createProjectPostDeps.runPipeline(project.id, null, admission.runToken).catch((e) => console.error('[Pipeline] start failed', e))
     }
 
+    if (transcriptCopyFailed) {
+      const fresh = await queryOne('SELECT * FROM projects WHERE id = ?', [project.id])
+      return res.status(202).json({ ...(fresh || project), params, cachedProjectId, transcriptCopyFailed: true })
+    }
     res.status(202).json({ ...project, params, cachedProjectId })
   } catch (err) {
+    const extra = createdProjectId ? { projectId: createdProjectId } : {}
     if (err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED') {
-      return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs })
+      return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs, ...extra })
     }
     console.error('Create project error:', err)
-    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error', extra)
   }
 })
 
@@ -356,6 +393,7 @@ router.delete('/:id', async (req, res) => {
     // The whole DB wipe commits as ONE transaction: a mid-wipe failure can no
     // longer leave a partially deleted project on disk, and a retry after a
     // rejected DELETE starts from a complete state (no duplicate/partial work).
+    let cleanupTaskId = null
     await withTransaction(async (tx) => {
       // ProviderLog is independent of the project lifecycle (docs/02 §5):
       // keep the rows for analytics, only detach them from the deleted project.
@@ -367,19 +405,32 @@ router.delete('/:id', async (req, res) => {
       for (const t of ['generation_jobs', 'assets', 'scenes', 'script_segments', 'ocr_regions', 'timeline_clips', 'audios', 'subtitles', 'outputs']) {
         await tx.run(`DELETE FROM ${t} WHERE project_id = ?`, [req.params.id])
       }
+      await tx.run('DELETE FROM project_idempotency WHERE project_id = ?', [req.params.id])
       await tx.run('DELETE FROM projects WHERE id = ?', [req.params.id])
-    }, { op: 'project.delete' })
-    // DB rows are gone — now free the files. Post-commit side effect:
-    // best-effort inside its own try/catch — a stuck file handle or cleanup
-    // read error must NOT fail an already-committed deletion (orphan files
-    // are logged instead).
-    try {
-      const cleanup = await deleteProjectFiles(project, fileKeys)
-      if (cleanup.filesFailed > 0) {
-        console.warn(`[Projects] xoá ${req.params.id}: ${cleanup.filesFailed} tệp không xoá được khỏi storage`)
+      // Outbox: cleanup task commit nguyên tử với DB wipe — fs fail không mất task.
+      // Chỉ tạo task khi còn file cần dọn: project không file thì không thêm
+      // write/save thừa (giữ postCommitBoundaries `saveCalls === 1`).
+      if (fileKeys.size > 0) {
+        cleanupTaskId = uuidv4()
+        await tx.run(
+          `INSERT INTO project_cleanup_tasks (id, project_id, keys_json, status, attempts, next_attempt_at)
+           VALUES (?, ?, ?, 'pending', 0, ?)`,
+          [cleanupTaskId, req.params.id, JSON.stringify([...fileKeys]), new Date().toISOString()]
+        )
       }
-    } catch (cleanupErr) {
-      console.error(`[Projects] xoá tệp ${req.params.id} thất bại sau khi DB đã commit:`, cleanupErr?.message || cleanupErr)
+    }, { op: 'project.delete' })
+    // Post-commit fast path: thử dọn ngay qua runCleanupTask (bên trong gọi
+    // deleteProjectFiles(project, keys)); thất bại thì task pending sẽ được
+    // sweep retry (server.js interval 60s) — không bao giờ mất, không rollback DB.
+    if (cleanupTaskId) {
+      try {
+        const outcome = await runCleanupTask({ id: cleanupTaskId, project_id: req.params.id, keys_json: JSON.stringify([...fileKeys]), attempts: 0 })
+        if (outcome.status !== 'done') {
+          console.warn(`[Projects] xoá ${req.params.id}: cleanup chưa hoàn tất (${outcome.status}) — sẽ retry`)
+        }
+      } catch (cleanupErr) {
+        console.error(`[Projects] cleanup ${req.params.id} post-commit lỗi (sẽ retry):`, cleanupErr?.message || cleanupErr)
+      }
     }
     res.json({ message: 'Deleted' })
   } catch (err) {

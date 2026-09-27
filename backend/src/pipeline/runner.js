@@ -276,6 +276,12 @@ const STAGE_IMPL = {
   'dub.render': dubRender,
 }
 
+// Test seam: regression test thay stage impl bằng fake (không chạy provider/
+// FFmpeg thật). Production không gọi; tests set/clear tường minh.
+const stageImplOverrides = new Map()
+export function setStageImplOverride(type, impl) { stageImplOverrides.set(type, impl) }
+export function clearStageImplOverrides() { stageImplOverrides.clear() }
+
 const STAGE_PROVIDER = {
   'summary.transcribe': 'asr',
   'summary.sceneDetect': 'ffmpeg',
@@ -599,7 +605,7 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       }
     }
 
-    const impl = STAGE_IMPL[job.type]
+    const impl = stageImplOverrides.get(job.type) || STAGE_IMPL[job.type]
     if (!impl) throw new Error(`Stage không được hỗ trợ: ${job.type}`)
     const stageTimeout = STAGE_TIMEOUTS[job.type] || DEFAULT_STAGE_TIMEOUT
     if (job.type === 'dub.render') {
@@ -854,6 +860,14 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
         else continue
       }
 
+      // Cancel invariant: reload TRƯỚC MỖI group. cancelProjectUseCase đã
+      // commit status='cancelled' + run_token=NULL → dừng graceful ở đây,
+      // không gọi executeStage, không ghi thêm job/project nào. (executeStage
+      // cũng có fence ownership — đây là lớp bảo vệ tường minh ở ranh giới stage.)
+      const latest = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
+      if (!latest || latest.status !== 'running' || latest.run_token !== runToken) return
+      currentProject = latest
+
       let groupFailed = false
       if (types.length === 1) {
         const job = await loadJob(projectId, types[0])
@@ -916,7 +930,6 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
         status: done >= total ? 'completed' : 'running',
         percent: Math.round((done / total) * 100),
       })
-      currentProject = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId]) || currentProject
     }
 
     const completedUpdated = await updateProjectOwned(projectId, runToken, { status: 'completed', progress: 100, run_token: null, lease_expires_at: null })

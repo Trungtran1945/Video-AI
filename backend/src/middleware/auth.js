@@ -1,6 +1,6 @@
 import jwt from 'jsonwebtoken'
 import { config } from '../config.js'
-import { queryOne, run } from '../db/query.js'
+import { queryOne, run, runAffected } from '../db/query.js'
 import { sha256 } from '../lib/crypto.js'
 import { sendError, ERR } from '../lib/httpError.js'
 
@@ -31,6 +31,21 @@ export async function storeRefreshToken(userId, plainRefresh) {
 
 export async function clearRefreshToken(userId) {
   await run(`UPDATE users SET refresh_token = NULL, refresh_expires = NULL WHERE id = ?`, [userId])
+}
+
+// Atomic compare-and-swap rotation: chỉ rotate khi hash cũ vẫn là hash đang
+// lưu VÀ chưa hết hạn. affected===1 → winner; affected===0 → token đã bị
+// rotate/invalid bởi request song song → 401. Chạy trong write queue hiện tại.
+export async function rotateRefreshToken(userId, oldHash, plainRefresh) {
+  const hash = sha256(plainRefresh)
+  const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+  const affected = await runAffected(
+    `UPDATE users SET refresh_token = ?, refresh_expires = ?
+     WHERE id = ? AND refresh_token = ? AND refresh_expires > ?`,
+    [hash, expires, userId, oldHash, new Date().toISOString()],
+    { op: 'auth.refresh.rotate' }
+  )
+  return affected === 1
 }
 
 // Lấy token: Authorization: Bearer <token>; chỉ chấp nhận ?token= khi allowQueryToken
@@ -93,7 +108,18 @@ export async function sseAuthMiddleware(req, res, next) {
       // Single-use: consume ngay tại auth để không reuse vô hạn.
       // Nếu SSE connect fail sau auth, ticket đã mất — frontend phải xin ticket
       // mới và retry với backoff giới hạn (xem useJobEvents), không reuse.
-      try { await run(`DELETE FROM sse_tickets WHERE ticket_hash = ?`, [sha256(ticket)]) } catch (_) {}
+      // QUYẾT ĐỊNH authenticate là DELETE có điều kiện — SELECT ở trên chỉ đọc
+      // thông tin (user/project/expiry). 100 request đồng thời cùng ticket:
+      // write queue serialize → 1 request affected=1, 99 affected=0 → 401.
+      // Không log ticket.
+      const claimed = await runAffected(
+        `DELETE FROM sse_tickets WHERE ticket_hash = ?`,
+        [sha256(ticket)],
+        { op: 'auth.sse.consume' }
+      )
+      if (claimed !== 1) {
+        return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid or expired ticket')
+      }
       req.user = { id: user.id, email: user.email, role: user.role }
       req.sseTicket = true
       return next()
@@ -114,28 +140,6 @@ export async function sseAuthMiddleware(req, res, next) {
   return sendError(res, 401, ERR.AUTH_TOKEN, 'Authentication required')
 }
 
-// Verify refresh token (in body.refreshToken or header x-refresh-token)
-export async function refreshMiddleware(req, res, next) {
-  const token = req.body?.refreshToken || req.headers['x-refresh-token']
-  if (!token) {
-    return sendError(res, 401, ERR.AUTH_TOKEN, 'Refresh token required')
-  }
-  try {
-    const decoded = jwt.verify(token, config.jwtRefreshSecret)
-    const user = await queryOne(`SELECT id, email, role, refresh_token, refresh_expires FROM users WHERE id = ?`, [decoded.id])
-    if (!user || !user.refresh_token || user.refresh_token !== sha256(token)) {
-      return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid refresh token')
-    }
-    if (user.refresh_expires && new Date(user.refresh_expires) < new Date()) {
-      return sendError(res, 401, ERR.AUTH_TOKEN, 'Refresh token expired')
-    }
-    req.user = decoded
-    next()
-  } catch (err) {
-    return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid refresh token')
-  }
-}
-
 export function requireRole(...roles) {
   return (req, res, next) => {
     if (!req.user || (roles.length && !roles.includes(req.user.role))) {
@@ -154,6 +158,5 @@ export default {
   verifyAccessToken,
   authMiddleware,
   sseAuthMiddleware,
-  refreshMiddleware,
   requireRole,
 }
