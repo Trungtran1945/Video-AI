@@ -14,9 +14,9 @@
 
 | Method | Path | Auth | Mô tả |
 | --- | --- | --- | --- |
-| POST | `/auth/register` | không | `{ email, password, name? }` → `{ accessToken, refreshToken, user }` |
-| POST | `/auth/login` | không | `{ email, password }` → tokens |
-| POST | `/auth/refresh` | không (body `refreshToken`) | rotate → tokens mới |
+| POST | `/auth/register` | không | `{ email, password, name? }` → `{ accessToken, user }` + HttpOnly cookie `refresh_token` (KHÔNG còn `refreshToken` trong JSON) |
+| POST | `/auth/login` | không | `{ email, password }` → `{ accessToken, user }` + HttpOnly cookie `refresh_token` |
+| POST | `/auth/refresh` | không (cookie `refresh_token`; fallback deprecated body `refreshToken`/header `x-refresh-token`) | rotate nguyên tử CAS → `{ accessToken, user }` + cookie mới (mỗi token cũ chỉ success đúng 1 lần) |
 | POST | `/auth/logout` | AUTH | thu hồi refresh |
 | GET | `/auth/me` | AUTH | user hiện tại (EXTRA: đã cài đặt, chưa document trước đây) |
 | POST | `/auth/forgot-password` | không | `{ email }` → message chung (EXTRA: đã cài đặt, chưa document trước đây) |

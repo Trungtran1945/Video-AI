@@ -15,7 +15,7 @@ Không dùng bất kỳ dịch vụ/BaaS bên ngoài nào — mọi dữ liệu 
 
 - `src/api/client.js`: axios client gốc (baseURL `VITE_API_BASE`, đính JWT, tự refresh khi 401).
 - `src/api/*.js`: các module endpoint (projects, upload, auth, outputs, extra).
-- `src/lib/AuthContext.jsx`: trạng thái đăng nhập (localStorage access/refresh token).
+- `src/lib/AuthContext.jsx`: trạng thái đăng nhập (access token memory-only qua `src/lib/tokenStore.js`, refresh qua HttpOnly cookie + silent refresh; KHÔNG localStorage refresh token).
 - `src/lib/constants.jsx`: nhãn trạng thái, stage pipeline, ngôn ngữ/phong cách dịch (13 preset)/giọng đọc.
 - `src/pages/CreateProject.jsx`: wizard tạo dự án 2 mode (SUMMARY / TRANSLATE_DUB) — đặc tả tại `../Video_AI_docs/docs/04_THIET_KE_FRONTEND.md` mục 4.
 - `src/pages/ProjectDetail.jsx`: tiến trình pipeline (SSE realtime, fallback polling jobs), transcript song ngữ + SubRegionEditor Canvas (TRANSLATE_DUB), timeline preview (SUMMARY), output. **TRANSLATE_DUB sử dụng layout 2-panel (video + mask bên trái, pipeline + transcript bên phải) và VideoTimeline (CapCut-inspired multi-track timeline) ở dưới cùng.**

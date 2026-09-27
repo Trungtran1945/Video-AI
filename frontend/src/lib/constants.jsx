@@ -114,8 +114,17 @@ export const STATUS_LABELS = {
   export const VOICE_PROVIDERS = ['edge_tts', 'elevenlabs', 'google_tts', 'azure_speech', 'openai_tts'];
   export const SUBTITLE_PROVIDERS = ['whisper', 'openai_whisper', 'faster_whisper'];
   
+  // Canonical project statuses: pending/queued/running/completed/failed/cancelled.
+  // 'success' is a legacy job/output status — project badges normalize it to
+  // 'completed' so one semantic never has two names (backend lib/projectStatus.js).
+  export function normalizeProjectStatusForDisplay(status) {
+    if (status === 'success') return 'completed';
+    return status;
+  }
+
   export function StatusBadge({ status, className = '' }) {
-    const cfg = STATUS_LABELS[status] || {
+    const key = normalizeProjectStatusForDisplay(status);
+    const cfg = STATUS_LABELS[key] || {
       label: status || 'Chưa rõ',
       color: 'bg-muted text-muted-foreground border-border',
       dot: 'bg-muted-foreground/60',

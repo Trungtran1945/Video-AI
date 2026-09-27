@@ -124,6 +124,18 @@ export async function initSchema() {
   try { db.run(`ALTER TABLE projects ADD COLUMN transcript_version INTEGER DEFAULT 0`) } catch (_) {}
   try { db.run(`ALTER TABLE projects ADD COLUMN run_token TEXT`) } catch (_) {}
   try { db.run(`ALTER TABLE projects ADD COLUMN lease_expires_at TEXT`) } catch (_) {}
+  // Retention sweep backoff gate (cleanupWorker): NULL = due, ISO = next attempt.
+  try { db.run(`ALTER TABLE projects ADD COLUMN next_cleanup_attempt_at TEXT`) } catch (_) {}
+  // Canonical status migration: 'success' was a job/output status leak, never a
+  // valid project status — normalize legacy rows to 'completed' (no data loss).
+  try {
+    const legacy = db.exec(`SELECT COUNT(*) AS cnt FROM projects WHERE status = 'success'`)
+    const n = legacy?.[0]?.values?.[0]?.[0] || 0
+    if (n > 0) {
+      db.run(`UPDATE projects SET status = 'completed' WHERE status = 'success'`)
+      console.log(`[DB] Normalized ${n} legacy project(s) status success→completed`)
+    }
+  } catch (_) {}
   try { db.run(`UPDATE projects SET transcript_version = 0 WHERE transcript_version IS NULL`) } catch (_) {}
   try { db.run(`ALTER TABLE outputs ADD COLUMN transcript_version INTEGER`) } catch (_) {}
 
@@ -365,13 +377,20 @@ export async function initSchema() {
 
   // Idempotency-Key cho POST /projects: retry cùng key KHÔNG tạo duplicate.
   // Claim (INSERT OR IGNORE) xảy ra trong CÙNG transaction với project insert.
+  // TTL 7 ngày (decision 2.A): expires_at hết hạn → sweep xóa để bảng không
+  // phình; key cũ sau TTL được dùng lại như request mới.
   db.run(`CREATE TABLE IF NOT EXISTS project_idempotency (
     user_id TEXT NOT NULL,
     idem_key TEXT NOT NULL,
     project_id TEXT NOT NULL,
     created_date TEXT DEFAULT (datetime('now')),
+    expires_at TEXT,
     PRIMARY KEY (user_id, idem_key)
   )`)
+  try { db.run(`ALTER TABLE project_idempotency ADD COLUMN expires_at TEXT`) } catch (_) {}
+  try {
+    db.run(`UPDATE project_idempotency SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_date, '+7 days') WHERE expires_at IS NULL`)
+  } catch (_) {}
 
   // Durable file cleanup sau DELETE project: row này commit CÙNG transaction
   // với DB wipe (outbox) — fs thất bại không bao giờ mất task, chỉ retry.

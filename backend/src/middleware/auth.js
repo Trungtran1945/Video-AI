@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken'
+import { randomUUID } from 'node:crypto'
 import { config } from '../config.js'
 import { queryOne, run, runAffected } from '../db/query.js'
 import { sha256 } from '../lib/crypto.js'
@@ -13,10 +14,13 @@ export function generateAccessToken(user) {
 }
 
 export function generateRefreshToken(user) {
+  // jti ngẫu nhiên mỗi lần rotate: 2 token ký trong cùng 1 giây (JWT iat chỉ
+  // chính xác tới giây) không bao giờ giống hệt nhau, nên mệnh đề CAS
+  // WHERE refresh_token=? không thể match nhầm cho request song song cũ.
   return jwt.sign(
     { id: user.id, email: user.email, role: user.role },
     config.jwtRefreshSecret,
-    { expiresIn: config.jwtRefreshExpiresIn }
+    { expiresIn: config.jwtRefreshExpiresIn, jwtid: randomUUID() }
   )
 }
 
@@ -105,16 +109,18 @@ export async function sseAuthMiddleware(req, res, next) {
       }
       const user = await queryOne(`SELECT id, email, role FROM users WHERE id = ?`, [row.user_id])
       if (!user) return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid ticket user')
-      // Single-use: consume ngay tại auth để không reuse vô hạn.
-      // Nếu SSE connect fail sau auth, ticket đã mất — frontend phải xin ticket
-      // mới và retry với backoff giới hạn (xem useJobEvents), không reuse.
-      // QUYẾT ĐỊNH authenticate là DELETE có điều kiện — SELECT ở trên chỉ đọc
-      // thông tin (user/project/expiry). 100 request đồng thời cùng ticket:
-      // write queue serialize → 1 request affected=1, 99 affected=0 → 401.
+      // Single-use atomic claim: quyết định authenticate là DELETE CÓ ĐIỀU KIỆN
+      // (ticket_hash + used=0 + chưa hết hạn + đúng project + đúng user).
+      // SELECT ở trên chỉ đọc thông tin để trả 403 sai-project mà không đốt
+      // ticket; DELETE dưới đây mới là claim nguyên tử. 100 request đồng thời
+      // cùng ticket: write queue serialize → 1 request affected=1, 99 affected=0
+      // → 401. Ticket hết hạn giữa SELECT và DELETE cũng affected=0 → 401.
       // Không log ticket.
       const claimed = await runAffected(
-        `DELETE FROM sse_tickets WHERE ticket_hash = ?`,
-        [sha256(ticket)],
+        `DELETE FROM sse_tickets
+         WHERE ticket_hash = ? AND used = 0 AND expires_at > ?
+           AND project_id = ? AND user_id = ?`,
+        [sha256(ticket), new Date().toISOString(), row.project_id, row.user_id],
         { op: 'auth.sse.consume' }
       )
       if (claimed !== 1) {

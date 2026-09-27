@@ -4,7 +4,7 @@ import cors from 'cors'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'node:fs'
-import { getDb, getDbPersistenceStats } from './src/db.js'
+import { getDb, getDbPersistenceStats, getDbPersistenceHealth, PERSISTENCE_STATES } from './src/db.js'
 import { getWriteQueueStats } from './src/db/query.js'
 import { initSchema } from './src/db/schema.js'
 import { seed } from './src/db/seed.js'
@@ -52,14 +52,54 @@ app.get('/health', async (req, res) => {
     redisOk = isRedisReady()
   } catch (_) {}
   const persistence = getDbPersistenceStats()
+  const health = getDbPersistenceHealth()
   const writes = getWriteQueueStats()
+  // Liveness: process is alive. Persistence state is reported explicitly so
+  // operators can distinguish HEALTHY / DEGRADED / WRITE_BLOCKED.
+  const status = health.state === PERSISTENCE_STATES.HEALTHY
+    ? 'ok'
+    : health.state === PERSISTENCE_STATES.DEGRADED
+      ? 'degraded'
+      : 'unavailable'
   res.json({
-    status: persistence.lastSaveError ? 'degraded' : 'ok',
+    status,
     redis: redisOk ? 'connected' : 'disconnected',
     queueSystem: redisOk ? 'available' : 'unavailable — notifications and cleanup disabled',
-    database: persistence,
+    database: {
+      ...persistence,
+      persistenceState: health.state,
+      consecutiveSaveFailures: health.consecutiveSaveFailures,
+      lastSuccessfulSaveAt: health.lastSuccessfulSaveAt,
+      lastSaveError: health.lastSaveError,
+      maxSaveFailures: health.maxSaveFailures,
+    },
     writes,
   })
+})
+
+// Readiness: WRITE_BLOCKED → 503 + ready:false (orchestrator stops routing
+// writes here). DEGRADED stays 200 + ready:true so transient save hiccups
+// don't cause restart loops. Redis is reported but never gates readiness
+// (dev runs without Redis; prod fail-fasts at boot instead).
+app.get('/ready', async (req, res) => {
+  let redisOk = false
+  try {
+    const { isRedisReady } = await import('./src/queue/connection.js')
+    redisOk = isRedisReady()
+  } catch (_) {}
+  const health = getDbPersistenceHealth()
+  const ready = health.state !== PERSISTENCE_STATES.WRITE_BLOCKED
+  const body = {
+    ready,
+    database: {
+      persistenceState: health.state,
+      consecutiveSaveFailures: health.consecutiveSaveFailures,
+      lastSuccessfulSaveAt: health.lastSuccessfulSaveAt,
+      lastSaveError: health.lastSaveError,
+    },
+    redis: redisOk ? 'connected' : 'disconnected',
+  }
+  res.status(ready ? 200 : 503).json(body)
 })
 
 async function tryListen(port, attempt = 0) {
@@ -116,10 +156,24 @@ async function start() {
   // INSTANCE_MODE=single nên một interval in-process là đủ ngay cả khi Redis
   // down; BullMQ hourly sweep (cleanupWorker + safeAddCleanup) giữ nguyên.
   sweepProjectCleanupTasks().catch((e) => console.error('[Cleanup] boot sweep lỗi:', e?.message || e))
+  try {
+    const { pruneExpiredIdempotency } = await import('./src/services/projectAdmission.js')
+    pruneExpiredIdempotency().catch((e) => console.error('[Idempotency] boot prune lỗi:', e?.message || e))
+  } catch (e) {
+    console.warn('[Idempotency] boot prune skipped:', e?.message || e)
+  }
   const cleanupSweepTimer = setInterval(() => {
     sweepProjectCleanupTasks().catch((e) => console.error('[Cleanup] sweep lỗi:', e?.message || e))
   }, 60_000)
+  // Idempotency TTL prune hourly (not every minute: a no-op DELETE would still
+  // rewrite data.db through the atomic persist path).
+  const idemPruneTimer = setInterval(() => {
+    import('./src/services/projectAdmission.js')
+      .then((m) => m.pruneExpiredIdempotency())
+      .catch((e) => console.error('[Idempotency] prune lỗi:', e?.message || e))
+  }, 60 * 60 * 1000)
   if (typeof cleanupSweepTimer.unref === 'function') cleanupSweepTimer.unref()
+  if (typeof idemPruneTimer.unref === 'function') idemPruneTimer.unref()
 
   // Group 1: Start queue workers (graceful fallback if Redis unavailable).
   // Workers are only constructed once the Redis stream is writable — this

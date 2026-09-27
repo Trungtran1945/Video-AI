@@ -50,10 +50,18 @@ export async function createProjectWithAdmission(data, options = {}) {
     // Idempotency claim: INSERT OR IGNORE cùng transaction với project insert.
     // Request song song cùng key: người thắng commit cả 2; người thua affected=0
     // → rollback (project chưa kịp insert) → IDEMPOTENT_REPLAY.
+    // TTL 7 ngày: key hết hạn được reclaim (DELETE rồi INSERT lại) như request mới.
     if (idemKey) {
+      const nowISO = new Date().toISOString()
+      const ttlISO = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      await tx.run(
+        `DELETE FROM project_idempotency
+         WHERE user_id = ? AND idem_key = ? AND expires_at IS NOT NULL AND expires_at < ?`,
+        [data.userId || data.user_id, idemKey, nowISO]
+      )
       const claimed = await tx.runAffected(
-        `INSERT OR IGNORE INTO project_idempotency (user_id, idem_key, project_id) VALUES (?, ?, ?)`,
-        [data.userId || data.user_id, idemKey, data.id]
+        `INSERT OR IGNORE INTO project_idempotency (user_id, idem_key, project_id, expires_at) VALUES (?, ?, ?, ?)`,
+        [data.userId || data.user_id, idemKey, data.id, ttlISO]
       )
       if (claimed !== 1) {
         const dup = await tx.queryOne(
@@ -246,6 +254,20 @@ export async function isProjectRunOwned(projectId, runToken) {
 
 export async function getProjectRun(projectId) {
   return queryOne('SELECT id, status, run_token, lease_expires_at FROM projects WHERE id = ?', [projectId])
+}
+
+// TTL sweep: xóa idempotency key hết hạn (7 ngày). Idempotent, bounded.
+export async function pruneExpiredIdempotency({ limit = 1000 } = {}) {
+  try {
+    await run(
+      `DELETE FROM project_idempotency WHERE expires_at IS NOT NULL AND expires_at < ?`,
+      [new Date().toISOString()],
+      { op: 'project.idempotency.prune' }
+    )
+  } catch (err) {
+    if (!err?.message?.includes('no such column')) throw err
+  }
+  return { pruned: true }
 }
 
 export const PROJECT_ACTIVE_STATUSES = ACTIVE_STATUSES

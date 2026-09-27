@@ -21,29 +21,55 @@ export const STYLE_PRESETS = [
 ]
 
 // Seed per docs/02 §4: default admin user + default settings row + 12 StylePreset.
-// Credentials come from env; dev fallbacks only when env is absent.
+// Production guard (decision 4.A): predictable dev credentials must never be
+// created in production. If ADMIN_PASSWORD is absent in production, skip admin
+// seeding with a loud warning and keep booting. If present but weak
+// (<12 chars), fail fast. Dev/test keep the documented fallback.
+const PROD_ADMIN_MIN_PASSWORD_LENGTH = 12
+export function resolveAdminSeed({ nodeEnv = process.env.NODE_ENV, adminEmail, adminPassword } = {}) {
+  const email = adminEmail ?? process.env.ADMIN_EMAIL
+  const password = adminPassword ?? process.env.ADMIN_PASSWORD
+  if (nodeEnv === 'production') {
+    if (!password) return { action: 'skip', reason: 'ADMIN_PASSWORD absent in production', email: email || null }
+    if (String(password).length < PROD_ADMIN_MIN_PASSWORD_LENGTH) {
+      throw new Error(
+        `[DB] FATAL: ADMIN_PASSWORD too weak in production (min ${PROD_ADMIN_MIN_PASSWORD_LENGTH} chars). Set a strong ADMIN_PASSWORD.`
+      )
+    }
+    return { action: 'create', email: email || 'admin@asf.local', password }
+  }
+  return { action: 'create', email: email || 'admin@asf.local', password: password || 'admin1234' }
+}
+
 // NOTE: users.credits is a legacy column — intentionally NOT seeded/exposed anymore.
 export async function seed() {
-  const email = process.env.ADMIN_EMAIL || 'admin@asf.local'
-  const password = process.env.ADMIN_PASSWORD || 'admin1234'
-
-  let admin = await queryOne('SELECT id FROM users WHERE email = ?', [email])
-  if (!admin) {
-    const hashed = await bcrypt.hash(password, 10)
-    admin = await insert('users', {
-      id: uuidv4(),
-      email,
-      password: hashed,
-      role: 'admin',
-      name: 'Admin',
-    })
-    console.log(`[DB] Seeded admin user: ${email}`)
+  const decision = resolveAdminSeed()
+  const email = decision.email
+  const password = decision.password
+  let admin = null
+  if (decision.action === 'skip') {
+    console.warn(`[DB] Skipping admin seed in production: ${decision.reason}. Set ADMIN_EMAIL/ADMIN_PASSWORD to bootstrap an admin.`)
+  } else if (email && password) {
+    admin = await queryOne('SELECT id FROM users WHERE email = ?', [email])
+    if (!admin) {
+      const hashed = await bcrypt.hash(password, 10)
+      admin = await insert('users', {
+        id: uuidv4(),
+        email,
+        password: hashed,
+        role: 'admin',
+        name: 'Admin',
+      })
+      console.log(`[DB] Seeded admin user: ${email}`)
+    }
   }
 
-  const settings = await queryOne('SELECT user_id FROM settings WHERE user_id = ?', [admin.id])
-  if (!settings) {
-    await insert('settings', { user_id: admin.id })
-    console.log('[DB] Seeded default settings for admin')
+  if (admin) {
+    const settings = await queryOne('SELECT user_id FROM settings WHERE user_id = ?', [admin.id])
+    if (!settings) {
+      await insert('settings', { user_id: admin.id })
+      console.log('[DB] Seeded default settings for admin')
+    }
   }
 
   const presets = await query('SELECT slug FROM style_presets')

@@ -243,7 +243,7 @@ Khởi chạy backend server:
 npm run dev
 ```
 > Server sẽ khởi chạy tại `http://localhost:3001`. Cơ sở dữ liệu SQLite sẽ tự động khởi tạo và nạp dữ liệu mẫu ban đầu:
-> - **Tài khoản Admin mặc định**: `admin@asf.local` / `admin1234`
+> - **Tài khoản Admin mặc định (CHỈ development/test)**: `admin@asf.local` / `admin1234` — production KHÔNG bao giờ seed credential này (thiếu `ADMIN_PASSWORD` → bỏ qua seed + warn, vẫn boot; `ADMIN_PASSWORD` yếu → fail-fast). Bootstrap admin production bằng `ADMIN_EMAIL`/`ADMIN_PASSWORD` (≥12 ký tự).
 > - **Dữ liệu**: Khởi tạo 13 phong cách dịch thuật `StylePreset`
 
 #### Bước 3: Cấu hình và khởi chạy Frontend
@@ -328,10 +328,13 @@ Toàn bộ các API được định tuyến dưới tiền tố `/api/v1`:
 - `POST /projects/:id/cancel`: Hủy thực thi pipeline đang chạy.
 - `POST /projects/:id/regenerate`: Chạy lại dự án từ công đoạn lỗi sớm nhất.
 - `DELETE /projects/:id`: Xóa dự án và các tệp tin lưu trữ liên quan.
-- `POST /api/v1/projects`: header tùy chọn `Idempotency-Key` (1-128 ký tự, unique per user) — retry không tạo duplicate project, lần retry trả `idempotentReplay: true` cùng project id. Lỗi copy transcript cache → **202** với `transcriptCopyFailed: true` (project đã tồn tại, chạy `queued`).
+- `POST /api/v1/projects`: header tùy chọn `Idempotency-Key` (1-128 ký tự, unique per user, TTL 7 ngày) — retry không tạo duplicate project, lần retry trả `idempotentReplay: true` cùng project id. Lỗi copy transcript cache → **202** với `transcriptCopyFailed: true` (project đã tồn tại, chạy `queued`).
 - `DELETE /api/v1/projects/:id`: DB xóa nguyên tử + ghi task `project_cleanup_tasks` trong cùng transaction; file được dọn post-commit, thất bại → sweep mỗi 60s (backoff mũ, tối đa 10 lần, sau đó log ALERT). Không phụ thuộc Redis.
 - `POST /api/v1/projects/:id/cancel`: cooperative — commit `cancelled` + hủy job trong 1 transaction, pipeline dừng ở ranh giới stage (không giết giữa chừng); gọi lại trên project đã xong là idempotent. `DELETE` khi pipeline đang chạy → `409`.
-- `GET /health` → `{ status, redis, queueSystem, database, writes }` — dùng cho readiness probe.
+- Retention cleanup (hourly sweep): chỉ dọn project hết `expires_at` có status `completed`/`failed` (legacy `success` tương thích → `completed`); `running/pending/queued` không bao giờ bị dọn; `cancelled` dọn ngay khi cancel. Filesystem hỏng → **giữ `expires_at`** + backoff 1h retry, không đánh dấu xong.
+- `GET /projects/:id/events?ticket=...`: ticket SSE single-use nguyên tử (claim `DELETE ... WHERE ticket_hash AND used=0 AND expires_at>now AND project_id AND user_id` — 100 request đồng thời → đúng 1 success); sai project → 403 không đốt ticket.
+- `GET /health` (liveness) → `{ status: ok|degraded|unavailable, redis, queueSystem, database: { persistenceState: HEALTHY|DEGRADED|WRITE_BLOCKED, consecutiveSaveFailures, lastSuccessfulSaveAt, ... }, writes }`.
+- `GET /ready` (readiness) → `200 { ready:true }` khi HEALTHY/DEGRADED; `503 { ready:false }` khi WRITE_BLOCKED.
 
 ### 8.3. Thực thi Pipeline (`/projects`)
 - `POST /projects/:id/summary/start`: Kích hoạt pipeline cho dự án Review phim.

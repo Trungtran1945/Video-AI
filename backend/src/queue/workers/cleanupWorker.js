@@ -6,17 +6,35 @@ import { query, run } from '../../db/query.js'
 import { projectDir } from '../../pipeline/context.js'
 import { config } from '../../config.js'
 import { isPathInside } from '../../lib/safePath.js'
+import { PROJECT_RETAINABLE_STATUSES, normalizeProjectStatus } from '../../lib/projectStatus.js'
 import { resumableUploadService } from '../../services/resumableUploadService.js'
 import { cleanupLegacyUploads } from '../../services/legacyUploadRegistry.js'
 
 // Throttled: a dead Redis stream emits errors continuously — log without spam.
 const logWorkerError = createThrottledLogger(30000)
 
+function retentionBackoffMs() {
+  // Retention sweep runs hourly — a failed project retries on the next sweep.
+  return 60 * 60 * 1000
+}
+
+// Canonical terminal states eligible for retention cleanup.
+// CANCELLED is excluded by policy (cancel path cleans immediately in
+// cancelProjectUseCase). 'success' is a legacy job-status leak kept in the
+// WHERE clause for DBs that predate the success→completed migration; rows are
+// normalized per-row and only retainable statuses are cleaned.
+const RETENTION_WHERE_STATUSES = [...PROJECT_RETAINABLE_STATUSES, 'success']
+
 /**
  * CleanupWorker — Cron repeatable job: cleanup.sweep
- * Quét projects.expiresAt < now() AND status IN ('success', 'failed')
- * Xóa file trong storage/tmp/{projectId}, giữ lại Output.
- * Projects CANCELLED: dọn ngay lập tức (trong cancelProjectUseCase).
+ * Quét projects.expires_at < cutoff AND status IN ('completed', 'failed')
+ * (+ legacy 'success' compat). Xóa file trung gian trong storage/projects/{id}
+ * (tmp/frames/thumbs/audios), giữ lại Output.
+ * Projects CANCELLED: dọn ngay lập tức (trong cancelProjectUseCase), không quét ở đây.
+ *
+ * Failure semantics: filesystem cleanup bắt buộc fail → GIỮ expires_at
+ * (retry ở sweep sau qua next_cleanup_attempt_at), KHÔNG tăng cleaned.
+ * Chỉ success mới SET expires_at=NULL.
  */
 export async function processCleanup(job) {
   const startedAt = Date.now()
@@ -27,21 +45,47 @@ export async function processCleanup(job) {
   const cutoffDate = new Date()
   cutoffDate.setDate(cutoffDate.getDate() - retentionDays)
   const cutoffISO = cutoffDate.toISOString()
+  const nowISO = new Date().toISOString()
 
   let cleaned = 0
+  const failed = []
 
-  // Find expired projects with intermediate files
-  const expiredProjects = await query(
-    `SELECT id, status, user_id FROM projects WHERE expires_at IS NOT NULL AND expires_at < ? AND status IN ('success', 'failed')`,
-    [cutoffISO]
-  )
+  // Find expired projects with intermediate files.
+  // next_cleanup_attempt_at gates poison-FS retries (backoff 1h); NULL = due.
+  const placeholders = RETENTION_WHERE_STATUSES.map(() => '?').join(', ')
+  let expiredProjects = []
+  try {
+    expiredProjects = await query(
+      `SELECT id, status, user_id FROM projects
+       WHERE expires_at IS NOT NULL AND expires_at < ?
+       AND status IN (${placeholders})
+       AND (next_cleanup_attempt_at IS NULL OR next_cleanup_attempt_at <= ?)`,
+      [cutoffISO, ...RETENTION_WHERE_STATUSES, nowISO]
+    )
+  } catch (err) {
+    // DB cũ chưa có cột next_cleanup_attempt_at → fallback không backoff gate.
+    if (err?.message?.includes('no such column')) {
+      expiredProjects = await query(
+        `SELECT id, status, user_id FROM projects
+         WHERE expires_at IS NOT NULL AND expires_at < ? AND status IN (${placeholders})`,
+        [cutoffISO, ...RETENTION_WHERE_STATUSES]
+      )
+    } else {
+      throw err
+    }
+  }
 
   for (const project of expiredProjects) {
+    // Normalize legacy rows; skip non-retainable if any slipped through.
+    const canonical = normalizeProjectStatus(project.status)
+    if (!PROJECT_RETAINABLE_STATUSES.includes(canonical)) continue
     const dir = projectDir(project.id)
     // Trusted-root invariant: recursive deletes may only touch storage/projects/.
     const trusted = isPathInside(path.join(config.storageDir, 'projects'), dir)
 
     // Clean up intermediate files (keep outputs)
+    let fsFailed = false
+    let fsError = null
     try {
       if (trusted && fs.existsSync(dir)) {
         // Remove tmp directory contents
@@ -66,14 +110,47 @@ export async function processCleanup(job) {
         }
       }
     } catch (err) {
-      console.error(`[Cleanup] Error cleaning project ${project.id}:`, err.message)
+      fsFailed = true
+      fsError = err
     }
 
-    // Clear expires_at to indicate cleanup is done
-    await run(
-      `UPDATE projects SET expires_at = NULL WHERE id = ?`,
-      [project.id]
-    )
+    if (fsFailed) {
+      // Failure keeps the retry signal: expires_at is RETAINED, backoff gates
+      // the next attempt. cleaned is NOT incremented. No secrets logged.
+      const nextRetryAt = new Date(Date.now() + retentionBackoffMs()).toISOString()
+      try {
+        await run(
+          `UPDATE projects SET next_cleanup_attempt_at = ? WHERE id = ?`,
+          [nextRetryAt, project.id]
+        )
+      } catch (backoffErr) {
+        if (!backoffErr?.message?.includes('no such column')) throw backoffErr
+        // Old DB without the column: expires_at alone still retains the signal.
+      }
+      failed.push(project.id)
+      console.error(JSON.stringify({
+        event: 'cleanup_project_failed',
+        projectId: project.id,
+        operation: 'cleanup.retention.sweep',
+        error: fsError?.message || 'filesystem cleanup failed',
+        nextRetryAt,
+      }))
+      continue
+    }
+
+    // Success: clear both expires_at (done marker) and backoff gate.
+    try {
+      await run(
+        `UPDATE projects SET expires_at = NULL, next_cleanup_attempt_at = NULL WHERE id = ?`,
+        [project.id]
+      )
+    } catch (err) {
+      if (err?.message?.includes('no such column')) {
+        await run(`UPDATE projects SET expires_at = NULL WHERE id = ?`, [project.id])
+      } else {
+        throw err
+      }
+    }
     cleaned++
   }
 
@@ -106,6 +183,8 @@ export async function processCleanup(job) {
 
   return {
     cleaned,
+    failed,
+    failedCount: failed.length,
     uploads,
     uploadRecovery,
     legacyUploads,
