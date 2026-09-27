@@ -39,7 +39,7 @@ function uploadResumable(file, options = {}) {
       })
       return { received: parseUploadOffsetHeader(response.headers['upload-offset']) ?? offset + chunk.size }
     },
-    completeSession: (uploadId) => api.post(`/uploads/${uploadId}/complete`, null, { signal: options.signal, timeout: UPLOAD_REQUEST_TIMEOUT_MS }).then((response) => response.data),
+    completeSession: (uploadId) => api.post(`/uploads/${uploadId}/complete`, {}, { signal: options.signal, timeout: UPLOAD_REQUEST_TIMEOUT_MS }).then((response) => response.data),
   })
 }
 

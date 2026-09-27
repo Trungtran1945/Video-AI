@@ -110,7 +110,7 @@ export default function CreateProject() {
       update('sourceFileName', file.name);
       update('videoHash', res.videoHash || null);
     } catch (err) {
-      setError('Tải phim thất bại: ' + (err?.response?.data?.message || err.message));
+      setError('Tải phim thất bại: ' + (err?.response?.data?.message || err?.response?.data?.error?.message || err.message));
     } finally {
       setUploading(false);
       setUploadPercent(0);
@@ -173,7 +173,7 @@ export default function CreateProject() {
       const project = await projectsApi.create(payload);
       navigate(`/projects/${project.id}`);
     } catch (err) {
-      setError('Không thể tạo dự án: ' + (err?.response?.data?.message || err.message));
+      setError('Không thể tạo dự án: ' + (err?.response?.data?.message || err?.response?.data?.error?.message || err.message));
       setCreating(false);
     }
   };
