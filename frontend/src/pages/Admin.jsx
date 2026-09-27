@@ -118,7 +118,7 @@ export default function Admin() {
               {[
                 { label: 'Cơ sở dữ liệu (PostgreSQL)', status: 'Hoạt động ổn định' },
                 { label: 'Kho lưu trữ video (MinIO/S3)', status: 'Hoạt động ổn định' },
-                { label: 'Cụm AI Providers (LLM/TTS/OCR)', status: 'Sẵn sàng phục vụ' },
+                { label: 'Cụm AI Providers (LLM/TTS/ASR)', status: 'Sẵn sàng phục vụ' },
                 { label: 'Hàng đợi tiến trình (BullMQ/Queue)', status: 'Đang điều phối' },
               ].map(item => (
                 <div

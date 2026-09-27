@@ -332,7 +332,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
       {/* Danh sách mask */}
       <div className="flex flex-col gap-1 max-h-32 overflow-y-auto">
         {masks.length === 0 && (
-          <div className="text-[11px] text-muted-foreground px-1">Chưa có mask — Thêm mask hoặc chạy OCR để có mask tự động.</div>
+          <div className="text-[11px] text-muted-foreground px-1">Chưa có mask — Nhấn &quot;Thêm mask&quot; để che vùng mong muốn.</div>
         )}
         {masks.map((m) => (
           <div

@@ -93,8 +93,8 @@ Speed nằm [0.9, 1.1] theo thiết kế align → an toàn.
 ### 2.10. addSubtitles
 Burn-in: `-vf "subtitles=sub.srt"`. Hoặc mux sidecar (`-c:s mov_text`).
 
-### 2.11. sampleFrames (TRANSLATE_DUB)
-`ffmpeg -i src -vf fps=2 -q:v 2 out/frame_%05d.jpg` — trích 1–2 fps cho OCR.
+### 2.11. sampleFrames
+`ffmpeg -i src -vf fps=2 -q:v 2 out/frame_%05d.jpg` — trích frame khi cần phân tích hình ảnh. Không tham gia vào active transcript extraction của `TRANSLATE_DUB` (pipeline đã chuyển sang STT-only).
 Chỉ decode video stream (`-an`) để tiết kiệm CPU.
 
 ### 2.12. normalizeLoudness (TRANSLATE_DUB)

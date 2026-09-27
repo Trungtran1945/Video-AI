@@ -70,7 +70,6 @@ import summaryRender from './stages/summaryRender.js'
 
 import dubIngest from './stages/dubIngest.js'
 import dubStt from './stages/dubStt.js'
-import dubOcr from './stages/dubOcr.js'
 
 import dubMerge from './stages/dubMerge.js'
 import { validateForRender, dedupeTranscriptSegments } from './stages/dubMerge.js'
@@ -78,17 +77,13 @@ import dubTranslate from './stages/dubTranslate.js'
 import dubTtsAlign from './stages/dubTtsAlign.js'
 import dubRender from './stages/dubRender.js'
 
-function parseParams(raw) {
-  try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
-}
-
 function isDubProject(project) {
   return String(project?.mode || '').toUpperCase().replace('-', '_') === 'TRANSLATE_DUB'
 }
 
 // Stages that (re)produce the transcript. The generation snapshot follows their
 // output, but only BEFORE the consumption side (dub.ttsAlign/dub.render) runs.
-const DUB_TRANSCRIPT_PRODUCERS = new Set(['dub.ingest', 'dub.stt', 'dub.ocr', 'dub.merge', 'dub.translate'])
+const DUB_TRANSCRIPT_PRODUCERS = new Set(['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate'])
 
 async function readCurrentTranscriptVersion(projectId) {
   const row = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [projectId])
@@ -159,9 +154,7 @@ export async function resolveGenerationSnapshot(projectId, effectiveFrom, projec
 
 async function startDubSequential(project, setProgress, results, signal, runToken = null, forceTranscript = false, generation = { transcriptVersionSnapshot: null }) {
   const projectId = project.id
-  const params = parseParams(project.params)
-  const useOcr = Boolean(params.ocrMode)
-  const firstStage = useOcr ? 'dub.ocr' : 'dub.stt'
+  const firstStage = 'dub.stt'
 
   await ensureStageJob(projectId, firstStage, runToken)
   await ensureStageJob(projectId, 'dub.merge', runToken)
@@ -230,10 +223,9 @@ export function stagesForProject(projectOrMode) {
   const project = typeof projectOrMode === 'string' ? { mode: projectOrMode, params: '{}' } : (projectOrMode || {})
   const mode = String(project.mode || '').toUpperCase().replace('-', '_')
   if (mode !== 'TRANSLATE_DUB') return (STAGES[mode] || []).flat()
-  const params = parseParams(project.params)
   return [
     'dub.ingest',
-    params.ocrMode ? 'dub.ocr' : 'dub.stt',
+    'dub.stt',
     'dub.merge',
     'dub.translate',
     'dub.ttsAlign',
@@ -246,7 +238,7 @@ function groupedStagesForProject(project) {
   if (String(project?.mode || '').toUpperCase().replace('-', '_') !== 'TRANSLATE_DUB') return order.map((stage) => [stage])
   return [
     ['dub.ingest'],
-    [order[1], 'dub.merge'],
+    ['dub.stt', 'dub.merge'],
     ['dub.translate'],
     ['dub.ttsAlign'],
     ['dub.render'],
@@ -268,7 +260,6 @@ const STAGE_IMPL = {
   'summary.render': summaryRender,
   'dub.ingest': dubIngest,
   'dub.stt': dubStt,
-  'dub.ocr': dubOcr,
 
   'dub.merge': dubMerge,
   'dub.translate': dubTranslate,
@@ -293,7 +284,6 @@ const STAGE_PROVIDER = {
   'summary.render': 'ffmpeg',
   'dub.ingest': 'ffmpeg',
   'dub.stt': 'asr',
-  'dub.ocr': 'ocr',
 
   'dub.merge': 'core',
   'dub.translate': 'llm',
@@ -313,7 +303,6 @@ const RESETS = {
   // TRANSLATE_DUB (docs/02: TranscriptSegment riêng cho từng mode)
   'dub.ingest': ['audios', 'subtitles', 'outputs'],
   'dub.stt': ['audios', 'subtitles', 'outputs'],
-  'dub.ocr': ['audios', 'subtitles', 'outputs'],
 
   'dub.merge': [], // dub.merge chỉ kiểm tra DB, không tạo artifacts
   'dub.translate': ['audios', 'subtitles', 'outputs'],

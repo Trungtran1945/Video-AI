@@ -119,12 +119,11 @@ async function cols(table) {
   assert(tr.includes('isManualTranslation'), 'dubTranslate có guard isManualTranslation')
 }
 
-// ── 7. OCR: consensus + language hint + độc lập mask ──
+// ── 7. STT / Whisper ASR: provider + language hint ──
 {
-  const ocr = srcFile('pipeline', 'stages', 'dubOcr.js')
-  assert(ocr.includes('OCR_MIN_FRAMES'), 'OCR_MIN_FRAMES env-tunable')
-  assert(ocr.includes('OCR_SINGLE_FRAME_CONF'), 'single-frame conf guard cho subtitle ngắn')
-  assert(!ocr.includes('applySubtitleMasks') && !ocr.includes('buildMaskFilter'), 'OCR không áp mask trước khi đọc (§6)')
+  const stt = srcFile('pipeline', 'stages', 'dubStt.js')
+  assert(stt.includes('getProvider'), 'dubStt calls getProvider for ASR')
+  assert(stt.includes('languageHint'), 'dubStt passes languageHint to ASR')
   const gemini = srcFile('providers', 'vision', 'geminiVision.js')
   assert(gemini.includes('sourceLanguage'), 'Gemini detectSubtitle nhận sourceLanguage hint')
 }

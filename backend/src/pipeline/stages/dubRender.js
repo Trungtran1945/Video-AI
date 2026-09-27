@@ -98,7 +98,7 @@ export async function dubRender(ctx) {
       width: info.width || 1280,
       height: info.height || 720,
       title: project.title,
-      subPosition: params.subPosition || 'original',
+      subPosition: params.subPosition || 'bottom',
     })
     const burnedFile = path.join(dir, 'burned.mp4')
     await burnSubtitlesStyled(workingFile, assPath, burnedFile, { timeout: BURN_TIMEOUT })
@@ -350,7 +350,7 @@ export function normalizeRegion(r) {
 
 // Sinh file ASS với Dialogue \pos định vị theo vùng mask (tính từ ratioX/Y/W/H).
 // subPosition: 'original' (đè lên vùng mask) | 'top' | 'bottom' | 'custom' (docs/01 §3.2).
-export function buildAss(dir, segments, regions, { width, height, title, subPosition = 'original' }) {
+export function buildAss(dir, segments, regions, { width, height, title, subPosition = 'bottom' }) {
   const header = [
     '[Script Info]',
     `Title: ${title || 'SubVideo AI dub'}`,

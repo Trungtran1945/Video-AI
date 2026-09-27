@@ -12,7 +12,6 @@ import GoogleTts from './tts/googleTts.js'
 import MockTts from './tts/mockTts.js'
 import GeminiVision from './vision/geminiVision.js'
 import MockVision from './vision/mockVision.js'
-import TesseractOcr from './vision/tesseractOcr.js'
 import GoogleTranslate from './translate/googleTranslate.js'
 
 export class ProviderError extends Error {
@@ -42,7 +41,6 @@ export const PROVIDER_LABELS = {
   google_tts: 'Google TTS (miễn phí)',
   azure_speech: 'Azure Speech',
   clip: 'CLIP (local)',
-  tesseract: 'Tesseract (local, miễn phí)',
   google_translate: 'Google Translate (Apps Script)',
 }
 
@@ -60,8 +58,8 @@ const ENV_KEYS = {
   translate: ['GOOGLE_TRANSLATE_SCRIPT_URL'],
 }
 
-// Provider chạy không cần API key (Edge-TTS của Microsoft, Tesseract local, Google Translate via Apps Script, Mock providers).
-const KEYLESS = new Set(['edge_tts', 'google_tts', 'tesseract', 'google_translate', 'mock'])
+// Provider chạy không cần API key (Edge-TTS của Microsoft, Google Translate via Apps Script, Mock providers).
+const KEYLESS = new Set(['edge_tts', 'google_tts', 'google_translate', 'mock'])
 
 const REGISTRY = {
   llm: {
@@ -90,25 +88,18 @@ const REGISTRY = {
     mock: (key) => new MockVision(key),
     clip: null,
   },
-  // OCR hardsub (docs/05 §B.3): Gemini Vision (cần key) hoặc Tesseract local (keyless).
-  ocr: {
-    gemini: (key) => new GeminiVision(key),
-    tesseract: () => new TesseractOcr(),
-    paddleocr: null,
-  },
   translate: {
     google_translate: (key) => new GoogleTranslate(key || process.env.GOOGLE_TRANSLATE_SCRIPT_URL),
   },
 }
 
-const DEFAULTS = { llm: 'gemini', asr: 'whisper', tts: 'edge_tts', vision: 'gemini', ocr: 'tesseract', translate: 'google_translate' }
+const DEFAULTS = { llm: 'gemini', asr: 'whisper', tts: 'edge_tts', vision: 'gemini', translate: 'google_translate' }
 
 const SETTINGS_COLUMN = {
   llm: ['active_llm_provider'],
   asr: ['active_subtitle_provider'],
   tts: ['active_voice_provider', 'voice_provider'],
   vision: [],
-  ocr: [],
   translate: ['active_translate_provider'],
 }
 
@@ -157,11 +148,6 @@ export async function getProvider(userId, type, { id } = {}) {
   }
   const { key: apiKey, apiKeyId } = await resolveApiKey(userId, providerId)
   if (!apiKey) {
-    // OCR: fallback to Tesseract local if no key
-    if (type === 'ocr' && REGISTRY.ocr?.tesseract) {
-      console.warn(`[provider] ocr '${providerId}' thiếu API key — dùng Tesseract local`)
-      return { id: 'tesseract', provider: REGISTRY.ocr.tesseract(null), apiKeyId: null }
-    }
     throw new ProviderError(
       `Chưa cấu hình API key cho ${PROVIDER_LABELS[providerId] || providerId}. Thêm key tại trang API Keys (provider: ${providerId}) hoặc đặt biến môi trường ${(ENV_KEYS[providerId] || []).join(' / ')}`,
       'PROV_001'

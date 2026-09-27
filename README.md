@@ -37,7 +37,7 @@ Hệ thống hoạt động theo tôn chỉ: **Người dùng cấu hình đầu
 | Chế độ | Mục đích | Đầu vào | Quy trình & Đầu ra |
 | :--- | :--- | :--- | :--- |
 | **`SUMMARY`** | **Review phim / Video tóm tắt** | Video dài **2–3 tiếng** (phim, tài liệu, bài giảng) | Video tóm tắt **20–30 phút** cô đọng, tự động nhận diện cảnh (scene detection), sinh kịch bản review, thuyết minh AI và cắt dựng hình ảnh khớp với lời đọc. |
-| **`TRANSLATE_DUB`** | **Dịch thuật & Lồng tiếng đa phong cách** | Video ngoại ngữ (≤ 2GB), chọn 1 trong **13 phong cách dịch** | Video giữ nguyên nhịp hình ảnh gốc, xóa/che phụ đề cũ (OCR mask), dịch phụ đề tiếng Việt tự nhiên và **lồng tiếng AI ép khớp thời lượng gốc (Forced Alignment TTS)**. |
+| **`TRANSLATE_DUB`** | **Dịch thuật & Lồng tiếng đa phong cách** | Video ngoại ngữ (≤ 2GB), chọn 1 trong **13 phong cách dịch** | Video giữ nguyên nhịp hình ảnh gốc, nhận dạng giọng nói ASR/STT, dịch phụ đề tiếng Việt tự nhiên và **lồng tiếng AI ép khớp thời lượng gốc (Forced Alignment TTS)**. |
 
 ### 2.1. SUMMARY (Review phim & Video tóm tắt)
 Pipeline gồm 8 công đoạn tuần tự:
@@ -52,7 +52,7 @@ summary.transcribe ➔ summary.sceneDetect ➔ summary.analyze ➔ summary.scrip
 ### 2.2. TRANSLATE_DUB (Dịch thuật & Lồng tiếng video)
 Pipeline gồm 6 công đoạn:
 ```
-dub.ingest ➔ dub.stt (hoặc dub.ocr) ➔ dub.merge ➔ dub.translate ➔ dub.ttsAlign ➔ dub.render
+dub.ingest ➔ dub.stt ➔ dub.merge ➔ dub.translate ➔ dub.ttsAlign ➔ dub.render
 ```
 - **13 Phong cách dịch thuật (`StylePreset`)**:
   1. `co-trang`: Cổ phong, kiếm hiệp cung đình ("bổn tọa", "hiền muội").
@@ -68,9 +68,9 @@ dub.ingest ➔ dub.stt (hoặc dub.ocr) ➔ dub.merge ➔ dub.translate ➔ dub.
   11. `cong-nghe`: Chuẩn xác thuật ngữ kỹ thuật chuyên ngành.
   12. `tre-em`: Trong sáng, từ ngữ đơn giản, phù hợp gia đình.
   13. `sat-nghia`: Trung thành tuyệt đối với nguyên tác, giữ nguyên câu từ.
-- **Phát hiện & Che phụ đề cũ (OCR Subtitle Mask)**: Tự động phát hiện vị trí phụ đề gốc qua OCR (Tesseract / Gemini Vision) hoặc vẽ vùng che thủ công.
+- **Vùng che phụ đề (Subtitle Masking)**: Hỗ trợ tạo vùng che phụ đề thủ công hoặc định vị phụ đề mới tại vị trí tối ưu (`bottom`) mà không phụ thuộc OCR.
 - **Forced Alignment TTS Speed Adjustment**: Tự động điều chỉnh tốc độ đọc (speed stretch) hoặc rút gọn văn bản bằng LLM để giọng lồng tiếng khớp chính xác timestamp của từng câu nói trong video gốc.
-- **In-Place Mutation & Redub**: Người dùng có thể sửa trực tiếp từng câu dịch (`PATCH /projects/:id/segments/:id/translation`) và kích hoạt quy trình lồng tiếng lại (`POST /projects/:id/translate-dub/redub`) mà không cần chạy lại STT/OCR.
+- **In-Place Mutation & Redub**: Người dùng có thể sửa trực tiếp từng câu dịch (`PATCH /projects/:id/segments/:id/translation`) và kích hoạt quy trình lồng tiếng lại (`POST /projects/:id/translate-dub/redub`) mà không cần chạy lại STT.
 
 ---
 
@@ -125,7 +125,7 @@ dub.ingest ➔ dub.stt (hoặc dub.ocr) ➔ dub.merge ➔ dub.translate ➔ dub.
 | **LLM (Language)** | Google Gemini (`gemini-2.5-flash`), OpenAI GPT, Mock | Tóm tắt, dịch thuật theo StylePreset, rút gọn câu |
 | **ASR (Speech-to-Text)** | OpenAI Whisper, Mock | Trích xuất âm thanh và nhận diện lời thoại |
 | **TTS (Text-to-Speech)** | Microsoft Edge-TTS, ElevenLabs, Google TTS, OpenAI TTS, Mock | Edge-TTS miễn phí, tốc độ cao, hỗ trợ tiếng Việt mượt mà |
-| **Vision & OCR** | Tesseract.js, Google Gemini Vision, Mock | Quét phụ đề cứng và phát hiện vùng văn bản trên video |
+| **Vision (Phân tích cảnh)** | Google Gemini Vision, Mock | Phân tích thị giác cho chế độ tóm tắt video (SUMMARY) |
 | **Translate** | Google Translate (Web/Script), LLM-based Direct Translation | Dịch câu ngắn và chuyển ngữ kịch bản |
 
 ---

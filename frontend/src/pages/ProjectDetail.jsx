@@ -41,7 +41,7 @@ const stageIcons = {
 
 const SUMMARY_STAGES = ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'];
 
-const DUB_STAGES_ALL = ['dub.ingest', 'dub.ocr', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
+const DUB_STAGES_ALL = ['dub.ingest', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
 
 const ACTIVE_STATUSES = ['pending', 'queued', 'generating', 'running'];
 
@@ -514,11 +514,9 @@ export default function ProjectDetail() {
 
   const params = project.params || {};
   const enableDubbing = params.enableDubbing ?? params.enable_dubbing ?? false;
-  const transcriptStage = params.ocrMode ? 'dub.ocr' : 'dub.stt';
   const stages = isDub
     ? DUB_STAGES_ALL.filter((s) => {
       if (s === 'dub.ttsAlign' && !enableDubbing) return false;
-      if (s === 'dub.ocr' || s === 'dub.stt') return s === transcriptStage;
       return true;
     })
     : SUMMARY_STAGES;
@@ -1399,7 +1397,7 @@ function SegmentCard({ seg, compact = false, isDirty, getField, onField, onSeek,
           onChange={(e) => onField(seg, 'text', e.target.value)}
           disabled={disabled}
           rows={compact ? 1 : 2}
-          placeholder="Câu gốc (OCR/STT)"
+          placeholder="Câu gốc (STT)"
           className={areaCls}
         />
       </div>

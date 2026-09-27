@@ -114,7 +114,7 @@ router.post('/:id/jobs/:type/retry', requireProjectOwner, async (req, res) => {
     return sendError(res, status, status === 429 ? ERR.CONCURRENCY_LIMIT : 'PIPELINE_BUSY', admission.reason || 'Project is not available')
   }
   runPipeline(req.project.id, fromStage, admission.runToken, {
-    forceTranscript: ['dub.ingest', 'dub.stt', 'dub.ocr'].includes(fromStage),
+    forceTranscript: ['dub.ingest', 'dub.stt'].includes(fromStage),
   }).catch(() => {})
   res.json({ message: 'Retrying', status: admission.project.status, fromStage })
 })

@@ -71,7 +71,6 @@ router.post('/', async (req, res) => {
       params.sourceLanguage = b.sourceLanguage || params.sourceLanguage || 'auto'
       params.targetLanguage = b.targetLanguage || params.targetLanguage || 'vi'
       params.enableDubbing = Boolean(b.enableDubbing ?? params.enableDubbing ?? false)
-      params.ocrMode = Boolean(b.ocrMode ?? params.ocrMode ?? false)
       if (params.enableDubbing && !b.voiceId && !params.voiceProvider && !params.voiceName) {
         // voice tuỳ chọn — chỉ cảnh báo qua log, không chặn tạo dự án
         console.warn('[Projects] TRANSLATE_DUB enableDubbing=true nhưng chưa chọn voice; dùng voice mặc định của provider')
@@ -370,7 +369,7 @@ router.post('/:id/regenerate', requireProjectOwner, async (req, res) => {
     return sendError(res, status, status === 429 ? ERR.CONCURRENCY_LIMIT : 'PIPELINE_BUSY', admission.reason || 'Project is not available')
   }
   runPipeline(project.id, r.type, admission.runToken, {
-    forceTranscript: r.type === null || ['dub.ingest', 'dub.stt', 'dub.ocr'].includes(r.type),
+    forceTranscript: r.type === null || ['dub.ingest', 'dub.stt'].includes(r.type),
   }).catch(() => {})
   res.json({ message: 'Pipeline restarted', status: admission.project.status, ...(r.type ? { fromStage: r.type } : {}) })
 })

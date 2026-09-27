@@ -30,12 +30,12 @@ export const STATUS_LABELS = {
     'dub.stt': { label: 'Nhận dạng giọng nói', icon: 'Mic' },
     'dub.translate': { label: 'Dịch theo phong cách', icon: 'Languages' },
     'dub.ttsAlign': { label: 'Lồng tiếng & khớp thời gian', icon: 'AudioLines' },
-    'dub.render': { label: 'Che chữ & xuất video', icon: 'Video' },
+    'dub.render': { label: 'Xuất video & phụ đề', icon: 'Video' },
   };
 
   export const STAGE_ORDER = [
     ...['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'],
-    ...['dub.ingest', 'dub.ocr', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'],
+    ...['dub.ingest', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'],
   ];
 
   export const MODE_LABELS = {
@@ -46,7 +46,7 @@ export const STATUS_LABELS = {
     translate_dub: 'Dịch & Lồng tiếng',
   };
 
-  export const DUB_STAGES = ['dub.ingest', 'dub.ocr', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
+  export const DUB_STAGES = ['dub.ingest', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
 
 
 

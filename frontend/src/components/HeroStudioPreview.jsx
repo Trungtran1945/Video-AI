@@ -263,7 +263,7 @@ export default function HeroStudioPreview() {
                         <span>Âm Thanh &amp; Phụ Đề Gốc (Tiếng Anh)</span>
                       </div>
                       <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-muted text-muted-foreground">
-                        OCR + Whisper STT
+                        Whisper STT
                       </span>
                     </div>
 
@@ -368,7 +368,7 @@ export default function HeroStudioPreview() {
           </div>
           <div className="flex items-center gap-2 font-mono text-[10px]">
             <Subtitles className="w-3 h-3 text-muted-foreground" />
-            <span>OCR Phụ Đề Cứng • Khử Nhiễu mượt mà</span>
+            <span>Speech-to-Text STT • Khử Nhiễu mượt mà</span>
           </div>
         </div>
       </div>

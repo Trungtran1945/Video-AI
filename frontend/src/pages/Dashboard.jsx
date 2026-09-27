@@ -160,7 +160,7 @@ export default function Dashboard() {
                 </div>
               </div>
               <div className="space-y-2">
-                {['LLM / Biên kịch', 'Tạo hình ảnh', 'Tạo video', 'Giọng nói AI', 'Phụ đề & OCR'].map(cat => (
+                {['LLM / Biên kịch', 'Tạo hình ảnh', 'Tạo video', 'Giọng nói AI', 'Phụ đề & STT'].map(cat => (
                   <div key={cat} className="flex items-center justify-between py-1.5 border-b border-border/40 last:border-0 text-xs">
                     <span className="text-muted-foreground font-medium">{cat}</span>
                     <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400 font-semibold">

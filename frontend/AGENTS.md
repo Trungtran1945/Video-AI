@@ -26,7 +26,7 @@ Không dùng bất kỳ dịch vụ/BaaS bên ngoài nào — mọi dữ liệu 
 
 - Tạo dự án: `POST /api/v1/projects` với `{mode: 'SUMMARY'|'TRANSLATE_DUB', title, ...}`:
   - SUMMARY: `{title, language, style, targetDurationSec, sourceVideoKey?, params?}`.
-  - TRANSLATE_DUB: `{sourceLanguage?, targetLanguage, stylePreset, enableDubbing, voiceId?, maskMethod: 'blur'|'fill'|'inpaint', sourceVideoKey}` — backend tự chạy pipeline sau khi tạo (enqueue dub.stt ‖ dub.ocr song song).
+  - TRANSLATE_DUB: `{sourceLanguage?, targetLanguage, stylePreset, enableDubbing, voiceId?, subPosition?, sourceVideoKey}` — backend tự chạy pipeline sau khi tạo (chạy sequential dub.ingest → dub.stt → dub.merge → dub.translate → dub.ttsAlign → dub.render).
 - Upload file lớn (video ≤2GB): resumable kiểu TUS — `POST /uploads/init` → `PUT /uploads/:id/chunk?offset=N` (chunk 5–10MB, resume bằng `HEAD`) → `POST /uploads/:id/complete` → `{storageKey}`. Endpoint multipart cũ `POST /upload` vẫn dùng cho file nhỏ.
 - Danh mục phong cách dịch: `GET /style-presets` → 13 preset (slug, name, description).
 - Vùng che hardsub: `GET|PUT /projects/:id/mask-regions` (region user khoanh trên Canvas có `source='MANUAL'`).

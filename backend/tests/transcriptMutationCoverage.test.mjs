@@ -94,7 +94,7 @@ const mergeStageSource = fs.readFileSync(mergeStagePath, 'utf8')
 assert(mergeStageSource.includes('expectedRevision = null, options = {}'), 'dub.merge passes run-token options through the dedupe service')
 assert(mergeStageSource.includes('mutateDedupeTranscriptSegments(projectId, expectedRevision, options)'), 'dub.merge forwards run-token options to the dedupe service')
 const stageRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'pipeline', 'stages')
-for (const [stageName, providerCall] of [['dubStt.js', 'await getProvider'], ['dubOcr.js', 'await getProvider']]) {
+for (const [stageName, providerCall] of [['dubStt.js', 'await getProvider']]) {
   const stageSource = fs.readFileSync(path.join(stageRoot, stageName), 'utf8')
   const snapshotIndex = stageSource.indexOf('const transcriptVersion =')
   const providerIndex = stageSource.indexOf(providerCall)

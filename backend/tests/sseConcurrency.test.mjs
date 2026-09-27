@@ -90,9 +90,8 @@ function assert(cond, msg) {
   assert(pd.includes('loadDubData()'), '409 triggers refetch of latest transcript')
   assert(pd.includes('transcriptLoadSeqRef.current += 1'), 'saving invalidates transcript loads started earlier')
   assert(pd.includes('transcriptSaveInFlightRef'), 'loads are guarded while a transcript save is in flight')
-  assert(pd.includes('transcriptRevisionRef = useRef(null)'), 'transcript revision has an unloaded sentinel')
-  assert(pd.includes("'dub.ocr'"), 'frontend displays the dynamically selected OCR stage')
-  assert(pd.includes("s === 'dub.ocr' || s === 'dub.stt'") && pd.includes('s === transcriptStage'), 'frontend hides the inactive OCR/STT stage')
+  assert(pd.includes("'dub.stt'"), 'frontend displays the STT stage')
+  assert(pd.includes('DUB_STAGES_ALL') && !pd.includes("s === 'dub.ocr' || s === 'dub.stt'"), 'frontend uses STT-only stage pipeline without dynamic OCR switch')
   // Must not silently discard: error path keeps local edits (no setTranscript on 409 error branch before refetch).
   const saveIdx = pd.indexOf('handleSaveTranscript')
   const saveBlock = saveIdx >= 0 ? pd.slice(saveIdx, saveIdx + 4000) : ''

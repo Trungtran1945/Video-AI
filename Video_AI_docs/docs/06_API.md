@@ -77,7 +77,7 @@ Chạy sau khi `dub.translate` xong, trước khi enqueue `dub.ttsAlign`/`dub.re
 ### GET `/projects/:id/transcript` — `{ revision, segments, outputStale }` (TRANSLATE_DUB) [CURRENT]
 ### PUT `/projects/:id/transcript` — body `{ revision, segments: [{ id, text?, translation?, startSec?, endSec? }] }`; `revision` bắt buộc, thiếu → 400, stale → 409 `CONFLICT_001`; trả `{ updated, revision, adjustedSegments, outputStale, segments }`
 ### PATCH `/projects/:id/segments/:segmentId/translation` — body `{ revision, translation }`; revision bắt buộc, gate hard → 422, stale → 409, trả segment + revision + outputStale
-`transcript_version` là revision của source-of-truth `transcript_segments`. User PUT/PATCH và generated translation/dedupe chỉ bump khi state thực sự đổi; initial STT/OCR/cache import giữ revision khởi tạo; TTS linkage là derived metadata và không bump. Dub render stamp snapshot revision, Summary output dùng `null`.
+`transcript_version` là revision của source-of-truth `transcript_segments`. User PUT/PATCH và generated translation/dedupe chỉ bump khi state thực sự đổi; initial STT/cache import giữ revision khởi tạo; TTS linkage là derived metadata và không bump. Dub render stamp snapshot revision, Summary output dùng `null`.
 ### DELETE `/projects/:id` — xoá project + file [CURRENT, EXTRA: `projects.js:329-362`; 409 nếu pipeline đang chạy]
 ### GET/PUT `/projects/:id/mask-regions` — [NOT IMPLEMENTED: không route nào cài đặt] —
 `OcrRegion[]`; PUT nhận region user chỉnh trên Canvas (`source='MANUAL'`)

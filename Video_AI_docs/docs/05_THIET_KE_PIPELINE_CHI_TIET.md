@@ -153,13 +153,10 @@ tuỳ chọn (13 StylePreset) và **(tuỳ chọn)** lồng tiếng AI, giữ ng
 | ttsAlign ★ | TtsProvider + ForcedAlignService (core) | audio dub khớp slot thời gian (tuỳ chọn) |
 | render | media | burn-in sub mới → mix → mux |
 
-> [CURRENT] Nhánh OR `params.ocrMode ? dub.ocr : dub.stt → dub.merge`
-> (`runner.js:70-108`). `dub.ocr` đã cài đặt trong `stages/dubOcr.js` (sample
-> `OCR_FPS||2`, cap `OCR_CAP||900`, `OCR_MIN_CONF||0.55`) nhưng unreachable vì không
-> có trong `STAGES.TRANSLATE_DUB` + `firstRunnableStage` + `regenerate`. Nhánh
-> parallel `dub.stt ‖ dub.ocr` hiện là dead code + FFmpeg serialize mọi call
-> (`media/ffmpeg.js:126-136`, build Windows crash exit -22 khi 2 tiến trình ghi file
-> đồng thời).
+> [ARCHITECTURE] Pipeline `TRANSLATE_DUB` là STT-only:
+> `dub.ingest → dub.stt → dub.merge → dub.translate → dub.ttsAlign → dub.render`.
+> Cơ chế trích xuất transcript dùng hoàn toàn Speech-to-Text (ASR) từ audio đã chuẩn hoá,
+> loại bỏ hoàn toàn OCR khỏi pipeline hoạt động để tăng tốc độ và độ tin cậy.
 
 Stage `translate` chỉ chạy khi `merge` hoàn thành: kiểm tra transcript, translation, duration và language config.
 

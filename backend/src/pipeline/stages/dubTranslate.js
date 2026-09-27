@@ -9,7 +9,6 @@ import { callProvider } from '../../lib/callProvider.js'
 import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js'
 import { projectDir, extractJsonBlock } from '../context.js'
 import { TRANSLATION_VERSION } from '../../lib/cacheKey.js'
-import { selectModePool } from './dubMerge.js'
 
 // Single source of truth cho cache version (đồng bộ với POST /projects
 // isCacheCompatible). Bump TRANSLATION_VERSION trong lib/cacheKey.js khi
@@ -63,13 +62,12 @@ export async function dubTranslate(ctx) {
     }
   }
 
-  // Source-aware: ocrMode chỉ dịch OCR rows (visible subtitles là source of
-  // truth); STT mode chỉ dịch ASR rows. Không dịch noise/rejected/out-of-mode.
-  const pool = selectModePool(segments, params)
+  // Transcript pool: TRANSLATE_DUB consumes ASR segments directly.
+  const pool = segments
 
   // Skip translation if all segments already have translations.
   // Task 1: cache identity đã validate ở POST /projects (isCacheCompatible:
-  // videoHash + source/target + stylePreset + ocrMode + translationVersion)
+  // videoHash + source/target + stylePreset + translationVersion)
   // nên tới đây reuse translation là an toàn. Transcript-only reuse
   // (style khác) copy translation=NULL nên không skip mà dịch lại.
   const untranslated = pool.filter((s) => s.text && !s.translation)
