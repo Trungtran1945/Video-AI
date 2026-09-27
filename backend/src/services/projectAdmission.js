@@ -45,12 +45,15 @@ function projectValues(data, status, runToken) {
 export async function createProjectWithAdmission(data, options = {}) {
   const maxConcurrent = limitFrom(options)
   const idemKey = options.idempotencyKey || null
+  const requestFingerprint = options.requestFingerprint ?? null
   if (idemKey && !data.id) data.id = uuidv4()
   return withTransaction(async (tx) => {
     // Idempotency claim: INSERT OR IGNORE cùng transaction với project insert.
     // Request song song cùng key: người thắng commit cả 2; người thua affected=0
     // → rollback (project chưa kịp insert) → IDEMPOTENT_REPLAY.
     // TTL 7 ngày: key hết hạn được reclaim (DELETE rồi INSERT lại) như request mới.
+    // Task 2: fingerprint phát hiện tái dùng key sai body → 409
+    // IDEMPOTENCY_KEY_REUSE; legacy row fingerprint NULL → replay (compat).
     if (idemKey) {
       const nowISO = new Date().toISOString()
       const ttlISO = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
@@ -59,15 +62,40 @@ export async function createProjectWithAdmission(data, options = {}) {
          WHERE user_id = ? AND idem_key = ? AND expires_at IS NOT NULL AND expires_at < ?`,
         [data.userId || data.user_id, idemKey, nowISO]
       )
-      const claimed = await tx.runAffected(
-        `INSERT OR IGNORE INTO project_idempotency (user_id, idem_key, project_id, expires_at) VALUES (?, ?, ?, ?)`,
-        [data.userId || data.user_id, idemKey, data.id, ttlISO]
-      )
-      if (claimed !== 1) {
-        const dup = await tx.queryOne(
-          `SELECT project_id FROM project_idempotency WHERE user_id = ? AND idem_key = ?`,
-          [data.userId || data.user_id, idemKey]
+      let claimed
+      try {
+        claimed = await tx.runAffected(
+          `INSERT OR IGNORE INTO project_idempotency (user_id, idem_key, project_id, expires_at, request_fingerprint) VALUES (?, ?, ?, ?, ?)`,
+          [data.userId || data.user_id, idemKey, data.id, ttlISO, requestFingerprint]
         )
+      } catch (insertErr) {
+        if (!String(insertErr?.message || '').includes('no such column')) throw insertErr
+        claimed = await tx.runAffected(
+          `INSERT OR IGNORE INTO project_idempotency (user_id, idem_key, project_id, expires_at) VALUES (?, ?, ?, ?)`,
+          [data.userId || data.user_id, idemKey, data.id, ttlISO]
+        )
+      }
+      if (claimed !== 1) {
+        let dup = null
+        try {
+          dup = await tx.queryOne(
+            `SELECT project_id, request_fingerprint FROM project_idempotency WHERE user_id = ? AND idem_key = ?`,
+            [data.userId || data.user_id, idemKey]
+          )
+        } catch (selectErr) {
+          if (!String(selectErr?.message || '').includes('no such column')) throw selectErr
+          dup = await tx.queryOne(
+            `SELECT project_id FROM project_idempotency WHERE user_id = ? AND idem_key = ?`,
+            [data.userId || data.user_id, idemKey]
+          )
+        }
+        const storedFp = dup?.request_fingerprint ?? null
+        if (storedFp != null && requestFingerprint != null && storedFp !== requestFingerprint) {
+          const err = new Error('Idempotency key reused with different request body')
+          err.code = 'IDEMPOTENCY_KEY_REUSE'
+          err.projectId = dup?.project_id || null
+          throw err
+        }
         const err = new Error('Idempotency key already used')
         err.code = 'IDEMPOTENT_REPLAY'
         err.projectId = dup?.project_id || null

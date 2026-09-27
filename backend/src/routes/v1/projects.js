@@ -12,6 +12,7 @@ import { cancelProjectUseCase } from '../../usecases/cancelProjectUseCase.js'
 import { sendError, ERR } from '../../lib/httpError.js'
 import { firstRunnableStage } from '../../pipeline/context.js'
 import { TRANSLATION_VERSION, isCacheCompatible, parseProjectParams } from '../../lib/cacheKey.js'
+import { computeProjectFingerprint } from '../../lib/idempotencyFingerprint.js'
 import { hasHardTranslationError } from '../../pipeline/stages/dubTranslate.js'
 
 const router = Router()
@@ -92,7 +93,7 @@ router.post('/', async (req, res) => {
 
     let admission
     try {
-      admission = await createProjectWithAdmission({
+      const admissionData = {
         id: uuidv4(),
         userId: req.user.id,
         mode,
@@ -105,8 +106,24 @@ router.post('/', async (req, res) => {
         sourceVideoKey: b.sourceVideoKey || null,
         videoHash: b.videoHash || null,
         copyrightAcknowledged: true,
-      }, { idempotencyKey })
+      }
+      const requestFingerprint = computeProjectFingerprint({
+        mode: admissionData.mode,
+        title: admissionData.title,
+        language: admissionData.language,
+        style: admissionData.style,
+        targetDurationSec: admissionData.targetDurationSec,
+        aspectRatio: admissionData.aspectRatio,
+        params: admissionData.params,
+        sourceVideoKey: admissionData.sourceVideoKey,
+        videoHash: admissionData.videoHash,
+        copyrightAcknowledged: true,
+      })
+      admission = await createProjectWithAdmission(admissionData, { idempotencyKey, requestFingerprint })
     } catch (admErr) {
+      if (admErr?.code === 'IDEMPOTENCY_KEY_REUSE') {
+        return sendError(res, 409, 'IDEMPOTENCY_KEY_REUSE', 'Idempotency key already used with a different request body', { projectId: admErr.projectId })
+      }
       if (admErr?.code !== 'IDEMPOTENT_REPLAY') throw admErr
       const existing = admErr.projectId ? await queryOne('SELECT * FROM projects WHERE id = ?', [admErr.projectId]) : null
       if (!existing) throw admErr
@@ -393,6 +410,10 @@ router.delete('/:id', async (req, res) => {
     // longer leave a partially deleted project on disk, and a retry after a
     // rejected DELETE starts from a complete state (no duplicate/partial work).
     let cleanupTaskId = null
+    // Deterministic idempotency key for the cleanup outbox (derived from the
+    // route param only — never from arbitrary client input).
+    const operation = 'PROJECT_DELETE'
+    const operation_key = `project-delete:${req.params.id}`
     await withTransaction(async (tx) => {
       // ProviderLog is independent of the project lifecycle (docs/02 §5):
       // keep the rows for analytics, only detach them from the deleted project.
@@ -410,12 +431,22 @@ router.delete('/:id', async (req, res) => {
       // Chỉ tạo task khi còn file cần dọn: project không file thì không thêm
       // write/save thừa (giữ postCommitBoundaries `saveCalls === 1`).
       if (fileKeys.size > 0) {
-        cleanupTaskId = uuidv4()
-        await tx.run(
-          `INSERT INTO project_cleanup_tasks (id, project_id, keys_json, status, attempts, next_attempt_at)
-           VALUES (?, ?, ?, 'pending', 0, ?)`,
-          [cleanupTaskId, req.params.id, JSON.stringify([...fileKeys]), new Date().toISOString()]
+        const nowIso = new Date().toISOString()
+        const candidateId = uuidv4()
+        const claimed = await tx.runAffected(
+          `INSERT OR IGNORE INTO project_cleanup_tasks (id, project_id, keys_json, status, attempts, next_attempt_at, operation, operation_key)
+           VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)`,
+          [candidateId, req.params.id, JSON.stringify([...fileKeys]), nowIso, operation, operation_key]
         )
+        if (claimed === 1) {
+          cleanupTaskId = candidateId
+        } else {
+          const existing = await tx.queryOne(
+            `SELECT id FROM project_cleanup_tasks WHERE operation_key = ? AND status = 'pending'`,
+            [operation_key]
+          )
+          cleanupTaskId = existing ? existing.id : null
+        }
       }
     }, { op: 'project.delete' })
     // Post-commit fast path: thử dọn ngay qua runCleanupTask (bên trong gọi
@@ -423,7 +454,7 @@ router.delete('/:id', async (req, res) => {
     // sweep retry (server.js interval 60s) — không bao giờ mất, không rollback DB.
     if (cleanupTaskId) {
       try {
-        const outcome = await runCleanupTask({ id: cleanupTaskId, project_id: req.params.id, keys_json: JSON.stringify([...fileKeys]), attempts: 0 })
+        const outcome = await runCleanupTask({ id: cleanupTaskId, project_id: req.params.id, keys_json: JSON.stringify([...fileKeys]), attempts: 0, operation, operation_key })
         if (outcome.status !== 'done') {
           console.warn(`[Projects] xoá ${req.params.id}: cleanup chưa hoàn tất (${outcome.status}) — sẽ retry`)
         }

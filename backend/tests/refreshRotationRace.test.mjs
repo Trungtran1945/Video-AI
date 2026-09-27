@@ -132,6 +132,32 @@ if (loginCookie) await nextSecond()
   assert(/refreshSession/.test(authCtxSrc), 'AuthContext silent-refresh bang cookie khi reload')
 }
 
+// ── 6. fallback deprecation metrics (Task 3: refreshMetrics) ──
+{
+  const { getRefreshFallbackStats } = await import('../src/lib/refreshMetrics.js')
+  const freshLogin = await post('/login', { email: 'rotate@test.local', password: 'RotatePass!123' })
+  const freshCookie = cookieOf(freshLogin)
+  assert(freshLogin.status === 200 && !!freshCookie, '§6 login cấp cookie mới cho metrics check')
+  const before = getRefreshFallbackStats().count
+  const cookieRes = await postWithCookie('/refresh', {}, freshCookie)
+  const cookieBody = await cookieRes.json().catch(() => ({}))
+  const afterCookie = getRefreshFallbackStats().count
+  assert(cookieRes.status === 200, `§6 cookie refresh 200 (got ${cookieRes.status})`)
+  assert(afterCookie === before, `§6 cookie refresh không bump counter (${before}→${afterCookie})`)
+  assert(!('refreshToken' in cookieBody), '§6 cookie refresh JSON không chứa refreshToken raw')
+  const u2 = await queryOne(`SELECT * FROM users WHERE id = ?`, ['rr-u1'])
+  const fbToken = generateRefreshToken(u2)
+  await storeRefreshToken(u2.id, fbToken)
+  const fbRes = await post('/refresh', { refreshToken: fbToken })
+  const fbBody = await fbRes.json().catch(() => ({}))
+  const afterBody = getRefreshFallbackStats().count
+  assert(fbRes.status === 200, `§6 body fallback refresh 200 (got ${fbRes.status})`)
+  assert(afterBody === afterCookie + 1, `§6 body fallback bump counter +1 (${afterCookie}→${afterBody})`)
+  assert(!('refreshToken' in fbBody), '§6 body fallback JSON không chứa refreshToken raw')
+  const stats = getRefreshFallbackStats()
+  assert(stats.deprecated === true && stats.removalTarget === 'v2', '§6 stats deprecated:true removalTarget:v2')
+}
+
 // cleanup
 server.closeAllConnections?.()
 await new Promise((resolve) => server.close(resolve))

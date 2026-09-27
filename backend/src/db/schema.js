@@ -388,6 +388,7 @@ export async function initSchema() {
     PRIMARY KEY (user_id, idem_key)
   )`)
   try { db.run(`ALTER TABLE project_idempotency ADD COLUMN expires_at TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE project_idempotency ADD COLUMN request_fingerprint TEXT`) } catch (_) {}
   try {
     db.run(`UPDATE project_idempotency SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', created_date, '+7 days') WHERE expires_at IS NULL`)
   } catch (_) {}
@@ -406,6 +407,19 @@ export async function initSchema() {
     updated_date TEXT
   )`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_due ON project_cleanup_tasks(status, next_attempt_at)`)
+
+  // Deterministic idempotency for the cleanup outbox: the same project always
+  // maps to the same active task. Partial unique index keeps a single pending
+  // row per operation_key; retries claim via INSERT OR IGNORE.
+  try { db.run(`ALTER TABLE project_cleanup_tasks ADD COLUMN operation TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE project_cleanup_tasks ADD COLUMN operation_key TEXT`) } catch (_) {}
+  try { db.run(`UPDATE project_cleanup_tasks SET operation = 'PROJECT_DELETE' WHERE operation IS NULL`) } catch (_) {}
+  try { db.run(`UPDATE project_cleanup_tasks SET operation_key = 'project-delete:' || project_id WHERE operation_key IS NULL`) } catch (_) {}
+  try {
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_cleanup_tasks_active_unique ON project_cleanup_tasks(operation_key) WHERE status='pending'`)
+  } catch (err) {
+    console.warn('[DB] partial unique index idx_cleanup_tasks_active_unique skipped:', err?.message || err)
+  }
 
   // Resumable upload sessions (TUS-style, docs/06 §2.1)
   db.run(`CREATE TABLE IF NOT EXISTS upload_sessions (

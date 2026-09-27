@@ -191,6 +191,52 @@ let copyFailId = null
   assert(r6.status === 400, `key > 128 ky tu -> 400 (got ${r6.status})`)
 }
 
+// G) same key same body -> 202 replay same id
+let fpKeyId = null
+{
+  const g1 = await post('/', summaryBody, { 'idempotency-key': 'idem-key-007' })
+  const g2 = await post('/', summaryBody, { 'idempotency-key': 'idem-key-007' })
+  assert(g1.status === 202 && g2.status === 202, `G: same key same body -> ca 2 202 (got ${g1.status}/${g2.status})`)
+  const gb1 = await g1.json(), gb2 = await g2.json()
+  fpKeyId = gb1.id
+  assert(fpKeyId && fpKeyId === gb2.id, 'G: replay tra CUNG project id')
+  assert(gb2.idempotentReplay === true, 'G: lan retry danh dau idempotentReplay')
+}
+
+// H) same key different title/mode -> 409 IDEMPOTENCY_KEY_REUSE
+{
+  const beforeH = await query('SELECT id FROM projects WHERE user_id = ?', [user.id])
+  const h1 = await post('/', { ...summaryBody, title: 'Idem DIFFERENT' }, { 'idempotency-key': 'idem-key-007' })
+  assert(h1.status === 409, `H1: same key different title -> 409 (got ${h1.status})`)
+  const hb1 = await h1.json()
+  assert((hb1?.error?.code || hb1?.code) === 'IDEMPOTENCY_KEY_REUSE', `H1: giu ma IDEMPOTENCY_KEY_REUSE (got ${hb1?.error?.code || hb1?.code})`)
+  assert((hb1.projectId ?? hb1.error?.projectId) === fpKeyId, 'H1: 409 body co projectId cua project goc')
+  const h2 = await post('/', dubBody('Idem mode change'), { 'idempotency-key': 'idem-key-007' })
+  assert(h2.status === 409, `H2: same key different mode -> 409 (got ${h2.status})`)
+  const hb2 = await h2.json()
+  assert((hb2?.error?.code || hb2?.code) === 'IDEMPOTENCY_KEY_REUSE', `H2: giu ma IDEMPOTENCY_KEY_REUSE (got ${hb2?.error?.code || hb2?.code})`)
+  const afterH = await query('SELECT id FROM projects WHERE user_id = ?', [user.id])
+  assert(afterH.length === beforeH.length, `H: 409 khong tao project moi (truoc ${beforeH.length}, sau ${afterH.length})`)
+}
+
+// I) different user same key -> 202 different id (independent scope)
+let user2 = null
+{
+  user2 = { id: 'idem-user-2', email: 'idem2@test.local', role: 'user', password: 'x' }
+  await insert('users', user2)
+  const token2 = generateAccessToken(user2)
+  const post2 = (p, body, headers = {}) => fetch(`${base}${p}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token2}`, ...headers },
+    body: JSON.stringify(body),
+  })
+  const i1 = await post2('/', summaryBody, { 'idempotency-key': 'idem-key-007' })
+  assert(i1.status === 202, `I: different user same key -> 202 (got ${i1.status})`)
+  const ib1 = await i1.json()
+  assert(ib1.id && ib1.id !== fpKeyId, 'I: user khac -> project id khac (doc lap theo user_id)')
+  assert(!ib1.idempotentReplay, 'I: user khac khong danh dau replay')
+}
+
 // cleanup
 if (deps) {
   if (realCopy) deps.copyTranscript = realCopy
@@ -206,6 +252,11 @@ for (let i = 0; i < 100; i++) {
 try { await run('DELETE FROM transcript_segments WHERE project_id LIKE ?', ['idem-%']) } catch (_) {}
 try { await run('DELETE FROM project_idempotency WHERE user_id = ?', [user.id]) } catch (_) {}
 await run('DELETE FROM projects WHERE user_id = ?', [user.id])
+if (user2?.id) {
+  try { await run('DELETE FROM project_idempotency WHERE user_id = ?', [user2.id]) } catch (_) {}
+  await run('DELETE FROM projects WHERE user_id = ?', [user2.id])
+  await run('DELETE FROM users WHERE id = ?', [user2.id])
+}
 await run('DELETE FROM style_presets WHERE id = ?', ['preset-satnghia'])
 await run('DELETE FROM users WHERE id = ?', [user.id])
 fs.rmSync(tmpRoot, { recursive: true, force: true })

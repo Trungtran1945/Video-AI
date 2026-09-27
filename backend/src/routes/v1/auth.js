@@ -13,7 +13,9 @@ import {
   verifyAccessToken,
 } from '../../middleware/auth.js'
 import { sendError, ERR } from '../../lib/httpError.js'
+import { noteRefreshFallback } from '../../lib/refreshMetrics.js'
 import { config } from '../../config.js'
+import { cookieCsrf } from '../../middleware/cookieCsrf.js'
 
 const router = Router()
 
@@ -53,7 +55,12 @@ function clearRefreshCookie(res) {
 // Cookie là nguồn chính; body/x-refresh-token là fallback DEPRECATED
 // (giữ 2 release cho client không phải trình duyệt — xem README, sẽ bỏ).
 function readRefreshToken(req) {
-  return readRefreshCookie(req) || req.body?.refreshToken || req.headers['x-refresh-token'] || null
+  const cookieToken = readRefreshCookie(req)
+  if (cookieToken) return { token: cookieToken, source: 'cookie' }
+  if (req.body?.refreshToken) return { token: req.body.refreshToken, source: 'body' }
+  const headerToken = req.headers['x-refresh-token']
+  if (headerToken) return { token: headerToken, source: 'header' }
+  return { token: null, source: null }
 }
 
 // POST /api/v1/auth/register
@@ -109,10 +116,11 @@ router.post('/login', async (req, res) => {
 })
 
 // POST /api/v1/auth/refresh — atomic CAS rotation (xem rotateRefreshToken).
-router.post('/refresh', async (req, res) => {
+router.post('/refresh', cookieCsrf, async (req, res) => {
   try {
-    const token = readRefreshToken(req)
+    const { token, source } = readRefreshToken(req)
     if (!token) return sendError(res, 401, ERR.AUTH_TOKEN, 'Refresh token required')
+    if (source === 'body' || source === 'header') noteRefreshFallback(source)
     const jwt = (await import('jsonwebtoken')).default
     const { sha256 } = await import('../../lib/crypto.js')
     let decoded
@@ -146,7 +154,7 @@ router.post('/refresh', async (req, res) => {
 
 // POST /api/v1/auth/logout — không bắt buộc access token còn hạn:
 // browser chỉ cần xóa được cookie; xác thực bằng Bearer hoặc chính refresh cookie.
-router.post('/logout', async (req, res) => {
+router.post('/logout', cookieCsrf, async (req, res) => {
   try {
     const cookieToken = readRefreshCookie(req)
     let userId = null

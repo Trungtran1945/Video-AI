@@ -150,7 +150,7 @@ Video_AI/
 │   │   ├── usecases/         # Luồng nghiệp vụ đặc thù (hủy project, v.v.)
 │   │   ├── config.js         # Quản lý biến môi trường tập trung
 │   │   └── server.js         # Điểm khởi chạy backend & worker
- │   ├── tests/                # Bộ kiểm thử tích hợp & hồi quy (84 test files)
+  │   ├── tests/                # Bộ kiểm thử tích hợp & hồi quy
 │   └── package.json
 ├── frontend/                 # Giao diện người dùng (React 18 + Vite 6)
 │   ├── src/
@@ -272,6 +272,8 @@ Dịch vụ bao gồm:
 
 Truy cập ứng dụng tại `http://localhost`.
 
+> Topology same-origin: browser chỉ gọi cùng origin (`/`); nginx `:80` proxy `/api` → `api:3001` (và Vite dev proxy `/api` → `localhost:3001`). Nhờ đó cookie `refresh_token` (`SameSite=Lax`) luôn là first-party — không cần cross-origin cookie hay fallback body/header ngoài giai đoạn chuyển đổi.
+
 ---
 
 ## 7. Kiểm thử & Chất lượng mã nguồn
@@ -279,7 +281,7 @@ Truy cập ứng dụng tại `http://localhost`.
 Hệ thống tuân thủ nghiêm ngặt quy trình kiểm thử trước khi bàn giao:
 
 ### Backend Tests (Regression Gate)
-Chạy toàn bộ 84 file kiểm thử tích hợp (bao gồm kiểm tra upload resumable, tính toàn vẹn database, SSE, pipeline admission, logic kiểm tra ngôn ngữ, bảo mật đường dẫn và khôi phục lỗi):
+Chạy toàn bộ bộ kiểm thử tích hợp (bao gồm kiểm tra upload resumable, tính toàn vẹn database, SSE, pipeline admission, logic kiểm tra ngôn ngữ, bảo mật đường dẫn và khôi phục lỗi):
 ```bash
 cd backend
 npm test
@@ -315,8 +317,9 @@ Toàn bộ các API được định tuyến dưới tiền tố `/api/v1`:
 
 #### Xác thực
 - Access token (JWT 15 phút): client giữ **trong bộ nhớ RAM** (không localStorage).
-- Refresh token (7 ngày): **HttpOnly cookie** `refresh_token`, `Path=/api/v1/auth`, `SameSite=Lax`, `Secure` khi production. Rotation nguyên tử: mỗi `POST /auth/refresh` chỉ thành công đúng 1 lần cho mỗi token cũ (CAS).
-- `POST /auth/refresh` vẫn nhận `refreshToken` trong body / header `x-refresh-token` như **fallback deprecated** — sẽ bị gỡ sau 2 release. Deploy cross-origin phải cùng-site hoặc dùng fallback này trong thời gian chuyển đổi.
+- Refresh token (7 ngày): **HttpOnly cookie** `refresh_token` là nguồn chính, `Path=/api/v1/auth`, `SameSite=Lax`, `Secure` khi production (`COOKIE_SECURE`, mặc định `true` khi `NODE_ENV=production`). Rotation nguyên tử: mỗi `POST /auth/refresh` chỉ thành công đúng 1 lần cho mỗi token cũ (CAS).
+- `POST /auth/refresh` vẫn nhận `refreshToken` trong body / header `x-refresh-token` như **fallback deprecated** — sẽ bị gỡ ở **v2** (mức dùng fallback được đếm trong `GET /health` → `auth.refreshFallback`). Deploy production đi qua **same-origin** (nginx `:80` proxy `/api` → api, Vite dev proxy `/api` → `localhost:3001`) nên cookie Lax đủ dùng, không cần cross-origin.
+- Cookie refresh/logout có lớp CSRF nhẹ theo Origin/Referer: request mang cookie kèm `Origin`/`Referer` cross-origin (ngoài `CORS_ORIGINS`) → `403 CSRF_ORIGIN_MISMATCH`.
 - `POST /auth/logout` không yêu cầu access token còn hạn (xác thực bằng Bearer hoặc chính refresh cookie) — luôn xóa được cookie.
 - `POST /auth/reset-password`: token một lần nguyên tử (claim trong transaction); đổi mật khẩu đồng thời thu hồi refresh token hiện tại.
 
@@ -328,12 +331,12 @@ Toàn bộ các API được định tuyến dưới tiền tố `/api/v1`:
 - `POST /projects/:id/cancel`: Hủy thực thi pipeline đang chạy.
 - `POST /projects/:id/regenerate`: Chạy lại dự án từ công đoạn lỗi sớm nhất.
 - `DELETE /projects/:id`: Xóa dự án và các tệp tin lưu trữ liên quan.
-- `POST /api/v1/projects`: header tùy chọn `Idempotency-Key` (1-128 ký tự, unique per user, TTL 7 ngày) — retry không tạo duplicate project, lần retry trả `idempotentReplay: true` cùng project id. Lỗi copy transcript cache → **202** với `transcriptCopyFailed: true` (project đã tồn tại, chạy `queued`).
-- `DELETE /api/v1/projects/:id`: DB xóa nguyên tử + ghi task `project_cleanup_tasks` trong cùng transaction; file được dọn post-commit, thất bại → sweep mỗi 60s (backoff mũ, tối đa 10 lần, sau đó log ALERT). Không phụ thuộc Redis.
+- `POST /api/v1/projects`: header tùy chọn `Idempotency-Key` (1-128 ký tự, unique per user — key độc lập theo từng user, TTL 7 ngày) — retry cùng body không tạo duplicate project, lần retry trả `idempotentReplay: true` cùng project id. Body khác với cùng key → `409 IDEMPOTENCY_KEY_REUSE` (so bằng `request_fingerprint` hash chuẩn của body; row legacy fingerprint NULL vẫn replay tương thích). Lỗi copy transcript cache → **202** với `transcriptCopyFailed: true` (project đã tồn tại, chạy `queued`).
+- `DELETE /api/v1/projects/:id`: DB xóa nguyên tử + ghi task `project_cleanup_tasks` trong cùng transaction; file được dọn post-commit, thất bại → sweep mỗi 60s (backoff mũ, tối đa 10 lần, sau đó `failed` + log ALERT). Không phụ thuộc Redis. Task dọn có `operation`/`operation_key` (`project-delete:<id>`) + partial unique index giữ đúng 1 task `pending` cho mỗi project. Admin xem/sửa tay qua `GET /api/v1/admin/cleanup-tasks` và `POST /api/v1/admin/cleanup-tasks/:id/retry`.
 - `POST /api/v1/projects/:id/cancel`: cooperative — commit `cancelled` + hủy job trong 1 transaction, pipeline dừng ở ranh giới stage (không giết giữa chừng); gọi lại trên project đã xong là idempotent. `DELETE` khi pipeline đang chạy → `409`.
 - Retention cleanup (hourly sweep): chỉ dọn project hết `expires_at` có status `completed`/`failed` (legacy `success` tương thích → `completed`); `running/pending/queued` không bao giờ bị dọn; `cancelled` dọn ngay khi cancel. Filesystem hỏng → **giữ `expires_at`** + backoff 1h retry, không đánh dấu xong.
 - `GET /projects/:id/events?ticket=...`: ticket SSE single-use nguyên tử (claim `DELETE ... WHERE ticket_hash AND used=0 AND expires_at>now AND project_id AND user_id` — 100 request đồng thời → đúng 1 success); sai project → 403 không đốt ticket.
-- `GET /health` (liveness) → `{ status: ok|degraded|unavailable, redis, queueSystem, database: { persistenceState: HEALTHY|DEGRADED|WRITE_BLOCKED, consecutiveSaveFailures, lastSuccessfulSaveAt, ... }, writes }`.
+- `GET /health` (liveness) → `{ status: ok|degraded|unavailable, redis: connected|disconnected, bullmq: available|unavailable, durableCleanup: available, cleanup: { pending, failed, oldestPendingAgeMs, lastFailureAt }, database: { persistenceState: HEALTHY|DEGRADED|WRITE_BLOCKED, consecutiveSaveFailures, lastSuccessfulSaveAt, ... }, writes, auth: { refreshFallback: { count, lastAt, deprecated, removalTarget: 'v2' } } }`.
 - `GET /ready` (readiness) → `200 { ready:true }` khi HEALTHY/DEGRADED; `503 { ready:false }` khi WRITE_BLOCKED.
 
 ### 8.3. Thực thi Pipeline (`/projects`)

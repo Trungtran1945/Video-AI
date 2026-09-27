@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { getAccessToken, setAccessToken, clearAccessToken } from '../lib/tokenStore'
+import { postAccessUpdated } from '../lib/authChannel'
 import { createSingleFlight } from './refreshFlight'
 
 const BASE = import.meta.env.VITE_API_BASE || '/api/v1'
@@ -24,6 +25,7 @@ export function refreshSession() {
   return refreshOnce(async () => {
     const { data } = await axios.post(`${BASE}/auth/refresh`, null, { withCredentials: true })
     setAccessToken(data.accessToken)
+    postAccessUpdated(data.accessToken, data.user)
     return data
   })
 }

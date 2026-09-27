@@ -60,6 +60,20 @@ CMD ["nginx", "-g", "daemon off;"]
 ### nginx (web)
 Phục vụ tĩnh + reverse proxy `/api` → `asf-api`, `/docs` bảo vệ auth. Riêng `/api/v1/upload` và `/api/v1/uploads/*`, nginx cho phép body trên 4GiB để tính multipart overhead, không prebuffer request và dùng timeout xử lý dài cho hash/FFprobe. `/storage` được API lọc theo canonical media path; nginx không tự serve storage volume.
 
+### Same-origin topology [CURRENT]
+
+Browser chỉ gọi cùng origin (`/`); cookie `refresh_token` (`SameSite=Lax`) luôn là
+first-party nên không cần cross-origin cookie:
+
+| Môi trường | Browser gọi | Proxy | Backend nhận |
+| --- | --- | --- | --- |
+| Production (compose) | `http://localhost/` (nginx `:80`) | nginx proxy `/api` → `api:3001` | `asf-api` |
+| Dev | `http://localhost:5173` (Vite) | Vite proxy `/api` → `http://localhost:3001` | Express `:3001` |
+
+Vì mọi request auth đi cùng-site, `Lax` đủ chặn CSRF cross-site mặc định; lớp
+`cookieCsrf` (Origin/Referer check trên `POST /auth/refresh`, `POST /auth/logout`)
+chỉ là vành đai thứ hai cho `Origin`/`Referer` tường minh.
+
 ---
 
 ## 2. docker-compose.yml [CURRENT]
@@ -135,7 +149,14 @@ PROVIDER_CACHE_ENABLED=true
 PROVIDER_CACHE_TTL_DAYS=90
 QUOTA_WARNING_THRESHOLD=0.8
 DEFAULT_PROVIDER_MODE=live              # 'live' | 'mock' — dùng 'mock' cho CI/dev, không tốn quota
+CORS_ORIGINS=http://localhost:5173      # allowlist Origin cho cookieCsrf + CORS (comma-separated, production fail-closed khi thiếu)
+COOKIE_SECURE=false                     # dev (localhost được browser miễn trừ); production mặc định true
 ```
+
+> Frontend axios bật `withCredentials: true` để trình duyệt gửi/nhận HttpOnly cookie
+> `refresh_token` qua proxy same-origin ở trên. Không dùng cross-origin trực tiếp tới
+> `api:3001` từ browser — cookie `Lax` sẽ không đi kèm và `cookieCsrf` trả
+> `403 CSRF_ORIGIN_MISMATCH` khi `Origin` ngoài `CORS_ORIGINS`.
 
 ---
 
@@ -169,6 +190,8 @@ DEFAULT_PROVIDER_MODE=live              # 'live' | 'mock' — dùng 'mock' cho C
 - Log tập trung (Pino → file/stdout → công cụ log hệ thống).
 - Metrics: BullMQ counts và `/health.database`/`/health.writes` (queue depth, wait time, duration, slow-write count).
 - Cảnh báo: job FAILED quá N lần → notify admin.
+- Giám sát outbox dọn file: scrape `GET /health` → `cleanup { pending, failed, oldestPendingAgeMs, lastFailureAt }` + `durableCleanup: available`. `cleanup.failed > 0` → mở `GET /admin/cleanup-tasks?status=failed` và `POST /admin/cleanup-tasks/:id/retry` để re-queue; task quá 10 lần → `failed` + log ALERT (filesystem hỏng cần can thiệp tay, không tự đánh dấu xong).
+- Giám sát fallback deprecated: `GET /health` → `auth.refreshFallback { count, lastAt, removalTarget: 'v2' }` — `count` tăng nghĩa là còn client cũ dùng body/header, phải migrate sang cookie trước khi gỡ ở v2.
 - Backup: copy `data.db` only from the single owner during a quiesced window; do not use `pg_dump` for the current sql.js file.
 
 ### 6.1. Dọn dẹp tự động (Retention & Cleanup Cron)

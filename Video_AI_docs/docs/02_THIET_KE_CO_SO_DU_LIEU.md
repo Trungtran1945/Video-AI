@@ -403,6 +403,8 @@ model MediaJobStage {  // [NOT IMPLEMENTED]
 - `ProviderLog(provider, status, createdAt)` — `QuotaGuardService` đếm nhanh số request theo phút/ngày
   cho từng provider để tính `percentUsed` (xem `11` §4.1), tránh full-scan bảng log.
 - `ProviderCache(inputHash)` — tra cache O(1) trước mỗi lời gọi provider thật (xem `11` §3.2).
+- `project_idempotency.request_fingerprint` — hash chuẩn của body `POST /projects` (mode/title/language/style/targetDurationSec/params/sourceVideoKey...); cùng `Idempotency-Key` + cùng fingerprint → replay, khác fingerprint → `409 IDEMPOTENCY_KEY_REUSE` (row legacy fingerprint NULL vẫn replay tương thích). PK `(user_id, idem_key)` nên key độc lập theo từng user; TTL 7 ngày (`expires_at`), hết hạn reclaim như request mới.
+- `project_cleanup_tasks(operation, operation_key)` — outbox dọn file sau `DELETE /projects/:id` (commit cùng transaction với DB wipe). `operation='PROJECT_DELETE'`, `operation_key='project-delete:<projectId>'`; partial unique index `idx_cleanup_tasks_active_unique ON project_cleanup_tasks(operation_key) WHERE status='pending'` giữ đúng 1 task `pending` cho mỗi project, retry claim qua `INSERT OR IGNORE`; index `(status, next_attempt_at)` cho sweep (`idx_cleanup_tasks_due`).
 
 ---
 

@@ -147,6 +147,37 @@ export async function startTranslateDub(req: Req, res: Res) {
 - **Mã hoá API key**: `ApiKey.encryptedKey` = AES-256-GCM với khóa từ env `MASTER_KEY`.
   Khi dùng, giải mã trong memory, không log.
 
+### 4.1. Cookie-first refresh [CURRENT]
+
+- Cookie `refresh_token` là nguồn chính: `HttpOnly`, `Path=/api/v1/auth`, `SameSite=Lax`,
+  `Secure` khi production (`COOKIE_SECURE`, mặc định `true` khi `NODE_ENV=production`).
+  Rotation nguyên tử CAS — mỗi token cũ chỉ success đúng 1 lần.
+- Body `refreshToken` / header `x-refresh-token` là **fallback deprecated** cho client
+  không phải trình duyệt; mỗi lần dùng được đếm trong `GET /health` →
+  `auth.refreshFallback { count, lastAt, deprecated: true, removalTarget: 'v2' }`,
+  sẽ bị gỡ ở **v2**.
+- `POST /auth/refresh` và `POST /auth/logout` có lớp CSRF nhẹ (`cookieCsrf`):
+  chỉ khi request mang cookie `refresh_token` kèm `Origin`/`Referer` cross-origin
+  (ngoài allowlist `CORS_ORIGINS`) mới chặn `403 CSRF_ORIGIN_MISMATCH`. Thiếu cả
+  `Origin`/`Referer` (EventSource/non-browser) cho qua; API project Bearer-only
+  không bị ảnh hưởng (không cookie → `next()`).
+
+### 4.2. Idempotency tạo project [CURRENT]
+
+- `POST /projects` nhận `Idempotency-Key` (1–128 ký tự, PK `(user_id, idem_key)` nên
+  độc lập theo từng user, TTL 7 ngày). Body được hash thành `request_fingerprint`
+  (`services/projectAdmission.js` + `computeProjectFingerprint`): cùng key + cùng
+  fingerprint → replay (`idempotentReplay: true`); cùng key + khác fingerprint →
+  `409 IDEMPOTENCY_KEY_REUSE`.
+
+### 4.3. Admin repair cleanup [CURRENT]
+
+- `DELETE /projects/:id` ghi outbox `project_cleanup_tasks` cùng transaction với DB wipe;
+  admin sửa tay qua `GET /api/v1/admin/cleanup-tasks?status=&limit=` (không bao giờ
+  select `keys_json`) và `POST /api/v1/admin/cleanup-tasks/:id/retry`
+  (chỉ `failed` → `pending`, `UPDATE ... WHERE status='failed'` nên concurrent retry
+  tối đa 1 thắng).
+
 ### Roles
 
 | Role | Quyền |

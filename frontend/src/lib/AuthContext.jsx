@@ -2,6 +2,7 @@ import React, { createContext, useState, useContext, useEffect } from 'react'
 import { authApi } from '@/api/auth'
 import { getAccessToken, setAccessToken, clearAccessToken } from './tokenStore'
 import { refreshSession } from '../api/client'
+import { postAccessUpdated, postLogout, subscribe } from './authChannel'
 
 const AuthContext = createContext()
 
@@ -15,6 +16,20 @@ export const AuthProvider = ({ children }) => {
 
   useEffect(() => {
     init()
+    const unsub = subscribe((msg) => {
+      if (!msg || typeof msg.type !== 'string') return
+      if (msg.type === 'access-updated') {
+        // Guard against echo/double-broadcast: same token → still sync user.
+        if (getAccessToken() !== msg.accessToken) setAccessToken(msg.accessToken)
+        setUser(msg.user ?? null)
+        setIsAuthenticated(true)
+      } else if (msg.type === 'logout') {
+        clearAccessToken()
+        setUser(null)
+        setIsAuthenticated(false)
+      }
+    })
+    return unsub
   }, [])
 
   const init = async () => {
@@ -34,6 +49,7 @@ export const AuthProvider = ({ children }) => {
         const data = await refreshSession()
         setUser(data.user)
         setIsAuthenticated(true)
+        postAccessUpdated(data.accessToken, data.user)
       } catch (e) { /* anonymous */ }
     }
     setIsLoadingAuth(false)
@@ -46,6 +62,7 @@ export const AuthProvider = ({ children }) => {
     setUser(data.user)
     setIsAuthenticated(true)
     setAuthError(null)
+    postAccessUpdated(data.accessToken, data.user)
     return data
   }
 
@@ -55,6 +72,7 @@ export const AuthProvider = ({ children }) => {
     setUser(data.user)
     setIsAuthenticated(true)
     setAuthError(null)
+    postAccessUpdated(data.accessToken, data.user)
     return data
   }
 
@@ -67,6 +85,7 @@ export const AuthProvider = ({ children }) => {
     clearAccessToken()
     setUser(null)
     setIsAuthenticated(false)
+    postLogout()
   }
 
   const navigateToLogin = () => {

@@ -8,7 +8,7 @@ Stack: React 18 + Vite, React Router, TanStack Query, Framer Motion, Tailwind CS
 
 - Frontend chạy độc lập với backend. Toàn bộ dữ liệu qua REST API `/api/v1`.
 - Vite dev server proxy `/api` → `http://localhost:3001` (backend Express).
-- Xác thực JWT: `access_token` / `refresh_token` lưu localStorage, tự refresh khi gặp 401.
+- Xác thực JWT: `access_token` giữ memory-only (RAM, `src/lib/tokenStore.js`), refresh qua HttpOnly cookie `refresh_token` + silent refresh; không lưu token trong localStorage.
 - File upload/storage: backend trả key dạng `uploads/...`, file được serve tại `/storage/<key>`.
 
 ## Yêu cầu

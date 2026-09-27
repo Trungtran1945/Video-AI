@@ -6,6 +6,8 @@ import { fileURLToPath } from 'url'
 import fs from 'node:fs'
 import { getDb, getDbPersistenceStats, getDbPersistenceHealth, PERSISTENCE_STATES } from './src/db.js'
 import { getWriteQueueStats } from './src/db/query.js'
+import { getRefreshFallbackStats } from './src/lib/refreshMetrics.js'
+import { getCleanupStats } from './src/services/projectCleanup.js'
 import { initSchema } from './src/db/schema.js'
 import { seed } from './src/db/seed.js'
 import { config, isOriginAllowed } from './src/config.js'
@@ -56,15 +58,26 @@ app.get('/health', async (req, res) => {
   const writes = getWriteQueueStats()
   // Liveness: process is alive. Persistence state is reported explicitly so
   // operators can distinguish HEALTHY / DEGRADED / WRITE_BLOCKED.
+  // Redis down never fails liveness (always 200 here; /ready gates writes).
   const status = health.state === PERSISTENCE_STATES.HEALTHY
     ? 'ok'
     : health.state === PERSISTENCE_STATES.DEGRADED
       ? 'degraded'
       : 'unavailable'
+  let cleanupStats = { pending: 0, failed: 0, oldestPendingAgeMs: 0, lastFailureAt: null }
+  try {
+    cleanupStats = await getCleanupStats()
+  } catch (_) {}
+  let refreshFallbackStats = { count: 0, lastAt: null, deprecated: true, removalTarget: 'v2' }
+  try {
+    refreshFallbackStats = getRefreshFallbackStats()
+  } catch (_) {}
   res.json({
     status,
     redis: redisOk ? 'connected' : 'disconnected',
-    queueSystem: redisOk ? 'available' : 'unavailable — notifications and cleanup disabled',
+    bullmq: redisOk ? 'available' : 'unavailable',
+    durableCleanup: 'available',
+    cleanup: cleanupStats,
     database: {
       ...persistence,
       persistenceState: health.state,
@@ -74,6 +87,7 @@ app.get('/health', async (req, res) => {
       maxSaveFailures: health.maxSaveFailures,
     },
     writes,
+    auth: { refreshFallback: refreshFallbackStats },
   })
 })
 

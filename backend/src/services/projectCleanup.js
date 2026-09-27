@@ -129,4 +129,25 @@ export async function sweepProjectCleanupTasks({ limit = 10 } = {}) {
   return { processed }
 }
 
-export default { collectProjectKeys, deleteProjectFiles, runCleanupTask, sweepProjectCleanupTasks }
+// Lightweight observability for the cleanup outbox. Counts only — never
+// selects keys_json (no storage-key material exposed through stats).
+export async function getCleanupStats() {
+  try {
+    const pendingRows = await query(
+      `SELECT COUNT(*) AS cnt, MIN(created_date) AS oldest FROM project_cleanup_tasks WHERE status = 'pending'`
+    )
+    const failedRows = await query(
+      `SELECT COUNT(*) AS cnt, MAX(updated_date) AS lastFailure FROM project_cleanup_tasks WHERE status = 'failed'`
+    )
+    const pending = Number(pendingRows?.[0]?.cnt || 0)
+    const failed = Number(failedRows?.[0]?.cnt || 0)
+    const oldest = pendingRows?.[0]?.oldest
+    const oldestPendingAgeMs = oldest ? Math.max(0, Date.now() - new Date(oldest).getTime()) : 0
+    const lastFailureAt = failedRows?.[0]?.lastFailure || null
+    return { pending, failed, oldestPendingAgeMs, lastFailureAt }
+  } catch (_) {
+    return { pending: 0, failed: 0, oldestPendingAgeMs: 0, lastFailureAt: null }
+  }
+}
+
+export default { collectProjectKeys, deleteProjectFiles, runCleanupTask, sweepProjectCleanupTasks, getCleanupStats }

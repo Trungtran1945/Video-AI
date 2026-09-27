@@ -16,8 +16,8 @@
 | --- | --- | --- | --- |
 | POST | `/auth/register` | không | `{ email, password, name? }` → `{ accessToken, user }` + HttpOnly cookie `refresh_token` (KHÔNG còn `refreshToken` trong JSON) |
 | POST | `/auth/login` | không | `{ email, password }` → `{ accessToken, user }` + HttpOnly cookie `refresh_token` |
-| POST | `/auth/refresh` | không (cookie `refresh_token`; fallback deprecated body `refreshToken`/header `x-refresh-token`) | rotate nguyên tử CAS → `{ accessToken, user }` + cookie mới (mỗi token cũ chỉ success đúng 1 lần) |
-| POST | `/auth/logout` | AUTH | thu hồi refresh |
+| POST | `/auth/refresh` | không (cookie `refresh_token`; fallback deprecated body `refreshToken`/header `x-refresh-token`, gỡ ở v2) | rotate nguyên tử CAS → `{ accessToken, user }` + cookie mới (mỗi token cũ chỉ success đúng 1 lần); request mang cookie kèm `Origin`/`Referer` ngoài allowlist → `403 CSRF_ORIGIN_MISMATCH` |
+| POST | `/auth/logout` | cookie `refresh_token` hoặc Bearer (không bắt buộc access còn hạn) | thu hồi refresh + xóa cookie; CSRF guard như `/refresh` |
 | GET | `/auth/me` | AUTH | user hiện tại (EXTRA: đã cài đặt, chưa document trước đây) |
 | POST | `/auth/forgot-password` | không | `{ email }` → message chung (EXTRA: đã cài đặt, chưa document trước đây) |
 | POST | `/auth/reset-password` | không | `{ token, newPassword }` (EXTRA: đã cài đặt, chưa document trước đây) |
@@ -56,6 +56,10 @@
 ```
 → `202 Accepted` + `Project` (status `pending`, hoặc `queued` nếu user đã đạt giới hạn concurrency —
 xem `03` §3 NFR-12).
+Header tùy chọn `Idempotency-Key` (1–128 ký tự, PK `(user_id, idem_key)` nên độc lập theo
+từng user, TTL 7 ngày): body được hash thành `request_fingerprint` — retry cùng body →
+`idempotentReplay: true` cùng project id; cùng key khác body → `409 IDEMPOTENCY_KEY_REUSE`
+(kèm `projectId` của project gốc).
 
 ### POST `/projects/:id/cancel` — huỷ pipeline đang chạy [CURRENT]
 Không cần body. Huỷ mọi job `pending`/`running` của project, dọn file tạm liên quan.
@@ -189,6 +193,13 @@ State machine: `pending → completing → completed`; pending/completing hết 
 | GET | `/logs` | AUTH | `ProviderLog` (project của user / toàn hệ nếu ADMIN; array trực tiếp; `status 'ok'→'success'`, `type` map theo taxonomy frontend, gốc giữ ở `rawType`) [CURRENT] |
 | GET/PUT | `/admin/users` | AUTH+ADMIN | quản lý user [CURRENT] |
 | GET | `/admin/providers` | AUTH+ADMIN | stub `{ global: true, note }` — key per-user qua `/api-keys` [CURRENT] |
+| GET | `/admin/cleanup-tasks?status=&limit=` | AUTH+ADMIN | liệt kê outbox dọn file (`pending`/`failed`/`done`, tối đa 100, mặc định 20; không bao giờ trả `keys_json`) [CURRENT] |
+| POST | `/admin/cleanup-tasks/:id/retry` | AUTH+ADMIN | re-queue task `failed` → `pending` (`UPDATE ... WHERE status='failed'` — concurrent retry tối đa 1 thắng; task chưa `failed` → `409`) [CURRENT] |
+
+### 6.1. Health & readiness [CURRENT]
+
+- `GET /health` (liveness, luôn 200) → `{ status: ok|degraded|unavailable, redis: connected|disconnected, bullmq: available|unavailable, durableCleanup: available, cleanup: { pending, failed, oldestPendingAgeMs, lastFailureAt }, database: { persistenceState: HEALTHY|DEGRADED|WRITE_BLOCKED, consecutiveSaveFailures, lastSuccessfulSaveAt, lastSaveError, ... }, writes, auth: { refreshFallback: { count, lastAt, deprecated: true, removalTarget: 'v2' } } }`.
+- `GET /ready` (readiness) → `200 { ready: true }` khi HEALTHY/DEGRADED; `503 { ready: false }` khi WRITE_BLOCKED. Redis chỉ báo cáo, không gate readiness.
 
 ---
 
@@ -247,6 +258,8 @@ State machine: `pending → completing → completed`; pending/completing hết 
 | `UNSUPPORTED_MEDIA_TYPE` | extension/MIME/signature không hợp lệ hoặc FFprobe không thấy video stream |
 | `UPLOAD_RECOVERY_FAILED` | durable completion metadata không thể reconcile với filesystem |
 | `PIPELINE_RUNNING` | pipeline đang chạy, không xoá/redub được — [CURRENT, EXTRA] |
+| `IDEMPOTENCY_KEY_REUSE` | `Idempotency-Key` tái dùng với body khác (409, kèm `projectId`) — [CURRENT] |
+| `CSRF_ORIGIN_MISMATCH` | cookie refresh/logout kèm `Origin`/`Referer` cross-origin ngoài allowlist (403) — [CURRENT] |
 | `MEDIA_001` | [TARGET/FUTURE: không cài đặt — upload CURRENT giới hạn 2GB resumable / 4GB legacy, không mã này] |
 | `MEDIA_002` | [NOT IMPLEMENTED: media-consent chưa cài đặt] |
 | `MEDIA_003` | [TARGET/FUTURE: MediaJobStage chưa cài đặt] |
