@@ -7,8 +7,16 @@ import { extractAudio, sliceAudio, probe, compressAudioForUpload } from '../../m
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
 import { projectDir, tmpDirOf, ensureDir, requireSourceFile, round2 } from '../context.js'
-
-const CHUNK_SEC = 600
+import {
+  STT_CHUNK_SEC,
+  STT_OVERLAP_SEC,
+  normalizeSttLanguage,
+  resolveSttSourceLanguage,
+  buildSttChunks,
+  filterHallucinatedSegments,
+  dedupeOverlapSegments,
+  hashFileContent,
+} from '../sttUtils.js'
 
 // dub.stt (docs/05 §B.2): ASR trên audio đã normalize LUFS → transcript_segments.
 // Speaker diarization: cột speaker để NULL ở v1 (Whisper API không trả speaker).
@@ -40,67 +48,86 @@ export async function dubStt(ctx) {
     const abs = path.join(projectDir(project.id), 'source_norm.wav')
     fullWav = fs.existsSync(abs) ? abs : null
   }
-  let languageHint = ingest.language
+  // Explicit source language wins (languageHint); otherwise auto-detect once
+  // and lock it for all chunks (per-chunk auto-detect flips on music/silence).
+  const languageHint = normalizeSttLanguage(ingest.language ?? resolveSttSourceLanguage(project))
   if (!fullWav) {
     await probe(src)
     fullWav = path.join(tmp, `dub_raw_${project.id}.wav`)
     await extractAudio(src, fullWav)
-    languageHint = undefined
     setProgress(6)
   }
 
   const durationSec = ingest.durationSec || (await probe(fullWav)).durationSec || (await probe(src)).durationSec
 
-  const chunkCount = Math.max(1, Math.ceil(durationSec / CHUNK_SEC))
+  const plan = buildSttChunks(durationSec, { chunkSec: STT_CHUNK_SEC, overlapSec: STT_OVERLAP_SEC })
   const chunks = []
-  if (chunkCount === 1) {
+  if (plan.length <= 1) {
     chunks.push({ file: fullWav, offsetSec: 0 })
   } else {
-    for (let i = 0; i < chunkCount; i++) {
-      const start = i * CHUNK_SEC
-      const dur = Math.min(CHUNK_SEC, durationSec - start)
+    for (let i = 0; i < plan.length; i++) {
       const f = path.join(tmp, `dub_chunk_${i}.wav`)
-      await sliceAudio(fullWav, f, start, dur)
-      chunks.push({ file: f, offsetSec: start })
-      setProgress(5 + Math.round(((i + 1) / chunkCount) * 10))
+      await sliceAudio(fullWav, f, plan[i].start, plan[i].dur)
+      chunks.push({ file: f, offsetSec: plan[i].start })
+      setProgress(5 + Math.round(((i + 1) / plan.length) * 10))
     }
   }
 
   const asr = await getProvider(project.user_id, 'asr')
-  let language = null
-  const segments = []
+  let language = languageHint || null
+  let lockedLanguage = languageHint || null
+  const rawSegments = []
   for (let i = 0; i < chunks.length; i++) {
+    const effectiveLang = lockedLanguage || undefined
     // Upload bản MP3 nén thay vì WAV gốc (tránh vượt giới hạn dung lượng của Groq)
     const uploadFile = path.join(tmp, `dub_up_${i}.mp3`)
     await compressAudioForUpload(chunks[i].file, uploadFile)
+    const fileHash = hashFileContent(uploadFile)
     const res = await callProvider({
       provider: asr.id,
       type: 'asr',
       model: asr.provider.model || asr.id,
-      input: { file: uploadFile, language: languageHint },
-      fn: () => asr.provider.transcribe(uploadFile, { language: languageHint }),
+      input: { fileHash, language: effectiveLang },
+      fn: () => asr.provider.transcribe(uploadFile, { language: effectiveLang }),
       userId: project.user_id,
       apiKeyId: asr.apiKeyId,
       projectId: project.id,
       jobId: job.id,
     })
     try { fs.unlinkSync(uploadFile) } catch (_) {}
-    if (!language || language === 'unknown') language = res.language
-    for (const s of res.segments || []) {
-      segments.push({
-        id: uuidv4(),
-        project_id: project.id,
-        index_num: segments.length,
-        start_sec: round2(s.start + chunks[i].offsetSec),
-        end_sec: round2(s.end + chunks[i].offsetSec),
+    const detected = normalizeSttLanguage(res.language)
+    // Lock detected language from first non-empty chunk; explicit hint never overridden.
+    if (!lockedLanguage && detected && (res.segments || []).length > 0) {
+      lockedLanguage = detected
+    }
+    if (!language || language === 'unknown') language = detected || res.language || language
+    const kept = filterHallucinatedSegments(res.segments || [])
+    for (const s of kept) {
+      rawSegments.push({
+        start: round2(s.start + chunks[i].offsetSec),
+        end: round2(s.end + chunks[i].offsetSec),
         text: String(s.text || '').trim(),
         speaker: s.speaker ?? null,
-        language: res.language || languageHint || null,
-        source: 'asr',
+        language: detected || res.language || lockedLanguage || languageHint || null,
       })
     }
     setProgress(15 + Math.round(((i + 1) / chunks.length) * 82))
   }
+
+  // Stitch overlap window: drop near-duplicate segments from adjacent chunks.
+  const stitched = dedupeOverlapSegments(rawSegments, { windowSec: 1.0 })
+  const segments = stitched.map((s) => ({
+    id: uuidv4(),
+    project_id: project.id,
+    index_num: 0, // reassigned below to keep ordering deterministic
+    start_sec: s.start,
+    end_sec: s.end,
+    text: s.text,
+    speaker: s.speaker ?? null,
+    language: s.language,
+    source: 'asr',
+  }))
+  segments.forEach((s, idx) => { s.index_num = idx })
 
   await replaceTranscript(project.id, segments, {
     expectedRevision: transcriptVersion,

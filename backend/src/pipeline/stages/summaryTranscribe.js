@@ -1,11 +1,19 @@
 import fs from 'node:fs'
 import path from 'path'
-import { extractAudio, sliceAudio, probe } from '../../media/mediaService.js'
+import { extractAudio, sliceAudio, probe, compressAudioForUpload } from '../../media/mediaService.js'
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
 import { projectDir, tmpDirOf, ensureDir, requireSourceFile, writeJson, toStorageKey, round2 } from '../context.js'
-
-const CHUNK_SEC = 600
+import {
+  STT_CHUNK_SEC,
+  STT_OVERLAP_SEC,
+  normalizeSttLanguage,
+  resolveSttSourceLanguage,
+  buildSttChunks,
+  filterHallucinatedSegments,
+  dedupeOverlapSegments,
+  hashFileContent,
+} from '../sttUtils.js'
 
 export async function summaryTranscribe(ctx) {
   const { project, job, setProgress, signal } = ctx
@@ -21,50 +29,64 @@ export async function summaryTranscribe(ctx) {
   if (!info.durationSec) throw new Error('Không đọc được thời lượng video nguồn')
 
   const fullWav = path.join(tmp, 'source_full.wav')
-  const chunkCount = Math.max(1, Math.ceil(info.durationSec / CHUNK_SEC))
+  // NOTE: project.language is the TARGET/summary language — never use it as
+  // the STT source hint. Resolve from params.sourceLanguage, else auto-detect.
+  const initialHint = resolveSttSourceLanguage(project)
+  const plan = buildSttChunks(info.durationSec, { chunkSec: STT_CHUNK_SEC, overlapSec: STT_OVERLAP_SEC })
   const chunks = []
-  if (chunkCount === 1) {
+  if (plan.length <= 1) {
     chunks.push({ file: await extractAudio(src, fullWav), offsetSec: 0 })
   } else {
     await extractAudio(src, fullWav)
-    for (let i = 0; i < chunkCount; i++) {
-      const start = i * CHUNK_SEC
-      const dur = Math.min(CHUNK_SEC, info.durationSec - start)
+    for (let i = 0; i < plan.length; i++) {
       const f = path.join(tmp, `chunk_${i}.wav`)
-      await sliceAudio(fullWav, f, start, dur)
-      chunks.push({ file: f, offsetSec: start })
-      setProgress(2 + Math.round(((i + 1) / chunkCount) * 8))
+      await sliceAudio(fullWav, f, plan[i].start, plan[i].dur)
+      chunks.push({ file: f, offsetSec: plan[i].start })
+      setProgress(2 + Math.round(((i + 1) / plan.length) * 8))
     }
   }
 
   const asr = await getProvider(project.user_id, 'asr')
-  let language = null
-  const segments = []
+  let language = initialHint || null
+  let lockedLanguage = initialHint || null
+  const rawSegments = []
   for (let i = 0; i < chunks.length; i++) {
+    const effectiveLang = lockedLanguage || undefined
+    // Nén MP3 như nhánh dub để đồng nhất chất lượng + tránh giới hạn upload.
+    const uploadFile = path.join(tmp, `sum_up_${i}.mp3`)
+    await compressAudioForUpload(chunks[i].file, uploadFile)
+    const fileHash = hashFileContent(uploadFile)
     const res = await callProvider({
       provider: asr.id,
       type: 'asr',
       model: asr.provider.model || asr.id,
-      input: { file: chunks[i].file, language: project.language || undefined },
-      fn: () => asr.provider.transcribe(chunks[i].file, { language: project.language || undefined }),
+      input: { fileHash, language: effectiveLang },
+      fn: () => asr.provider.transcribe(uploadFile, { language: effectiveLang }),
       userId: project.user_id,
       apiKeyId: asr.apiKeyId,
       projectId: project.id,
       jobId: job.id,
     })
-    if (!language || language === 'unknown') language = res.language
-    for (const s of res.segments) {
-      segments.push({
+    try { fs.unlinkSync(uploadFile) } catch (_) {}
+    const detected = normalizeSttLanguage(res.language)
+    if (!lockedLanguage && detected && (res.segments || []).length > 0) {
+      lockedLanguage = detected
+    }
+    if (!language || language === 'unknown') language = detected || res.language || language
+    const kept = filterHallucinatedSegments(res.segments || [])
+    for (const s of kept) {
+      rawSegments.push({
         start: round2(s.start + chunks[i].offsetSec),
         end: round2(s.end + chunks[i].offsetSec),
-        text: s.text,
+        text: String(s.text || '').trim(),
       })
     }
     setProgress(12 + Math.round(((i + 1) / chunks.length) * 84))
   }
+  const segments = dedupeOverlapSegments(rawSegments, { windowSec: 1.0 })
 
   const transcriptPath = writeJson(path.join(dir, 'transcript.json'), {
-    language: language || project.language || 'unknown',
+    language: language || initialHint || 'unknown',
     durationSec: info.durationSec,
     segments,
   })

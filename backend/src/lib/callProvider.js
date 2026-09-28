@@ -114,6 +114,15 @@ function isStaleLocalArtifact(cached) {
  * @param {object} [params.rateLimitOpts] - Rate limiter config override
  * @returns {Promise<*>} provider result
  */
+// ASR inputs keyed by tmp file PATH alone are unsafe: the same path is reused
+// across runs with different audio. Require a content hash (fileHash) for
+// cache use; otherwise bypass cache entirely (still executes + logs).
+function isUnsafeAsrCacheInput(type, input) {
+  if (type !== 'asr' || !input || typeof input !== 'object' || Array.isArray(input)) return false
+  if (typeof input.file !== 'string' || !input.file) return false
+  return !input.fileHash && !input.fileContentHash && !input.contentHash
+}
+
 export async function callProvider({
   provider,
   type,
@@ -127,12 +136,15 @@ export async function callProvider({
   cacheTtlDays = 90,
   rateLimitOpts,
 }) {
+  const skipCache = isUnsafeAsrCacheInput(type, input)
   // 1. Cache check
-  const cached = await checkCache(provider, type, model, input)
-  if (cached !== null && !isStaleLocalArtifact(cached)) {
-    // Still log for analytics but mark as cache hit
-    await logCall({ projectId, jobId, provider, type, model, status: 'cache_hit', durationMs: 0 })
-    return cached
+  if (!skipCache) {
+    const cached = await checkCache(provider, type, model, input)
+    if (cached !== null && !isStaleLocalArtifact(cached)) {
+      // Still log for analytics but mark as cache hit
+      await logCall({ projectId, jobId, provider, type, model, status: 'cache_hit', durationMs: 0 })
+      return cached
+    }
   }
 
   // 2. Rate limiter
@@ -152,8 +164,10 @@ export async function callProvider({
     // 4. Log success
     await logCall({ projectId, jobId, provider, type, model, status: 'ok', durationMs })
 
-    // 5. Cache result
-    await storeCache(provider, type, model, input, result, cacheTtlDays)
+    // 5. Cache result (skipped for unsafe ASR path-only inputs)
+    if (!skipCache) {
+      await storeCache(provider, type, model, input, result, cacheTtlDays)
+    }
 
     return result
   } catch (err) {
