@@ -10,6 +10,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info } from 'lucide-react';
 import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES } from '@/lib/constants';
 import { useJobEvents } from '@/hooks/useJobEvents';
+import ProjectHeader from '@/components/project/ProjectHeader';
+import PipelineStatus from '@/components/project/PipelineStatus';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -543,125 +545,26 @@ export default function ProjectDetail() {
       <Layout>
         <div className="h-screen max-md:h-auto flex flex-col bg-background text-foreground">
           {/* 1. Header */}
-          <div className="shrink-0 px-4 py-3 border-b border-border bg-card">
-            <Link to="/projects" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground mb-2 transition">
-              <ArrowLeft className="w-3 h-3" /> Quay lại dự án
-            </Link>
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3 min-w-0">
-                <h1 className="text-lg font-bold text-foreground truncate">{project.title}</h1>
-                <StatusBadge status={project.status} />
-              </div>
-              <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
-                <button
-                  type="button"
-                  onClick={() => setConfirmDelete(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-destructive/30 text-destructive hover:bg-destructive/10 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive"
-                >
-                  <Trash2 className="w-3.5 h-3.5" /> Xoá
-                </button>
-                {canCancel && (
-                  <button
-                    type="button"
-                    onClick={handleCancel}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
-                  >
-                    <XCircle className="w-3.5 h-3.5" /> Huỷ
-                  </button>
-                )}
-                {canRegenerate && (
-                  <button
-                    type="button"
-                    onClick={handleRegenerate}
-                    disabled={regenerating}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 text-xs font-semibold transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    {regenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />} Chạy lại
-                  </button>
-                )}
-                {outputUrl && (
-                  <>
-                    <a
-                      href={outputUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold transition shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <Play className="w-3.5 h-3.5" /> Xem
-                    </a>
-                    <a
-                      href={outputUrl}
-                      download
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-foreground text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <Download className="w-3.5 h-3.5" /> Tải
-                    </a>
-                  </>
-                )}
-              </div>
-            </div>
-            {error && (
-              <div className="mt-2.5 flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-2">
-                <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {error}
-              </div>
-            )}
-          </div>
+          <ProjectHeader
+            project={project}
+            canCancel={canCancel}
+            canRegenerate={canRegenerate}
+            regenerating={regenerating}
+            outputUrl={outputUrl}
+            error={error}
+            onConfirmDelete={() => setConfirmDelete(true)}
+            onCancel={handleCancel}
+            onRegenerate={handleRegenerate}
+          />
 
-          {/* 2. Pipeline Progress - Full width near top */}
-          <div className="shrink-0 px-4 py-2.5 bg-card border-b border-border">
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="text-[11px] font-bold text-foreground">Pipeline</span>
-                {isActive && (
-                  <span className="inline-flex items-center gap-1 text-[11px] text-primary font-semibold" title={sseAvailable ? 'Realtime (SSE)' : 'Fallback polling'}>
-                    <Loader2 className="w-2.5 h-2.5 animate-spin" /> {sseAvailable ? 'Trực tiếp' : 'Đồng bộ định kỳ'}
-                  </span>
-                )}
-              </div>
-              {typeof project.progress === 'number' && (
-                <div className="flex-1 max-w-xs">
-                  <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                    <motion.div
-                      className="h-full rounded-full bg-primary"
-                      initial={{ width: 0 }}
-                      animate={{ width: `${Math.min(100, Math.max(0, project.progress))}%` }}
-                      transition={{ duration: 0.4 }}
-                    />
-                  </div>
-                </div>
-              )}
-              <div className="flex-1 flex flex-wrap gap-1.5">
-                {stages.map((stageKey) => {
-                  const stage = STAGE_LABELS[stageKey];
-                  const Icon = stageIcons[stageKey] || Circle;
-                  const job = jobByStage[stageKey];
-                  const isCurrent = job?.status === 'running';
-                  const isDone = job?.status === 'success';
-                  const isError = ['failed', 'error', 'timeout'].includes(job?.status);
-                  const isRetry = job?.status === 'retry';
-                  return (
-                    <div
-                      key={stageKey}
-                      className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium border transition-colors ${
-                        isCurrent ? 'bg-primary/10 text-primary border-primary/30' :
-                        isDone ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/25' :
-                        isError ? 'bg-destructive/10 text-destructive dark:text-rose-300 border-destructive/25' :
-                        isRetry ? 'bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-500/25' :
-                        'bg-muted/50 text-muted-foreground border-border/60'
-                      }`}
-                    >
-                      {isDone ? <CheckCircle className="w-2.5 h-2.5" /> :
-                       isError ? <AlertCircle className="w-2.5 h-2.5" /> :
-                       isRetry ? <Clock className="w-2.5 h-2.5" /> :
-                       isCurrent ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> :
-                       <Icon className="w-2.5 h-2.5" />}
-                      <span className="truncate max-w-[80px]">{stage?.label || stageKey.split('.').pop()}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
+          {/* 2. Pipeline Progress */}
+          <PipelineStatus
+            progress={project.progress}
+            isActive={isActive}
+            sseAvailable={sseAvailable}
+            stages={stages}
+            jobByStage={jobByStage}
+          />
 
           {/* 3. Main Workspace: Transcript (chính) + Video/output/mask tabs */}
           <div className="flex-1 flex min-h-0 max-md:flex-col">
@@ -669,7 +572,7 @@ export default function ProjectDetail() {
             <div className="w-[58%] max-md:w-full flex flex-col min-h-0 border-r border-border max-md:border-r-0 max-md:border-b">
               {outputStale && !isActive && (
                 <div className="shrink-0 mx-3 mt-3 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">
-                  <AlertCircle className="w-4 h-4 shrink-0" /> Video hiện tại chưa phản ánh bản chỉnh sửa — nhấn Chạy lại để cập nhật.
+                  <AlertCircle className="w-4 h-4 shrink-0" /> Video hiện tại chưa phản ánh thay đổi mask. Nhấn Chạy lại để cập nhật.
                 </div>
               )}
               <TranscriptEditor
@@ -822,7 +725,13 @@ export default function ProjectDetail() {
 
                 {activeRightTab === 'mask' && (
                   <div className="p-3">
-                    <MaskEditor projectId={id} sourceUrl={sourceUrl} disabled={isActive} />
+                    <MaskEditor
+                      projectId={id}
+                      sourceUrl={sourceUrl}
+                      disabled={isActive}
+                      outputStale={outputStale}
+                      onMaskChange={load}
+                    />
                   </div>
                 )}
 

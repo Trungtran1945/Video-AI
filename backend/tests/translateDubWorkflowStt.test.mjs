@@ -11,8 +11,6 @@ import { v4 as uuidv4 } from 'uuid'
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai_workflow_stt_'))
 process.env.DB_PATH = path.join(tmpDir, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpDir, 'storage')
-process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || 'C:\\ffmpeg\\bin\\ffmpeg.exe'
-process.env.FFPROBE_PATH = process.env.FFPROBE_PATH || 'C:\\ffmpeg\\bin\\ffprobe.exe'
 
 const { initSchema } = await import('../src/db/schema.js')
 const { run, query, queryOne } = await import('../src/db/query.js')

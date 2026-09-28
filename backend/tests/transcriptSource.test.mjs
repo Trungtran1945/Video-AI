@@ -12,8 +12,6 @@ import os from 'node:os'
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai_test_asr_'))
 process.env.DB_PATH = path.join(tmpDir, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpDir, 'storage')
-process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || 'C:\\ffmpeg\\bin\\ffmpeg.exe'
-process.env.FFPROBE_PATH = process.env.FFPROBE_PATH || 'C:\\ffmpeg\\bin\\ffprobe.exe'
 
 const { initSchema } = await import('../src/db/schema.js')
 const { run, query } = await import('../src/db/query.js')

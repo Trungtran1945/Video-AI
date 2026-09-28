@@ -62,14 +62,29 @@ router.get('/projects/:id/events', sseAuthMiddleware, requireProjectOwner, async
   let heartbeat = null
   let closed = false
   let unsubscribe = () => {}
+
   function cleanup() {
     if (closed) return
     closed = true
-    if (heartbeat) clearInterval(heartbeat)
+    if (heartbeat) {
+      clearInterval(heartbeat)
+      heartbeat = null
+    }
     try { unsubscribe() } catch (_) {}
   }
 
+  function sendTerminal(terminalPayload) {
+    if (closed) return
+    try {
+      res.write(`event: progress\ndata: ${JSON.stringify(terminalPayload)}\n\n`)
+      res.write('event: done\ndata: {}\n\n')
+    } catch (_) {}
+    cleanup()
+    try { res.end() } catch (_) {}
+  }
+
   unsubscribe = eventBus.subscribe(req.project.id, (payload) => {
+    if (closed) return
     try {
       res.write(`event: progress\ndata: ${JSON.stringify(payload)}\n\n`)
       // Terminal statuses: 'completed' (chuẩn mới, khớp projects.status) +
@@ -77,12 +92,10 @@ router.get('/projects/:id/events', sseAuthMiddleware, requireProjectOwner, async
       // done = stream closed, không phải completion — client phải dùng payload
       // progress terminal / fetch DB làm truth.
       if (payload.stage === '__project__' && ['completed', 'success', 'failed'].includes(payload.status)) {
-        res.write('event: done\ndata: {}\n\n')
-        cleanup()
-        res.end()
+        sendTerminal(payload)
       }
     } catch (_) {
-      /* client đã ngắt */
+      cleanup()
     }
   })
 
@@ -92,19 +105,22 @@ router.get('/projects/:id/events', sseAuthMiddleware, requireProjectOwner, async
     const current = await queryOne(`SELECT status, progress FROM projects WHERE id = ?`, [req.project.id])
     if (current && ['completed', 'failed'].includes(String(current.status))) {
       const terminal = { stage: '__project__', status: String(current.status), percent: Number(current.progress ?? 100) }
-      try {
-        res.write(`event: progress\ndata: ${JSON.stringify(terminal)}\n\n`)
-        res.write('event: done\ndata: {}\n\n')
-      } catch (_) {}
-      cleanup()
-      res.end()
+      sendTerminal(terminal)
       return
     }
   } catch (_) {}
 
+  if (closed) return
+
   // Heartbeat giữ connection sống qua proxy
   heartbeat = setInterval(() => {
-    try { res.write(': ping\n\n') } catch (_) {}
+    if (closed) {
+      if (heartbeat) clearInterval(heartbeat)
+      return
+    }
+    try { res.write(': ping\n\n') } catch (_) {
+      cleanup()
+    }
   }, 15000)
 
   req.on('close', cleanup)

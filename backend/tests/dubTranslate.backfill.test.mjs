@@ -8,8 +8,6 @@ import os from 'node:os'
 
 // Phải set env TRƯỚC khi import (module ffmpeg.js chạy resolveBin tại load time).
 process.env.DB_PATH = path.join(os.tmpdir(), `vidai_test_${Date.now()}.db`)
-process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || 'C:\\ffmpeg\\bin\\ffmpeg.exe'
-process.env.FFPROBE_PATH = process.env.FFPROBE_PATH || 'C:\\ffmpeg\\bin\\ffprobe.exe'
 
 const { initSchema } = await import('../src/db/schema.js')
 const { translateGroup } = await import('../src/pipeline/stages/dubTranslate.js')

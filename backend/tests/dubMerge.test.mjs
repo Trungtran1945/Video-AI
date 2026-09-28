@@ -6,8 +6,6 @@ import os from 'node:os'
 import { v4 as uuidv4 } from 'uuid'
 
 process.env.DB_PATH = path.join(os.tmpdir(), `vidai_dubmerge_${Date.now()}.db`)
-process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || 'C:\\ffmpeg\\bin\\ffmpeg.exe'
-process.env.FFPROBE_PATH = process.env.FFPROBE_PATH || 'C:\\ffmpeg\\bin\\ffprobe.exe'
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, updateById, query, queryOne } = await import('../src/db/query.js')

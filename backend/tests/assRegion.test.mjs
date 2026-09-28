@@ -7,8 +7,6 @@ import os from 'node:os'
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-ass-'))
 process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
-process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || 'C:\\ffmpeg\\bin\\ffmpeg.exe'
-process.env.FFPROBE_PATH = process.env.FFPROBE_PATH || 'C:\\ffmpeg\\bin\\ffprobe.exe'
 
 const { initSchema } = await import('../src/db/schema.js')
 const { run } = await import('../src/db/query.js')
@@ -65,8 +63,8 @@ const assert = (c, m) => { if (c) console.log('PASS:', m); else { failures++; co
   const pid = 'ass-proj-1'
   await run('INSERT INTO projects (id, user_id, mode, title, params) VALUES (?, ?, ?, ?, ?)',
     [pid, 'u1', 'TRANSLATE_DUB', 't', '{}'])
-  await run('INSERT INTO ocr_regions (id, project_id, start_sec, end_sec, ratio_x, ratio_y, ratio_w, ratio_h, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ['rg1', pid, 0, 2, 0.1, 0.7, 0.8, 0.2, 'AUTO'])
+  await run('INSERT INTO ocr_regions (id, project_id, start_sec, end_sec, ratio_x, ratio_y, ratio_w, ratio_h, source, status, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ['rg1', pid, 0, 2, 0.1, 0.7, 0.8, 0.2, 'MANUAL', 'APPROVED', 1])
   const regions = await loadSubtitleRegions(pid)
   assert(regions.length === 1 && regions[0].ratioX === 0.1, 'loadSubtitleRegions reads persisted bbox')
 }

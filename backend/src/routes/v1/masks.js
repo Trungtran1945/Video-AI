@@ -143,8 +143,8 @@ function parseParams(raw) {
   try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
 }
 
-// Dựng mask AUTO suy ra từ transcript OCR — single source of truth nằm ở
-// deriveAutoRegions (dubRender.js), route chỉ map sang JSON API.
+// Dựng mask legacy OCR suy ra từ transcript — single source of truth nằm ở
+// deriveAutoRegions (dubRender.js), route map sang JSON API với metadata rõ ràng.
 export async function deriveAutoMasks(projectId, maskMethod) {
   const regions = await deriveAutoRegions(projectId, maskMethod)
   return regions.map(toMaskJson)
@@ -152,8 +152,12 @@ export async function deriveAutoMasks(projectId, maskMethod) {
 
 export function toMaskJson(r) {
   const source = r.source || 'MANUAL'
+  const rawStatus = String(r.status || '').toUpperCase()
+  const defaultStatus = source === 'AUTO' ? 'APPROVED' : 'DRAFT'
+  const status = ['DRAFT', 'APPROVED', 'DISABLED'].includes(rawStatus) ? rawStatus : defaultStatus
+  const isLegacy = r.isLegacy || source === 'LEGACY_OCR' || source === 'LEGACY_AUTO'
   return {
-    ...r,
+    id: r.id,
     startSec: r.start_sec ?? r.startSec,
     endSec: r.end_sec ?? r.endSec,
     ratioX: r.ratio_x ?? r.ratioX,
@@ -165,13 +169,14 @@ export function toMaskJson(r) {
     enabled: r.enabled === 1 || r.enabled === true,
     source,
     type: r.type || 'blur',
-    // Mask ảo AUTO suy ra lúc đọc (deriveAutoRegions) luôn coi như APPROVED
-    // để filter render đồng nhất; mask MANUAL thiếu status → DRAFT.
-    status: r.status || (source === 'AUTO' ? 'APPROVED' : 'DRAFT'),
+    text: typeof r.text === 'string' ? r.text : null,
+    confidence: r.confidence ?? null,
+    status,
+    isLegacy: !!isLegacy,
   }
 }
 
-// GET /api/v1/projects/:id/masks — manual đã lưu + automatic suy ra từ transcript.
+// GET /api/v1/projects/:id/masks — manual đã lưu + legacy OCR suy ra từ transcript.
 router.get('/projects/:id/masks', requireProjectOwner, async (req, res) => {
   try {
     if (!isDubMode(req.project.mode)) {
@@ -182,8 +187,14 @@ router.get('/projects/:id/masks', requireProjectOwner, async (req, res) => {
       [req.project.id]
     )
     const params = parseParams(req.project.params)
-    const auto = await deriveAutoMasks(req.project.id, params.maskMethod)
-    res.json({ masks: [...stored.map(toMaskJson), ...auto] })
+    const legacyAuto = await deriveAutoMasks(req.project.id, params.maskMethod)
+    // Phân biệt rõ MANUAL vs LEGACY_AUTO / LEGACY_OCR
+    const formattedStored = (stored || []).map((row) => {
+      const src = String(row.source || 'MANUAL').toUpperCase()
+      const normalizedSource = src === 'AUTO' ? 'LEGACY_AUTO' : src
+      return toMaskJson({ ...row, source: normalizedSource })
+    })
+    res.json({ masks: [...formattedStored, ...legacyAuto] })
   } catch (err) {
     console.error('Masks GET error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', err.message || 'Internal server error')
@@ -216,6 +227,15 @@ router.post('/projects/:id/masks', requireProjectOwner, async (req, res) => {
       confidence: null,
       source: 'MANUAL',
     })
+
+    // Nếu tạo mask APPROVED trực tiếp, ảnh hưởng render -> bump revision
+    if (v.value.status === 'APPROVED' && v.value.enabled !== 0) {
+      await run(
+        'UPDATE projects SET transcript_version = COALESCE(transcript_version, 0) + 1 WHERE id = ?',
+        [req.project.id]
+      )
+    }
+
     res.status(201).json(toMaskJson(row))
   } catch (err) {
     console.error('Masks POST error:', err)
@@ -224,24 +244,48 @@ router.post('/projects/:id/masks', requireProjectOwner, async (req, res) => {
 })
 
 async function loadOwnedMask(projectId, maskId) {
-  if (String(maskId || '').startsWith('auto:')) return { auto: true, row: null }
+  const sid = String(maskId || '')
+  if (sid.startsWith('auto:') || sid.startsWith('legacy_ocr:')) return { auto: true, row: null }
   const row = await queryOne('SELECT * FROM ocr_regions WHERE id = ? AND project_id = ?', [maskId, projectId])
   return { auto: false, row }
 }
 
-// PATCH /api/v1/projects/:id/masks/:maskId — sửa manual mask (AUTO chỉ đọc).
+// PATCH /api/v1/projects/:id/masks/:maskId — sửa manual mask (AUTO/LEGACY chỉ đọc).
 router.patch('/projects/:id/masks/:maskId', requireProjectOwner, async (req, res) => {
   try {
     if (!isDubMode(req.project.mode)) {
       return sendError(res, 400, ERR.VALIDATION, 'Chỉ dự án TRANSLATE_DUB mới có mask', { field: 'mode' })
     }
     const { row, auto } = await loadOwnedMask(req.project.id, req.params.maskId)
-    if (auto || (row && String(row.source || '').toUpperCase() === 'AUTO')) {
+    if (auto || (row && ['AUTO', 'LEGACY_AUTO', 'LEGACY_OCR'].includes(String(row.source || '').toUpperCase()))) {
       return sendError(res, 400, ERR.VALIDATION, 'Mask tự động chỉ đọc — hãy tạo mask thủ công mới để override', { field: 'maskId' })
     }
     if (!row) return sendError(res, 404, ERR.VALIDATION, 'Mask không tồn tại trong project này', { field: 'maskId' })
     const v = validateMaskInput(req.body || {}, { partial: true })
     if (!v.ok) return sendError(res, 400, ERR.VALIDATION, v.message, { field: v.field })
+
+    // BẢO ĐẢM APPROVED MASK IMMUTABLE (§4.4):
+    // Nếu row hiện tại là APPROVED:
+    // Tuyệt đối không cho phép sửa ratioX, ratioY, ratioW, ratioH, startSec, endSec, type, blurRadius, opacity!
+    const isCurrentlyApproved = String(row.status || '').toUpperCase() === 'APPROVED'
+    const GEOMETRY_OR_VISUAL_FIELDS = [
+      'ratioX', 'ratioY', 'ratioW', 'ratioH',
+      'startSec', 'endSec', 'type', 'blurRadius', 'opacity'
+    ]
+    const hasGeometryOrVisualChange = GEOMETRY_OR_VISUAL_FIELDS.some(
+      (f) => v.value[f] !== undefined
+    )
+
+    if (isCurrentlyApproved && hasGeometryOrVisualChange) {
+      return sendError(
+        res,
+        409,
+        'MASK_APPROVED_IMMUTABLE',
+        'Mask đã APPROVED là bất biến (không thể sửa toạ độ, timing, hoặc kiểu hiển thị). Hãy chuyển trạng thái về DRAFT hoặc tạo bản sao để chỉnh sửa.',
+        { field: 'status' }
+      )
+    }
+
     const patch = {}
     if (v.value.ratioX !== undefined) patch.ratio_x = v.value.ratioX
     if (v.value.ratioY !== undefined) patch.ratio_y = v.value.ratioY
@@ -276,6 +320,18 @@ router.patch('/projects/:id/masks/:maskId', requireProjectOwner, async (req, res
         [row.id],
         { op: 'update.ocr_regions' }
       )
+
+      // KIỂM TRA RENDER-AFFECTING MASK MUTATION (§4.5):
+      // Nếu mask mới được APPROVED, hoặc mask APPROVED bị DISABLED/DRAFT:
+      // Render output sẽ bị ảnh hưởng -> BUMP transcript_version của project!
+      const oldApproved = isCurrentlyApproved && row.enabled !== 0
+      const newApproved = updated.status === 'APPROVED' && updated.enabled !== 0
+      if (oldApproved !== newApproved) {
+        await run(
+          'UPDATE projects SET transcript_version = COALESCE(transcript_version, 0) + 1 WHERE id = ?',
+          [req.project.id]
+        )
+      }
     }
     res.json(toMaskJson(updated))
   } catch (err) {
@@ -291,11 +347,20 @@ router.delete('/projects/:id/masks/:maskId', requireProjectOwner, async (req, re
       return sendError(res, 400, ERR.VALIDATION, 'Chỉ dự án TRANSLATE_DUB mới có mask', { field: 'mode' })
     }
     const { row, auto } = await loadOwnedMask(req.project.id, req.params.maskId)
-    if (auto || (row && String(row.source || '').toUpperCase() === 'AUTO')) {
+    if (auto || (row && ['AUTO', 'LEGACY_AUTO', 'LEGACY_OCR'].includes(String(row.source || '').toUpperCase()))) {
       return sendError(res, 400, ERR.VALIDATION, 'Mask tự động chỉ đọc — không thể xoá', { field: 'maskId' })
     }
     if (!row) return sendError(res, 404, ERR.VALIDATION, 'Mask không tồn tại trong project này', { field: 'maskId' })
     await run('DELETE FROM ocr_regions WHERE id = ?', [row.id])
+
+    // Nếu xoá mask đang APPROVED và active, ảnh hưởng render -> bump revision
+    if (row.status === 'APPROVED' && row.enabled !== 0) {
+      await run(
+        'UPDATE projects SET transcript_version = COALESCE(transcript_version, 0) + 1 WHERE id = ?',
+        [req.project.id]
+      )
+    }
+
     res.json({ deleted: true, id: row.id })
   } catch (err) {
     console.error('Masks DELETE error:', err)

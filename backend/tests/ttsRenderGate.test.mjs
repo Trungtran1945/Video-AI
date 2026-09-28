@@ -7,8 +7,6 @@ import os from 'node:os'
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-ttsgate-'))
 process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
-process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || 'C:\\ffmpeg\\bin\\ffmpeg.exe'
-process.env.FFPROBE_PATH = process.env.FFPROBE_PATH || 'C:\\ffmpeg\\bin\\ffprobe.exe'
 process.env.GEMINI_API_KEY = 'test-key'
 
 const { initSchema } = await import('../src/db/schema.js')

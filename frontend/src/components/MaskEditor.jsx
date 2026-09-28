@@ -6,14 +6,19 @@ const toPct = (r) => Math.round(Number(r || 0) * 1000) / 10;
 const toRatio = (p) => Math.min(1, Math.max(0, Number(p) / 100));
 
 function isAuto(m) {
-  return String(m?.id || '').startsWith('auto:') || String(m?.source || '').toUpperCase() === 'AUTO';
+  return String(m?.id || '').startsWith('auto:') ||
+    String(m?.id || '').startsWith('legacy_ocr:') ||
+    String(m?.source || '').toUpperCase() === 'AUTO' ||
+    String(m?.source || '').toUpperCase() === 'LEGACY_AUTO' ||
+    String(m?.source || '').toUpperCase() === 'LEGACY_OCR' ||
+    !!m?.isLegacy;
 }
 
 function inTime(m, t) {
   return Number(m.startSec) <= t && t <= Number(m.endSec);
 }
 
-export default function MaskEditor({ projectId, sourceUrl, disabled }) {
+export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale, onMaskChange }) {
   const [masks, setMasks] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [currentTime, setCurrentTime] = useState(0);
@@ -65,6 +70,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
     try {
       const updated = await projectsApi.updateMask(projectId, maskId, patch);
       setMasks((prev) => prev.map((m) => (String(m.id) === String(maskId) ? { ...m, ...updated } : m)));
+      onMaskChange?.();
       return updated;
     } catch (e) {
       setError('Không lưu được mask: ' + (e?.response?.data?.message || e.message));
@@ -72,7 +78,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
     } finally {
       setSaving(false);
     }
-  }, [projectId]);
+  }, [projectId, onMaskChange]);
 
   const handleAdd = async () => {
     setSaving(true);
@@ -86,6 +92,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
       });
       setMasks((prev) => [...prev, created]);
       setSelectedId(created.id);
+      onMaskChange?.();
     } catch (e) {
       setError('Không tạo được mask: ' + (e?.response?.data?.message || e.message));
     } finally {
@@ -102,7 +109,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
     : isAuto(selected)
       ? 'Mask tự động chỉ đọc — nhấn “Nhân bản tay” để chỉnh'
       : selected.status === 'APPROVED'
-        ? 'Mask đã approve — sẽ được đưa vào video ở lần Chạy lại tiếp theo'
+        ? 'APPROVED: sẽ được render ở lần chạy lại'
         : 'Approve để đưa mask vào video ở lần Chạy lại tiếp theo';
   const handleApprove = async () => {
     if (!canApprove) return;
@@ -111,11 +118,16 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
     try {
       const updated = await projectsApi.updateMask(projectId, selected.id, { status: 'APPROVED' });
       setMasks((prev) => prev.map((m) => (String(m.id) === String(selected.id) ? { ...m, ...updated } : m)));
+      onMaskChange?.();
     } catch (e) {
       setError('Không approve được mask: ' + (e?.response?.data?.message || e.message));
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleResetToDraft = async (m) => {
+    await patchMask(m.id, { status: 'DRAFT' });
   };
 
   // Eye toggle chuyển trạng thái DISABLED ↔ APPROVED (giữ row, render bỏ qua/khôi phục).
@@ -125,7 +137,9 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
   };
 
   const statusBadge = (m) => {
-    if (isAuto(m)) return 'AUTO';
+    if (isAuto(m)) {
+      return String(m?.source || '').toUpperCase() === 'LEGACY_OCR' ? 'LEGACY_OCR' : 'AUTO';
+    }
     return m.status === 'APPROVED' ? 'APPROVED' : m.status === 'DISABLED' ? 'DISABLED' : 'DRAFT';
   };
 
@@ -136,6 +150,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
       await projectsApi.deleteMask(projectId, m.id);
       setMasks((prev) => prev.filter((x) => String(x.id) !== String(m.id)));
       if (String(selectedId) === String(m.id)) setSelectedId(null);
+      onMaskChange?.();
     } catch (e) {
       setError('Không xoá được mask: ' + (e?.response?.data?.message || e.message));
     } finally {
@@ -155,6 +170,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
       });
       setMasks((prev) => [...prev, created]);
       setSelectedId(created.id);
+      onMaskChange?.();
     } catch (e) {
       setError('Không nhân bản được mask: ' + (e?.response?.data?.message || e.message));
     } finally {
@@ -163,9 +179,10 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
   };
 
   // Drag / resize bằng pointer events (không thêm dependency).
+  // Khoá kéo/thả đối với mask AUTO và mask đã APPROVED (bất biến).
   const onBoxPointerDown = (e, m, mode) => {
     if (disabled || saving) return;
-    if (isAuto(m)) {
+    if (isAuto(m) || m.status === 'APPROVED') {
       setSelectedId(m.id);
       return;
     }
@@ -257,6 +274,11 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
 
   return (
     <div className="flex flex-col gap-2">
+      {outputStale && (
+        <div className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">
+          <AlertCircle className="w-4 h-4 shrink-0" /> Video hiện tại chưa phản ánh thay đổi mask.
+        </div>
+      )}
       {/* Workflow lifecycle: thêm mask ≠ sửa video cuối. Burn thật chỉ xảy ra ở dub.render. */}
       <div className="flex items-start gap-2 text-[11px] text-muted-foreground bg-muted/50 border border-border rounded-lg px-2 py-1.5">
         <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
@@ -398,6 +420,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
           onCommit={(patch) => patchMask(selected.id, patch)}
           onDelete={() => handleDelete(selected)}
           onDuplicate={() => handleDuplicateAuto(selected)}
+          onResetToDraft={() => handleResetToDraft(selected)}
         />
       )}
     </div>
@@ -425,8 +448,9 @@ function NumField({ label, value, step = 0.5, min, max, onCommit, suffix, disabl
   );
 }
 
-function MaskForm({ mask, readOnly, disabled, onCommit, onDelete, onDuplicate }) {
-  const locked = readOnly || disabled;
+function MaskForm({ mask, readOnly, disabled, onCommit, onDelete, onDuplicate, onResetToDraft }) {
+  const isApproved = mask.status === 'APPROVED';
+  const locked = readOnly || disabled || isApproved;
   return (
     <div className="border border-border rounded-xl p-2 flex flex-col gap-2 bg-card">
       <div className="flex items-center justify-between">
@@ -453,11 +477,28 @@ function MaskForm({ mask, readOnly, disabled, onCommit, onDelete, onDuplicate })
           )}
         </div>
       </div>
-      {!readOnly && mask.status !== 'APPROVED' && (
-        <div className="text-[11px] text-amber-600 dark:text-amber-300">Mask DRAFT chưa được render — nhấn Approve ở phía trên, rồi Chạy lại để áp dụng.</div>
+      {!readOnly && mask.status === 'DRAFT' && (
+        <div className="text-[11px] text-amber-600 dark:text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+          DRAFT: chưa render. Chỉnh sửa toạ độ/thời lượng bên dưới, sau đó nhấn <strong>Approve</strong> ở phía trên để áp dụng.
+        </div>
       )}
       {!readOnly && mask.status === 'APPROVED' && (
-        <div className="text-[11px] text-emerald-600 dark:text-emerald-300">Mask đã approve — sẽ được đưa vào video ở lần Chạy lại tiếp theo.</div>
+        <div className="flex items-center justify-between text-[11px] text-emerald-600 dark:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-2">
+          <span>APPROVED: sẽ được render ở lần chạy lại. Mask đã khoá để bảo đảm tính nhất quán.</span>
+          <button
+            type="button"
+            onClick={onResetToDraft}
+            disabled={disabled}
+            className="ml-2 px-2 py-1 text-[10px] font-semibold border border-border bg-background rounded-md hover:bg-muted text-foreground transition"
+          >
+            Chuyển về DRAFT để sửa
+          </button>
+        </div>
+      )}
+      {!readOnly && mask.status === 'DISABLED' && (
+        <div className="text-[11px] text-slate-500 dark:text-slate-400 bg-muted/40 rounded-lg p-2">
+          DISABLED: không render. Bật lại (biểu tượng con mắt) để đưa vào video ở lần chạy lại.
+        </div>
       )}
       <div className="grid grid-cols-4 gap-1.5">
         <NumField label="X" suffix="%" value={toPct(mask.ratioX)} min={0} max={100} disabled={locked} onCommit={(n) => onCommit({ ratioX: toRatio(n) })} />

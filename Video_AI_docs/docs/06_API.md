@@ -83,26 +83,34 @@ Chạy sau khi `dub.translate` xong, trước khi enqueue `dub.ttsAlign`/`dub.re
 ### PATCH `/projects/:id/segments/:segmentId/translation` — body `{ revision, translation }`; revision bắt buộc, gate hard → 422, stale → 409, trả segment + revision + outputStale
 `transcript_version` là revision của source-of-truth `transcript_segments`. User PUT/PATCH và generated translation/dedupe chỉ bump khi state thực sự đổi; initial STT/cache import giữ revision khởi tạo; TTS linkage là derived metadata và không bump. Dub render stamp snapshot revision, Summary output dùng `null`.
 ### DELETE `/projects/:id` — xoá project + file [CURRENT, EXTRA: `projects.js:329-362`; 409 nếu pipeline đang chạy]
-### GET/PUT `/projects/:id/mask-regions` — [NOT IMPLEMENTED: không route nào cài đặt] —
-`OcrRegion[]`; PUT nhận region user chỉnh trên Canvas (`source='MANUAL'`)
+### GET `/projects/:id/masks` — `{ masks: MaskItem[] }` (TRANSLATE_DUB) [CURRENT]
+Trả về danh sách mask đã lưu (`MANUAL`, `LEGACY_AUTO`) và các mask suy ra từ legacy OCR (`LEGACY_OCR` với `status: 'DRAFT'`, `enabled: false`, `isLegacy: true`).
+### POST `/projects/:id/masks` — tạo mask thủ công mới [CURRENT]
+Body: `{ startSec, endSec, ratioX, ratioY, ratioW, ratioH, type?, blurRadius?, opacity?, status? }`.
+Mặc định `status: 'DRAFT'`. Nếu tạo trực tiếp với `status: 'APPROVED'` và `enabled: 1`, hệ thống tự động bump `projects.transcript_version` để đánh dấu video output hiện tại bị cũ (`outputStale`).
+### PATCH `/projects/:id/masks/:maskId` — cập nhật mask thủ công [CURRENT]
+- **Bất biến APPROVED**: Nếu mask đang ở trạng thái `APPROVED`, cấm sửa đổi các trường hình học và thị giác (`ratioX`, `ratioY`, `ratioW`, `ratioH`, `startSec`, `endSec`, `type`, `blurRadius`, `opacity`) và trả về `409 MASK_APPROVED_IMMUTABLE`. Client phải chuyển trạng thái về `DRAFT` hoặc tạo bản sao để chỉnh sửa.
+- **Vòng đời trạng thái**: Cho phép chuyển trạng thái giữa `APPROVED`, `DRAFT`, `DISABLED`.
+- **Đồng bộ Revision**: Khi chuyển trạng thái ảnh hưởng tới render (giữa APPROVED và DRAFT/DISABLED), hệ thống tự động tăng `projects.transcript_version`, kích hoạt cờ `outputStale: true` trên toàn bộ UI/API.
+### DELETE `/projects/:id/masks/:maskId` — xoá mask thủ công [CURRENT]
+Xoá mask thủ công đã lưu. Nếu mask bị xoá đang ở trạng thái `APPROVED`, hệ thống tăng `projects.transcript_version` để đánh dấu output stale.
 
-Mỗi `OcrRegion` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
+Mỗi `MaskItem` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
 
 ```jsonc
 {
   "id": "uuid",
   "startSec": 12.0, "endSec": 15.5,
   "ratioX": 0.05, "ratioY": 0.80, "ratioW": 0.90, "ratioH": 0.15, // 0.0–1.0 so với kích thước video
-  "maskStrength": 0.6,   // 0–1: cường độ làm mờ (blur + độ đục lớp phủ)
-  "isStatic": false,      // true: hardsub tĩnh → áp dụng cho toàn bộ duration (1 record)
-  "text": "Original subtitle", "confidence": 0.91,
-  "source": "AUTO"        // 'AUTO' (OCR) | 'MANUAL' (user khoanh)
+  "type": "blur",        // 'blur' | 'solid'
+  "blurRadius": 8,       // 1–50
+  "opacity": 1,          // 0–1
+  "enabled": true,       // true/false
+  "source": "MANUAL",    // 'MANUAL' | 'LEGACY_AUTO' | 'LEGACY_OCR'
+  "status": "APPROVED",  // 'DRAFT' | 'APPROVED' | 'DISABLED' (chỉ APPROVED mới được render)
+  "isLegacy": false      // true đối với mask từ dữ liệu OCR cũ
 }
 ```
-
-- `GET` trả danh sách đã normalize (pixel cũ → ratio nếu DB còn bản ghi cũ).
-- `PUT` body `{ regions: [...] }` upsert theo `id`; region `id` mới (`tmp_...`) → thêm `MANUAL`;
-  `isStatic=true` → backend mở rộng `startSec=0, endSec=duration` khi render.
 ### POST `/projects/:id/regenerate` — chạy lại pipeline (từ stage lỗi hoặc đầu)
 
 ---

@@ -9,8 +9,6 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 process.env.DB_PATH = path.join(os.tmpdir(), `vidai_sse_${Date.now()}.db`)
-process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || 'C:\\ffmpeg\\bin\\ffmpeg.exe'
-process.env.FFPROBE_PATH = process.env.FFPROBE_PATH || 'C:\\ffmpeg\\bin\\ffprobe.exe'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const srcFile = (...p) => fs.readFileSync(path.join(__dirname, '..', 'src', ...p), 'utf8')

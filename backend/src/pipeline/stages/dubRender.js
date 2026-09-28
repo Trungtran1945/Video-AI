@@ -64,9 +64,8 @@ export async function dubRender(ctx) {
   // Chạy TRƯỚC burn ASS để subtitle dịch overlay sau luôn visible (render order:
   // source → mask → translated subtitle → audio mix → mux).
   const maskMethod = params.maskMethod === 'solid' ? 'solid' : 'blur'
-  const regions = await loadSubtitleRegions(project.id, { maskMethod })
-  // loadSubtitleRegions đã lọc APPROVED-only (+AUTO legacy); giữ check phòng thủ.
-  const activeMasks = regions.filter((r) => (r.status === 'APPROVED' || r.source === 'AUTO') && r.enabled !== 0)
+  // loadSubtitleRegions chỉ trả về mask APPROVED và enabled !== 0 (STT-only)
+  const activeMasks = await loadSubtitleRegions(project.id, { maskMethod })
   if (activeMasks.length) {
     await assertRunOwner(project.id, runToken)
     console.log(`[dub.render] Burning ${activeMasks.length} APPROVED mask(s) vào video trước ASS`)
@@ -92,9 +91,8 @@ export async function dubRender(ctx) {
   )
   if (segments.length) {
     await assertRunOwner(project.id, runToken)
-    // Minimal plumbing: đọc ocr_regions nếu tồn tại (scale-invariant ratio 0..1),
-    // normalize snake_case → camelCase, truyền đúng vào buildAss. Rỗng → fallback đáy.
-    const assPath = buildAss(dir, segments, regions, {
+    // Truyền activeMasks (APPROVED masks) vào buildAss để căn chỉnh vị trí phụ đề nếu cần.
+    const assPath = buildAss(dir, segments, activeMasks, {
       width: info.width || 1280,
       height: info.height || 720,
       title: project.title,
@@ -257,43 +255,78 @@ export async function dubRender(ctx) {
 
 // Đọc subtitle/mask regions đã persist (nếu có). Scale-invariant ratio 0..1,
 // tương ứng resolution video thực tế qua PlayResX/Y + centerOf().
-// Gộp regions MANUAL đã APPROVE + AUTO suy ra từ transcript OCR (bbox đã persist
-// trên segment — luôn nhất quán với transcript, dedupe-safe). Mask DRAFT/DISABLED
-// KHÔNG được render (§2: chỉ APPROVED mới burn vào video thật).
-// Không hard-code vị trí khi region tồn tại; rỗng → fallback top/bottom/default.
-export async function loadSubtitleRegions(projectId, { maskMethod = 'blur' } = {}) {
+// Đọc subtitle/mask regions đã persist (nếu có). Scale-invariant ratio 0..1,
+// tương ứng resolution video thực tế qua PlayResX/Y + centerOf().
+// STT-only TRANSLATE_DUB (§4.1): Chỉ render các mask MANUAL đã APPROVED và enabled !== 0.
+// Tuyệt đối không tự động derive mask từ OCR transcript_segments vào render.
+// DB query failure PHẢI throw BLOCK_RENDER: MASK_DATA_UNAVAILABLE (không nuốt lỗi).
+// APPROVED mask malformed / invalid geometry PHẢI throw BLOCK_RENDER: MASK_INVALID.
+export async function loadSubtitleRegions(projectId, { maskMethod = 'blur', includeLegacyAuto = false } = {}) {
+  let rows
   try {
-    const rows = await query(
+    rows = await query(
       `SELECT * FROM ocr_regions WHERE project_id = ? ORDER BY start_sec ASC`,
       [projectId]
     )
-    // Tương thích ngược: row AUTO lưu trong DB từ phiên bản cũ (chưa có
-    // status, backfill giữ DRAFT) vẫn được render như trước — chỉ MANUAL mới
-    // bắt buộc APPROVED. `enabled` vẫn là kill-switch cho mọi row.
-    const stored = (rows || [])
-      .map(normalizeRegion)
-      .filter((r) => r && (r.status === 'APPROVED' || r.source === 'AUTO') && r.enabled !== 0)
-    const auto = await deriveAutoRegions(projectId, maskMethod)
-    return [...stored, ...auto]
-  } catch (_) {
-    return []
+  } catch (err) {
+    const error = new Error(`BLOCK_RENDER: MASK_DATA_UNAVAILABLE — Không thể đọc dữ liệu mask từ cơ sở dữ liệu: ${err.message}`)
+    error.code = 'BLOCK_RENDER'
+    throw error
   }
+
+  const approved = []
+  for (const row of rows || []) {
+    const rawStatus = String(row.status || '').toUpperCase()
+    const isApproved = rawStatus === 'APPROVED'
+    const isEnabled = row.enabled !== 0 && row.enabled !== false && row.enabled !== '0'
+
+    // DRAFT và DISABLED không được render (§2: chỉ APPROVED mới burn vào video thật).
+    if (!isApproved || !isEnabled) {
+      continue
+    }
+
+    const norm = normalizeRegion(row)
+    if (!norm) {
+      const error = new Error(`BLOCK_RENDER: MASK_INVALID — Mask ${row.id || 'unknown'} có toạ độ hoặc timing không hợp lệ`)
+      error.code = 'BLOCK_RENDER'
+      throw error
+    }
+    approved.push(norm)
+  }
+
+  // Tương thích ngược: chỉ derive khi cờ includeLegacyAuto được bật tường minh.
+  if (includeLegacyAuto) {
+    const auto = await deriveAutoRegions(projectId, maskMethod)
+    const approvedAuto = auto.filter((r) => r.status === 'APPROVED' && r.enabled !== 0)
+    return [...approved, ...approvedAuto]
+  }
+
+  return approved
 }
 
-// Dựng mask AUTO từ transcript OCR (bbox ratio đã persist trên segment).
-// Không ghi DB — suy ra lúc render/API nên không bao giờ lệch với transcript.
-export async function deriveAutoRegions(projectId, maskMethod) {
+// Dựng mask từ transcript OCR legacy (nếu còn trong DB cũ).
+// STT-only TRANSLATE_DUB không tự động render các mask này.
+// Chỉ match các row có source = 'ocr' tường minh (LOWER/TRIM), KHÔNG match source IS NULL.
+export async function deriveAutoRegions(projectId, maskMethod = 'blur') {
   const type = maskMethod === 'solid' ? 'solid' : 'blur'
-  const rows = await query(
-    `SELECT id, start_sec, end_sec, text, confidence, ratio_x, ratio_y, ratio_w, ratio_h
-     FROM transcript_segments
-     WHERE project_id = ? AND (source = 'ocr' OR source IS NULL)
-       AND ratio_x IS NOT NULL AND ratio_y IS NOT NULL AND ratio_w IS NOT NULL AND ratio_h IS NOT NULL
-     ORDER BY start_sec ASC`,
-    [projectId]
-  )
+  let rows
+  try {
+    rows = await query(
+      `SELECT id, start_sec, end_sec, text, confidence, ratio_x, ratio_y, ratio_w, ratio_h
+       FROM transcript_segments
+       WHERE project_id = ? AND LOWER(TRIM(source)) = 'ocr'
+         AND ratio_x IS NOT NULL AND ratio_y IS NOT NULL AND ratio_w IS NOT NULL AND ratio_h IS NOT NULL
+       ORDER BY start_sec ASC`,
+      [projectId]
+    )
+  } catch (err) {
+    const error = new Error(`BLOCK_RENDER: MASK_DATA_UNAVAILABLE — Lỗi truy vấn transcript segments: ${err.message}`)
+    error.code = 'BLOCK_RENDER'
+    throw error
+  }
+
   const out = []
-  for (const s of rows) {
+  for (const s of rows || []) {
     const r = normalizeRegion({
       ratio_x: s.ratio_x, ratio_y: s.ratio_y, ratio_w: s.ratio_w, ratio_h: s.ratio_h,
       start_sec: s.start_sec, end_sec: s.end_sec,
@@ -301,14 +334,16 @@ export async function deriveAutoRegions(projectId, maskMethod) {
     if (!r) continue
     out.push({
       ...r,
-      id: `auto:${s.id}`,
+      id: `legacy_ocr:${s.id}`,
       type,
       blur_radius: 8,
       opacity: 1,
-      enabled: 1,
+      enabled: 0,
       text: s.text,
       confidence: s.confidence,
-      source: 'AUTO',
+      source: 'LEGACY_OCR',
+      status: 'DRAFT',
+      isLegacy: true,
     })
   }
   return out
@@ -330,7 +365,7 @@ export function normalizeRegion(r) {
   const blurRaw = Number(r.blur_radius ?? r.blurRadius ?? 8)
   const opRaw = Number(r.opacity ?? r.mask_strength ?? 1)
   const enabled = r.enabled === 0 || r.enabled === false || r.enabled === '0' ? 0 : 1
-  const source = r.source || 'AUTO'
+  const source = r.source || 'MANUAL'
   const rawStatus = String(r.status || '').toUpperCase()
   return {
     id: r.id ?? null,
@@ -343,8 +378,8 @@ export function normalizeRegion(r) {
     text: typeof r.text === 'string' ? r.text : null,
     confidence: Number.isFinite(Number(r.confidence)) ? Number(r.confidence) : null,
     source,
-    // AUTO suy ra lúc đọc luôn APPROVED; MANUAL thiếu status → DRAFT (render bỏ qua).
-    status: ['DRAFT', 'APPROVED', 'DISABLED'].includes(rawStatus) ? rawStatus : (source === 'AUTO' ? 'APPROVED' : 'DRAFT'),
+    // Status hợp lệ: DRAFT | APPROVED | DISABLED. Mặc định là DRAFT (chỉ render khi APPROVED).
+    status: ['DRAFT', 'APPROVED', 'DISABLED'].includes(rawStatus) ? rawStatus : 'DRAFT',
   }
 }
 

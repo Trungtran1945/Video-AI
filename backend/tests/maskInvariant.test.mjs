@@ -5,8 +5,6 @@ import path from 'node:path'
 import os from 'node:os'
 
 process.env.DB_PATH = path.join(os.tmpdir(), `vidai_maskInvariant_${Date.now()}.db`)
-process.env.FFMPEG_PATH = process.env.FFMPEG_PATH || 'C:\\ffmpeg\\bin\\ffmpeg.exe'
-process.env.FFPROBE_PATH = process.env.FFPROBE_PATH || 'C:\\ffmpeg\\bin\\ffprobe.exe'
 
 const { initSchema } = await import('../src/db/schema.js')
 const { run } = await import('../src/db/query.js')
