@@ -539,7 +539,7 @@ export default function ProjectDetail() {
   if (isDub) {
     return (
       <Layout>
-        <div className="h-screen flex flex-col bg-background text-foreground">
+        <div className="h-screen max-md:h-auto flex flex-col bg-background text-foreground">
           {/* 1. Header */}
           <div className="shrink-0 px-4 py-3 border-b border-border bg-card">
             <Link to="/projects" className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground mb-2 transition">
@@ -550,7 +550,7 @@ export default function ProjectDetail() {
                 <h1 className="text-lg font-bold text-foreground truncate">{project.title}</h1>
                 <StatusBadge status={project.status} />
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
                 <button
                   type="button"
                   onClick={() => setConfirmDelete(true)}
@@ -611,8 +611,8 @@ export default function ProjectDetail() {
               <div className="flex items-center gap-2 shrink-0">
                 <span className="text-[11px] font-bold text-foreground">Pipeline</span>
                 {isActive && (
-                  <span className="inline-flex items-center gap-1 text-[11px] text-primary font-semibold">
-                    <Loader2 className="w-2.5 h-2.5 animate-spin" /> {sseAvailable ? 'SSE' : 'Polling'}
+                  <span className="inline-flex items-center gap-1 text-[11px] text-primary font-semibold" title={sseAvailable ? 'Realtime (SSE)' : 'Fallback polling'}>
+                    <Loader2 className="w-2.5 h-2.5 animate-spin" /> {sseAvailable ? 'Trực tiếp' : 'Đồng bộ định kỳ'}
                   </span>
                 )}
               </div>
@@ -661,13 +661,13 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          {/* 3. Main Workspace: Transcript + Video */}
-          <div className="flex-1 flex min-h-0">
+          {/* 3. Main Workspace: Transcript (chính) + Video/output */}
+          <div className="flex-1 flex min-h-0 max-md:flex-col">
             {/* Left Panel: Transcript Editor (dominant) */}
-            <div className="w-[58%] flex flex-col min-h-0 border-r border-border">
+            <div className="w-[58%] max-md:w-full flex flex-col min-h-0 border-r border-border max-md:border-r-0 max-md:border-b">
               {outputStale && !isActive && (
                 <div className="shrink-0 mx-3 mt-3 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">
-                  <AlertCircle className="w-4 h-4 shrink-0" /> Video hiện tại chưa phản ánh bản chỉnh sửa — nhấn Lồng tiếng lại để cập nhật.
+                  <AlertCircle className="w-4 h-4 shrink-0" /> Video hiện tại chưa phản ánh bản chỉnh sửa — nhấn Chạy lại để cập nhật.
                 </div>
               )}
               <TranscriptEditor
@@ -686,7 +686,7 @@ export default function ProjectDetail() {
             </div>
 
             {/* Right Panel: Video Preview */}
-            <div className="w-[42%] flex flex-col min-h-0 bg-card border-l border-border overflow-y-auto">
+            <div className="w-[42%] max-md:w-full flex flex-col min-h-0 bg-card border-l border-border max-md:border-l-0 overflow-y-auto">
               {/* §1: pipeline đang chạy → ẩn output, hiện tiến trình + stage hiện tại */}
               {isActive ? (
                 <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">

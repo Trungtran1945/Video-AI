@@ -95,7 +95,15 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
 
   // §2 approve lifecycle: DRAFT → APPROVED (render burn thật) | DISABLED.
   // Chưa chọn mask hoặc mask AUTO → nút Approve disabled.
+  // Thêm mask CHỈ tạo bản xem trước — video cuối chỉ đổi khi Approve + Chạy lại.
   const canApprove = selected && !isAuto(selected) && selected.status !== 'APPROVED' && !disabled && !saving;
+  const approveHint = !selected
+    ? 'Chọn một mask thủ công để approve'
+    : isAuto(selected)
+      ? 'Mask tự động chỉ đọc — nhấn “Nhân bản tay” để chỉnh'
+      : selected.status === 'APPROVED'
+        ? 'Mask đã approve — sẽ được đưa vào video ở lần Chạy lại tiếp theo'
+        : 'Approve để đưa mask vào video ở lần Chạy lại tiếp theo';
   const handleApprove = async () => {
     if (!canApprove) return;
     setSaving(true);
@@ -249,6 +257,11 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
 
   return (
     <div className="flex flex-col gap-2">
+      {/* Workflow lifecycle: thêm mask ≠ sửa video cuối. Burn thật chỉ xảy ra ở dub.render. */}
+      <div className="flex items-start gap-2 text-[11px] text-muted-foreground bg-muted/50 border border-border rounded-lg px-2 py-1.5">
+        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
+        <span>Thêm mask chỉ tạo bản xem trước. Để đưa vào video cuối: <strong className="text-foreground">Approve</strong> mask rồi nhấn <strong className="text-foreground">Chạy lại</strong>.</span>
+      </div>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
           <Scissors className="w-3.5 h-3.5" /> Che chữ thủ công
@@ -258,7 +271,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
           <button
             onClick={handleApprove}
             disabled={!canApprove}
-            title={!selected ? 'Chọn một mask thủ công để approve' : isAuto(selected) ? 'Mask tự động chỉ đọc' : 'Approve mask để render burn vào video'}
+            title={approveHint}
             className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40"
           >
             {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />} Approve
@@ -278,8 +291,11 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
           <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {error}
         </div>
       )}
+      {!error && (
+        <div className="text-[11px] text-muted-foreground px-1" role="status">{approveHint}</div>
+      )}
 
-      {/* Preview: video nguồn + overlay mask realtime */}
+      {/* Preview: video nguồn + overlay mask realtime (xem trước, chưa phải video cuối) */}
       <div
         ref={containerRef}
         onPointerMove={onContainerPointerMove}
@@ -328,6 +344,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
           </div>
         ))}
       </div>
+      <div className="text-[10px] text-muted-foreground px-1">Xem trước trên video nguồn — phụ đề dịch sẽ hiển thị phía trên vùng che ở video cuối.</div>
 
       {/* Danh sách mask */}
       <div className="flex flex-col gap-1 max-h-32 overflow-y-auto">
@@ -352,6 +369,12 @@ export default function MaskEditor({ projectId, sourceUrl, disabled }) {
             </span>
             <span className="flex-1 truncate">{m.text || `${m.type} ${toPct(m.ratioW)}×${toPct(m.ratioH)}%`}</span>
             <span className="text-muted-foreground shrink-0">{Number(m.startSec).toFixed(1)}–{Number(m.endSec).toFixed(1)}s</span>
+            {!isAuto(m) && m.status !== 'APPROVED' && m.status !== 'DISABLED' && (
+              <span className="shrink-0 text-amber-400/90" title="Mask DRAFT chưa được render — cần Approve">chưa render</span>
+            )}
+            {!isAuto(m) && m.status === 'APPROVED' && (
+              <span className="shrink-0 text-emerald-400/90" title="Mask sẽ được đưa vào video ở lần Chạy lại tiếp theo">chờ render</span>
+            )}
             {!isAuto(m) && (
               <button
                 onClick={(e) => { e.stopPropagation(); handleToggleEnabled(m); }}
@@ -430,6 +453,12 @@ function MaskForm({ mask, readOnly, disabled, onCommit, onDelete, onDuplicate })
           )}
         </div>
       </div>
+      {!readOnly && mask.status !== 'APPROVED' && (
+        <div className="text-[11px] text-amber-600 dark:text-amber-300">Mask DRAFT chưa được render — nhấn Approve ở phía trên, rồi Chạy lại để áp dụng.</div>
+      )}
+      {!readOnly && mask.status === 'APPROVED' && (
+        <div className="text-[11px] text-emerald-600 dark:text-emerald-300">Mask đã approve — sẽ được đưa vào video ở lần Chạy lại tiếp theo.</div>
+      )}
       <div className="grid grid-cols-4 gap-1.5">
         <NumField label="X" suffix="%" value={toPct(mask.ratioX)} min={0} max={100} disabled={locked} onCommit={(n) => onCommit({ ratioX: toRatio(n) })} />
         <NumField label="Y" suffix="%" value={toPct(mask.ratioY)} min={0} max={100} disabled={locked} onCommit={(n) => onCommit({ ratioY: toRatio(n) })} />

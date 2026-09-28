@@ -44,7 +44,8 @@ router.post('/projects/:id/sse-ticket', authMiddleware, requireProjectOwner, asy
 // - event 'progress' mang terminal payload authoritative (completed/failed khớp
 //   projects.status); event 'done' chỉ nghĩa stream sắp đóng, frontend KHÔNG được
 //   suy diễn completed từ done mà phải fetch project status.
-// - nếu project đã completed/failed trước connect, gửi ngay terminal từ DB.
+// - nếu project đã completed/failed trước connect HOẶC hoàn thành đúng lúc setup,
+//   re-check DB sau subscribe vẫn trả ngay terminal từ DB (race-safe).
 router.get('/projects/:id/events', sseAuthMiddleware, requireProjectOwner, async (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -54,21 +55,21 @@ router.get('/projects/:id/events', sseAuthMiddleware, requireProjectOwner, async
   })
   res.write('retry: 3000\n\n')
 
-  // Project đã terminal trước khi SSE connect → trả ngay state DB, không chờ event.
-  try {
-    const current = await queryOne(`SELECT status, progress FROM projects WHERE id = ?`, [req.project.id])
-    if (current && ['completed', 'failed'].includes(String(current.status))) {
-      const terminal = { stage: '__project__', status: String(current.status), percent: Number(current.progress ?? 100) }
-      try {
-        res.write(`event: progress\ndata: ${JSON.stringify(terminal)}\n\n`)
-        res.write('event: done\ndata: {}\n\n')
-      } catch (_) {}
-      res.end()
-      return
-    }
-  } catch (_) {}
+  // Race-safe: subscribe eventBus TRƯỚC khi check DB terminal lần cuối.
+  // Nếu pipeline hoàn thành giữa DB-check và subscribe, event sẽ bị mất vì
+  // eventBus là process-local EventEmitter không replay. Subscribe trước +
+  // re-check DB sau subscribe loại bỏ window mất terminal event.
+  let heartbeat = null
+  let closed = false
+  let unsubscribe = () => {}
+  function cleanup() {
+    if (closed) return
+    closed = true
+    if (heartbeat) clearInterval(heartbeat)
+    try { unsubscribe() } catch (_) {}
+  }
 
-  const unsubscribe = eventBus.subscribe(req.project.id, (payload) => {
+  unsubscribe = eventBus.subscribe(req.project.id, (payload) => {
     try {
       res.write(`event: progress\ndata: ${JSON.stringify(payload)}\n\n`)
       // Terminal statuses: 'completed' (chuẩn mới, khớp projects.status) +
@@ -85,15 +86,26 @@ router.get('/projects/:id/events', sseAuthMiddleware, requireProjectOwner, async
     }
   })
 
+  // Re-check DB SAU khi đã subscribe: nếu project đã terminal trước connect
+  // hoặc hoàn thành đúng lúc setup, trả ngay state DB qua listener đã sẵn sàng.
+  try {
+    const current = await queryOne(`SELECT status, progress FROM projects WHERE id = ?`, [req.project.id])
+    if (current && ['completed', 'failed'].includes(String(current.status))) {
+      const terminal = { stage: '__project__', status: String(current.status), percent: Number(current.progress ?? 100) }
+      try {
+        res.write(`event: progress\ndata: ${JSON.stringify(terminal)}\n\n`)
+        res.write('event: done\ndata: {}\n\n')
+      } catch (_) {}
+      cleanup()
+      res.end()
+      return
+    }
+  } catch (_) {}
+
   // Heartbeat giữ connection sống qua proxy
-  const heartbeat = setInterval(() => {
+  heartbeat = setInterval(() => {
     try { res.write(': ping\n\n') } catch (_) {}
   }, 15000)
-
-  function cleanup() {
-    clearInterval(heartbeat)
-    unsubscribe()
-  }
 
   req.on('close', cleanup)
 })
