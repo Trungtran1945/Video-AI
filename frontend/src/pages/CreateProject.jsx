@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, Languages, AlertCircle, AudioLines, AlertTriangle } from 'lucide-react';
+import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, Languages, AlertCircle, AudioLines, AlertTriangle, Search } from 'lucide-react';
 import {
   LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS,
   MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
@@ -37,6 +37,29 @@ const SUMMARY_DURATIONS = [
   { value: 1800, label: '30 phút', desc: 'Chi tiết, phân tích sâu' },
 ];
 
+const PRESET_CATEGORIES = {
+  all: 'Tất cả',
+  drama: 'Phim & Kịch tính',
+  trend: 'Xu hướng & Meme',
+  formal: 'Chuẩn mực & Tin tức',
+};
+
+const PRESET_CATEGORY_MAP = {
+  'co-trang': 'drama',
+  'tinh-cam': 'drama',
+  'review-phim': 'drama',
+  'kinh-di': 'drama',
+  'tre-em': 'drama',
+  'bat-trend': 'trend',
+  'hai-huoc': 'trend',
+  'gaming': 'trend',
+  'the-thao': 'trend',
+  'sat-nghia': 'formal',
+  'tai-lieu': 'formal',
+  'chinh-luan': 'formal',
+  'cong-nghe': 'formal',
+};
+
 export default function CreateProject() {
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
@@ -45,6 +68,8 @@ export default function CreateProject() {
   const [uploadPercent, setUploadPercent] = useState(0);
   const [error, setError] = useState('');
   const [presets, setPresets] = useState(STYLE_PRESETS_FALLBACK);
+  const [presetCategory, setPresetCategory] = useState('all');
+  const [presetSearch, setPresetSearch] = useState('');
   const [copyrightAck, setCopyrightAck] = useState(false);
   const [form, setForm] = useState({
     mode: null,
@@ -274,16 +299,40 @@ export default function CreateProject() {
 
               {isDub && step === 1 && (
                 <div className="space-y-5">
+                  {/* Language Flow Preview */}
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-muted/40 border border-border">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-primary" />
+                      <span className="text-xs text-muted-foreground">Video nguồn:</span>
+                      <span className="text-xs font-semibold text-foreground">
+                        {SOURCE_LANGUAGES[form.sourceLanguage] || form.sourceLanguage}
+                      </span>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">Dịch sang:</span>
+                      <span className="text-xs font-semibold text-primary">
+                        {TARGET_LANGUAGES[form.targetLanguage] || form.targetLanguage}
+                      </span>
+                      <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                    </div>
+                  </div>
+
                   <div>
-                    <label className="text-sm font-semibold text-foreground mb-2 block">Ngôn ngữ nguồn</label>
+                    <label className="text-sm font-semibold text-foreground mb-2 block">
+                      1. Ngôn ngữ gốc trong video
+                    </label>
                     <div className="grid grid-cols-2 gap-3">
                       {Object.entries(SOURCE_LANGUAGES).map(([code, label]) => (
                         <OptionCard key={code} selected={form.sourceLanguage === code} onClick={() => update('sourceLanguage', code)} title={label} />
                       ))}
                     </div>
                   </div>
+
                   <div>
-                    <label className="text-sm font-semibold text-foreground mb-2 block">Dịch sang</label>
+                    <label className="text-sm font-semibold text-foreground mb-2 block">
+                      2. Ngôn ngữ bản dịch mong muốn
+                    </label>
                     <div className="grid grid-cols-2 gap-3">
                       {Object.entries(TARGET_LANGUAGES).map(([code, label]) => (
                         <OptionCard key={code} selected={form.targetLanguage === code} onClick={() => update('targetLanguage', code)} title={label} />
@@ -337,47 +386,161 @@ export default function CreateProject() {
               )}
 
               {isDub && step === 2 && (
-                <div>
-                  <label className="text-sm font-semibold text-foreground mb-2 block">Phong cách dịch (13 phong cách chuyên nghiệp)</label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[360px] overflow-y-auto pr-1">
-                    {presets.map((p) => (
-                      <OptionCard
-                        key={p.slug}
-                        selected={form.stylePreset === p.slug}
-                        onClick={() => update('stylePreset', p.slug)}
-                        title={p.name}
-                        desc={p.description}
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                    <div>
+                      <label className="text-sm font-semibold text-foreground block">
+                        Phong cách dịch (13 phong cách chuyên nghiệp)
+                      </label>
+                      <p className="text-xs text-muted-foreground">
+                        Chọn phong cách câu từ phù hợp nhất với thể loại video của bạn
+                      </p>
+                    </div>
+                    {form.stylePreset && (
+                      <span className="text-[11px] font-semibold text-primary bg-primary/10 px-2 py-0.5 rounded shrink-0 self-start sm:self-auto">
+                        Đã chọn: {presets.find((p) => p.slug === form.stylePreset)?.name || form.stylePreset}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Search and Category Filter Toolbar */}
+                  <div className="space-y-2">
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={presetSearch}
+                        onChange={(e) => setPresetSearch(e.target.value)}
+                        placeholder="Tìm phong cách (cổ trang, meme, tài liệu, phim...)..."
+                        className="w-full pl-8 pr-7 py-1.5 text-xs rounded-xl bg-background border border-input text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
                       />
-                    ))}
+                      {presetSearch && (
+                        <button
+                          type="button"
+                          onClick={() => setPresetSearch('')}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-xs"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+                      {Object.entries(PRESET_CATEGORIES).map(([catKey, catLabel]) => (
+                        <button
+                          key={catKey}
+                          type="button"
+                          onClick={() => setPresetCategory(catKey)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+                            presetCategory === catKey
+                              ? 'bg-primary text-primary-foreground shadow-xs'
+                              : 'bg-muted/60 text-muted-foreground hover:text-foreground hover:bg-muted'
+                          }`}
+                        >
+                          {catLabel}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Presets Grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[340px] overflow-y-auto pr-1">
+                    {presets
+                      .filter((p) => {
+                        if (presetCategory !== 'all') {
+                          const cat = PRESET_CATEGORY_MAP[p.slug];
+                          if (cat !== presetCategory) return false;
+                        }
+                        if (presetSearch.trim()) {
+                          const q = presetSearch.toLowerCase().trim();
+                          const n = (p.name || '').toLowerCase();
+                          const d = (p.description || '').toLowerCase();
+                          if (!n.includes(q) && !d.includes(q)) return false;
+                        }
+                        return true;
+                      })
+                      .map((p) => (
+                        <OptionCard
+                          key={p.slug}
+                          selected={form.stylePreset === p.slug}
+                          onClick={() => update('stylePreset', p.slug)}
+                          title={p.name}
+                          desc={p.description}
+                        />
+                      ))}
                   </div>
                 </div>
               )}
 
               {isDub && step === 3 && (
                 <div className="space-y-4">
-                  <button
-                    type="button"
-                    onClick={() => update('enableDubbing', !form.enableDubbing)}
-                    className={`w-full flex items-center justify-between p-4 rounded-xl border transition-all ${
-                      form.enableDubbing
-                        ? 'border-primary bg-primary/10'
-                        : 'border-border bg-card hover:bg-muted/40'
-                    }`}
-                  >
-                    <div className="text-left">
-                      <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                        <AudioLines className="w-4 h-4 text-primary" />
-                        <span>Lồng tiếng AI ép khớp thời gian</span>
+                  <div>
+                    <label className="text-sm font-semibold text-foreground block">
+                      Tuỳ chọn âm thanh & Lồng tiếng
+                    </label>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Bạn có muốn AI tạo giọng đọc thay thế lời thoại gốc hay chỉ giữ tiếng gốc và thêm phụ đề?
+                    </p>
+                  </div>
+
+                  {/* 2-Option Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => update('enableDubbing', false)}
+                      className={`p-4 rounded-xl border text-left transition-all flex flex-col justify-between ${
+                        !form.enableDubbing
+                          ? 'border-primary bg-primary/10 shadow-xs ring-1 ring-primary/30'
+                          : 'border-border bg-card hover:bg-muted/40'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-bold text-foreground">Chỉ dịch phụ đề</span>
+                          <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                            !form.enableDubbing ? 'border-primary bg-primary' : 'border-muted-foreground'
+                          }`}>
+                            {!form.enableDubbing && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground leading-relaxed">
+                          Giữ nguyên âm thanh và giọng nói gốc của video, chỉ tạo và ép phụ đề tiếng Việt.
+                        </p>
                       </div>
-                      <div className="text-xs text-muted-foreground mt-0.5">
-                        {form.enableDubbing ? 'Bật — giọng đọc AI thay thế audio gốc, ép khớp thời gian thoại' : 'Tắt — giữ nguyên âm thanh gốc, chỉ thay phụ đề'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => update('enableDubbing', true)}
+                      className={`p-4 rounded-xl border text-left transition-all flex flex-col justify-between ${
+                        form.enableDubbing
+                          ? 'border-primary bg-primary/10 shadow-xs ring-1 ring-primary/30'
+                          : 'border-border bg-card hover:bg-muted/40'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-bold text-primary flex items-center gap-1.5">
+                            <AudioLines className="w-3.5 h-3.5" /> Lồng tiếng AI khớp nhịp
+                          </span>
+                          <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                            form.enableDubbing ? 'border-primary bg-primary' : 'border-muted-foreground'
+                          }`}>
+                            {form.enableDubbing && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground leading-relaxed">
+                          Giọng đọc AI thay thế âm thanh thoại gốc, tự động co giãn tốc độ để khớp chính xác nhịp điệu.
+                        </p>
                       </div>
+                    </button>
+                  </div>
+
+                  {form.enableDubbing && (
+                    <div className="pt-2 border-t border-border">
+                      <VoiceStep form={form} update={update} />
                     </div>
-                    <span className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${form.enableDubbing ? 'bg-primary' : 'bg-muted'}`}>
-                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform ${form.enableDubbing ? 'translate-x-5' : ''}`} />
-                    </span>
-                  </button>
-                  {form.enableDubbing && <VoiceStep form={form} update={update} />}
+                  )}
                 </div>
               )}
 

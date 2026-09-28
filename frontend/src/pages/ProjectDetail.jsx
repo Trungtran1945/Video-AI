@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { projectsApi } from '@/api/projects';
 import Layout from '@/components/Layout';
@@ -7,7 +7,7 @@ import { VideoTimeline } from '@/components/timeline';
 import MaskEditor from '@/components/MaskEditor';
 import { useTimelineStore } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock } from 'lucide-react';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info } from 'lucide-react';
 import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES } from '@/lib/constants';
 import { useJobEvents } from '@/hooks/useJobEvents';
 import {
@@ -88,6 +88,8 @@ export default function ProjectDetail() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [targetLanguage, setTargetLanguage] = useState('vi');
+  const [activeRightTab, setActiveRightTab] = useState('video'); // 'video' | 'mask' | 'info'
+  const [timelineMinimized, setTimelineMinimized] = useState(false);
   const videoRef = useRef(null);
   // Optimistic concurrency (§4.6): revision server cấp, seq chống stale response.
   const transcriptRevisionRef = useRef(null);
@@ -661,7 +663,7 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          {/* 3. Main Workspace: Transcript (chính) + Video/output */}
+          {/* 3. Main Workspace: Transcript (chính) + Video/output/mask tabs */}
           <div className="flex-1 flex min-h-0 max-md:flex-col">
             {/* Left Panel: Transcript Editor (dominant) */}
             <div className="w-[58%] max-md:w-full flex flex-col min-h-0 border-r border-border max-md:border-r-0 max-md:border-b">
@@ -682,92 +684,196 @@ export default function ProjectDetail() {
                 error={transcriptError}
                 targetLanguage={targetLanguage}
                 onLanguageChange={setTargetLanguage}
+                activeSegmentId={activeSegmentId}
               />
             </div>
 
-            {/* Right Panel: Video Preview */}
-            <div className="w-[42%] max-md:w-full flex flex-col min-h-0 bg-card border-l border-border max-md:border-l-0 overflow-y-auto">
-              {/* §1: pipeline đang chạy → ẩn output, hiện tiến trình + stage hiện tại */}
-              {isActive ? (
-                <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
-                  <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                  <div className="text-sm font-semibold text-foreground">
-                    Đang xử lý{typeof project.progress === 'number' ? ` — ${project.progress}%` : ''}
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {(() => {
-                      const cur = stages.map((k) => ({ key: k, job: jobByStage[k] })).find((s) => s.job?.status === 'running');
-                      const label = cur ? (STAGE_LABELS[cur.key]?.label || cur.key) : 'Chuẩn bị pipeline';
-                      return `Stage hiện tại: ${label}`;
-                    })()}
-                  </div>
-                  <div className="text-[11px] text-muted-foreground/70 max-w-[260px]">
-                    Video output sẽ xuất hiện khi pipeline hoàn thành — đây không phải kết quả cũ.
-                  </div>
+            {/* Right Panel: Tabs (Video thành phẩm / Che chữ / Thông số) */}
+            <div className="w-[42%] max-md:w-full flex flex-col min-h-0 bg-card border-l border-border max-md:border-l-0">
+              {/* Tab Navigation */}
+              <div className="shrink-0 flex items-center justify-between border-b border-border bg-muted/20 px-3 py-2">
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setActiveRightTab('video')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                      activeRightTab === 'video'
+                        ? 'bg-background text-foreground shadow-xs border border-border'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                    }`}
+                  >
+                    <Video className="w-3.5 h-3.5 text-primary" />
+                    <span>Xem video</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveRightTab('mask')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                      activeRightTab === 'mask'
+                        ? 'bg-background text-foreground shadow-xs border border-border'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                    }`}
+                  >
+                    <Scissors className="w-3.5 h-3.5 text-primary" />
+                    <span>Che chữ (Mask)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveRightTab('info')}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                      activeRightTab === 'info'
+                        ? 'bg-background text-foreground shadow-xs border border-border'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                    }`}
+                  >
+                    <Info className="w-3.5 h-3.5 text-primary" />
+                    <span>Thông số</span>
+                  </button>
                 </div>
-              ) : outputUrl ? (
-                <div className="flex-1 flex flex-col min-h-0 p-3 gap-2">
-                  {/* Video Container */}
-                  <div className="relative flex-1 min-h-0 bg-black rounded-xl overflow-hidden group">
-                    <video
-                      ref={videoRef}
-                      id="output-video"
-                      src={outputUrl}
-                      className="w-full h-full object-contain"
-                      onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
-                    />
-                    {/* Play/Pause Overlay Button */}
-                    <AnimatePresence>
-                      {!isPlaying && (
-                        <motion.button
-                          initial={{ opacity: 0, scale: 0.8 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          exit={{ opacity: 0, scale: 0.8 }}
-                          transition={{ duration: 0.15 }}
-                          onClick={handlePlayPause}
-                          className="absolute inset-0 flex items-center justify-center z-10"
-                        >
-                          <div className="w-14 h-14 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/10 hover:bg-white/30 transition-colors">
-                            <Play className="w-6 h-6 text-white fill-white ml-1" />
+                {activeRightTab === 'video' && outputUrl && (
+                  <span className="text-[11px] font-mono text-muted-foreground">
+                    {fmtSec(currentTime)} / {fmtSec(duration)}
+                  </span>
+                )}
+              </div>
+
+              {/* Tab Content Panel */}
+              <div className="flex-1 min-h-0 overflow-y-auto">
+                {activeRightTab === 'video' && (
+                  <div className="h-full flex flex-col p-3">
+                    {isActive ? (
+                      <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
+                        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                        <div className="text-sm font-semibold text-foreground">
+                          Đang xử lý{typeof project.progress === 'number' ? ` — ${project.progress}%` : ''}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {(() => {
+                            const cur = stages.map((k) => ({ key: k, job: jobByStage[k] })).find((s) => s.job?.status === 'running');
+                            const label = cur ? (STAGE_LABELS[cur.key]?.label || cur.key) : 'Chuẩn bị pipeline';
+                            return `Stage hiện tại: ${label}`;
+                          })()}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground/70 max-w-[260px]">
+                          Video output sẽ xuất hiện khi pipeline hoàn thành — đây không phải kết quả cũ.
+                        </div>
+                      </div>
+                    ) : outputUrl ? (
+                      <div className="flex-1 flex flex-col min-h-0 gap-2">
+                        {/* Video Container */}
+                        <div className="relative flex-1 min-h-[220px] bg-black rounded-xl overflow-hidden group">
+                          <video
+                            ref={videoRef}
+                            id="output-video"
+                            src={outputUrl}
+                            className="w-full h-full object-contain"
+                            onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+                          />
+                          {/* Play/Pause Overlay Button */}
+                          <AnimatePresence>
+                            {!isPlaying && (
+                              <motion.button
+                                initial={{ opacity: 0, scale: 0.8 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                exit={{ opacity: 0, scale: 0.8 }}
+                                transition={{ duration: 0.15 }}
+                                onClick={handlePlayPause}
+                                className="absolute inset-0 flex items-center justify-center z-10"
+                              >
+                                <div className="w-14 h-14 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/10 hover:bg-white/30 transition-colors">
+                                  <Play className="w-6 h-6 text-white fill-white ml-1" />
+                                </div>
+                              </motion.button>
+                            )}
+                          </AnimatePresence>
+                          {/* Pause indicator on hover when playing */}
+                          <AnimatePresence>
+                            {isPlaying && (
+                              <motion.button
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 0 }}
+                                whileHover={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                onClick={handlePlayPause}
+                                className="absolute inset-0 flex items-center justify-center z-10"
+                              >
+                                <div className="w-14 h-14 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center border border-white/10">
+                                  <Pause className="w-6 h-6 text-white" />
+                                </div>
+                              </motion.button>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                        {/* Video Info Bar */}
+                        <div className="shrink-0 flex items-center justify-between text-xs text-muted-foreground px-1 py-1">
+                          <span className="font-mono">{fmtSec(currentTime)} / {fmtSec(duration)}</span>
+                          <span className="font-medium">{MODE_LABELS[project.mode] || project.mode}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex-1 flex flex-col items-center justify-center gap-2 p-6 text-center text-muted-foreground">
+                        <Video className="w-10 h-10 text-muted-foreground/30 mb-1" />
+                        <span className="text-sm font-medium text-foreground">Chưa có video output</span>
+                        <span className="text-xs max-w-xs">Nhấn "Chạy lại" hoặc "Lồng tiếng lại" từ bảng bên trái để xuất video thành phẩm.</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {activeRightTab === 'mask' && (
+                  <div className="p-3">
+                    <MaskEditor projectId={id} sourceUrl={sourceUrl} disabled={isActive} />
+                  </div>
+                )}
+
+                {activeRightTab === 'info' && (
+                  <div className="p-4 space-y-4">
+                    <div className="rounded-xl bg-card border border-border p-4 space-y-3">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Thông tin dự án</h4>
+                      <div className="space-y-2 text-xs">
+                        <div className="flex justify-between items-center py-1.5 border-b border-border/40">
+                          <span className="text-muted-foreground">Chế độ</span>
+                          <span className="font-semibold text-foreground">{MODE_LABELS[project.mode] || project.mode}</span>
+                        </div>
+                        <div className="flex justify-between items-center py-1.5 border-b border-border/40">
+                          <span className="text-muted-foreground">Ngôn ngữ nguồn → đích</span>
+                          <span className="font-semibold text-foreground">
+                            {SOURCE_LANGUAGES[params.sourceLanguage ?? params.source_language] || params.sourceLanguage || 'Tự động'} → {TARGET_LANGUAGES[params.targetLanguage ?? params.target_language] || project.language || 'vi'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center py-1.5 border-b border-border/40">
+                          <span className="text-muted-foreground">Phong cách dịch</span>
+                          <span className="font-semibold text-foreground">{params.stylePreset ?? params.style_preset ?? 'Mặc định'}</span>
+                        </div>
+                        <div className="flex justify-between items-center py-1.5 border-b border-border/40">
+                          <span className="text-muted-foreground">Lồng tiếng AI</span>
+                          <span className="font-semibold text-foreground">
+                            {(params.enableDubbing ?? params.enable_dubbing)
+                              ? `Bật (${VOICE_PROVIDER_LABELS[params.voiceProvider] || params.voiceProvider || 'ElevenLabs'})`
+                              : 'Tắt'}
+                          </span>
+                        </div>
+                        {params.voiceName && (
+                          <div className="flex justify-between items-center py-1.5 border-b border-border/40">
+                            <span className="text-muted-foreground">Giọng đọc</span>
+                            <span className="font-semibold text-foreground">{params.voiceName}</span>
                           </div>
-                        </motion.button>
-                      )}
-                    </AnimatePresence>
-                    {/* Pause indicator on hover when playing */}
-                    <AnimatePresence>
-                      {isPlaying && (
-                        <motion.button
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 0 }}
-                          whileHover={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          onClick={handlePlayPause}
-                          className="absolute inset-0 flex items-center justify-center z-10"
-                        >
-                          <div className="w-14 h-14 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center border border-white/10">
-                            <Pause className="w-6 h-6 text-white" />
-                          </div>
-                        </motion.button>
-                      )}
-                    </AnimatePresence>
+                        )}
+                        <div className="flex justify-between items-center py-1.5 border-b border-border/40">
+                          <span className="text-muted-foreground">Tệp video nguồn</span>
+                          <span className="font-mono text-[11px] text-foreground truncate max-w-[200px]" title={project.source_video_key || ''}>
+                            {project.source_video_key || '—'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center py-1.5">
+                          <span className="text-muted-foreground">Ngày khởi tạo</span>
+                          <span className="text-foreground">{formatDate(project.created_date)}</span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  {/* Video Info Bar */}
-                  <div className="shrink-0 flex items-center justify-between text-[10px] text-muted-foreground px-1">
-                    <span>{fmtSec(currentTime)} / {fmtSec(duration)}</span>
-                    <span>{MODE_LABELS[project.mode] || project.mode}</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
-                  Chưa có video output
-                </div>
-              )}
-              {/* Manual Mask Editor: che/làm mờ hardsub gốc trên video nguồn */}
-              {isDub && (
-                <div className="shrink-0 border-t border-border p-3">
-                  <MaskEditor projectId={id} sourceUrl={sourceUrl} disabled={isActive} />
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </div>
 
@@ -791,6 +897,8 @@ export default function ProjectDetail() {
               project={project}
               outputUrl={outputUrl}
               className="rounded-none border-x-0 border-b-0 border-t border-border"
+              minimized={timelineMinimized}
+              onToggleMinimize={setTimelineMinimized}
             />
           </div>
 
@@ -1088,11 +1196,28 @@ function InfoGrid({ project, isDub, params }) {
   );
 }
 
-function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, saving, redubbing, disabled, error, compact = false, targetLanguage = 'vi', onLanguageChange }) {
+function TranscriptEditor({
+  transcript,
+  onSeek,
+  hasVideo,
+  onSave,
+  onRedub,
+  saving,
+  redubbing,
+  disabled,
+  error,
+  compact = false,
+  targetLanguage = 'vi',
+  onLanguageChange,
+  activeSegmentId = null,
+}) {
   // §7: chỉnh trực tiếp Original / Translation / Start / End. Không drag-and-drop.
   // edits: { [segmentId]: { text?, translation?, startSec?, endSec? } }
   const [edits, setEdits] = useState({});
   const [localError, setLocalError] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filter, setFilter] = useState('all'); // 'all' | 'dirty' | 'untranslated'
+  const [autoScroll, setAutoScroll] = useState(true);
 
   const getField = (seg, field) => (edits[seg.id]?.[field] !== undefined ? edits[seg.id][field] : seg[field]);
   const isDirtyRow = (s) => {
@@ -1102,11 +1227,21 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
   };
   const dirtyCount = transcript.filter(isDirtyRow).length;
   const translatedCount = transcript.filter((s) => String(getField(s, 'translation') || '').trim()).length;
+  const untranslatedCount = transcript.length - translatedCount;
 
   const setField = (seg, field, value) => {
     setLocalError('');
     setEdits((p) => ({ ...p, [seg.id]: { ...p[seg.id], [field]: value } }));
   };
+
+  // Auto-scroll to active segment
+  useEffect(() => {
+    if (!autoScroll || !activeSegmentId) return;
+    const el = document.getElementById(`seg-${activeSegmentId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [activeSegmentId, autoScroll]);
 
   // Validation client: 0 <= start < end + không overlap câu trước/sau.
   // Server (OVERLAP_CONFLICT) là authority cuối; đây chỉ là pre-check nhanh.
@@ -1189,170 +1324,191 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
     await onRedub();
   };
 
-  // Compact mode for 2-panel layout
-  if (compact) {
-    if (!transcript.length) {
-      return (
-        <div className="h-full flex flex-col items-center justify-center p-6 text-center">
-          <p className="text-xs text-muted-foreground">
-            Chưa có lời thoại. Hãy chạy pipeline để nhận dạng.
-          </p>
-        </div>
-      );
-    }
+  const filteredTranscript = useMemo(() => {
+    return transcript.filter((seg) => {
+      if (filter === 'dirty' && !isDirtyRow(seg)) return false;
+      if (filter === 'untranslated' && String(getField(seg, 'translation') || '').trim().length > 0) return false;
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const orig = String(getField(seg, 'text') || '').toLowerCase();
+        const trans = String(getField(seg, 'translation') || '').toLowerCase();
+        const spk = String(seg.speaker || '').toLowerCase();
+        if (!orig.includes(q) && !trans.includes(q) && !spk.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [transcript, filter, searchQuery, edits]);
 
-    return (
-      <div className="h-full flex flex-col bg-card">
-        {/* Header */}
-        <div className="shrink-0 p-3 border-b border-border bg-card">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <h3 className="text-xs font-semibold text-foreground">Lời thoại song ngữ</h3>
-            <span className="text-[10px] font-mono text-muted-foreground">{translatedCount}/{transcript.length}</span>
-          </div>
-          {/* Language Selector */}
-          <div className="flex items-center gap-1.5 mb-2.5">
-            <Languages className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-            <select
-              value={targetLanguage}
-              onChange={(e) => onLanguageChange?.(e.target.value)}
-              disabled={disabled}
-              className="flex-1 bg-background border border-input rounded-md px-2 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
-            >
-              <option value="vi">Tiếng Việt</option>
-              <option value="en">Tiếng Anh</option>
-              <option value="ja">Tiếng Nhật</option>
-              <option value="ko">Tiếng Hàn</option>
-              <option value="zh">Tiếng Trung</option>
-            </select>
-          </div>
-          {error && (
-            <div className="mb-2 flex items-center gap-1.5 text-[11px] text-destructive bg-destructive/10 rounded-md px-2 py-1">
-              <AlertCircle className="w-3 h-3 shrink-0" /> {error}
-            </div>
-          )}
-          <div className="flex gap-1.5">
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={saving || disabled || dirtyCount === 0}
-              className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/10 text-xs font-semibold transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
-              Lưu{dirtyCount > 0 ? ` (${dirtyCount})` : ''}
-            </button>
-            <button
-              type="button"
-              onClick={handleRedub}
-              disabled={redubbing || disabled}
-              className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md border border-primary/30 text-primary hover:bg-primary/10 text-xs font-semibold transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              {redubbing ? <Loader2 className="w-3 h-3 animate-spin" /> : <AudioLines className="w-3 h-3" />}
-              Lồng tiếng
-            </button>
-          </div>
-        </div>
-
-        {/* Transcript list */}
-        <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
-          {localError && (
-            <div className="flex items-center gap-1 text-[10px] text-destructive bg-destructive/10 rounded px-2 py-1">
-              <AlertCircle className="w-2.5 h-2.5 shrink-0" /> {localError}
-            </div>
-          )}
-          {transcript.map((seg, i) => (
-            <SegmentCard
-              key={seg.id || i}
-              seg={seg}
-              compact
-              isDirty={isDirtyRow(seg)}
-              getField={getField}
-              onField={setField}
-              onSeek={onSeek}
-              hasVideo={hasVideo}
-              disabled={disabled}
-            />
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  // Full mode (original)
   if (!transcript.length) {
     return (
-      <div className="rounded-2xl bg-card border border-border p-6 mb-6 shadow-sm">
-        <h3 className="text-base font-semibold text-foreground">Lời thoại song ngữ</h3>
-        <p className="text-sm text-muted-foreground mt-2">
-          Chưa có lời thoại nào. Hãy chạy pipeline (hoặc nhấn <span className="text-primary font-medium">Chạy lại</span>) để AI nhận dạng và dịch video.
+      <div className="h-full flex flex-col items-center justify-center p-8 text-center bg-card">
+        <Languages className="w-10 h-10 text-muted-foreground/40 mb-3" />
+        <h3 className="text-sm font-semibold text-foreground">Chưa có lời thoại</h3>
+        <p className="text-xs text-muted-foreground mt-1 max-w-sm">
+          Pipeline đang xử lý hoặc chưa được khởi chạy. Lời thoại sẽ tự động xuất hiện tại đây khi nhận dạng xong.
         </p>
       </div>
     );
   }
 
   return (
-    <div className="h-full flex flex-col rounded-2xl bg-card border border-border p-6 shadow-sm">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-        <div>
-          <h3 className="text-base font-semibold text-foreground">Lời thoại song ngữ (chỉnh sửa được)</h3>
-          <p className="text-xs text-muted-foreground mt-1">
-            Gốc ↔ bản dịch{hasVideo ? ' — nhấn vào giờ để nhảy tới đoạn đó trong video' : ''}. Đã dịch {translatedCount}/{transcript.length} câu.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Language Selector */}
-          <div className="flex items-center gap-1.5">
-            <Languages className="w-3.5 h-3.5 text-muted-foreground" />
-            <select
-              value={targetLanguage}
-              onChange={(e) => onLanguageChange?.(e.target.value)}
-              disabled={disabled}
-              className="bg-background border border-input rounded-lg px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
-            >
-              <option value="vi">Tiếng Việt</option>
-              <option value="en">Tiếng Anh</option>
-              <option value="ja">Tiếng Nhật</option>
-              <option value="ko">Tiếng Hàn</option>
-              <option value="zh">Tiếng Trung</option>
-            </select>
+    <div className="h-full flex flex-col bg-card">
+      {/* 1. Header Toolbar */}
+      <div className="shrink-0 p-3.5 border-b border-border bg-card space-y-2.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-sm font-bold text-foreground">Lời thoại song ngữ</h3>
+            <span className="text-[11px] font-mono bg-muted px-2 py-0.5 rounded text-muted-foreground">
+              {translatedCount}/{transcript.length} đã dịch
+            </span>
+            {dirtyCount > 0 && (
+              <span className="text-[11px] font-semibold bg-amber-500/15 text-amber-800 dark:text-amber-300 px-2 py-0.5 rounded">
+                {dirtyCount} chưa lưu
+              </span>
+            )}
           </div>
-          <button onClick={handleSave} disabled={saving || disabled || dirtyCount === 0}
-            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10 text-sm font-semibold transition disabled:opacity-50">
-            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-            Lưu chỉnh sửa{dirtyCount > 0 ? ` (${dirtyCount})` : ''}
-          </button>
-          <button onClick={handleRedub} disabled={redubbing || disabled}
-            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-primary/30 text-primary hover:bg-primary/10 text-sm font-semibold transition disabled:opacity-50">
-            {redubbing ? <Loader2 className="w-4 h-4 animate-spin" /> : <AudioLines className="w-4 h-4" />}
-            Chạy lại (lồng tiếng)
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {/* Language Selector */}
+            <div className="flex items-center gap-1 bg-background border border-input rounded-lg px-2 py-1">
+              <Languages className="w-3.5 h-3.5 text-muted-foreground" />
+              <select
+                value={targetLanguage}
+                onChange={(e) => onLanguageChange?.(e.target.value)}
+                disabled={disabled}
+                className="bg-transparent text-xs text-foreground focus:outline-none disabled:opacity-60 font-medium"
+              >
+                <option value="vi">Tiếng Việt</option>
+                <option value="en">Tiếng Anh</option>
+                <option value="ja">Tiếng Nhật</option>
+                <option value="ko">Tiếng Hàn</option>
+                <option value="zh">Tiếng Trung</option>
+              </select>
+            </div>
+            {/* Save Button */}
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving || disabled || dirtyCount === 0}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/10 text-xs font-semibold transition disabled:opacity-40"
+            >
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+              <span>Lưu{dirtyCount > 0 ? ` (${dirtyCount})` : ''}</span>
+            </button>
+            {/* Redub Button */}
+            <button
+              type="button"
+              onClick={handleRedub}
+              disabled={redubbing || disabled}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 text-xs font-semibold transition disabled:opacity-40"
+            >
+              {redubbing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <AudioLines className="w-3.5 h-3.5" />}
+              <span>Lồng tiếng lại</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Search & Filter Toolbar */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative flex-1 min-w-[150px]">
+            <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Tìm kiếm lời thoại gốc hoặc dịch..."
+              className="w-full pl-8 pr-7 py-1 text-xs rounded-lg bg-background border border-input text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-xs"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          {/* Filter Pills */}
+          <div className="flex items-center gap-1 bg-muted/60 p-0.5 rounded-lg text-[11px]">
+            <button
+              type="button"
+              onClick={() => setFilter('all')}
+              className={`px-2 py-0.5 rounded font-medium transition ${
+                filter === 'all' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Tất cả ({transcript.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilter('dirty')}
+              className={`px-2 py-0.5 rounded font-medium transition ${
+                filter === 'dirty' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Đã sửa ({dirtyCount})
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilter('untranslated')}
+              className={`px-2 py-0.5 rounded font-medium transition ${
+                filter === 'untranslated' ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              Chưa dịch ({untranslatedCount})
+            </button>
+          </div>
+
+          {/* Auto-scroll toggle */}
+          <button
+            type="button"
+            onClick={() => setAutoScroll(!autoScroll)}
+            title={autoScroll ? 'Đang bật tự cuộn theo video (nhấn để tắt)' : 'Đang tắt tự cuộn (nhấn để bật)'}
+            className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium border transition ${
+              autoScroll
+                ? 'bg-primary/10 border-primary/30 text-primary'
+                : 'bg-background border-border text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <ArrowDownToLine className="w-3 h-3" />
+            <span className="hidden sm:inline">Tự cuộn</span>
           </button>
         </div>
+
+        {error && (
+          <div className="flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-1.5">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {error}
+          </div>
+        )}
+        {localError && (
+          <div className="flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-3 py-1.5">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" /> {localError}
+          </div>
+        )}
       </div>
 
-      {error && (
-        <div className="mb-4 flex items-center gap-2 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-3">
-          <AlertCircle className="w-4 h-4 shrink-0" /> {error}
-        </div>
-      )}
-
-      {localError && (
-        <div className="mb-4 flex items-center gap-2 text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-xl px-4 py-3">
-          <AlertCircle className="w-4 h-4 shrink-0" /> {localError}
-        </div>
-      )}
-
-      <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
-        {transcript.map((seg, i) => (
-          <SegmentCard
-            key={seg.id || i}
-            seg={seg}
-            isDirty={isDirtyRow(seg)}
-            getField={getField}
-            onField={setField}
-            onSeek={onSeek}
-            hasVideo={hasVideo}
-            disabled={disabled}
-          />
-        ))}
+      {/* 2. Transcript List */}
+      <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2">
+        {filteredTranscript.length === 0 ? (
+          <div className="py-8 text-center text-xs text-muted-foreground">
+            Không tìm thấy câu thoại nào phù hợp với bộ lọc.
+          </div>
+        ) : (
+          filteredTranscript.map((seg, i) => (
+            <SegmentCard
+              key={seg.id || i}
+              seg={seg}
+              isDirty={isDirtyRow(seg)}
+              isActive={String(seg.id) === String(activeSegmentId) || Number(seg.index) === Number(activeSegmentId)}
+              getField={getField}
+              onField={setField}
+              onSeek={onSeek}
+              hasVideo={hasVideo}
+              disabled={disabled}
+            />
+          ))
+        )}
       </div>
     </div>
   );
@@ -1360,77 +1516,120 @@ function TranscriptEditor({ transcript, onSeek, hasVideo, onSave, onRedub, savin
 
 // §7: thẻ subtitle chỉnh trực tiếp 4 trường (Original / Translation / Start / End).
 // Không kéo-thả, không draggable/dataTransfer.
-function SegmentCard({ seg, compact = false, isDirty, getField, onField, onSeek, hasVideo, disabled }) {
+function SegmentCard({ seg, isDirty, isActive, getField, onField, onSeek, hasVideo, disabled }) {
   const numCls = 'w-full bg-background border border-input rounded-md px-2 py-1 text-xs text-foreground tabular-nums focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60 font-mono';
-  const areaCls = compact
-    ? 'w-full resize-none rounded-md bg-background border border-input px-2.5 py-1 text-xs text-foreground leading-snug focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60'
-    : 'w-full resize-y rounded-md bg-background border border-input px-3 py-1.5 text-xs sm:text-sm text-foreground leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60';
+  const areaCls = 'w-full resize-y rounded-md bg-background border border-input px-3 py-1.5 text-xs text-foreground leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60';
+
+  const startVal = Number(getField(seg, 'startSec') ?? 0);
+  const endVal = Number(getField(seg, 'endSec') ?? 0);
+  const duration = Math.max(0, endVal - startVal).toFixed(1);
 
   return (
-    <div className={`p-3 rounded-lg border transition-colors ${
-      isDirty ? 'bg-amber-500/10 border-amber-500/30' : 'bg-card border-border hover:border-border/90'
-    }`}>
+    <div
+      id={`seg-${seg.id || seg.index}`}
+      className={`p-3 rounded-xl border transition-all text-xs ${
+        isActive
+          ? 'border-primary ring-2 ring-primary/40 bg-primary/[0.04] shadow-xs'
+          : isDirty
+          ? 'bg-amber-500/5 border-amber-500/30'
+          : 'bg-card border-border hover:border-border/90'
+      }`}
+    >
+      {/* Top Header of Card */}
       <div className="flex items-center justify-between gap-2 mb-2">
-        <button
-          type="button"
-          onClick={() => onSeek(Number(getField(seg, 'startSec')))}
-          disabled={!hasVideo}
-          className="text-xs font-semibold text-muted-foreground hover:text-primary transition-colors disabled:cursor-default tabular-nums font-mono inline-flex items-center gap-1"
-        >
-          <span>{fmtSec(getField(seg, 'startSec'))}</span>
-          <span>→</span>
-          <span>{fmtSec(getField(seg, 'endSec'))}</span>
-        </button>
-        <span className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono font-bold text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
+            #{(seg.index ?? 0) + 1}
+          </span>
+          <button
+            type="button"
+            onClick={() => onSeek(startVal)}
+            disabled={!hasVideo}
+            title="Nhảy tới mốc thời gian này trên video"
+            className="text-xs font-semibold text-muted-foreground hover:text-primary transition-colors disabled:cursor-default tabular-nums font-mono inline-flex items-center gap-1.5 bg-muted/40 hover:bg-primary/10 px-2 py-0.5 rounded"
+          >
+            <Play className="w-2.5 h-2.5 fill-current" />
+            <span>{fmtSec(startVal)}</span>
+            <span>→</span>
+            <span>{fmtSec(endVal)}</span>
+          </button>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {isActive && (
+            <span className="text-[10px] px-2 py-0.5 rounded font-semibold bg-primary/15 text-primary flex items-center gap-1">
+              <Volume2 className="w-2.5 h-2.5 animate-pulse" /> Đang phát
+            </span>
+          )}
           {seg.speaker && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-primary/10 text-primary">{seg.speaker}</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-secondary text-secondary-foreground">
+              {seg.speaker}
+            </span>
           )}
           {isDirty && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-800 dark:text-amber-300">đã sửa</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-800 dark:text-amber-300">
+              đã sửa
+            </span>
           )}
-        </span>
+        </div>
       </div>
-      <div>
-        <label className="block text-[11px] font-semibold text-muted-foreground mb-1">Original (Câu gốc)</label>
-        <textarea
-          value={getField(seg, 'text') ?? ''}
-          onChange={(e) => onField(seg, 'text', e.target.value)}
-          disabled={disabled}
-          rows={compact ? 1 : 2}
-          placeholder="Câu gốc (STT)"
-          className={areaCls}
-        />
+
+      {/* Content Fields */}
+      <div className="space-y-2">
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Gốc (STT)</span>
+          </div>
+          <textarea
+            value={getField(seg, 'text') ?? ''}
+            onChange={(e) => onField(seg, 'text', e.target.value)}
+            disabled={disabled}
+            rows={2}
+            placeholder="Lời thoại gốc..."
+            className={areaCls}
+          />
+        </div>
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-semibold text-primary uppercase tracking-wide">Bản dịch</span>
+          </div>
+          <textarea
+            value={getField(seg, 'translation') ?? ''}
+            onChange={(e) => onField(seg, 'translation', e.target.value)}
+            disabled={disabled}
+            rows={2}
+            placeholder="Bản dịch tiếng Việt (sửa tay được giữ nguyên khi chạy lại)..."
+            className={areaCls}
+          />
+        </div>
       </div>
-      <div className="mt-2">
-        <label className="block text-[11px] font-semibold text-muted-foreground mb-1">Translation (Bản dịch)</label>
-        <textarea
-          value={getField(seg, 'translation') ?? ''}
-          onChange={(e) => onField(seg, 'translation', e.target.value)}
-          disabled={disabled}
-          rows={compact ? 1 : 2}
-          placeholder="Bản dịch — sửa tay được giữ nguyên khi chạy lại"
-          className={areaCls}
-        />
-      </div>
-      <div className="grid grid-cols-2 gap-2 mt-2">
-        <label className="block text-[11px] font-semibold text-muted-foreground">Start (giây)
+
+      {/* Timing Controls */}
+      <div className="flex items-center gap-3 mt-2.5 pt-2 border-t border-border/50 text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-1.5 flex-1">
+          <span className="font-medium shrink-0">Bắt đầu:</span>
           <input
             type="number" step={0.1} min={0}
             value={getField(seg, 'startSec') ?? 0}
             onChange={(e) => onField(seg, 'startSec', Number(e.target.value))}
             disabled={disabled}
-            className={`mt-1 ${numCls}`}
+            className={numCls}
           />
-        </label>
-        <label className="block text-[11px] font-semibold text-muted-foreground">End (giây)
+          <span className="text-[10px] text-muted-foreground">s</span>
+        </div>
+        <div className="flex items-center gap-1.5 flex-1">
+          <span className="font-medium shrink-0">Kết thúc:</span>
           <input
             type="number" step={0.1} min={0}
             value={getField(seg, 'endSec') ?? 0}
             onChange={(e) => onField(seg, 'endSec', Number(e.target.value))}
             disabled={disabled}
-            className={`mt-1 ${numCls}`}
+            className={numCls}
           />
-        </label>
+          <span className="text-[10px] text-muted-foreground">s</span>
+        </div>
+        <div className="text-[10px] font-mono text-muted-foreground shrink-0 bg-muted/60 px-2 py-1 rounded">
+          {duration}s
+        </div>
       </div>
     </div>
   );
