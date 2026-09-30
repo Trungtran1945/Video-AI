@@ -133,7 +133,7 @@ State machine: `pending → completing → completed`; pending/completing hết 
 
 | Method | Path | Auth | Mô tả |
 | --- | --- | --- | --- |
-| GET | `/projects/:id/events` | `?token=<accessToken>` (EventSource không gửi được Authorization header; `sseAuthMiddleware`) + OWNER | stream `text/event-stream` qua `eventBus`: `retry: 3000`, heartbeat `: ping` mỗi 15s, event `progress` `{ stage, status, percent }` (stage `__project__` là tiến độ tổng), event `done` + đóng stream khi project `success`/`failed` |
+| GET | `/projects/:id/events` | `?ticket=<single-use>` (POST `/projects/:id/sse-ticket` bằng Bearer trước; `sseAuthMiddleware`) + OWNER; legacy `?token=<accessToken>` deprecated | stream `text/event-stream` qua `eventBus`: `retry: 3000`, heartbeat `: ping` mỗi 15s, event `progress` `{ stage, status, percent }` (stage `__project__` là tiến độ tổng), event `done` + đóng stream khi project `completed`/`failed`, event `error` `{ code: 'DB_UNAVAILABLE', retryable: true }` + đóng stream khi initial DB check fail (frontend fallback polling DB, không suy diễn terminal) |
 
 ---
 

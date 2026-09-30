@@ -12,6 +12,16 @@ const router = Router()
 
 export const SSE_TICKET_TTL_MS = 60 * 1000
 
+// Structured SSE diagnostics (never logs ticket/hash/token).
+function logSseDiag(event, fields = {}) {
+  try {
+    const safe = { event }
+    if (fields.projectId) safe.projectId = String(fields.projectId)
+    if (fields.error) safe.error = String(fields.error?.message || fields.error).slice(0, 200)
+    console.warn(`[sse] ${event} ${JSON.stringify(safe)}`)
+  } catch (_) {}
+}
+
 // POST /api/v1/projects/:id/sse-ticket — cấp ticket single-use TTL 60s cho SSE.
 // Frontend gọi bằng Bearer (axios), sau đó mở EventSource với ?ticket= (không để
 // JWT dài hạn trong URL). Ticket gắn user+project, single-use, không log.
@@ -27,7 +37,10 @@ router.post('/projects/:id/sse-ticket', authMiddleware, requireProjectOwner, asy
       // expires_at lưu ISO (toISOString) nên so sánh bằng ISO hiện tại, không dùng
       // datetime('now') (format 'YYYY-MM-DD HH:MM:SS' lệch với ISO có 'T').
       await run(`DELETE FROM sse_tickets WHERE expires_at < ?`, [new Date().toISOString()])
-    } catch (_) {}
+    } catch (err) {
+      // Best-effort cleanup: INSERT chính vẫn tiếp tục; failure observable.
+      logSseDiag('sse_ticket_cleanup_error', { projectId: req.project?.id, error: err })
+    }
     await run(
       `INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, 0)`,
       [uuidv4(), req.user.id, req.project.id, sha256(ticket), expiresAt]
@@ -46,6 +59,9 @@ router.post('/projects/:id/sse-ticket', authMiddleware, requireProjectOwner, asy
 //   suy diễn completed từ done mà phải fetch project status.
 // - nếu project đã completed/failed trước connect HOẶC hoàn thành đúng lúc setup,
 //   re-check DB sau subscribe vẫn trả ngay terminal từ DB (race-safe).
+// - nếu initial DB check fail (DB unavailable): phát event 'error'
+//   { code: 'DB_UNAVAILABLE', retryable: true } + cleanup + end. Frontend phải
+//   coi SSE unavailable và fallback polling DB với backoff (không suy diễn terminal).
 router.get('/projects/:id/events', sseAuthMiddleware, requireProjectOwner, async (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -83,6 +99,15 @@ router.get('/projects/:id/events', sseAuthMiddleware, requireProjectOwner, async
     try { res.end() } catch (_) {}
   }
 
+  function sendErrorAndClose() {
+    if (closed) return
+    try {
+      res.write(`event: error\ndata: ${JSON.stringify({ code: 'DB_UNAVAILABLE', retryable: true })}\n\n`)
+    } catch (_) {}
+    cleanup()
+    try { res.end() } catch (_) {}
+  }
+
   unsubscribe = eventBus.subscribe(req.project.id, (payload) => {
     if (closed) return
     try {
@@ -101,6 +126,8 @@ router.get('/projects/:id/events', sseAuthMiddleware, requireProjectOwner, async
 
   // Re-check DB SAU khi đã subscribe: nếu project đã terminal trước connect
   // hoặc hoàn thành đúng lúc setup, trả ngay state DB qua listener đã sẵn sàng.
+  // DB là authoritative: nếu check này fail, KHÔNG giữ stream mở vô hạn —
+  // phát event error + đóng để frontend fallback polling/retry (không suy diễn terminal).
   try {
     const current = await queryOne(`SELECT status, progress FROM projects WHERE id = ?`, [req.project.id])
     if (current && ['completed', 'failed'].includes(String(current.status))) {
@@ -108,7 +135,11 @@ router.get('/projects/:id/events', sseAuthMiddleware, requireProjectOwner, async
       sendTerminal(terminal)
       return
     }
-  } catch (_) {}
+  } catch (err) {
+    logSseDiag('sse_db_check_error', { projectId: req.project?.id, error: err })
+    sendErrorAndClose()
+    return
+  }
 
   if (closed) return
 

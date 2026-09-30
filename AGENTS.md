@@ -68,8 +68,9 @@ When designing and developing frontend interfaces:
 
 ## Git Rules
 
-- Allowed: `git status`, `git diff`, `git log`, `git branch --show-current`.
-- Forbidden for all agents and pipeline scripts: `git commit`, `git push`, `git merge`, `git reset --hard`, `git clean -fd`.
+- Allowed anytime: `git status`, `git diff`, `git log`, `git branch --show-current`.
+- `git commit`, `git push`, `git merge` (và mọi biến thể commit/push lên GitHub) CHỈ được thực hiện khi user yêu cầu rõ ràng trong turn hiện tại. Không tự ý commit/push, không suy diễn "chắc user muốn".
+- Forbidden in all cases (kể cả khi user yêu cầu commit/push): `git reset --hard`, `git clean -fd`.
 - Dirty tree at start = warning + baseline, never reset. Humans decide commit/merge/push.
 
 ## Agent Workflow (OpenCode + Antigravity)

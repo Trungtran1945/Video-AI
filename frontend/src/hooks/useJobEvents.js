@@ -8,13 +8,16 @@ const API_BASE = import.meta.env.VITE_API_BASE || '/api/v1'
  * Auth: fetch POST /sse-ticket (Bearer) rồi mở EventSource với ?ticket=
  * (single-use, TTL 60s) — KHÔNG để JWT dài hạn trong URL.
  *
- * Contract (DB-authoritative, race-safe):
- * - Hook này KHÔNG tự fallback polling. Khi SSE gãy (ticket fail, network
- *   error, stream closed), hook chỉ set sseAvailable=false / streamClosed=true.
- *   Caller (ProjectDetail.jsx) chịu trách nhiệm polling GET /projects/:id
- *   khi sseAvailable===false. DB status là source of truth duy nhất.
- * - done chỉ nghĩa stream closed — KHÔNG tự suy diễn completed. Caller phải
- *   fetch project status (DB) để lấy truth.
+  * Contract (DB-authoritative, race-safe):
+  * - Hook này KHÔNG tự fallback polling. Khi SSE gãy (ticket fail, network
+  *   error, stream closed, HOẶC backend phát event 'error' DB_UNAVAILABLE),
+  *   hook chỉ set sseAvailable=false / streamClosed=true.
+  *   Caller (ProjectDetail.jsx) chịu trách nhiệm polling GET /projects/:id
+  *   khi sseAvailable===false. DB status là source of truth duy nhất.
+  * - done chỉ nghĩa stream closed — KHÔNG tự suy diễn completed. Caller phải
+  *   fetch project status (DB) để lấy truth.
+  * - error (DB_UNAVAILABLE, retryable) nghĩa authoritative DB check thất bại —
+  *   SSE không còn đáng tin, caller polling với backoff hợp lý, không storm.
  * - Ticket single-use nên mỗi retry phải xin ticket MỚI (không reuse).
  * - Retry giới hạn với backoff [1s, 2s, 5s]. Không retry vô hạn để tránh
  *   request storm. Chỉ 1 EventSource tại 1 thời điểm.
@@ -142,6 +145,18 @@ export function useJobEvents(projectId, enabled = true) {
         applyEvent(gen, e.data)
       }
       es.addEventListener('progress', onProgress)
+      // Backend DB failure: event 'error' { code:'DB_UNAVAILABLE', retryable }.
+      // SSE không còn authoritative → đánh dấu unavailable để caller fallback
+      // polling DB, không suy diễn terminal từ error.
+      const onErrorEvent = () => {
+        if (cancelled || gen !== generationRef.current) return
+        if (sourceRef.current !== es) return
+        setSseAvailable(false)
+        setStreamClosed(true)
+        try { es.close() } catch { /* noop */ }
+        if (sourceRef.current === es) sourceRef.current = null
+      }
+      es.addEventListener('error', onErrorEvent)
       // done = stream closed (backend đã gửi terminal progress trước đó nếu có).
       // Không tự tạo completed — caller fetch DB để lấy truth.
       const onDone = () => {

@@ -266,7 +266,7 @@ docker compose up -d --build
 ```
 
 Dịch vụ bao gồm:
-- **`redis`**: Cổng `6379:6379`
+- **`redis`**: internal Docker network only (không publish port công khai; API dùng `REDIS_HOST=redis`. Dev cần host access: `docker compose -f docker-compose.yml -f docker-compose.redis-host.yml up` — bind `127.0.0.1` only)
 - **`api`**: Cổng `3001:3001` (đã tích hợp sẵn FFmpeg trong container)
 - **`web`**: Cổng `80:80` (Nginx phục vụ Frontend SPA và đóng vai trò Reverse Proxy)
 

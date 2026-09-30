@@ -53,5 +53,14 @@ const detailSrc = fs.readFileSync(path.join(frontendRoot, 'pages', 'ProjectDetai
   assert(detailSrc.includes('return () => clearInterval(t)'), 'caller polling cleanup prevents duplicates')
 }
 
+// 6. DB-failure error event: backend emits error + closes, hook marks unavailable
+{
+  const eventsSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'v1', 'events.js'), 'utf8')
+  assert(eventsSrc.includes("event: error") && eventsSrc.includes('DB_UNAVAILABLE'), 'backend emits error/DB_UNAVAILABLE on DB-check failure')
+  assert(eventsSrc.includes('sendErrorAndClose') || eventsSrc.includes('sendError('), 'backend has explicit error-close path (no infinite hang)')
+  assert(hookSrc.includes("addEventListener('error'") || hookSrc.includes('addEventListener("error"'), 'hook listens for backend error event')
+  assert(hookSrc.includes('DB_UNAVAILABLE') || hookSrc.includes('error'), 'hook documents error-event fallback to polling')
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

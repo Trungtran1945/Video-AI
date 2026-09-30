@@ -58,8 +58,12 @@ export class OpenAiWhisperAsr {
   }
 
   async transcribe(filePath, { language, prompt, temperature } = {}) {
-    // Single buffered read for multipart upload. Hashing is streaming
-    // (sttUtils.hashFileContent) so this is the only whole-file buffer.
+    // Upload memory audit (Node 22): single buffered read for multipart upload.
+    // Hashing is streaming (sttUtils.hashFileContent) so this is the only
+    // whole-file buffer. File-backed FormData/File (openAsBlob) is not used:
+    // no stable file-backed multipart path in Node 22 without experimental
+    // APIs; chunk slices here are small compressed MP3s. No memory regression
+    // vs prior behavior; do not switch to experimental APIs without re-audit.
     const buffer = fs.readFileSync(filePath)
     const effective = getWhisperEffectiveConfig({ prompt, temperature })
     // Refresh model so mid-process WHISPER_MODEL changes are honored.

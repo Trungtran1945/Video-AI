@@ -60,7 +60,9 @@ Cấu hình mẫu [CURRENT]:
 3. Chạy `cd frontend && npm run lint && npm run typecheck && npm run build`, rồi
    `cd ../backend && npm test` — phải xanh. (Chú ý: frontend không có script `test`, CI cũng
    không chạy test — xem `08` §4; không dùng `pnpm -r` / Vitest / Jest.)
-4. Commit theo Commitlint; push & tạo PR.
+4. Commit theo Commitlint; push & tạo PR. (Lưu ý cho agent: CHỈ commit/push khi user yêu cầu
+   rõ ràng trong turn hiện tại — không tự ý commit/push; `git reset --hard` và `git clean -fd`
+   bị cấm trong mọi trường hợp.)
 5. PR cần ≥1 review (ADMIN duyệt nếu chạm core).
 6. CI pass → merge vào `main` → auto deploy staging.
 
