@@ -139,7 +139,10 @@ function acquireWriterLock() {
         try { fs.rmSync(WRITER_LOCK_PATH, { force: true }) } catch (_) {}
         continue
       }
-      throw new Error(`[DB] another sql.js writer owns ${DB_PATH}; INSTANCE_MODE=single is required`)
+      const ownerDesc = owner?.pid
+        ? `pid=${owner.pid} host=${owner.hostname} startedAt=${owner.startedAt}`
+        : 'unknown owner (unreadable lock file)'
+      throw new Error(`[DB] another sql.js writer owns ${DB_PATH} (${ownerDesc}); INSTANCE_MODE=single is required — stop the other "node server.js" first, or delete ${WRITER_LOCK_PATH} only when no backend is running`)
     }
   }
   throw new Error(`[DB] unable to acquire sql.js writer lock for ${DB_PATH}`)
