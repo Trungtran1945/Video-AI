@@ -100,7 +100,7 @@ export async function dubStt(ctx) {
       type: 'asr',
       model: effective.model,
       input: canonicalInput,
-      fn: () => asr.provider.transcribe(uploadFile, { language: effectiveLang }),
+      fn: () => asr.provider.transcribe(uploadFile, { language: effectiveLang, effectiveConfig: effective }),
       userId: project.user_id,
       apiKeyId: asr.apiKeyId,
       projectId: project.id,
@@ -126,8 +126,9 @@ export async function dubStt(ctx) {
     setProgress(15 + Math.round(((i + 1) / chunks.length) * 82))
   }
 
-  // Stitch overlap window: drop near-duplicate segments from adjacent chunks.
-  const stitched = dedupeOverlapSegments(rawSegments, { windowSec: 1.0 })
+  // Stitch overlap window: chunk overlap is STT_OVERLAP_SEC (15s), so allow
+  // negative gaps down to -15s; forward discontinuity stays tight (1.0s).
+  const stitched = dedupeOverlapSegments(rawSegments, { windowSec: 1.0, overlapSec: STT_OVERLAP_SEC })
   const segments = stitched.map((s) => ({
     id: uuidv4(),
     project_id: project.id,

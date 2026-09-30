@@ -14,6 +14,7 @@ import { run, queryOne } from '../db/query.js'
 import { v4 as uuidv4 } from 'uuid'
 import { getRateLimiter, RateLimitExhaustedError } from '../lib/rateLimiter.js'
 import { classifyProviderError, ERROR_KINDS } from './providerErrors.js'
+import { isCanonicalAsrCacheInput } from './asrCacheKey.js'
 
 /**
  * Compute SHA-256 hash of normalized input for cache key.
@@ -161,6 +162,8 @@ function isStaleLocalArtifact(cached) {
  * @param {object} [params.rateLimitOpts] - Rate limiter config override
  * @returns {Promise<*>} provider result
  */
+// Single source of truth for canonical ASR cache identity lives in
+// asrCacheKey.js (buildAsrCacheInput / isCanonicalAsrCacheInput).
 // ASR inputs keyed by tmp file PATH alone are unsafe: the same path is reused
 // across runs with different audio. Require a content hash for cache use;
 // otherwise bypass cache entirely (still executes + logs). Canonical v2
@@ -171,8 +174,8 @@ function isUnsafeAsrCacheInput(type, input) {
   if (typeof input.file === 'string' && input.file) {
     return !input.fileHash && !input.fileContentHash && !input.contentHash && !input.audioContentHash
   }
-  // Canonical ASR identity requires a content hash; without it bypass cache.
-  if (input.v === 2) return !input.audioContentHash
+  // Canonical v2 without valid canonical identity → bypass cache.
+  if (input.v === 2) return !isCanonicalAsrCacheInput(input)
   return false
 }
 

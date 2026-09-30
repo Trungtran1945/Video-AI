@@ -1,5 +1,5 @@
 /**
- * Canonical ASR cache input (4.1).
+ * Canonical ASR cache input — single source of truth for ASR cache identity.
  *
  * Same audio + same effective ASR semantics → hit.
  * Any semantic difference → miss (including legacy rows missing metadata).
@@ -15,17 +15,9 @@
  *
  * Never contains: apiKey, Authorization, password, secret, token,
  * temporary file paths, absolute paths, or raw audio bytes.
+ * The builder allow-lists exactly these fields, so no separate sanitizer
+ * is needed on the hashing path (dead helper removed).
  */
-
-const SENSITIVE_KEYS = new Set([
-  'apikey', 'api_key', 'authorization', 'password', 'secret', 'token',
-  'accesstoken', 'access_token', 'refreshtoken', 'refresh_token',
-])
-
-const PATH_LIKE_KEYS = new Set([
-  'file', 'filepath', 'file_path', 'audioPath', 'audio_path', 'outPath',
-  'out_path', 'path', 'tmp', 'tmpPath', 'uploadFile', 'sourceFile',
-])
 
 function normalizeLanguage(value) {
   const raw = String(value ?? 'auto').trim().toLowerCase()
@@ -94,21 +86,4 @@ export function isCanonicalAsrCacheInput(input) {
   }
 }
 
-/**
- * Strip anything that must never enter cache identity (defense-in-depth).
- * Returns a sanitized shallow copy without sensitive or path-like keys.
- */
-export function sanitizeCacheInput(input) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return input
-  const out = {}
-  for (const [key, value] of Object.entries(input)) {
-    const low = String(key).toLowerCase()
-    if (SENSITIVE_KEYS.has(low)) continue
-    if (PATH_LIKE_KEYS.has(low)) continue
-    if (low.includes('secret') || low.includes('password') || low.includes('authorization') || low.includes('apikey') || low.includes('api_key')) continue
-    out[key] = value
-  }
-  return out
-}
-
-export default { buildAsrCacheInput, isCanonicalAsrCacheInput, sanitizeCacheInput }
+export default { buildAsrCacheInput, isCanonicalAsrCacheInput }

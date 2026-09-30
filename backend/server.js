@@ -121,7 +121,14 @@ async function tryListen(port, attempt = 0) {
   const p = Number(port)
   return new Promise((resolve, reject) => {
     const server = app.listen(p, () => {
-      console.log(`[Server] Backend running at http://localhost:${p}`)
+      // When PORT=0 the OS assigns an ephemeral port — log the actual bound
+      // port so smoke tests can discover it without fixed-port races.
+      let actual = p
+      try {
+        const addr = server.address()
+        if (addr && typeof addr === 'object' && Number(addr.port)) actual = Number(addr.port)
+      } catch (_) {}
+      console.log(`[Server] Backend running at http://localhost:${actual}`)
       resolve(server)
     })
     server.on('error', (err) => {

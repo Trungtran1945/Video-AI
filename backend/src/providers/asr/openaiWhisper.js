@@ -57,7 +57,7 @@ export class OpenAiWhisperAsr {
     this.apiKey = apiKey
   }
 
-  async transcribe(filePath, { language, prompt, temperature } = {}) {
+  async transcribe(filePath, { language, prompt, temperature, effectiveConfig } = {}) {
     // Upload memory audit (Node 22): single buffered read for multipart upload.
     // Hashing is streaming (sttUtils.hashFileContent) so this is the only
     // whole-file buffer. File-backed FormData/File (openAsBlob) is not used:
@@ -65,7 +65,12 @@ export class OpenAiWhisperAsr {
     // APIs; chunk slices here are small compressed MP3s. No memory regression
     // vs prior behavior; do not switch to experimental APIs without re-audit.
     const buffer = fs.readFileSync(filePath)
-    const effective = getWhisperEffectiveConfig({ prompt, temperature })
+    // Single-source effective config: caller (dubStt/summaryTranscribe) resolves
+    // once and passes it for both cache identity and the HTTP request. Only
+    // resolve from env when the caller did not supply one (backward compat).
+    const effective = effectiveConfig && typeof effectiveConfig === 'object'
+      ? effectiveConfig
+      : getWhisperEffectiveConfig({ prompt, temperature })
     // Refresh model so mid-process WHISPER_MODEL changes are honored.
     this.model = effective.model
     const base = effective.endpoint

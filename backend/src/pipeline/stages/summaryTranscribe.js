@@ -73,7 +73,7 @@ export async function summaryTranscribe(ctx) {
       type: 'asr',
       model: effective.model,
       input: canonicalInput,
-      fn: () => asr.provider.transcribe(uploadFile, { language: effectiveLang }),
+      fn: () => asr.provider.transcribe(uploadFile, { language: effectiveLang, effectiveConfig: effective }),
       userId: project.user_id,
       apiKeyId: asr.apiKeyId,
       projectId: project.id,
@@ -95,7 +95,7 @@ export async function summaryTranscribe(ctx) {
     }
     setProgress(12 + Math.round(((i + 1) / chunks.length) * 84))
   }
-  const segments = dedupeOverlapSegments(rawSegments, { windowSec: 1.0 })
+  const segments = dedupeOverlapSegments(rawSegments, { windowSec: 1.0, overlapSec: STT_OVERLAP_SEC })
 
   const transcriptPath = writeJson(path.join(dir, 'transcript.json'), {
     language: language || initialHint || 'unknown',

@@ -47,13 +47,30 @@ jobs:
       - name: Validate Docker Compose
         run: docker compose config --quiet
 
-      - name: Production deployment smoke (secrets/health/readiness/Redis)
+      - name: Production deployment config contract
         run: cd backend && node tests/deploymentSmoke.test.mjs
         env:
           NODE_ENV: test
           JWT_ACCESS_SECRET: test-access-secret-0123456789abcdef
           JWT_REFRESH_SECRET: test-refresh-secret-0123456789abcdef
           MASTER_KEY: test-master-key-0123456789abcdef
+
+      - name: Production runtime smoke (NODE_ENV=production, ephemeral port, ephemeral redis)
+        run: cd backend && node tests/productionRuntimeSmoke.test.mjs
+        env:
+          NODE_ENV: test
+          JWT_ACCESS_SECRET: test-access-secret-0123456789abcdef
+          JWT_REFRESH_SECRET: test-refresh-secret-0123456789abcdef
+          MASTER_KEY: test-master-key-0123456789abcdef
+
+      - name: Docker Compose integration (config + redis/api runtime)
+        run: cd backend && node tests/dockerIntegration.test.mjs
+        env:
+          NODE_ENV: test
+          JWT_ACCESS_SECRET: test-access-secret-0123456789abcdef
+          JWT_REFRESH_SECRET: test-refresh-secret-0123456789abcdef
+          MASTER_KEY: test-master-key-0123456789abcdef
+          CORS_ORIGINS: https://app.example.com
 
   docker-build:
     runs-on: ubuntu-latest

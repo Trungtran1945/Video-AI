@@ -180,17 +180,38 @@ function isValidSingleWordOverlap(word) {
   return true
 }
 
+function hasCjkChars(text) {
+  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(String(text ?? ''))
+}
+
+function longestSuffixPrefixChars(prevStr, currStr, minLen = 4) {
+  const a = String(prevStr ?? '')
+  const b = String(currStr ?? '')
+  const maxK = Math.min(a.length, b.length)
+  for (let k = maxK; k >= minLen; k -= 1) {
+    if (a.slice(a.length - k) === b.slice(0, k)) return k
+  }
+  return 0
+}
+
 // Stitch overlap window between adjacent chunks.
-// - Exact duplicates within windowSec → drop later (legacy behavior).
+// Chunking uses STT_CHUNK_SEC=300 with STT_OVERLAP_SEC=15, so adjacent
+// chunks share up to 15s of audio. Timing gate is asymmetric:
+// - forward gap: gap < windowSec (default 1.0, small discontinuity allowed)
+// - negative overlap: gap >= -overlapSec (default STT_OVERLAP_SEC)
+// Text gate is unchanged in spirit:
+// - Exact duplicates within window → drop later (legacy behavior).
 // - Suffix/prefix word overlap (e.g. A ends "... everyone welcome",
 //   B starts "everyone welcome ...") → merge into one segment:
 //   "Hello everyone welcome to the show" with start=prev.start,
 //   end=max(prev.end, curr.end). Original casing/punctuation preserved.
-// - Never merges independent sentences: requires timing gap in
-//   [-2.0, windowSec) and meaningful overlap (≥2 words, or 1 long
-//   non-stopword). Low-similarity pairs are kept separate.
-export function dedupeOverlapSegments(sortedSegments, { windowSec = 1.0 } = {}) {
+// - CJK/no-space fallback: char-level suffix/prefix (≥4 chars).
+// - Never merges independent sentences: requires timing gate AND meaningful
+//   overlap (≥2 words, or 1 long non-stopword, or ≥4 CJK chars).
+//   Low-similarity pairs are kept separate.
+export function dedupeOverlapSegments(sortedSegments, { windowSec = 1.0, overlapSec = STT_OVERLAP_SEC } = {}) {
   const list = [...(sortedSegments || [])].sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
+  const maxOverlap = Number.isFinite(Number(overlapSec)) && Number(overlapSec) > 0 ? Number(overlapSec) : STT_OVERLAP_SEC
   const out = []
   for (const seg of list) {
     const prev = out[out.length - 1]
@@ -199,7 +220,7 @@ export function dedupeOverlapSegments(sortedSegments, { windowSec = 1.0 } = {}) 
       continue
     }
     const gap = (Number(seg.start) || 0) - (Number(prev.end) || 0)
-    if (!(gap < windowSec && gap >= -2.0)) {
+    if (!(gap < windowSec && gap >= -maxOverlap)) {
       out.push(seg)
       continue
     }
@@ -217,8 +238,49 @@ export function dedupeOverlapSegments(sortedSegments, { windowSec = 1.0 } = {}) 
       out.push(seg)
       continue
     }
-    const k = longestSuffixPrefixOverlap(prevTokens, currTokens)
+    let k = longestSuffixPrefixOverlap(prevTokens, currTokens)
+    // CJK / no-space fallback: token overlap is 0 for languages without
+    // spaces (single-token sentences). Try char-level suffix/prefix on
+    // normalized no-space strings (min 4 chars) before giving up.
+    let cjkK = 0
     if (k <= 0) {
+      const prevNoSpace = prevNorm.replace(/\s+/g, '')
+      const currNoSpace = currNorm.replace(/\s+/g, '')
+      const looksCjk = hasCjkChars(prev.text) || hasCjkChars(seg.text)
+        || (prevTokens.length <= 1 && currTokens.length <= 1 && prevNoSpace.length >= 6 && currNoSpace.length >= 6)
+      if (looksCjk && prevNoSpace && currNoSpace) {
+        cjkK = longestSuffixPrefixChars(prevNoSpace, currNoSpace, 4)
+        if (cjkK >= 4) {
+          // Full containment at char level → drop curr.
+          if (cjkK >= currNoSpace.length) continue
+          const prevOrig = String(prev.text ?? '').trim()
+          const currOrig = String(seg.text ?? '').trim()
+          // Map normalized char overlap to original: when test strings carry
+          // no punctuation the counts align; otherwise fall back to suffix
+          // search on the raw strings.
+          let mergedText = ''
+          const rawK = longestSuffixPrefixChars(prevOrig, currOrig, 1)
+          if (rawK >= 4) {
+            mergedText = (prevOrig + currOrig.slice(rawK)).trim()
+          } else {
+            mergedText = (prevOrig + currOrig.slice(cjkK)).trim()
+          }
+          if (!mergedText) {
+            out.push(seg)
+            continue
+          }
+          const mergedCjk = {
+            ...prev,
+            text: mergedText,
+            start: prev.start,
+            end: Math.max(Number(prev.end) || 0, Number(seg.end) || 0),
+          }
+          if ((mergedCjk.speaker == null) && (seg.speaker != null)) mergedCjk.speaker = seg.speaker
+          if ((mergedCjk.language == null) && (seg.language != null)) mergedCjk.language = seg.language
+          out[out.length - 1] = mergedCjk
+          continue
+        }
+      }
       out.push(seg)
       continue
     }
