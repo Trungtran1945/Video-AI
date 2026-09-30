@@ -48,12 +48,20 @@ assert(normalizeSttLanguage('en-US') === 'en', 'en-US → en')
     { start: 6, end: 8, text: 'We need to move quickly.' },
   ])
   assert(filtered.length === 2, `hallucinations removed, kept 2 (got ${filtered.length})`)
-  // high no_speech_prob dropped even with text
+  // Multi-signal safety: high no_speech_prob ALONE never drops legitimate
+  // speech (fix for single-signal hard delete). Normal text with high
+  // noSpeechProb but no repetition/placeholder/low-logprob co-signal is kept.
   const filtered2 = filterHallucinatedSegments([
     { start: 0, end: 2, text: 'music playing', noSpeechProb: 0.9 },
     { start: 2, end: 4, text: 'real speech here', noSpeechProb: 0.1 },
   ])
-  assert(filtered2.length === 1 && filtered2[0].text === 'real speech here', 'high no_speech_prob dropped')
+  assert(filtered2.length === 2, `high noSpeechProb alone keeps normal text (got ${filtered2.length})`)
+  // Same text with corroborating low avgLogprob + loop still drops
+  const filtered3 = filterHallucinatedSegments([
+    { start: 0, end: 2, text: 'ah ah ah ah ah ah ah', noSpeechProb: 0.9, avgLogprob: -1.2 },
+    { start: 2, end: 4, text: 'real speech here', noSpeechProb: 0.1, avgLogprob: -0.3 },
+  ])
+  assert(filtered3.length === 1 && filtered3[0].text === 'real speech here', 'loop + bad acoustics dropped, good speech kept')
 }
 
 // resolve source language: prefers params.sourceLanguage, never project.language (target)

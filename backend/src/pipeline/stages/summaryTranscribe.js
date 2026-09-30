@@ -14,6 +14,8 @@ import {
   dedupeOverlapSegments,
   hashFileContent,
 } from '../sttUtils.js'
+import { buildAsrCacheInput } from '../../lib/asrCacheKey.js'
+import { getWhisperEffectiveConfig } from '../../providers/asr/openaiWhisper.js'
 
 export async function summaryTranscribe(ctx) {
   const { project, job, setProgress, signal } = ctx
@@ -55,12 +57,22 @@ export async function summaryTranscribe(ctx) {
     // Nén MP3 như nhánh dub để đồng nhất chất lượng + tránh giới hạn upload.
     const uploadFile = path.join(tmp, `sum_up_${i}.mp3`)
     await compressAudioForUpload(chunks[i].file, uploadFile)
-    const fileHash = hashFileContent(uploadFile)
+    const audioContentHash = await hashFileContent(uploadFile)
+    const effective = getWhisperEffectiveConfig()
+    const canonicalInput = buildAsrCacheInput({
+      audioContentHash,
+      sourceLanguage: effectiveLang,
+      effectiveModel: effective.model,
+      temperature: effective.temperature,
+      initialPrompt: effective.initialPrompt,
+      responseFormat: effective.responseFormat,
+      endpoint: effective.endpoint,
+    })
     const res = await callProvider({
       provider: asr.id,
       type: 'asr',
-      model: asr.provider.model || asr.id,
-      input: { fileHash, language: effectiveLang },
+      model: effective.model,
+      input: canonicalInput,
       fn: () => asr.provider.transcribe(uploadFile, { language: effectiveLang }),
       userId: project.user_id,
       apiKeyId: asr.apiKeyId,

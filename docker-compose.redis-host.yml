@@ -1,0 +1,8 @@
+# Local-dev only: expose Redis on host for debugging (redis-cli, inspection).
+# Production docker-compose.yml deliberately exposes NO Redis ports.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.redis-host.yml up
+services:
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"

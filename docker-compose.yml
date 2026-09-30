@@ -1,8 +1,9 @@
 services:
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # No public ports by default: API reaches Redis via internal Docker network
+    # (REDIS_HOST=redis). Local dev needing host access:
+    #   docker compose -f docker-compose.yml -f docker-compose.redis-host.yml up
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
@@ -43,6 +44,13 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - WHISPER_API_KEY=${WHISPER_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - WHISPER_BASE_URL=${WHISPER_BASE_URL:-https://api.openai.com/v1}
+      - WHISPER_MODEL=${WHISPER_MODEL:-whisper-1}
+      - WHISPER_TEMPERATURE=${WHISPER_TEMPERATURE:-0}
+      - WHISPER_INITIAL_PROMPT=${WHISPER_INITIAL_PROMPT:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
     volumes:
       - storage_data:/app/storage
       - db_data:/app/data

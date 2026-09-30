@@ -2,7 +2,19 @@ import fs from 'node:fs'
 import path from 'path'
 
 // Tương thích OpenAI Whisper API — có thể trỏ sang Groq free qua WHISPER_BASE_URL
-const DEFAULT_BASE = 'https://api.openai.com/v1'
+export const DEFAULT_BASE = 'https://api.openai.com/v1'
+export const WHISPER_RESPONSE_FORMAT = 'verbose_json'
+
+export function getWhisperEndpoint() {
+  const raw = String(process.env.WHISPER_BASE_URL || DEFAULT_BASE).trim() || DEFAULT_BASE
+  // Endpoint identity for cache semantics: normalize trailing slash only.
+  // Never includes API keys/secrets (they live in Authorization header).
+  return raw.replace(/\/+$/, '')
+}
+
+export function getWhisperEffectiveModel() {
+  return String(process.env.WHISPER_MODEL || 'whisper-1').trim() || 'whisper-1'
+}
 
 function normalizeWhisperLanguage(value) {
   const raw = String(value ?? '').trim().toLowerCase()
@@ -12,37 +24,55 @@ function normalizeWhisperLanguage(value) {
   return base
 }
 
-function whisperTemperature() {
+export function whisperTemperature() {
   const raw = Number(process.env.WHISPER_TEMPERATURE ?? 0)
   if (!Number.isFinite(raw)) return 0
   return Math.min(1, Math.max(0, raw))
 }
 
-function whisperPrompt() {
+export function whisperPrompt() {
   const raw = String(process.env.WHISPER_INITIAL_PROMPT ?? '').trim()
   return raw || undefined
+}
+
+// Effective Whisper request semantics for ASR cache identity.
+// Includes everything that changes transcription output; excludes secrets
+// (API key lives only in Authorization header, never in cache input).
+export function getWhisperEffectiveConfig({ prompt, temperature } = {}) {
+  const temp = temperature ?? whisperTemperature()
+  const initialPrompt = String(prompt ?? whisperPrompt() ?? '').trim().slice(0, 224) || ''
+  return {
+    model: getWhisperEffectiveModel(),
+    temperature: Number(temp),
+    initialPrompt,
+    responseFormat: WHISPER_RESPONSE_FORMAT,
+    endpoint: getWhisperEndpoint(),
+  }
 }
 
 export class OpenAiWhisperAsr {
   constructor(apiKey) {
     this.id = 'whisper'
-    this.model = process.env.WHISPER_MODEL || 'whisper-1'
+    this.model = getWhisperEffectiveModel()
     this.apiKey = apiKey
   }
 
   async transcribe(filePath, { language, prompt, temperature } = {}) {
+    // Single buffered read for multipart upload. Hashing is streaming
+    // (sttUtils.hashFileContent) so this is the only whole-file buffer.
     const buffer = fs.readFileSync(filePath)
-    const base = process.env.WHISPER_BASE_URL || DEFAULT_BASE
+    const effective = getWhisperEffectiveConfig({ prompt, temperature })
+    // Refresh model so mid-process WHISPER_MODEL changes are honored.
+    this.model = effective.model
+    const base = effective.endpoint
     const form = new FormData()
     form.append('file', new Blob([buffer]), path.basename(filePath))
-    form.append('model', this.model)
-    form.append('response_format', 'verbose_json')
+    form.append('model', effective.model)
+    form.append('response_format', effective.responseFormat)
     const lang = normalizeWhisperLanguage(language)
     if (lang) form.append('language', lang)
-    const temp = temperature ?? whisperTemperature()
-    form.append('temperature', String(temp))
-    const initialPrompt = String(prompt ?? whisperPrompt() ?? '').trim()
-    if (initialPrompt) form.append('prompt', initialPrompt.slice(0, 224))
+    form.append('temperature', String(effective.temperature))
+    if (effective.initialPrompt) form.append('prompt', effective.initialPrompt)
 
     const res = await fetch(`${base}/audio/transcriptions`, {
       method: 'POST',

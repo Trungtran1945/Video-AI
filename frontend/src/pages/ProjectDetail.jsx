@@ -313,13 +313,16 @@ export default function ProjectDetail() {
     };
   }, [load, loadDubData]);
 
-  // Poll progress while pipeline is active — chỉ khi SSE không khả dụng (fallback)
+  // Poll progress while pipeline is active — fallback authoritative khi SSE
+  // không khả dụng HOẶC stream đã closed mà project vẫn active (miss event).
+  // DB (load) là source of truth duy nhất; không suy diễn completed từ SSE.
+  // Single polling loop: cleanup trước khi tạo mới, stop khi terminal/unmount.
   useEffect(() => {
     if (!project || !ACTIVE_STATUSES.includes(project.status)) return undefined;
-    if (sseAvailable) return undefined;
+    if (sseAvailable && !streamClosed) return undefined;
     const t = setInterval(load, POLL_INTERVAL_MS);
     return () => clearInterval(t);
-  }, [project?.status, project, load, sseAvailable]);
+  }, [project?.status, sseAvailable, streamClosed, load]);
 
   // Khi pipeline vừa chuyển sang completed/failed (sau Chạy lại / Chạy lại lồng tiếng),
   // reload để làm mới output video & trạng thái.

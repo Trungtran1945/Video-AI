@@ -48,9 +48,34 @@ function inputHash(provider, type, model, input) {
  * @param {*} input
  * @returns {Promise<null|*>} cached result or null
  */
-async function checkCache(provider, type, model, input) {
+// Process-local single-flight for cacheable calls (INSTANCE_MODE=single,
+// sql.js single-writer). Same cache key → first request calls provider,
+// later concurrent requests await the same promise. No distributed lock.
+const inFlightProviderCalls = new Map()
+
+function singleFlightKey(provider, type, hash) {
+  return `${provider}\0${type}\0${hash}`
+}
+
+// Structured cache diagnostics (never throws, never logs secrets/audio).
+// Safe fields only: provider, type, hash prefix, error message snippet.
+function logCacheDiag(event, { provider, type, hash, error } = {}) {
   try {
-    const hash = inputHash(provider, type, model, input)
+    const safe = {
+      event,
+      provider: String(provider ?? ''),
+      type: String(type ?? ''),
+      hashPrefix: String(hash ?? '').slice(0, 12),
+    }
+    if (error) safe.error = String(error?.message || error).slice(0, 200)
+    console.warn(`[provider_cache] ${event} ${JSON.stringify(safe)}`)
+  } catch (_) {}
+}
+
+async function checkCache(provider, type, model, input) {
+  let hash = ''
+  try {
+    hash = inputHash(provider, type, model, input)
     const row = await queryOne(
       `SELECT result, expires_date FROM provider_cache WHERE provider = ? AND type = ? AND input_hash = ?`,
       [provider, type, hash]
@@ -61,8 +86,18 @@ async function checkCache(provider, type, model, input) {
       await run(`DELETE FROM provider_cache WHERE provider = ? AND type = ? AND input_hash = ?`, [provider, type, hash])
       return null
     }
-    return JSON.parse(row.result)
-  } catch (_) {
+    try {
+      return JSON.parse(row.result)
+    } catch (parseErr) {
+      logCacheDiag('provider_cache_parse_error', { provider, type, hash, error: parseErr })
+      try {
+        await run(`DELETE FROM provider_cache WHERE provider = ? AND type = ? AND input_hash = ?`, [provider, type, hash])
+      } catch (_) {}
+      return null
+    }
+  } catch (err) {
+    // Availability preserved: cache errors never fail the provider request.
+    logCacheDiag('provider_cache_check_error', { provider, type, hash, error: err })
     return null
   }
 }
@@ -71,8 +106,9 @@ async function checkCache(provider, type, model, input) {
  * Store result in provider cache.
  */
 async function storeCache(provider, type, model, input, result, ttlDays) {
+  let hash = ''
   try {
-    const hash = inputHash(provider, type, model, input)
+    hash = inputHash(provider, type, model, input)
     const expiresDate = ttlDays
       ? new Date(Date.now() + ttlDays * 86400000).toISOString()
       : null
@@ -80,8 +116,19 @@ async function storeCache(provider, type, model, input, result, ttlDays) {
       `INSERT OR REPLACE INTO provider_cache (id, provider, type, input_hash, result, expires_date) VALUES (?, ?, ?, ?, ?, ?)`,
       [uuidv4(), provider, type, hash, JSON.stringify(result), expiresDate]
     )
-  } catch (_) {
+  } catch (err) {
     // Cache write failure is non-fatal
+    logCacheDiag('provider_cache_write_error', { provider, type, hash, error: err })
+  }
+}
+
+async function invalidateCacheRow(provider, type, model, input, reason) {
+  try {
+    const hash = inputHash(provider, type, model, input)
+    await run(`DELETE FROM provider_cache WHERE provider = ? AND type = ? AND input_hash = ?`, [provider, type, hash])
+    logCacheDiag(reason || 'provider_cache_stale_artifact', { provider, type, hash })
+  } catch (err) {
+    logCacheDiag('provider_cache_check_error', { provider, type, error: err })
   }
 }
 
@@ -115,12 +162,18 @@ function isStaleLocalArtifact(cached) {
  * @returns {Promise<*>} provider result
  */
 // ASR inputs keyed by tmp file PATH alone are unsafe: the same path is reused
-// across runs with different audio. Require a content hash (fileHash) for
-// cache use; otherwise bypass cache entirely (still executes + logs).
+// across runs with different audio. Require a content hash for cache use;
+// otherwise bypass cache entirely (still executes + logs). Canonical v2
+// uses audioContentHash; legacy fileHash/fileContentHash/contentHash still
+// accepted for backward-compat (old rows miss once v2 fields differ).
 function isUnsafeAsrCacheInput(type, input) {
   if (type !== 'asr' || !input || typeof input !== 'object' || Array.isArray(input)) return false
-  if (typeof input.file !== 'string' || !input.file) return false
-  return !input.fileHash && !input.fileContentHash && !input.contentHash
+  if (typeof input.file === 'string' && input.file) {
+    return !input.fileHash && !input.fileContentHash && !input.contentHash && !input.audioContentHash
+  }
+  // Canonical ASR identity requires a content hash; without it bypass cache.
+  if (input.v === 2) return !input.audioContentHash
+  return false
 }
 
 export async function callProvider({
@@ -137,16 +190,49 @@ export async function callProvider({
   rateLimitOpts,
 }) {
   const skipCache = isUnsafeAsrCacheInput(type, input)
-  // 1. Cache check
+  // 1. Cache check (+ stale local-artifact invalidation before provider call)
   if (!skipCache) {
     const cached = await checkCache(provider, type, model, input)
-    if (cached !== null && !isStaleLocalArtifact(cached)) {
-      // Still log for analytics but mark as cache hit
-      await logCall({ projectId, jobId, provider, type, model, status: 'cache_hit', durationMs: 0 })
-      return cached
+    if (cached !== null) {
+      if (isStaleLocalArtifact(cached)) {
+        await invalidateCacheRow(provider, type, model, input, 'provider_cache_stale_artifact')
+      } else {
+        // Still log for analytics but mark as cache hit
+        await logCall({ projectId, jobId, provider, type, model, status: 'cache_hit', durationMs: 0 })
+        return cached
+      }
     }
+  } else {
+    // Non-cacheable calls never participate in single-flight.
+    return executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts })
   }
 
+  // 1b. Process-local single-flight: same cache key → one provider call.
+  const hash = inputHash(provider, type, model, input)
+  const flightKey = singleFlightKey(provider, type, hash)
+  const existing = inFlightProviderCalls.get(flightKey)
+  if (existing) return existing
+
+  const flight = (async () => {
+    try {
+      const result = await executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts })
+      await storeCache(provider, type, model, input, result, cacheTtlDays)
+      return result
+    } finally {
+      // Always cleanup so retries are possible and no memory leaks.
+      if (inFlightProviderCalls.get(flightKey) === flightPromise) {
+        inFlightProviderCalls.delete(flightKey)
+      }
+    }
+  })()
+  // Store the promise synchronously before any await so concurrent
+  // same-key callers observe it and await instead of calling provider.
+  const flightPromise = flight
+  inFlightProviderCalls.set(flightKey, flightPromise)
+  return flightPromise
+}
+
+async function executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts }) {
   // 2. Rate limiter
   const limiter = getRateLimiter(userId || 'system', provider, apiKeyId, {
     requestsPerMinute: rateLimitOpts?.requestsPerMinute || 10,
@@ -163,11 +249,6 @@ export async function callProvider({
 
     // 4. Log success
     await logCall({ projectId, jobId, provider, type, model, status: 'ok', durationMs })
-
-    // 5. Cache result (skipped for unsafe ASR path-only inputs)
-    if (!skipCache) {
-      await storeCache(provider, type, model, input, result, cacheTtlDays)
-    }
 
     return result
   } catch (err) {
@@ -207,6 +288,14 @@ async function logCall({ projectId, jobId, provider, type, model, status, durati
   } catch (_) {
     // Log failure is non-fatal
   }
+}
+
+export function __clearInFlightForTests() {
+  inFlightProviderCalls.clear()
+}
+
+export function __inFlightSizeForTests() {
+  return inFlightProviderCalls.size
 }
 
 export default { callProvider, checkCache, storeCache }

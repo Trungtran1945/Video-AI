@@ -17,6 +17,8 @@ import {
   dedupeOverlapSegments,
   hashFileContent,
 } from '../sttUtils.js'
+import { buildAsrCacheInput } from '../../lib/asrCacheKey.js'
+import { getWhisperEffectiveConfig } from '../../providers/asr/openaiWhisper.js'
 
 // dub.stt (docs/05 §B.2): ASR trên audio đã normalize LUFS → transcript_segments.
 // Speaker diarization: cột speaker để NULL ở v1 (Whisper API không trả speaker).
@@ -82,12 +84,22 @@ export async function dubStt(ctx) {
     // Upload bản MP3 nén thay vì WAV gốc (tránh vượt giới hạn dung lượng của Groq)
     const uploadFile = path.join(tmp, `dub_up_${i}.mp3`)
     await compressAudioForUpload(chunks[i].file, uploadFile)
-    const fileHash = hashFileContent(uploadFile)
+    const audioContentHash = await hashFileContent(uploadFile)
+    const effective = getWhisperEffectiveConfig()
+    const canonicalInput = buildAsrCacheInput({
+      audioContentHash,
+      sourceLanguage: effectiveLang,
+      effectiveModel: effective.model,
+      temperature: effective.temperature,
+      initialPrompt: effective.initialPrompt,
+      responseFormat: effective.responseFormat,
+      endpoint: effective.endpoint,
+    })
     const res = await callProvider({
       provider: asr.id,
       type: 'asr',
-      model: asr.provider.model || asr.id,
-      input: { fileHash, language: effectiveLang },
+      model: effective.model,
+      input: canonicalInput,
       fn: () => asr.provider.transcribe(uploadFile, { language: effectiveLang }),
       userId: project.user_id,
       apiKeyId: asr.apiKeyId,

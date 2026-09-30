@@ -23,6 +23,12 @@ assert(!compose.includes('scale-disabled') && !/^\s{2}worker:/m.test(compose), '
 assert(!compose.includes('change-me-in-production'), 'Compose never injects placeholder secrets (fail-fast instead)')
 assert(compose.includes('JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:-}'), 'Compose passes the JWT secret through without a default')
 assert(compose.includes('UPLOAD_SESSION_TTL_MINUTES=${UPLOAD_SESSION_TTL_MINUTES:-60}'), 'Compose configures the upload session TTL')
+assert(!compose.includes('6379:6379'), 'Compose never exposes Redis publicly (internal network only)')
+assert(compose.includes('REDIS_HOST=redis'), 'Compose API uses internal Redis host')
+assert(compose.includes('WHISPER_BASE_URL='), 'Compose passes WHISPER_BASE_URL')
+assert(compose.includes('WHISPER_MODEL='), 'Compose passes WHISPER_MODEL')
+assert(compose.includes('WHISPER_TEMPERATURE='), 'Compose passes WHISPER_TEMPERATURE')
+assert(compose.includes('WHISPER_INITIAL_PROMPT='), 'Compose passes WHISPER_INITIAL_PROMPT')
 
 const result = spawnSync(process.execPath, ['-e', "process.env.INSTANCE_MODE='multi'; import('./src/config.js')"], {
   cwd: root,

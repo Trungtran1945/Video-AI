@@ -73,9 +73,12 @@ function assert(cond, msg) {
   assert(!/for\s*\(\s*;\s*;\s*\)/.test(hook), 'no for(;;) infinite retry')
   // Bounded: attempt compared against backoff length.
   assert(hook.includes('attempt <') || hook.includes('attempt >='), 'retry counter bounded by backoff length')
-  // Polling/SSE storm guard: ProjectDetail polls only when !sseAvailable.
+  // Polling/SSE storm guard: ProjectDetail polls only as fallback when SSE
+  // unavailable (or stream closed while still active). Single interval with
+  // cleanup, stops at terminal — never concurrent with a live SSE stream.
   const pd = frontFile('pages', 'ProjectDetail.jsx')
-  assert(pd.includes('if (sseAvailable) return'), 'no SSE+polling storm (poll only when SSE unavailable)')
+  assert(pd.includes('sseAvailable') && pd.includes('setInterval(load'), 'no SSE+polling storm (poll gated by sseAvailable fallback)')
+  assert(pd.includes('return () => clearInterval(t)'), 'polling cleanup prevents duplicate loops')
 }
 
 // 5. frontend stale response protection + 409 handling.

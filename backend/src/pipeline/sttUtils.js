@@ -54,27 +54,84 @@ function normalizeTextForLoop(text) {
   return String(text ?? '').trim().toLowerCase().replace(/[.,!?;:…。、！？，；：\s]+/gu, ' ').trim()
 }
 
-// Heuristic hallucination detector for Whisper loops on silence/music:
-// blank, single token/char repeated, or high no_speech_prob.
-export function isHallucinatedText(text, { noSpeechProb } = {}) {
+function normalizeWordForOverlap(word) {
+  return String(word ?? '').toLowerCase().replace(/^[.,!?;:…。、！？，；："'“”‘’()[\]{}<>«»—–-]+|[.,!?;:…。、！？，；："'“”‘’()[\]{}<>«»—–-]+$/gu, '').trim()
+}
+
+function tokensForOverlap(text) {
+  const norm = normalizeTextForLoop(text)
+  if (!norm) return []
+  return norm.split(/\s+/).filter(Boolean).map(normalizeWordForOverlap).filter(Boolean)
+}
+
+// Multi-signal hallucination detector for Whisper loops on silence/music.
+// Never drops legitimate speech on a single signal alone (notably never on
+// noSpeechProb >= 0.85 by itself). Combines:
+//   - noSpeechProb (high >=0.85, veryHigh >=0.95)
+//   - avgLogprob (low <=-1.0 suspicious, good >=-0.5 confident)
+//   - duration (short audio with long repetitive text)
+//   - repetition (token/char loops)
+//   - placeholder patterns (music/silence/noise/...)
+export function isHallucinatedText(text, { noSpeechProb, no_speech_prob, avgLogprob, avg_logprob, durationSec, start, end } = {}) {
   const raw = String(text ?? '').trim()
   if (!raw) return true
-  if (typeof noSpeechProb === 'number' && noSpeechProb >= 0.85) return true
   const norm = normalizeTextForLoop(raw)
   if (!norm) return true
-  // CJK: very few distinct chars over a long string → loop
-  const noSpaces = norm.replace(/\s+/g, '')
-  const distinct = new Set([...noSpaces])
-  if (noSpaces.length >= 12 && distinct.size <= 2) return true
-  // Alphabetic: one word repeated ≥5 times, or ≤2 distinct words with ≥6 tokens
-  const tokens = norm.split(/\s+/).filter(Boolean)
-  if (tokens.length >= 5) {
-    const uniq = new Set(tokens)
-    if (uniq.size === 1) return true
-    if (uniq.size <= 2 && tokens.length >= 8) return true
+
+  const noSpeech = typeof noSpeechProb === 'number' ? noSpeechProb
+    : typeof no_speech_prob === 'number' ? no_speech_prob : NaN
+  const logprob = typeof avgLogprob === 'number' ? avgLogprob
+    : typeof avg_logprob === 'number' ? avg_logprob : NaN
+  const hasNoSpeech = Number.isFinite(noSpeech)
+  const hasLogprob = Number.isFinite(logprob)
+  const veryHighNoSpeech = hasNoSpeech && noSpeech >= 0.95
+  const lowLogprob = hasLogprob && logprob <= -1.0
+  const goodLogprob = hasLogprob && logprob >= -0.5
+
+  let duration = Number(durationSec)
+  if (!Number.isFinite(duration) && Number.isFinite(Number(start)) && Number.isFinite(Number(end))) {
+    duration = Number(end) - Number(start)
   }
-  // Long dash/music placeholders Whisper emits on silence
-  if (/^(music|silence|noise|applause|laughter)[\s.]*(\1[\s.]*)*$/i.test(norm) && tokens.length >= 3) return true
+  const hasDuration = Number.isFinite(duration) && duration >= 0
+
+  // Repetition analysis
+  const noSpaces = norm.replace(/\s+/g, '')
+  const distinctChars = new Set([...noSpaces])
+  const isCjkLoop = noSpaces.length >= 12 && distinctChars.size <= 2
+  const tokens = norm.split(/\s+/).filter(Boolean)
+  const uniqTokens = new Set(tokens)
+  const singleTokenLoop = tokens.length >= 5 && uniqTokens.size === 1
+  const twoTokenLoop = tokens.length >= 8 && uniqTokens.size <= 2
+  const strongSingleLoop = tokens.length >= 10 && uniqTokens.size === 1
+  const strongTwoLoop = tokens.length >= 12 && uniqTokens.size <= 2
+  const strongRepetition = isCjkLoop || strongSingleLoop || strongTwoLoop
+  const moderateRepetition = singleTokenLoop || twoTokenLoop
+
+  const placeholderMatch = /^(music|silence|noise|applause|laughter|musica|musique|silencio)[\s.]*(\1[\s.]*)*$/i.test(norm) && tokens.length >= 3
+  const longPlaceholder = placeholderMatch && tokens.length >= 6
+
+  // Strong structural loops are hallucinations even without acoustic signals
+  // (matches legacy behavior for obvious Whisper feedback loops).
+  if (strongRepetition) return true
+  if (longPlaceholder) return true
+
+  // Good acoustic confidence rescues moderate/placeholder/silence cases.
+  // Noisy-speech guard: high noSpeechProb + good avgLogprob → keep.
+  // Legitimate repeated phrases (good avgLogprob) are kept here.
+  if (goodLogprob) return false
+
+  // Moderate repetition / placeholder: drop unless rescued above.
+  // Preserves legacy behavior when acoustic info is absent (unknown → drop
+  // obvious loops), but never drops on noSpeechProb alone for normal text.
+  if (moderateRepetition) return true
+  if (placeholderMatch) return true
+
+  // Silence hallucination: very high noSpeech + low confidence + short segment
+  // with non-trivial text. Requires all three to avoid dropping legit speech.
+  if (veryHighNoSpeech && lowLogprob && hasDuration && duration < 3 && tokens.length >= 3) return true
+
+  // High noSpeech alone, low logprob alone, or short duration alone → keep.
+  // This is the safety fix: no single acoustic-signal hard delete.
   return false
 }
 
@@ -83,34 +140,145 @@ export function filterHallucinatedSegments(segments) {
   return list.filter((s) => {
     const text = String(s?.text ?? '').trim()
     if (!text) return false
-    if (isHallucinatedText(text, { noSpeechProb: s?.noSpeechProb ?? s?.no_speech_prob })) return false
+    const start = Number(s?.start)
+    const end = Number(s?.end)
+    const durationSec = (Number.isFinite(start) && Number.isFinite(end)) ? (end - start) : undefined
+    if (isHallucinatedText(text, {
+      noSpeechProb: s?.noSpeechProb ?? s?.no_speech_prob,
+      avgLogprob: s?.avgLogprob ?? s?.avg_logprob,
+      durationSec,
+    })) return false
     return true
   })
 }
 
-// Drop duplicate segments produced in the overlap window of adjacent chunks.
-// Keeps first occurrence; drops later ones with (near-)identical text starting
-// within `windowSec` of previous end.
+const OVERLAP_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'but', 'to', 'of', 'in', 'on', 'is', 'it',
+  'that', 'this', 'for', 'with', 'as', 'at', 'by', 'from', 'you', 'we',
+  'va', 'la', 'cua', 'của', 'và', 'et', 'le', 'la', 'de', 'und', 'der',
+])
+
+function longestSuffixPrefixOverlap(prevTokens, currTokens) {
+  const maxK = Math.min(prevTokens.length, currTokens.length)
+  for (let k = maxK; k >= 1; k -= 1) {
+    let match = true
+    for (let i = 0; i < k; i += 1) {
+      if (prevTokens[prevTokens.length - k + i] !== currTokens[i]) {
+        match = false
+        break
+      }
+    }
+    if (match) return k
+  }
+  return 0
+}
+
+function isValidSingleWordOverlap(word) {
+  const w = String(word ?? '')
+  if (w.length < 4) return false
+  if (OVERLAP_STOPWORDS.has(w)) return false
+  return true
+}
+
+// Stitch overlap window between adjacent chunks.
+// - Exact duplicates within windowSec → drop later (legacy behavior).
+// - Suffix/prefix word overlap (e.g. A ends "... everyone welcome",
+//   B starts "everyone welcome ...") → merge into one segment:
+//   "Hello everyone welcome to the show" with start=prev.start,
+//   end=max(prev.end, curr.end). Original casing/punctuation preserved.
+// - Never merges independent sentences: requires timing gap in
+//   [-2.0, windowSec) and meaningful overlap (≥2 words, or 1 long
+//   non-stopword). Low-similarity pairs are kept separate.
 export function dedupeOverlapSegments(sortedSegments, { windowSec = 1.0 } = {}) {
   const list = [...(sortedSegments || [])].sort((a, b) => (Number(a.start) || 0) - (Number(b.start) || 0))
   const out = []
   for (const seg of list) {
     const prev = out[out.length - 1]
-    if (prev) {
-      const gap = (Number(seg.start) || 0) - (Number(prev.end) || 0)
-      const sameText = normalizeTextForLoop(seg.text) === normalizeTextForLoop(prev.text)
-      if (sameText && gap < windowSec) continue
+    if (!prev) {
+      out.push(seg)
+      continue
     }
-    out.push(seg)
+    const gap = (Number(seg.start) || 0) - (Number(prev.end) || 0)
+    if (!(gap < windowSec && gap >= -2.0)) {
+      out.push(seg)
+      continue
+    }
+    const prevNorm = normalizeTextForLoop(prev.text)
+    const currNorm = normalizeTextForLoop(seg.text)
+    if (!prevNorm || !currNorm) {
+      out.push(seg)
+      continue
+    }
+    if (prevNorm === currNorm) continue
+
+    const prevTokens = tokensForOverlap(prev.text)
+    const currTokens = tokensForOverlap(seg.text)
+    if (prevTokens.length === 0 || currTokens.length === 0) {
+      out.push(seg)
+      continue
+    }
+    const k = longestSuffixPrefixOverlap(prevTokens, currTokens)
+    if (k <= 0) {
+      out.push(seg)
+      continue
+    }
+    if (k === 1 && !isValidSingleWordOverlap(currTokens[0])) {
+      out.push(seg)
+      continue
+    }
+    // Full containment: curr entirely inside prev overlap → drop curr.
+    if (k >= currTokens.length) continue
+
+    // Merge: prev original words + curr original words after overlap.
+    const prevWordsOrig = String(prev.text ?? '').trim().split(/\s+/).filter(Boolean)
+    const currWordsOrig = String(seg.text ?? '').trim().split(/\s+/).filter(Boolean)
+    // Map normalized overlap k to original word offset: normalized token
+    // count may be ≤ original word count when punctuation-only tokens are
+    // stripped; align from the front by skipping empty normalized words.
+    let currOrigSkip = 0
+    let seen = 0
+    for (let i = 0; i < currWordsOrig.length && seen < k; i += 1) {
+      const nw = normalizeWordForOverlap(currWordsOrig[i])
+      currOrigSkip += 1
+      if (nw) seen += 1
+    }
+    const mergedText = [...prevWordsOrig, ...currWordsOrig.slice(currOrigSkip)].join(' ').trim()
+    if (!mergedText) {
+      out.push(seg)
+      continue
+    }
+    const merged = {
+      ...prev,
+      text: mergedText,
+      start: prev.start,
+      end: Math.max(Number(prev.end) || 0, Number(seg.end) || 0),
+    }
+    // Preserve speaker/language from prev (chunk-boundary continuity);
+    // if prev lacks them but curr has them, inherit curr's.
+    if ((merged.speaker == null) && (seg.speaker != null)) merged.speaker = seg.speaker
+    if ((merged.language == null) && (seg.language != null)) merged.language = seg.language
+    out[out.length - 1] = merged
   }
   return out
 }
 
 // sha256 of file content for ASR cache keys (path alone is not stable:
 // tmp paths are reused across runs with different audio).
-export function hashFileContent(filePath) {
-  const buffer = fs.readFileSync(filePath)
-  return crypto.createHash('sha256').update(buffer).digest('hex')
+// Streaming: never loads the whole audio file into RAM just to hash.
+export async function hashFileContent(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256')
+    const stream = fs.createReadStream(filePath)
+    stream.on('error', reject)
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.on('end', () => {
+      try {
+        resolve(hash.digest('hex'))
+      } catch (err) {
+        reject(err)
+      }
+    })
+  })
 }
 
 export default {
