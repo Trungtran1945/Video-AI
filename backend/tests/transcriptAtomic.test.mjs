@@ -91,6 +91,26 @@ function seg(id, idx, s, e, extra = {}) {
   assert(r.conflicts.length > 0, 'push vào segment manual → conflict')
 }
 
+// 7b. incident c47817c2: transcript dày khít nhau (gap 0) + 1 overlap render-blocking.
+// Sửa overlap KHÔNG được cascade push toàn bộ (editor unsaveable + EXCEEDS_DURATION).
+{
+  const all = [seg('a', 0, 298, 299), seg('b', 1, 299, 300), seg('c', 2, 299.08, 300.4), seg('d', 3, 300.4, 302), seg('e', 4, 302, 302.92)]
+  const r = computeProposedState(all, [{ id: 'c', startSec: 300.1 }], { gap: 0.1 })
+  assert(r.errors.length === 0 && r.conflicts.length === 0, 'sửa overlap duy nhất → không errors/conflicts, không cascade')
+  assert(r.adjusted.length === 0, `không push câu nào khác (got ${r.adjusted.length})`)
+  assert(r.proposed.get('c').start_sec === 300.1, 'C start thành 300.1')
+  assert(r.proposed.get('d').start_sec === 300.4 && r.proposed.get('e').start_sec === 302, 'D/E khít nhau giữ nguyên')
+  const v = validateProposedState(r.ordered, { gap: 0.1 })
+  assert(v.ok, 'proposed pass validate (render gate 0.05 chấp nhận gap 0)')
+}
+
+// 7c. cặp khít nhau (gap 0) không bị push khi sửa text ở xa
+{
+  const all = [seg('a', 0, 0, 5), seg('b', 1, 5, 10), seg('c', 2, 10, 15)]
+  const r = computeProposedState(all, [{ id: 'c', translation: 'mới' }], { gap: 0.1 })
+  assert(r.errors.length === 0 && r.conflicts.length === 0 && r.adjusted.length === 0, 'edit text-only trên transcript khít → save được, không drift')
+}
+
 // 8. withTransaction rollback: throw giữa txn → DB giữ nguyên
 {
   const pid = 'proj-txn-1'

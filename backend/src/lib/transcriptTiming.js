@@ -1,16 +1,25 @@
 // Deterministic transcript timing model (TRANSLATE_DUB).
 // Invariant (minimal-push, decision 1a):
 // - start_sec >= 0, end_sec > start_sec
-// - segments sorted by index_num keep order, no overlap: next.start >= prev.end + GAP
-// - GAP = 0.1 applied consistently
+// - explicit user timing targets gap GAP (0.1) vs neighbours
+// - auto-push/validate only intervene on RENDER-BLOCKING pairs
+//   (overlap > RENDER_OVERLAP_TOL 0.05, mirror of dubMerge validateForRender):
+//   abutting pairs (gap 0) render fine and are left untouched — no cascade
 // - no negative values, no exceeding video duration when durationSec is known
 // - same input batch always produces same output (sorted by index_num, not payload order)
-// Semantics: only push downstream when needed to resolve overlap, by exactly
-// `need = prevEnd + GAP - nextStart` (cumulative). Explicit timing in the same
+// Semantics: only push downstream when needed to resolve render-blocking
+// overlap, by exactly `need = prevEnd + GAP - nextStart` (cumulative). Explicit timing in the same
 // batch wins; if auto-push requirement contradicts an explicit timing, the whole
 // batch is a conflict (caller rejects, writes nothing).
 
 export const TIMING_GAP = 0.1
+// Render gate (pipeline/stages/dubMerge.js validateForRender + forcedAlignService
+// validateNoOverlap): overlap chỉ BLOCK_RENDER khi start < prevEnd - 0.05.
+// Auto-push/validate ở đây CHỈ can thiệp khi cặp câu vượt ngưỡng đó (sẽ BLOCK
+// render). Các cặp khít nhau (gap 0) render được nên giữ nguyên — tránh cascade
+// push toàn transcript trên STT dày đặc (incident c47817c2: 1 overlap 0.92s
+// khiến mọi PUT đều conflict + EXCEEDS_DURATION, editor unsaveable).
+export const RENDER_OVERLAP_TOL = 0.05
 const EPS = 1e-9
 
 function num(v) {
@@ -135,7 +144,9 @@ export function computeProposedState(allSegments, incoming, { gap = TIMING_GAP, 
     return { proposed: byId, ordered, adjusted: [], ttsInvalidate, conflicts, errors }
   }
 
-  // Step 2: minimal forward push in index order.
+  // Step 2: minimal forward push in index order — ONLY for pairs that would
+  // BLOCK_RENDER (overlap beyond RENDER_OVERLAP_TOL). Abutting pairs (gap 0)
+  // render fine and must not trigger pushes (no cascade, no drift).
   const adjusted = []
   for (let i = 0; i < ordered.length; i++) {
     const cur = ordered[i]
@@ -148,7 +159,8 @@ export function computeProposedState(allSegments, incoming, { gap = TIMING_GAP, 
     }
     const prev = ordered[i - 1]
     const need = prev.end_sec + GAP - cur.start_sec
-    if (need > EPS) {
+    const blocksRender = prev.end_sec - RENDER_OVERLAP_TOL - cur.start_sec > EPS
+    if (blocksRender && need > EPS) {
       // Need to move cur forward. If cur was explicitly set in this batch → conflict.
       if (hasExplicitTiming.has(String(cur.id))) {
         conflicts.push({
@@ -216,7 +228,9 @@ export function validateProposedState(ordered, { gap = TIMING_GAP, durationSec =
     if (!(r.end_sec > r.start_sec)) errors.push({ code: 'INVALID_TIMING', segmentId: String(r.id), message: `end phải > start` })
     if (i > 0) {
       const prev = list[i - 1]
-      if (prev.end_sec + GAP - r.start_sec > EPS) {
+      // Đồng bộ với render gate: chỉ reject cặp sẽ BLOCK_RENDER (overlap > tol).
+      // Cặp khít nhau (gap 0) render được → cho qua, tránh editor unsaveable.
+      if (prev.end_sec - RENDER_OVERLAP_TOL - r.start_sec > EPS) {
         errors.push({ code: 'OVERLAP_CONFLICT', segmentId: String(r.id), message: `Overlap với segment trước (index ${prev.index_num})` })
       }
     }
@@ -233,4 +247,4 @@ export function validateProposedState(ordered, { gap = TIMING_GAP, durationSec =
   return { ok: errors.length === 0, errors }
 }
 
-export default { TIMING_GAP, computeProposedState, validateProposedState, applyTextTranslation }
+export default { TIMING_GAP, RENDER_OVERLAP_TOL, computeProposedState, validateProposedState, applyTextTranslation }
