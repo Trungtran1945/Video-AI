@@ -111,7 +111,27 @@ Mỗi `MaskItem` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
   "isLegacy": false      // true đối với mask từ dữ liệu OCR cũ
 }
 ```
-### POST `/projects/:id/regenerate` — chạy lại pipeline (từ stage lỗi hoặc đầu)
+### POST `/projects/:id/regenerate` — chạy lại pipeline (từ stage lỗi hoặc chọn lọc) [CURRENT]
+Auth: `AUTH + OWNER`.
+Body (JSON, tuỳ chọn):
+```jsonc
+{
+  "fromStage": "dub.translate" // tuỳ chọn: stage muốn bắt đầu chạy lại
+}
+```
+- Nếu không truyền `fromStage`: Hệ thống tự động tìm stage đầu tiên chưa hoàn thành hoặc bị lỗi để chạy tiếp (`firstRunnableStage`). Nếu stage đang chờ hồi phục quota, trả về `429 RETRY_WAITING` kèm `nextRetryAt`.
+- Nếu có truyền `fromStage`: Kiểm tra tính hợp lệ qua `stagesForProject(project)`.
+  - TRANSLATE_DUB hợp lệ: `dub.ingest`, `dub.stt`, `dub.merge`, `dub.translate`, `dub.ttsAlign`, `dub.render`.
+  - SUMMARY hợp lệ: `summary.transcribe`, `summary.analyze`, `summary.script`, `summary.sceneDetect`, `summary.align`, `summary.subtitle`, `summary.tts`, `summary.render`.
+  - Nếu `fromStage` không hợp lệ: Trả về `400 VALIDATION` kèm danh sách các stage hợp lệ.
+- Response (200):
+```jsonc
+{
+  "message": "Pipeline restarted",
+  "status": "running",
+  "fromStage": "dub.translate"
+}
+```
 
 ---
 
@@ -133,6 +153,7 @@ State machine: `pending → completing → completed`; pending/completing hết 
 
 | Method | Path | Auth | Mô tả |
 | --- | --- | --- | --- |
+| POST | `/projects/:id/sse-ticket` | AUTH+OWNER | Sinh vé xác thực ngắn hạn một lần (TTL 30s) cho SSE EventSource: lưu `sha256(ticket)` trong bảng `sse_tickets` → `{ ticket, expiresIn }` |
 | GET | `/projects/:id/events` | `?ticket=<single-use>` (POST `/projects/:id/sse-ticket` bằng Bearer trước; `sseAuthMiddleware`) + OWNER; legacy `?token=<accessToken>` deprecated | stream `text/event-stream` qua `eventBus`: `retry: 3000`, heartbeat `: ping` mỗi 15s, event `progress` `{ stage, status, percent }` (stage `__project__` là tiến độ tổng), event `done` + đóng stream khi project `completed`/`failed`, event `error` `{ code: 'DB_UNAVAILABLE', retryable: true }` + đóng stream khi initial DB check fail (frontend fallback polling DB, không suy diễn terminal) |
 
 ---
@@ -268,6 +289,9 @@ State machine: `pending → completing → completed`; pending/completing hết 
 | `PIPELINE_RUNNING` | pipeline đang chạy, không xoá/redub được — [CURRENT, EXTRA] |
 | `IDEMPOTENCY_KEY_REUSE` | `Idempotency-Key` tái dùng với body khác (409, kèm `projectId`) — [CURRENT] |
 | `CSRF_ORIGIN_MISMATCH` | cookie refresh/logout kèm `Origin`/`Referer` cross-origin ngoài allowlist (403) — [CURRENT] |
+| `MASK_APPROVED_IMMUTABLE` | mask đã ở trạng thái APPROVED là bất biến, cấm sửa toạ độ/thời gian/thị giác (409) — [CURRENT] |
+| `MASK_DATA_UNAVAILABLE` | lỗi truy vấn cơ sở dữ liệu khi nạp danh sách mask cho render (500/BLOCK_RENDER) — [CURRENT] |
+| `MASK_INVALID` | toạ độ hình học hoặc thời gian của mask không hợp lệ khi nạp cho render (BLOCK_RENDER) — [CURRENT] |
 | `MEDIA_001` | [TARGET/FUTURE: không cài đặt — upload CURRENT giới hạn 2GB resumable / 4GB legacy, không mã này] |
 | `MEDIA_002` | [NOT IMPLEMENTED: media-consent chưa cài đặt] |
 | `MEDIA_003` | [TARGET/FUTURE: MediaJobStage chưa cài đặt] |

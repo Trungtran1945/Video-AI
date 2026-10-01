@@ -24,7 +24,7 @@ dễ bảo trì (theo yêu cầu Clean Architecture, SOLID, không code trùng l
 | --- | --- | --- |
 | ESLint | style, unused, hooks | `frontend: npm run lint` (backend không có script lint) |
 | TypeScript (qua jsconfig) | typecheck nhẹ cho JS | `frontend: npm run typecheck` = `tsc -p ./jsconfig.json` |
-| `node:test` | unit & integration test | backend `npm test` = `node scripts/run-tests.mjs` (~36 file `tests/*.test.mjs`); `timeline.test.js` của frontend cũng là `node:test` (frontend không có script `test`) |
+| `node:test` | unit & integration test | backend `npm test` = `node scripts/run-tests.mjs` (~115 file `tests/*.test.mjs`); `timeline.test.js` của frontend cũng là `node:test` (frontend không có script `test`) |
 
 Cấu hình mẫu [CURRENT]:
 ```jsonc
@@ -90,9 +90,8 @@ packages/<name>/
 - **Provider**: mock HTTP, assert gọi đúng & map kết quả; test lỗi → `ProviderLog` status error.
 - **AlignService** (SUMMARY): test invariant `sum(clip.duration*speed) ≈ D` với nhiều kịch bản (thiếu cảnh, thừa cảnh).
 - **ForcedAlignService** (TRANSLATE_DUB): fixture TTS dài/ngắn hơn slot → assert lệch < 5% slot,
-  không segment nào chồng nhau, atempo không vượt [0.8–1.2] (`forcedAlignService.js:14-15`).
-- **OcrRegion merge**: boxes liên tiếp IoU > 0.7 → assert gộp đúng `[startSec, endSec]`; box hiện
-  < 0.5s bị lọc.
+  không segment nào chồng nhau, pause-expansion mở rộng hợp lý, atempo không vượt `[0.80–1.35]` (`forcedAlignService.js:14-15`).
+- **Mask lifecycle & validation** (TRANSLATE_DUB): assert mask `APPROVED` bất biến khi sửa toạ độ/thị giác (409 `MASK_APPROVED_IMMUTABLE`), `loadSubtitleRegions` chỉ nạp mask `APPROVED`, DB lỗi trả `BLOCK_RENDER: MASK_DATA_UNAVAILABLE`, mask sai toạ độ trả `BLOCK_RENDER: MASK_INVALID`.
 - **TranslateService**: cùng input, khác StylePreset → assert đúng systemPrompt được inject và
   output khớp JSON schema `{segments:[{index, translation}]}`.
 - **API**: test controller qua `node:test` + mock use-case. [CURRENT — không supertest, xem §2].

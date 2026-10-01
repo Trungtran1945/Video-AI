@@ -190,6 +190,10 @@ COOKIE_SECURE=false                     # dev (localhost được browser miễn
 - Log tập trung (Pino → file/stdout → công cụ log hệ thống).
 - Metrics: BullMQ counts và `/health.database`/`/health.writes` (queue depth, wait time, duration, slow-write count).
 - Cảnh báo: job FAILED quá N lần → notify admin.
+- **Single-Writer Lock với Actionable Error**: File lock `sqlite_single_writer.lock` lưu metadata người sở hữu `{ pid, host, acquiredAt, lockId }`. Khi có tiến trình thứ 2 khởi động hoặc tranh chấp ghi, hệ thống báo lỗi rõ ràng kèm PID và hostname của tiến trình đang giữ lock.
+- **Giám sát Persistence State & Readiness**:
+  - `GET /health` báo cáo chi tiết `database.persistenceState`: `HEALTHY` (ghi đĩa bình thường), `DEGRADED` (chậm/thử lại), `WRITE_BLOCKED` (không thể ghi đĩa an toàn).
+  - `GET /ready` phản ánh readiness: tự động trả về `503 Service Unavailable` khi database ở trạng thái `WRITE_BLOCKED`, giúp load balancer/orchestrator ngắt traffic kịp thời.
 - Giám sát outbox dọn file: scrape `GET /health` → `cleanup { pending, failed, oldestPendingAgeMs, lastFailureAt }` + `durableCleanup: available`. `cleanup.failed > 0` → mở `GET /admin/cleanup-tasks?status=failed` và `POST /admin/cleanup-tasks/:id/retry` để re-queue; task quá 10 lần → `failed` + log ALERT (filesystem hỏng cần can thiệp tay, không tự đánh dấu xong).
 - Giám sát fallback deprecated: `GET /health` → `auth.refreshFallback { count, lastAt, removalTarget: 'v2' }` — `count` tăng nghĩa là còn client cũ dùng body/header, phải migrate sang cookie trước khi gỡ ở v2.
 - Backup: copy `data.db` only from the single owner during a quiesced window; do not use `pg_dump` for the current sql.js file.

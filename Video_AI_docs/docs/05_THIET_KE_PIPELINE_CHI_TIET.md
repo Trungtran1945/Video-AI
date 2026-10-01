@@ -194,8 +194,9 @@ Stage `translate` chỉ chạy khi `merge` hoàn thành: kiểm tra transcript, 
   lưu vào `TranscriptSegment.speaker`.
 - **Audio câm/không có giọng nói**: trả transcript rỗng, Stage STT vẫn `COMPLETED` (không phải lỗi),
   nhưng cảnh báo ở UI "Không phát hiện lời thoại".
-- **Audio quá dài**: có thể cần chia nhỏ theo chunk trước khi gửi provider (nhiều provider giới hạn
-  độ dài file); xử lý chunk + ghép lại timestamp là trách nhiệm của AsrProvider.
+- **Audio quá dài & Overlap Stitching (15s)** [CURRENT]: File âm thanh dài được chia thành các chunk 300s (`STT_CHUNK_SEC = 300`) với phần gối đầu 15s (`STT_OVERLAP_SEC = 15`). Hàm `dedupeOverlapSegments` khử lặp thông minh các câu tại biên chunk, ghép timestamp chuẩn xác toàn bộ video mà không bị đứt đoạn thoại.
+- **Lọc ảo giác Whisper (Hallucination filtering)** [CURRENT]: `filterHallucinatedSegments` tự động loại bỏ các đoạn lặp từ bất thường do model sinh ra khi gặp đoạn nhạc hoặc im lặng, các nhãn âm thanh rác (`[Music]`, `♪♪`).
+- **Canonical ASR Cache**: Input của ASR được hash theo nội dung file audio stream (`hashFileContent`) kết hợp cấu hình Whisper chuẩn hoá (`buildAsrCacheInput`), chống gọi lại API tốn kém khi audio không đổi.
 - **Nhiều giọng nói chồng lấn (overlapping speech)**: MVP không tách speaker diarization đầy đủ,
   transcript chỉ lấy giọng nói chính; ghi nhận là giới hạn đã biết, không phải lỗi.
 
@@ -224,6 +225,14 @@ Stage `translate` chỉ chạy khi `merge` hoàn thành: kiểm tra transcript, 
 
 - **Ràng buộc output**: trả JSON `{ "segments": [{ "index", "translation" }] }`; độ dài bản dịch
   ≈ bản gốc (±20%) để không vỡ forced alignment ở stage sau.
+- **Chiến lược dịch 3 vòng (Multi-Round Batching - TransFlow)** [CURRENT]:
+  - *Vòng 1 (Parallel Batch)*: Gom nhóm các câu và dịch song song với giới hạn concurrency (`LLM_BATCH_CONCURRENCY`).
+  - *Vòng 2 (Rescue Batch)*: Thu thập các câu còn thiếu hoặc bị format lỗi, gom nhóm nhỏ 5 câu để dịch lại.
+  - *Vòng 3 (Single-Line Fallback)*: Dịch riêng từng câu còn sót cuối cùng, đảm bảo không bỏ sót bất kỳ segment nào.
+- **Multi-Shape Payload Parser**: Bộ bóc tách linh hoạt chấp nhận nhiều dạng dữ liệu JSON mà các model LLM có thể trả về (`{segments}`, `{translations}`, `{lines}`, hoặc object `{ "1": "bản dịch" }`), tránh mất dữ liệu khi model đổi shape.
+- **Kiểm soát rò rỉ chữ Hán (CJK Script Leakage Gate)**: Với đích dịch là tiếng Việt, kiểm tra nghiêm ngặt `countCjk(text) > 0` nhằm loại bỏ hoàn toàn các trường hợp model LLM chép nguyên văn chữ Hán/Trung thay vì dịch.
+- **Tự động sửa lỗi ngữ nghĩa bằng LLM (`repairTranslationWithLlm`)**: Nếu câu dịch vi phạm semantic gate, hệ thống tự động gọi 1 lần sửa lỗi có ngữ cảnh trước/sau trước khi quyết định chặn render.
+- **Version hóa bộ nhớ đệm**: `TRANSLATION_VERSION = 4` trong `backend/src/lib/cacheKey.js` tự động invalidate cache cũ khi nâng cấp logic dịch thuật.
 - Ghi `ProviderLog` (provider, model, tokens, cost) như mọi cuộc gọi AI khác.
 
 ## B.4. ★ Stage: ttsAlign (TTS + Forced Alignment) — KHÓ NHẤT
@@ -289,10 +298,13 @@ cho mỗi TranscriptSegment seg (đã có translation):
 - **Trả về**: `{ dubbedCount, errorCount, errors: [{segmentId, indexNum, error}], stageStatus }`
 - **User có thể retry thủ công segment lỗi** (UI hiển thị danh sách segment lỗi).
 
-### Đảm bảo khớp (Invariant)
+### Đảm bảo khớp (Invariant) & Tinh chỉnh âm thanh (TransFlow) [CURRENT]
 
 - Lệch biên mỗi segment < 5% slot; **không segment nào chồng lên segment kế**.
-- `atempo` bị chặn trong [0.8–1.2] để giọng không méo; ưu tiên **rút gọn câu thay vì hớt tốc độ**.
+- `atempo` được mở rộng chặn trong `[0.80–1.35]` (thay vì 1.20) theo TransFlow `MAX_FIT_TEMPO = 1.35` để giữ pitch tự nhiên, không biến giọng đọc thành sóc chuột.
+- **Pause-expansion (Mở rộng khoảng lặng)**: Dòng phụ đề sở hữu slot của nó + khoảng lặng (pause) trước câu tiếp theo (chừa buffer 60ms an toàn): `roomDur = Math.max(slotDur, nextStart - 0.06 - startSec)`. Nếu thời lượng giọng đọc nằm gọn trong `roomDur`, giữ nguyên tốc độ 1.0x tự nhiên mà không cần time-stretch hay rút gọn câu.
+- **Silence trimming (`trimAudioSilence`)**: Loại bỏ 100-300ms im lặng thừa do provider sinh ra trước và sau câu thoại bằng bộ lọc FFmpeg `silenceremove`, đảm bảo tính toán duration chính xác.
+- **Fade-out chống click/pop**: Bổ sung `afade=t=out:d=0.12` ở đuôi audio clip khi buộc phải cắt ngắn.
 - Word-level khớp (karaoke-style) dùng tham khảo **Dynamic Time Warping (DTW)** khi cần.
 
 ## B.5. Stage: render — Burn-in sub mới — ✅ ĐÃ CẢI THIỆN
@@ -303,21 +315,21 @@ cho mỗi TranscriptSegment seg (đã có translation):
   - Tất cả segments đã có translation
   - Duration hợp lệ (>0 và <=300s)
   - Nếu enableDubbing: tất cả segments có translation phải có TTS audio
+  - **Mask Validation**: `loadSubtitleRegions` chỉ tải và render các mask có `status = 'APPROVED'`. Bắt buộc kiểm tra tính toàn vẹn: chặn render và báo lỗi rõ ràng `BLOCK_RENDER: MASK_DATA_UNAVAILABLE` khi DB fail và `BLOCK_RENDER: MASK_INVALID` khi toạ độ hình học hoặc thời gian không hợp lệ.
   - Nếu validation fail → FAILED ngay, không gọi FFmpeg; lỗi `TRANSLATE_NEEDS_REVIEW` /
     `BLOCK_RENDER` là lỗi dữ liệu → fail-fast, không retry/backoff (`isValidationError`,
     `runner.js:29-36, 400-405`). User sửa tay
-    (`PATCH /projects/:id/segments/:segmentId/translation`) rồi Regenerate/Retry
-    (resume từ stage lỗi earliest qua `firstRunnableStage`).
-- **Burn-in phụ đề mới**: file ASS có vị trí mặc định đáy khung hình →
+    (`PATCH /projects/:id/segments/:segmentId/translation` hoặc chỉnh mask) rồi Regenerate/Retry
+    (resume từ stage lỗi earliest qua `firstRunnableStage` hoặc chọn stage cụ thể).
+- **Burn-in phụ đề mới**: file ASS có vị trí mặc định đáy khung hình (`\an2`) →
   `media.burnSubtitlesStyled`.
 - **Audio mixing** (xem `07_MODULE_FFMPEG.md` chi tiết):
   - **Dubbing bật**: thay voice gốc bằng dub track.
-    - **Timing lệch lớn (>20%)**: Stage đề xuất rút gọn câu dịch.
-    - **Timing lệch nhỏ (5-20%)**: time-stretch audio dub ±20% cho khớp slot (atempo 0.8–1.2).
-    - **Timing khớp (±20%)**: giữ nguyên audio dub thực tế.
+    - **Timing lệch lớn**: Stage đề xuất rút gọn câu dịch nếu vượt quá cả khoảng lặng kế tiếp.
+    - **Timing lệch nhỏ**: time-stretch audio dub trong ngưỡng [0.8–1.35] cho khớp slot.
+    - **Timing khớp**: giữ nguyên audio dub thực tế.
     - **Partial success**: Segment thiếu TTS audio dùng giọng gốc (fallback).
-    - Giữ background (nhạc/tiếng động môi trường) nếu hệ thống tách stem được; ducking −12dB;
-      `loudnorm` lần cuối.
+    - **Dynamic Sidechain Ducking** (`useSidechainDucking = true`, attack 50ms, release 250ms): Giữ nhạc nền gốc, tự động nén −12dB khi có giọng đọc và hồi phục âm lượng 100% trong khoảng lặng giữa các câu; chuẩn hoá `loudnorm` I=-16, TP=-1.5, LRA=11 lần cuối.
     - **Lưu ý quan trọng**: `tts_audio_ref` là source of truth cho audio đã dub, KHÔNG dùng
       `dub_track_asset_id` (deprecated).
   - **Dubbing tắt**: giữ nguyên audio gốc, chỉ thay phụ đề.

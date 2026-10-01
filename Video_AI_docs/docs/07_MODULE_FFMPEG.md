@@ -11,7 +11,9 @@ Mục tiêu: backend không gọi lệnh ffmpeg thô, mà qua interface `MediaSe
 - [CURRENT] Timeout stage 15/30m (`backend/src/pipeline/runner.js:321-327`) + `BURN 20m` + `DUB_TRACK 15m` (`backend/src/pipeline/stages/dubRender.js:20-21`); `SIGTERM`→`SIGKILL` 5s trong `runBin` (`backend/src/media/ffmpeg.js:54-91`).
 - [CURRENT] ASS `\pos` từ `ocr_regions` ratios (`original`/`top`/`bottom`/`custom`) qua `loadSubtitleRegions`/`buildAss` (`backend/src/pipeline/stages/dubRender.js:199-279`).
 - [CURRENT] Fallback loudnorm→raw (`dubIngest.js:34-38`).
-- [NOT IMPLEMENTED] `maskRegions()` (`blur`/`fill`/`delogo`/`inpaint`) + `maskStrength`/`between(t)`: không hàm nào trong `mediaService.js`; DB `ocr_regions` đã có `mask_strength`/`is_static` (`backend/src/db/schema.js:286-300`) nhưng chưa có consumer.
+- [CURRENT] `applySubtitleMasks()`: Đã cài đặt trong `backend/src/media/mediaService.js:450-475`; áp dụng filter `boxblur` cho type `blur` và `drawbox` cho type `solid` theo toạ độ tỷ lệ `ratioX/Y/W/H` của các mask `APPROVED` từ `loadSubtitleRegions` (`dubRender.js:67-85`). Inpaint cần external provider.
+- [CURRENT] `trimAudioSilence()`: Loại bỏ 100-300ms im lặng thừa đầu/cuối clip thoại qua `silenceremove` filter (`backend/src/media/mediaService.js:484-500`).
+- [CURRENT] `buildDubTrack()` dynamic sidechain ducking: Hỗ trợ `useSidechainDucking = true` qua `sidechaincompress=threshold=0.04:ratio=8:attack=50:release=250` nén nhạc nền −12dB khi có tiếng nói và thở về 100% âm lượng khi im lặng, kết thúc bằng `loudnorm` (`mediaService.js:544-565`).
 - [PARTIAL] `signal` + `CANCELLED_BY_USER` + cleanup partial: `runBin`/`ffmpeg()` hỗ trợ `signal` (`ffmpeg.js:54-81,133-135`) nhưng `mediaService.js` hầu hết không nhận `signal`; abort hiện chỉ ở biên stage (`if (signal?.aborted) throw new Error('Cancelled')`, vd `dubRender.js:30`, `dubIngest.js:16`), error là `'Cancelled'` chung, không mã `CANCELLED_BY_USER`, không xoá output dở dang tập trung.
 - [NOT IMPLEMENTED] Inpaint FFmpeg-native: cần external provider (Vision/inpainting), ffmpeg chỉ composite.
 
@@ -137,15 +139,17 @@ user chọn (xem `01` §3.2) + font/outline:
 > [CURRENT] — `muxStream` là `-c:v copy` (không re-encode, không NVENC) + `-c:a aac 192k` (`mediaService.js:450-462`); `buildDubTrack` amix + ducking ×0.25 + `loudnorm` (`mediaService.js:391-447`). Câu "Mux cuối: `-c:v h264_nvenc -preset p4`..." dưới đây là [TARGET] (chỉ đúng cho `burnSubtitlesStyled`/`encodeVideo`).
 
 - **Audio dub timing handling** (xem `05_THIET_KE_PIPELINE_CHI_TIET.md` §B.5 chi tiết):
-  - **Timing lệch lớn (>20%)**: MediaJob → `FAILED`, thông báo user cần rerun.
-  - **Timing lệch nhỏ (5-20%)**: time-stretch audio dub ±20% cho khớp slot (atempo 0.8–1.2).
-  - **Timing khớp (±20%)**: giữ nguyên audio dub thực tế.
+  - **Pause-expansion**: Đoạn thoại được phép mở rộng vào khoảng lặng kế tiếp (`roomDur`), giữ nguyên tempo 1.0x tự nhiên.
+  - **Timing lệch lớn**: Đề xuất rút gọn câu dịch nếu vượt quá cả khoảng lặng kế tiếp.
+  - **Timing lệch nhỏ**: time-stretch audio dub trong khoảng `[0.80–1.35]` (TransFlow `MAX_FIT_TEMPO = 1.35`).
+  - **Silence trimming & Fade-out**: Cắt 100-300ms im lặng thừa trước/sau bằng `silenceremove`; fade-out `afade=t=out:d=0.12` ở đuôi clip cắt ngắn.
+  - **Timing khớp**: giữ nguyên audio dub thực tế.
   - `tts_audio_ref` là source of truth cho audio đã dub (KHÔNG dùng `dub_track_asset_id`).
 - Dubbing bật: thay voice gốc bằng dub track; nếu có background stem (nhạc/tiếng động môi trường)
-  thì `amix` với ducking −12dB, kết thúc bằng `loudnorm`.
+  thì áp dụng **dynamic sidechain ducking** (`useSidechainDucking = true`, nén −12dB khi có lời và hồi phục 100% khi im lặng), kết thúc bằng `loudnorm`.
 - Dubbing tắt: copy audio gốc (`-c:a copy`).
 - Mux cuối: `-c:v h264_nvenc -preset p4` nếu có GPU NVIDIA (tăng tốc phần cứng), fallback
-  `libx264 -preset medium`; container MP4 hoặc MKV theo tuỳ chọn.
+  `libx264 -preset veryfast/crf20` (`mediaService.js:465-503`); container MP4 hoặc MKV theo tuỳ chọn.
 
 ### 2.16. Subtitle presentation options (TRANSLATE_DUB)
 

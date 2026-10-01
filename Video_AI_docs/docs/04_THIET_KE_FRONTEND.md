@@ -107,8 +107,7 @@ Wizard local state (`useState`, không RHF/Zod), 6 bước:
 Wizard local state (`useState`, không RHF/Zod), 5 bước:
 
 1. **Video**: upload video (tối đa 2GB) — resumable, hiện % chunk đã nhận; rớt mạng resume không mất.
-2. **Ngôn ngữ**: nguồn (`sourceLanguage`, `auto` hoặc chọn) → đích (`targetLanguage`, mặc định `vi`);
-   toggle **OCR phụ đề cứng** (`ocrMode`; bật OCR thì nguồn không được để `auto`).
+2. **Ngôn ngữ**: nguồn (`sourceLanguage`, `auto` hoặc chọn) → đích (`targetLanguage`, mặc định `vi`).
 3. **Biên dịch**: chọn 1 trong 13 StylePreset (`stylePreset`, card có mô tả; load qua
    `GET /style-presets`, fallback hằng số local khi API lỗi).
 4. **Lồng tiếng AI** (toggle `enableDubbing`): bật → chọn `voiceProvider` + `voiceName` (tuỳ chọn);
@@ -116,12 +115,13 @@ Wizard local state (`useState`, không RHF/Zod), 5 bước:
 5. **Tạo video**: checkbox bản quyền bắt buộc (tương tự SUMMARY) + `FreeTierWarning`
    (TRANSLATE_DUB > 20 phút) + tên dự án (tuỳ chọn) → `POST /projects` payload
    `{mode: 'TRANSLATE_DUB', title, sourceLanguage, targetLanguage, stylePreset, enableDubbing,
-   subPosition: 'original', sourceVideoKey, videoHash, ocrMode, copyrightAcknowledged,
-   params: {voiceProvider?, voiceName?, subPosition}}` — [CURRENT] không có `maskMethod` /
-   `voiceId` / `maskStrength` trong payload.
+   subPosition: 'original', sourceVideoKey, videoHash, copyrightAcknowledged,
+   params: {voiceProvider?, voiceName?, subPosition}}` — [CURRENT] không có `ocrMode` (đã bỏ),
+   không có `maskMethod` / `voiceId` / `maskStrength` trong payload (quản lý qua `MaskEditor`).
 
 > [NOT IMPLEMENTED] Bước "Nâng cao" (chọn `maskMethod` `blur`/`fill`/`inpaint`, vị trí phụ đề
-> `Top`/`Bottom`/`Custom`, thanh kéo `maskStrength`) chưa có trong wizard hiện tại.
+> `Top`/`Bottom`/`Custom`, thanh kéo `maskStrength`) chưa có trong wizard ban đầu; người dùng
+> định hình mask và độ mờ trực tiếp tại màn hình `ProjectDetail` qua `MaskEditor`.
 
 > [NOT IMPLEMENTED] Bước **"Xem trước & Xác nhận"** (FR-J2): API orphan — wrapper FE
 > `confirmPreview` (`frontend/src/api/projects.js:21`,
@@ -133,45 +133,36 @@ RHF mỗi bước + validate Zod trước khi next.
 
 ---
 
-## 4.1. SubRegionEditor (riêng TRANSLATE_DUB) [NOT IMPLEMENTED]
+## 4.1. MaskEditor — Quản lý & Chỉnh sửa Subtitle Masks [CURRENT — `frontend/src/components/MaskEditor.jsx`]
 
-> [NOT IMPLEMENTED] Không có editor Canvas khoanh vùng hardsub trong code hiện tại
-> (`ProjectDetail` TRANSLATE_DUB không render overlay mask; không có thanh kéo `maskStrength`,
-> tick `isStatic`, nút Merge Regions hay gợi ý vị trí phụ đề). Toàn bộ mục này là [TARGET/FUTURE].
+`MaskEditor` được tích hợp trực tiếp trên màn hình `ProjectDetail` (ngay trên khung video player), hỗ trợ tạo và điều chỉnh các vùng che phụ đề với trải nghiệm trực quan:
 
-Sau khi stage `dub.ocr` xong, `ProjectDetail` hiển thị các OcrRegion tự động phát hiện đè lên
-khung hình preview:
+- **Letterbox-aware Canvas overlay**: Tính toán vùng hiển thị thực tế của video (`contentBox`) trong player để các hộp thoại mask khớp chuẩn xác từng pixel trên video dù phát ở tỉ lệ màn hình nào.
+- **Tọa độ lưu theo TỶ LỆ (0.0–1.0)**: `ratioX`, `ratioY`, `ratioW`, `ratioH` scale-invariant so với kích thước gốc của video.
+- **Live preview hiệu ứng**: Xem trước trực tiếp hiệu ứng làm mờ (`blur` với `blurRadius` 1–50) hoặc che đặc (`solid` với `opacity` 0–1).
+- **Vòng đời Mask (Lifecycle)**:
+  - `DRAFT`: Mask đang phác thảo/chỉnh sửa, có thể tự do kéo thả, thay đổi toạ độ và mốc thời gian (`startSec` – `endSec`).
+  - `APPROVED`: Mask đã được duyệt đưa vào render. **Bất biến (Immutable)**: Khi đã APPROVED, canvas khoá thao tác kéo thả và không cho sửa toạ độ/thời gian để tránh lỗi vô ý. Muốn sửa phải chuyển về `DRAFT`.
+  - `DISABLED`: Tạm tắt mask mà không cần xoá record khỏi DB.
+- **Render an toàn**: `dubRender` chỉ đọc các mask có `status = 'APPROVED'` và `enabled = 1`.
+- **Cảnh báo Output Stale**: Mọi thao tác tạo mới, chuyển trạng thái mask giữa APPROVED và DRAFT/DISABLED đều tự động tăng `transcript_version`, kích hoạt cờ `outputStale: true` và hiển thị alert banner nhắc người dùng render lại video.
 
-- Vẽ bằng **Canvas API** overlay trên `<video>` — user kéo/thêm/xoá/sửa bounding box
-  (đặt đúng vùng hardsub mà OCR sót), đánh dấu `source='MANUAL'`.
-- **Tọa độ lưu theo TỶ LỆ %** (`ratioX/Y/W/H`, 0.0–1.0 so với kích thước video gốc) thay vì pixel
-  tuyệt đối → vùng che tự co giãn, không bị lệch khi render ở độ phân giải khác (xem `02` §2).
-- **Live preview hiệu ứng mask ngay trên player**: vùng được **làm mờ thực sự (blur)** + lớp phủ
-  mờ, không còn thấy rõ chữ gốc. Có **thanh kéo `maskStrength` (0–1)** cho vùng đang chọn để tăng/giảm
-  đồng thời bán kính blur và độ đục lớp phủ; giá trị lưu xuống `OcrRegion.maskStrength` để render khớp.
-- **"Áp dụng cho toàn bộ video"** (tick `isStatic`): cho hardsub tĩnh (logo, credit chạy suốt),
-  chỉ cần 1 record áp dụng từ `startSec=0` đến hết video — tránh sinh hàng chục region rời rạc.
-- **"Gộp vùng" (Merge Regions)**: hợp nhiều region nhỏ cùng hardsub thành 1 bbox bao trùm.
-- **Liên kết vị trí phụ đề mới**: khi user chọn che vùng hardsub, editor gợi ý/mặc định đặt phụ đề
-  dịch trùng khớp hoặc nằm ngay **trên** vùng đã mask (safe zone) để thẩm mỹ; user có thể đổi sang
-  "Giữ nguyên vị trí gốc" hoặc "Vị trí mới (Top/Bottom/Custom)" (xem `01` §3.2).
-- Preview từng region tại mốc thời gian: click region → player seek tới giữa `[startSec, endSec]`.
-- "Dùng mặc định AI" nếu không muốn chỉnh tay; PUT `/projects/:id/mask-regions` trước khi render.
-- Không phải editor timeline — chỉ chỉnh vùng chữ, giữ nguyên nguyên tắc tự động hoàn toàn.
+## 4.2. Tiến trình real-time (SSE) & Điều khiển dự án [CURRENT — `useJobEvents` + `ProjectHeader`]
 
-## 4.2. Tiến trình real-time (SSE) [CURRENT — `useJobEvents` + `ProjectDetail`]
-
+- **Modular UI Components**: `ProjectDetail.jsx` được module hoá, tách riêng `ProjectHeader.jsx` (quản lý điều hướng, tiêu đề, action buttons) và `PipelineStatus.jsx` (stepper tiến trình).
 - Hook `useJobEvents(projectId)` (`frontend/src/hooks/useJobEvents.js`) mở **EventSource** tới
-  `GET /projects/:id/events`. Mỗi event `{ stage, status, percent }` cập nhật stepper pipeline +
+  `GET /projects/:id/events?ticket=...`. Mỗi event `{ stage, status, percent }` cập nhật stepper pipeline +
   progress bar không cần F5. Nếu SSE lỗi (backend chưa hỗ trợ/không parse được) → `sseAvailable=false`
-  và caller **fallback polling** `GET /projects/:id/jobs` mỗi 3s (`POLL_INTERVAL_MS`), chỉ poll khi
-  project còn active và SSE không khả dụng.
+  và caller **fallback polling** `GET /projects/:id` mỗi 3s (`POLL_INTERVAL_MS`).
 - Stages [CURRENT]: SUMMARY 8 stage (`summary.transcribe → … → summary.render`); TRANSLATE_DUB
-  (`dub.ingest → dub.stt → dub.translate → dub.ttsAlign? → dub.render`, `ttsAlign` chỉ khi bật
-  dubbing). [TARGET/FUTURE] Nhánh OCR song song (`dub.ocr`) chưa có trong code.
+  6 stage (`dub.ingest → dub.stt → dub.merge → dub.translate → dub.ttsAlign? → dub.render`, `ttsAlign` chỉ khi bật dubbing).
 - Nút **"Huỷ"** ở header (`canCancel` khi status `running`/`queued`/`pending`) gọi
   `POST /projects/:id/cancel` (FR-J1); sau huỷ reload project, status `cancelled` (không `failed`).
-- Nút **"Chạy lại"** (`completed`/`failed`) gọi `POST /projects/:id/regenerate`; nút
+- Nút **"Chạy lại"** kèm dropdown menu **"Chạy lại theo giai đoạn"** (`ProjectHeader.jsx`):
+  - **Tự động**: Tiếp tục theo tiến độ từ earliest failed/runnable stage (`POST /projects/:id/regenerate`).
+  - **Chạy lại từ bước chỉ định** (`POST /projects/:id/regenerate` với body `{ fromStage }`):
+    - TRANSLATE_DUB: Dịch thuật (`dub.translate`), Lồng tiếng (`dub.ttsAlign`), Render video (`dub.render`).
+    - SUMMARY: Kịch bản (`summary.script`), Tạo giọng (`summary.tts`), Render video (`summary.render`).
   **"Lồng tiếng lại"** gọi `POST /projects/:id/translate-dub/redub` (dùng bản dịch đã sửa tay).
 - Sửa transcript (`PUT /projects/:id/transcript`, chỉ gửi segment đã đổi) trả `outputStale=true`
   → banner vàng "Video hiện tại chưa phản ánh bản chỉnh sửa — nhấn Lồng tiếng lại để cập nhật";
@@ -199,18 +190,18 @@ Mục tiêu: **tất cả nội dung vừa trong 1 khung màn hình duy nhất**
 ┌─────────────────────────────────────────────────────────────────┐
 │ Breadcrumb: ← Quay lại dự án                                    │
 ├─────────────────────────────────────────────────────────────────┤
-│ Header: [Title] [Status] [Huỷ] [Xoá] [Chạy lại] [Xem] [Tải]      │
+│ Header: [Title] [Status] [Huỷ] [Xoá] [Chạy lại ▾] [Xem] [Tải]    │
 ├─────────────────────────────────────────────────────────────────┤
 │ Pipeline Progress (full-width, compact badges + progress bar)   │
 ├───────────────────────────────────────┬─────────────────────────┤
 │                                       │                         │
-│   TRANSCRIPT EDITOR (song ngữ,        │  VIDEO PREVIEW          │
+│   TRANSCRIPT EDITOR (song ngữ,        │  VIDEO PREVIEW & MASKS  │
 │   chiếm ~58% chiều rộng)              │  (~42%)                 │
 │                                       │                         │
-│   - Danh sách segment gốc ↔ dịch      │  - Video output         │
-│   - Sửa translation (textarea)        │  - Play/pause overlay   │
-│   - Lưu / Lồng tiếng lại              │  - Info bar (time/mode) │
-│   - Banner outputStale                │                         │
+│   - Danh sách segment gốc ↔ dịch      │  - Video player/output  │
+│   - Sửa translation (textarea)        │  - MaskEditor overlay   │
+│   - Lưu / Lồng tiếng lại              │  - DRAFT/APPROVED masks │
+│   - Banner outputStale                │  - Info bar (time/mode) │
 │                                       │                         │
 ├───────────────────────────────────────┴─────────────────────────┤
 │  VIDEOTIMELINE (subtitle-sync review, full-width, xem §5.2)      │

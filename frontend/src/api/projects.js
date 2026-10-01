@@ -5,7 +5,8 @@ export const projectsApi = {
   get: (id) => api.get(`/projects/${id}`).then((r) => r.data),
   create: (body) => api.post('/projects', body).then((r) => r.data),
   timeline: (id) => api.get(`/projects/${id}/timeline`).then((r) => r.data),
-  regenerate: (id) => api.post(`/projects/${id}/regenerate`).then((r) => r.data),
+  regenerate: (id, fromStage) =>
+    api.post(`/projects/${id}/regenerate`, fromStage ? { fromStage } : {}).then((r) => r.data),
   remove: (id) => api.delete(`/projects/${id}`).then((r) => r.data),
   summaryStart: (id) => api.post(`/projects/${id}/summary/start`).then((r) => r.data),
   translateDubStart: (id) => api.post(`/projects/${id}/translate-dub/start`).then((r) => r.data),

@@ -15,8 +15,8 @@ và chắc chắn dính lỗi `429 Too Many Requests` hoặc cạn quota tháng 
 
 - [CURRENT] `RateLimiter` TokenBucket + SlidingWindow + daily cap theo `(userId, provider, apiKeyId)`, in-memory per-process (`backend/src/lib/rateLimiter.js:30-122,166-172`): `acquire()` chờ theo RPM, throw `RateLimitExhaustedError` khi chạm RPD, `markRateLimited()` freeze bucket 10s.
 - [CURRENT] Gemini per-key sliding-window (`backend/src/providers/rateLimit.js:18-51`, `GEMINI_RPM` mặc định 10) + `generateContent` dùng đúng độ trễ `Retry-After` / `retry in Xs` kết hợp backoff 1s→30s, cap 60s (`backend/src/providers/geminiClient.js:106-116`), budget `GEMINI_MAX_RETRIES` mặc định 5.
-- [CURRENT] `ProviderCache` SHA-256 `(provider + type + model + normalized input)` + TTL 90 ngày (`backend/src/lib/callProvider.js:37-86,127-156`); [PARTIAL] bỏ qua config `providerCacheEnabled`/`providerCacheTtlDays` (`backend/src/config.js:46-47`).
-- [CURRENT] Fallback theo segment: OCR thiếu key → Tesseract local (`backend/src/providers/registry.js:160-164`), EdgeTTS lỗi → Google TTS (`backend/src/providers/tts/edgeTts.js:42-50`), GT lỗi → LLM direct + restyle có fallback (`backend/src/pipeline/stages/dubTranslate.js:153-212`), loudnorm lỗi → copy audio thô (`backend/src/pipeline/stages/dubIngest.js:34-38`), NVENC lỗi → libx264 (`backend/src/media/mediaService.js:491-503`).
+- [CURRENT] `ProviderCache` SHA-256 `(provider + type + model + normalized input)` + TTL 90 ngày (`backend/src/lib/callProvider.js:37-86,127-156`); [PARTIAL] bỏ qua config `providerCacheEnabled`/`providerCacheTtlDays` (`backend/src/config.js:46-47`). Bổ sung canonical ASR cache cho Whisper (`buildAsrCacheInput`).
+- [CURRENT] Fallback theo segment: EdgeTTS lỗi → Google TTS (`backend/src/providers/tts/edgeTts.js:42-50`), Google Translate lỗi → LLM direct + restyle theo chiến lược 3 vòng (TransFlow: parallel batch → chunk 5 → single fallback, `backend/src/pipeline/stages/dubTranslate.js`), loudnorm lỗi → copy audio thô (`backend/src/pipeline/stages/dubIngest.js:34-38`), NVENC lỗi → libx264 (`backend/src/media/mediaService.js:491-503`). OCR đã gỡ bỏ khỏi pipeline; TRANSLATE_DUB là STT-only.
 - [CURRENT] 429 park: `next_retry_at = now + 60s` (`backend/src/pipeline/runner.js:38-45`), MAX 5 lần (`runner.js:408-414`), project về `queued` chờ resume (`runner.js:277-280`).
 - [PARTIAL] `callProvider` hardcode `rpm: 10` (`backend/src/lib/callProvider.js:139-143`), bỏ qua bảng `provider_rate_limits` và `providerRateLimitSafetyMargin` (`backend/src/config.js:45`).
 - [PARTIAL] `backend/src/services/quotaGuardService.js` (chữ `q` thường) chỉ được wired tới `GET /providers/:provider/quota` (`backend/src/routes/v1/providers.js:83-91`); không pre-check pipeline, không injection `quota_risk` vào job.
@@ -149,8 +149,9 @@ Rate limit chỉ là lớp phòng thủ cuối; cách hiệu quả nhất với 
 | `analyze` (Vision, SUMMARY) | 1 cuộc gọi / key scene | Gom **tối đa 5 keyframe/request** nếu VisionProvider hỗ trợ multi-image input (Gemini/GPT-4o đều hỗ trợ) — giảm ~5 lần số request |
 | `script` (LLM, SUMMARY) | Đã gộp 1 lần cho toàn bộ transcript | Giữ nguyên (đã tối ưu) |
 | `tts` (SUMMARY) / `ttsAlign` (TRANSLATE_DUB) | 1 cuộc gọi / ScriptSegment hoặc TranscriptSegment | **Không gộp được** (mỗi câu cần audio riêng để đo duration chính xác — xem `05` §A.6/B.5) — bù lại bằng cache (§3.2) và giãn cách qua RateLimiter |
-| `translate` (LLM, TRANSLATE_DUB) | Đã gộp theo context window ~10 câu | Giữ nguyên, nhưng **tăng kích thước context window** khi dùng free tier LLM có giới hạn RPM thấp (đổi lấy ít request hơn, chấp nhận prompt dài hơn) — cấu hình `translateContextWindowSec` theo provider tier |
-| `ocr` (TRANSLATE_DUB) | Frame sampling 1–2 fps → 1 cuộc gọi OCR/frame | Với `OcrProvider` dạng local (Tesseract/PaddleOCR self-host) thì không tính quota; với `OcrProvider` cloud (Gemini Vision OCR) → **giảm fps xuống 0.5–1fps khi phát hiện provider là free tier** (cấu hình `ocrSampleFpsByTier`) |
+| `translate` (LLM, TRANSLATE_DUB) | Đã gộp theo context window ~10 câu | Áp dụng chiến lược 3 vòng (TransFlow): parallel batch → re-batch 5 câu → fallback từng câu; kết hợp `TRANSLATION_VERSION = 4` để cache chính xác |
+| `stt` (ASR, TRANSLATE_DUB & SUMMARY) | Chunk 300s gối đầu 15s | Gom chunk dài thay vì gọi lắt nhắt; gối đầu 15s khử lặp qua `dedupeOverlapSegments`; cache ASR theo streaming hash file và Whisper config |
+| `ocr` (TRANSLATE_DUB) | [REMOVED] | Đã gỡ bỏ khỏi pipeline hoạt động; chuyển hoàn toàn sang STT-only |
 
 ### 3.2. Cache theo nội dung (Content-hash Cache) [PARTIAL]
 

@@ -366,12 +366,18 @@ router.post('/:id/cancel', requireProjectOwner, async (req, res) => {
 // never ran), so resume follows stage order via firstRunnableStage.
 router.post('/:id/regenerate', requireProjectOwner, async (req, res) => {
   const project = req.project
+  const validStages = stagesForProject(project)
+  const requestedStage = req.body?.fromStage
+  if (requestedStage && !validStages.includes(requestedStage)) {
+    return sendError(res, 400, ERR.VALIDATION, `Giai đoạn yêu cầu không hợp lệ: ${requestedStage}. Các giai đoạn hợp lệ: ${validStages.join(', ')}`)
+  }
+
   const jobs = await query(
     `SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?`,
     [project.id]
   )
-  const r = firstRunnableStage(stagesForProject(project), jobs)
-  if (r.waiting) {
+  const r = firstRunnableStage(validStages, jobs)
+  if (!requestedStage && r.waiting) {
     return sendError(res, 429, 'RETRY_WAITING', `Stage ${r.type} đang chờ quota hồi phục, thử lại sau ${new Date(r.nextRetryAt).toLocaleTimeString('vi-VN')}`, {
       stage: r.type,
       nextRetryAt: r.nextRetryAt,
@@ -385,10 +391,11 @@ router.post('/:id/regenerate', requireProjectOwner, async (req, res) => {
     const status = admission.reason === 'concurrency' ? 429 : 409
     return sendError(res, status, status === 429 ? ERR.CONCURRENCY_LIMIT : 'PIPELINE_BUSY', admission.reason || 'Project is not available')
   }
-  runPipeline(project.id, r.type, admission.runToken, {
-    forceTranscript: r.type === null || ['dub.ingest', 'dub.stt'].includes(r.type),
+  const targetStage = requestedStage || r.type
+  runPipeline(project.id, targetStage, admission.runToken, {
+    forceTranscript: targetStage === null || ['dub.ingest', 'dub.stt'].includes(targetStage),
   }).catch(() => {})
-  res.json({ message: 'Pipeline restarted', status: admission.project.status, ...(r.type ? { fromStage: r.type } : {}) })
+  res.json({ message: 'Pipeline restarted', status: admission.project.status, ...(targetStage ? { fromStage: targetStage } : {}) })
 })
 
 // DELETE /api/v1/projects/:id

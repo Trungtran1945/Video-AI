@@ -6,6 +6,7 @@ import { attachTtsAudio, TranscriptRevisionConflict } from '../../services/trans
 import { isProjectRunOwned, runProjectOwned, insertProjectOwned } from '../../services/projectAdmission.js'
 import {
   applyTempoAudio,
+  trimAudioSilence,
   probe,
 } from '../../media/mediaService.js'
 import { ffmpeg } from '../../media/ffmpeg.js'
@@ -23,7 +24,15 @@ export function buildAudioFileMap(fitted) {
 }
 
 async function trimWavToDur(inPath, outPath, maxDurSec) {
-  await ffmpeg(['-y', '-i', inPath, '-t', String(Math.max(0.1, maxDurSec)), '-ac', '2', '-ar', '48000', outPath])
+  const dur = Math.max(0.1, maxDurSec)
+  const fadeStart = Math.max(0, dur - 0.12)
+  await ffmpeg([
+    '-y', '-i', inPath,
+    '-t', String(dur),
+    '-af', `afade=t=out:st=${fadeStart.toFixed(3)}:d=0.12`,
+    '-ac', '2', '-ar', '48000',
+    outPath,
+  ])
   return outPath
 }
 import { getProvider } from '../../providers/registry.js'
@@ -95,9 +104,11 @@ export async function dubTtsAlign(ctx) {
 
   // Provider hỗ trợ tốc độ native (Edge/OpenAI) → synthesize đúng tốc độ,
   // tránh méo giọng do filter atempo (docs/05 §B.5).
+  // TransFlow MAX_FIT_TEMPO = 1.35: Chặn tốc độ tối đa ở 1.35x để giữ pitch tự nhiên,
+  // không biến giọng đọc thành sóc chuột lách chách.
   const supportsNativeSpeed = tts.id === 'edge_tts' || tts.id === 'openai_tts'
   const SPEED_MIN = 0.5
-  const SPEED_MAX = 2.0
+  const SPEED_MAX = 1.35
 
   // Partial success tracking (transflow doc 15 §8.3)
   const fitted = []
@@ -108,6 +119,10 @@ export async function dubTtsAlign(ctx) {
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i]
     const slotDur = Math.max(0.2, Number(seg.end_sec) - Number(seg.start_sec))
+    const nextStart = segments[i + 1] ? Number(segments[i + 1].start_sec) : Infinity
+    // TransFlow pause-expansion: Dòng phụ đề sở hữu slot của nó + khoảng lặng (pause)
+    // trước câu tiếp theo (chừa buffer 60ms) để không bị ép tốc độ giả hoặc rút gọn oan uổng.
+    const roomDur = Math.max(slotDur, nextStart !== Infinity ? Math.max(slotDur, nextStart - 0.06 - Number(seg.start_sec)) : slotDur + 2.0)
     let translation = seg.translation
 
     // Bounded retry cho TTS transient (tối đa 1 retry = 2 attempts).
@@ -121,18 +136,40 @@ export async function dubTtsAlign(ctx) {
         const segKey = sanitizeSegmentId(seg.id)
         const makeAudio = async (text) => {
           let audio = await synth(tts, text, path.join(segDir, `seg_${segKey}.mp3`), job, project.id, 1, project.user_id)
-          let fit = fitSegment(audio.durationSec, slotDur)
+          // Loại bỏ khoảng lặng thừa ở đầu và cuối clip do TTS sinh ra (TransFlow prepare_voice)
+          try {
+            const cleanPath = path.join(segDir, `seg_${segKey}_clean.mp3`)
+            await trimAudioSilence(audio.audioPath, cleanPath)
+            if (fs.existsSync(cleanPath)) {
+              const cleanedDur = (await probe(cleanPath)).durationSec
+              if (cleanedDur > 0.05) {
+                audio = { ...audio, audioPath: cleanPath, durationSec: cleanedDur }
+              }
+            }
+          } catch (_) {}
+
+          let fit = fitSegment(audio.durationSec, slotDur, { roomDur })
           if (supportsNativeSpeed) {
             let targetSpeed = 1
             if (fit.tempo !== 1) {
               targetSpeed = fit.tempo
-            } else if (fit.action === 'shorten' && audio.durationSec > slotDur) {
-              targetSpeed = audio.durationSec / slotDur
+            } else if (fit.action === 'shorten' && audio.durationSec > roomDur) {
+              targetSpeed = audio.durationSec / roomDur
             }
             if (targetSpeed !== 1) {
               const speed = clamp(targetSpeed, SPEED_MIN, SPEED_MAX)
               audio = await synth(tts, text, audio.audioPath, job, project.id, speed, project.user_id)
-              fit = fitSegment(audio.durationSec, slotDur)
+              try {
+                const cleanPath = path.join(segDir, `seg_${segKey}_clean.mp3`)
+                await trimAudioSilence(audio.audioPath, cleanPath)
+                if (fs.existsSync(cleanPath)) {
+                  const cleanedDur = (await probe(cleanPath)).durationSec
+                  if (cleanedDur > 0.05) {
+                    audio = { ...audio, audioPath: cleanPath, durationSec: cleanedDur }
+                  }
+                }
+              } catch (_) {}
+              fit = fitSegment(audio.durationSec, slotDur, { roomDur })
             }
           }
           return { audio, fit }
@@ -163,9 +200,8 @@ export async function dubTtsAlign(ctx) {
         })
         try { fs.unlinkSync(audio.audioPath) } catch (_) {}
         let finalDur = (await probe(finalPath)).durationSec || fit.effectiveDurSec
-        // Physical consistency: audio thật không được dài hơn slot hoặc tràn sang segment kế
-        const nextStart = segments[i + 1] ? Number(segments[i + 1].start_sec) : Infinity
-        const maxAllowed = Math.min(slotDur, Math.max(0.1, nextStart - Number(seg.start_sec)))
+        // Physical consistency: audio thật không được tràn sang segment kế (chừa 60ms gap)
+        const maxAllowed = Math.max(slotDur, nextStart !== Infinity ? Math.max(0.1, nextStart - 0.06 - Number(seg.start_sec)) : slotDur + 2.0)
         if (finalDur > maxAllowed) {
           const trimmed = path.join(segDir, `seg_fit_${segKey}_trim.wav`)
           await trimWavToDur(finalPath, trimmed, maxAllowed)

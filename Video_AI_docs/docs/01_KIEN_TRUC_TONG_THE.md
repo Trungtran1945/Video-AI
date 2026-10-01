@@ -5,6 +5,9 @@
 - layout `backend/`+`frontend/` phẳng JS ESM (không apps/packages)
 - DB sql.js/SQLite file backend/data.db + schema backend/src/db/schema.js
 - pipeline backend/src/pipeline/runner.js sequential (SUMMARY 8 stages, TRANSLATE_DUB 6 stages [dub.ingest,dub.stt,dub.merge,dub.translate,dub.ttsAlign,dub.render]), không BullMQ per-stage
+- TRANSLATE_DUB là STT-only: legacy OCR (dubOcr.js, tesseract) đã loại bỏ hoàn toàn; phụ đề mặc định neo đáy (\an2)
+- Mask editor (MaskEditor.jsx) tích hợp tại ProjectDetail với lifecycle DRAFT, APPROVED, DISABLED; mask APPROVED là bất biến (immutable); render chỉ áp dụng mask APPROVED
+- POST /projects/:id/regenerate hỗ trợ chạy lại tự động hoặc chọn lọc theo stage (fromStage)
 - queue BullMQ+Redis chỉ cho projectQueue/notifyQueue/cleanupQueue
 
 # Target Architecture (FUTURE — NOT IMPLEMENTED)
@@ -348,7 +351,7 @@ Mọi asset (phim nguồn, scene, audio, video, subtitle, output) lưu qua abstr
 | **WebSocket** | Full-duplex, bidirectional | Phức tạp hơn, cần quản lý connection | Chat, collaborative editing (tương lai) |
 
 **Quyết định**: Dùng **SSE** cho progress pipeline (vì chỉ cần server push 1 chiều).
-Khi SSE mất kết nối → frontend tự poll lại `/projects/:id/status` sau 5s.
+Khi SSE mất kết nối → frontend tự poll lại `/projects/:id` sau 5s.
 
 ### 8.4. Stage State Machine [TARGET/FUTURE]
 

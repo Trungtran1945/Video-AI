@@ -478,9 +478,33 @@ export async function applyTempoAudio(inFile, out, { tempo = 1, padBeforeSec = 0
   return out
 }
 
+// Cắt khoảng lặng đầu và cuối clip TTS (TransFlow prepare_voice):
+// Loại bỏ 100-300ms im lặng thừa do provider sinh ra trước/sau giọng nói,
+// giúp đo đạc duration chính xác, tránh bị ép tốc độ giả.
+export async function trimAudioSilence(inFile, out) {
+  ensureDir(out)
+  try {
+    await ffmpeg([
+      '-y', '-i', inFile,
+      '-af', 'silenceremove=start_periods=1:start_duration=0.03:start_threshold=-45dB:detection=peak,areverse,silenceremove=start_periods=1:start_duration=0.03:start_threshold=-45dB:detection=peak,areverse',
+      '-ac', '2', '-ar', '48000',
+      out,
+    ])
+    const info = await probe(out).catch(() => null)
+    if (info && info.durationSec > 0.05) return out
+    fs.copyFileSync(inFile, out)
+    return out
+  } catch (_) {
+    try { fs.copyFileSync(inFile, out) } catch (__) {}
+    return out
+  }
+}
+
 // Ghép các segment dub theo offset + trộn với audio gốc làm nền (ducking −12dB ≈ ×0.25).
+// Hỗ trợ dynamic sidechain ducking (TransFlow mix_executor): nhạc nền tự động giảm âm lượng khi có tiếng nói
+// và hồi phục âm lượng đầy đủ khi nhân vật ngắt nghỉ / im lặng.
 // entries: [{file, offsetSec, segmentId?, startAtSec?, endAtSec?}] — timeline xác định, không overlap.
-export async function buildDubTrack({ originalMedia, entries = [], totalSec, out, backgroundVolume = 0.25, timeout = 0 } = {}) {
+export async function buildDubTrack({ originalMedia, entries = [], totalSec, out, backgroundVolume = 0.25, useSidechainDucking = true, timeout = 0 } = {}) {
   ensureDir(out)
   // Deterministic scheduler guard: physical voice timeline must not overlap.
   const sorted = [...entries].sort((a, b) => (a.offsetSec || 0) - (b.offsetSec || 0))
@@ -520,9 +544,18 @@ export async function buildDubTrack({ originalMedia, entries = [], totalSec, out
 
   let mapLabel
   if (tail && info.hasAudio) {
-    filters.push(`[0:a]aresample=48000,volume=${backgroundVolume}[bg]`)
-    filters.push(`${tail}[bg]amix=inputs=2:duration=first:normalize=0,apad,atrim=0:${round3(totalSec)},loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[aout]`)
-    mapLabel = '[aout]'
+    if (useSidechainDucking) {
+      // Dynamic sidechain ducking (TransFlow): Speech ducks background music by -12dB (attack 50ms, release 250ms),
+      // but background audio breathes back to full volume during pauses between sentences.
+      filters.push(`[0:a]aresample=48000,volume=1.0[bg_raw]`)
+      filters.push(`[bg_raw]${tail}sidechaincompress=threshold=0.04:ratio=8:attack=50:release=250[bg_ducked]`)
+      filters.push(`${tail}[bg_ducked]amix=inputs=2:duration=first:normalize=0,apad,atrim=0:${round3(totalSec)},loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[aout]`)
+      mapLabel = '[aout]'
+    } else {
+      filters.push(`[0:a]aresample=48000,volume=${backgroundVolume}[bg]`)
+      filters.push(`${tail}[bg]amix=inputs=2:duration=first:normalize=0,apad,atrim=0:${round3(totalSec)},loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[aout]`)
+      mapLabel = '[aout]'
+    }
   } else if (tail) {
     filters.push(`${tail}apad,atrim=0:${round3(totalSec)},loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[aout]`)
     mapLabel = '[aout]'
@@ -616,6 +649,7 @@ export default {
   normalizeLoudness,
   burnSubtitlesStyled,
   applyTempoAudio,
+  trimAudioSilence,
   buildDubTrack,
   muxStream,
   encodeVideo,

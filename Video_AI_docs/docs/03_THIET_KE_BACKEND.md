@@ -64,19 +64,17 @@ Use-case gọi `resolveTts(settings.voiceProvider)` → **không biết** implem
 - `TranslateDubPipeline` [CURRENT] — chạy sequential theo `STAGES.TRANSLATE_DUB`
   (`backend/src/pipeline/runner.js:111-129`):
   `[dub.ingest, dub.stt, dub.merge, dub.translate, dub.ttsAlign, dub.render]`.
-  Nhánh OR `params.ocrMode ? dub.ocr : dub.stt → dub.merge` chỉ tồn tại trong
-  `startDubSequential` (`runner.js:70-108`); `dub.ocr` đã cài đặt trong
-  `stages/dubOcr.js` (sample `OCR_FPS||2`, cap `OCR_CAP||900`,
-  `OCR_MIN_CONF||0.55`) nhưng unreachable vì không có trong `STAGES.TRANSLATE_DUB` +
-  `firstRunnableStage` + `regenerate`. Nhánh parallel `dub.stt ‖ dub.ocr` hiện là
-  dead code (single-type path luôn) + FFmpeg serialize mọi call
-  (`media/ffmpeg.js:126-136`, build Windows crash exit -22 khi 2 tiến trình ghi
-  file đồng thời). Giữ parallel + FlowProducer là [TARGET] (xem `01` §5.1).
+  Pipeline là STT-only: toàn bộ legacy OCR (`dubOcr.js`, `tesseractOcr.js`, thư viện `tesseract.js`,
+  cờ `ocrMode`) đã bị gỡ bỏ hoàn toàn khỏi codebase; phụ đề được render mặc định ở đáy khung hình (`\an2`).
+  Dữ liệu OCR cũ nếu còn trong DB được cô lập với `source = 'LEGACY_OCR'`.
 - `AlignService` — thuật toán đồng bộ giọng ↔ cảnh của SUMMARY (xem `05`).
 - `ForcedAlignService` — ép khớp thời lượng TTS vào slot timestamp gốc của TRANSLATE_DUB
-  (tempo stretching / chèn lặng / yêu cầu rút gọn câu).
+  (tempo stretching / chèn lặng / pause expansion / rút gọn câu).
+  - **Tốc độ tự nhiên (TEMPO_MAX = 1.35)**: Tốc độ co dãn tối đa chặn ở 1.35x (thay vì 1.20) để giữ pitch tự nhiên, không biến giọng đọc thành sóc chuột.
+  - **Pause-expansion**: Dòng phụ đề sở hữu slot của nó + khoảng lặng (pause) trước câu tiếp theo (chừa buffer 60ms an toàn) để không bị ép tốc độ giả hoặc rút gọn oan uổng.
+  - **Silence trimming**: Dùng FFmpeg `silenceremove` cắt 100-300ms im lặng thừa do provider sinh ra trước/sau giọng đọc trước khi đo đạc và căn chỉnh duration.
   - **Overlap Detection**: Khi người dùng điều chỉnh `startSec`/`endSec` của segment N, hệ thống kiểm tra
-    và xử lý theo **một quy tắc thống nhất** (không để 2 hướng xử lý mơ hồ như trước):
+    và xử lý theo **một quy tắc thống nhất**:
     1. Validate trước: `endSec` của segment N-1 phải ≤ `startSec` của segment N (cho phép khoảng lặng
        hợp lý ≥ 0.1s). Nếu vi phạm với segment N-1 → **từ chối** request, trả lỗi `VAL_002`
        (segment trước là "quá khứ", không được tự ý đẩy lùi vì có thể phá đồng bộ đã xác nhận).
@@ -91,11 +89,12 @@ Use-case gọi `resolveTts(settings.voiceProvider)` → **không biết** implem
     ```json
     { "warnings": [{ "segmentId": "...", "type": "reading_speed", "cps": 32.5, "threshold": 25 }] }
     ```
-- `SubtitleMaskService` — quản lý OcrRegion: merge bbox OCR, nhận region MANUAL từ Canvas
-  (lưu `ratioX/Y/W/H` scale-invariant), chọn method `blur`/`fill`/`inpaint`, áp dụng `maskStrength`
-  (độ mờ: blur radius + độ đục lớp phủ), gộp hardsub tĩnh (`isStatic` → 1 record cho toàn video),
-  và tính vị trí phụ đề mới ưu tiên trùng/nằm ngay trên vùng đã mask (point 2, xem `01` §3.2).
-- `RenderService` — gọi `packages/media` sinh video.
+- `SubtitleMaskService` [CURRENT] — quản lý mask qua bảng `ocr_regions` với lifecycle: `DRAFT`, `APPROVED`, `DISABLED`.
+  - **Bất biến APPROVED**: Mask `APPROVED` bị khoá chỉnh sửa hình học/thị giác (HTTP 409 `MASK_APPROVED_IMMUTABLE`). Muốn sửa toạ độ phải chuyển về `DRAFT`.
+  - **Render an toàn**: `dubRender` chỉ render mask `APPROVED`. Trả lỗi rõ ràng `BLOCK_RENDER: MASK_DATA_UNAVAILABLE` khi DB fail và `BLOCK_RENDER: MASK_INVALID` khi toạ độ/thời gian sai lệch.
+  - **Đồng bộ Stale**: Mọi thao tác tạo/sửa/xoá mask APPROVED/DRAFT đều tăng `projects.transcript_version` để kích hoạt cờ `outputStale: true`.
+- `RenderService` — gọi `backend/src/media/mediaService.js` sinh video (hỗ trợ dynamic sidechain ducking −12dB khi có giọng nói và hồi phục âm lượng đầy đủ khi ngắt nghỉ).
+- `Regenerate / Rerun by Stage` [CURRENT] — `POST /projects/:id/regenerate` hỗ trợ tham số `{ fromStage?: string }` cho phép chạy lại từ stage chỉ định (TRANSLATE_DUB: `dub.translate`, `dub.ttsAlign`, `dub.render`; SUMMARY: `summary.script`, `summary.tts`, `summary.render`), validate theo `stagesForProject(project)`.
 - `CancelProjectUseCase` [CURRENT] — huỷ job `pending`/`running` của 1 project
   (`backend/src/usecases/cancelProjectUseCase.js`): đặt `projects.status = 'cancelled'`
   (không `failed`), `generation_jobs` liên quan → `'cancelled'`, abort pipeline đang
@@ -217,6 +216,8 @@ export const CreateTranslateDubSchema = z.object({
   // 'original' = đè lên vùng mask; 'top'/'bottom' = safe zone; 'custom' = toạ độ riêng
   sourceVideoKey: z.string(),         // đã upload resumable xong
 });
+// [CURRENT] payload tạo project `POST /projects` nhận `{ mode, title, sourceVideoKey, copyrightAcknowledged, stylePreset, sourceLanguage?, targetLanguage?, enableDubbing?, voiceId?, params? }`.
+// `ocrMode` đã bị gỡ bỏ hoàn toàn; `maskMethod` và `maskStrength` được quản lý trực tiếp qua `MaskEditor` sau khi tạo project.
 
 export const UpdateSegmentTimingSchema = z.object({
   segmentId: z.string().uuid(),

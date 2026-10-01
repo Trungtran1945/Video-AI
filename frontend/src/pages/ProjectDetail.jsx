@@ -384,12 +384,12 @@ export default function ProjectDetail() {
   const canRegenerate = project && ['completed', 'failed'].includes(project.status);
   const canCancel = project && ['running', 'queued', 'pending'].includes(project.status); // Group 1: Cancel
 
-  const handleRegenerate = async () => {
+  const handleRegenerate = async (fromStage) => {
     if (regenerating) return;
     setRegenerating(true);
     setError('');
     try {
-      await projectsApi.regenerate(id);
+      await projectsApi.regenerate(id, fromStage);
       await load();
     } catch (e) {
       setError('Không thể chạy lại pipeline: ' + (e?.response?.data?.message || e.message));

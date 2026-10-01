@@ -22,6 +22,94 @@ function getContextWindowSec(project) {
   return tier === 'free' ? 45 : 30
 }
 
+// TransFlow-inspired LLM batching caps: one LLM call carries at most 30 lines
+// or ~2500 chars so long windows never truncate mid-JSON (fewer silent drops).
+// Concurrency 2 bounds provider pressure; CONTEXT_LINES = 3 prior lines travel
+// as context-only (never translated) for pronoun/register consistency.
+export const LLM_BATCH_MAX_LINES = 30
+export const LLM_BATCH_MAX_CHARS = 2500
+export const LLM_BATCH_CONCURRENCY = 2
+export const LLM_CONTEXT_LINES = 3
+
+// Normalize source text before sending to LLM: NFC + collapse whitespace.
+// Keeps timing/DB untouched (prompt-only); gate still checks original.
+export function normalizeSourceText(s) {
+  return String(s || '')
+    .normalize('NFC')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Split segments into LLM batches honoring window + line/char caps.
+// Pure (no I/O) — exported for unit tests.
+export function splitLlmBatches(segments, windowSec = 45) {
+  const groups = []
+  let cur = []
+  let chars = 0
+  let winStart = 0
+  for (const s of segments || []) {
+    const len = String(s.text || '').length
+    if (
+      cur.length &&
+      ((Number(s.end_sec) - winStart) > windowSec ||
+        cur.length >= LLM_BATCH_MAX_LINES ||
+        chars + len > LLM_BATCH_MAX_CHARS)
+    ) {
+      groups.push(cur)
+      cur = []
+      chars = 0
+    }
+    if (!cur.length) winStart = Number(s.start_sec) || 0
+    cur.push(s)
+    chars += len
+  }
+  if (cur.length) groups.push(cur)
+  return groups
+}
+
+// Multi-shape batch payload parser: models return keyed lists in various
+// shapes ({segments:[...]} vs {translations:[...]} vs {"id":text}).
+// Returns Map(index → translation); ignores blanks/non-integers.
+export function parseLlmBatchPayload(text) {
+  let payload = null
+  try {
+    payload = extractJsonBlock(String(text || '')) || null
+  } catch (_) {
+    payload = null
+  }
+  if (!payload && String(text || '').trim().startsWith('[')) {
+    try { payload = JSON.parse(String(text || '').trim()) } catch (_) { payload = null }
+  }
+  const entries = []
+  if (Array.isArray(payload)) {
+    entries.push(...payload)
+  } else if (payload && typeof payload === 'object') {
+    for (const key of ['translations', 'segments', 'lines', 'items', 'results']) {
+      const v = payload[key]
+      if (Array.isArray(v)) { entries.push(...v); break }
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        for (const [k, val] of Object.entries(v)) entries.push({ id: k, translation: val })
+        break
+      }
+    }
+    if (!entries.length) {
+      const vals = Object.values(payload)
+      if (vals.length && vals.every((v) => typeof v === 'string')) {
+        for (const [k, val] of Object.entries(payload)) entries.push({ id: k, translation: val })
+      }
+    }
+  }
+  const m = new Map()
+  for (const item of entries) {
+    if (!item || typeof item !== 'object') continue
+    const rawIdx = item.index ?? item.id ?? item.line_id
+    const idx = typeof rawIdx === 'string' && /^\d+$/.test(rawIdx.trim()) ? Number(rawIdx.trim()) : rawIdx
+    const t = item.translation ?? item.text ?? item.target_text
+    if (Number.isInteger(idx) && typeof t === 'string' && t.trim()) m.set(idx, t.trim())
+  }
+  return m
+}
+
 // dub.translate (docs/05 §B.4): Hybrid Google Translate + LLM restyle.
 // Bước 1: Google Translate dịch sát nghĩa (accurate base translation).
 // Bước 2: Nếu có style preset → LLM chỉ "viết lại" theo style (giữ nguyên nghĩa).
@@ -194,6 +282,7 @@ export async function dubTranslate(ctx) {
     if (fallbackLlm) {
       const directMap = await translateMissingWithLlm(fallbackLlm, missingAfterGt, {
         system, targetLanguage, job, projectId: project.id, userId: project.user_id,
+        allSegments: pool,
       })
       for (const [idx, txt] of directMap) {
         if (!gtResults.has(idx)) {
@@ -466,43 +555,49 @@ export async function persistTranslateReview(job, details, runToken = null) {
 // Dịch trực tiếp source → target (không phải restyle), có validate + repair bounded.
 // Không bịa translation, không copy source. Preserve index_num. Bounded: mỗi group
 // tối đa 2 attempts cho TRANSIENT, PERMANENT/CONFIGURATION → dừng ngay.
-export async function translateMissingWithLlm(llm, missingSegments, { system, targetLanguage, job, projectId, userId }) {
+export async function translateMissingWithLlm(llm, missingSegments, { system, targetLanguage, job, projectId, userId, allSegments = [] }) {
   const out = new Map() // index_num → validated translation
   if (!llm || !missingSegments?.length) return out
   const list = [...missingSegments].sort((a, b) => (a.index_num || 0) - (b.index_num || 0))
-  // Nhóm theo window để giảm số LLM calls, giữ thứ tự/timing ở caller.
-  const groups = []
-  let cur = []
-  let winStart = 0
-  for (const s of list) {
-    if (!cur.length) winStart = Number(s.start_sec) || 0
-    if (cur.length && (Number(s.end_sec) - winStart) > 45) {
-      groups.push(cur)
-      cur = [s]
-      winStart = Number(s.start_sec) || 0
-    } else {
-      cur.push(s)
-    }
-  }
-  if (cur.length) groups.push(cur)
+  // Nhóm theo window + line/char caps (TransFlow batching) để giảm số LLM
+  // calls mà không truncate giữa JSON. Giữ thứ tự/timing ở caller.
+  const groups = splitLlmBatches(list, 45)
 
-  for (const group of groups) {
+  const buildPrompt = (group) => {
     const requiredIndexes = group.map((s) => s.index_num)
+    const firstIndex = group[0]?.index_num ?? 0
+    // Sliding context: lấy 3 câu thoại liền trước để hiểu ngôi xưng và ngữ cảnh đàm thoại (TransFlow technique)
+    const prevSegs = (allSegments || [])
+      .filter((s) => s.index_num < firstIndex && s.text && s.text.trim())
+      .slice(-LLM_CONTEXT_LINES)
+    const contextLines = prevSegs.map((s) => `- ${normalizeSourceText(s.text)}`).join('\n')
+    const contextPrompt = contextLines
+      ? `Ngữ cảnh các câu thoại trước (chỉ để nắm đại từ xưng hô, CẤM dịch các câu này):\n${contextLines}\n\n`
+      : ''
     const prompt =
-      `Dịch các câu sau sang ${languageName(targetLanguage)}. GIỮ ĐÚNG nghĩa, tên riêng, con số, phủ định, nghi vấn. Không bịa thêm, không copy nguyên văn nguồn.\n` +
+      `Dịch các câu sau sang ${languageDescription(targetLanguage)}.\n` +
+      `- BẮT BUỘC giữ đúng nghĩa, đúng ngôi xưng hô tự nhiên, tên riêng, con số, phủ định, nghi vấn.\n` +
+      `- Dịch độc lập từng câu, KHÔNG dồn chữ sang câu khác, giữ nguyên index.\n` +
+      `- Câu thoại ngắn, khẩu ngữ, tiếng lóng bắt buộc dịch hoặc phóng tác tự nhiên sang tiếng Việt, CẤM copy nguyên văn chữ nước ngoài.\n\n` +
+      `${contextPrompt}` +
       `Mỗi dòng có định dạng "index|src:câu nguồn". Giữ nguyên index.\n\n` +
-      group.map((s) => `${s.index_num}|src:${s.text}`).join('\n') +
+      group.map((s) => `${s.index_num}|src:${normalizeSourceText(s.text)}`).join('\n') +
       `\n\nTrả về DUY NHẤT JSON: {"segments":[{"index":int,"translation":string}]}`
-
     const estTokens = group.reduce((n, s) => n + Math.max(8, Math.ceil(String(s.text || '').length * 2.5)), 0) + 256
     const maxOutputTokens = Math.min(65536, Math.max(1024, Math.ceil(estTokens * 1.5)))
+    return { prompt, requiredIndexes, maxOutputTokens }
+  }
 
+  // Một group qua translateGroup với retry bounded cho TRANSIENT (temp 0.2:
+  // dịch trung thành, ít sáng tạo bậy — TransFlow default).
+  const translateOneGroup = async (group) => {
+    const { prompt, requiredIndexes, maxOutputTokens } = buildPrompt(group)
     let collected = new Map()
     let lastErr = null
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         collected = await translateGroup(llm, system, prompt, job, projectId, {
-          requiredIndexes, maxOutputTokens, userId,
+          requiredIndexes, maxOutputTokens, userId, temperature: 0.2,
         })
         lastErr = null
         break
@@ -517,28 +612,68 @@ export async function translateMissingWithLlm(llm, missingSegments, { system, ta
         break
       }
     }
-    if (lastErr && collected.size === 0) continue
+    return { collected, lastErr }
+  }
 
-    for (const seg of group) {
-      let txt = collected.get(seg.index_num)
-      if (txt) txt = String(txt).trim()
-      // Từ chối JSON artifact lọt qua gate yếu (không phải bản dịch thật).
-      if (txt && !/[{}[\]]/.test(txt) && !hasHardTranslationError(seg.text, txt, targetLanguage).hard) {
-        out.set(seg.index_num, txt)
-        continue
-      }
-      // Semantic fail → repair bounded 1 lần. Vẫn fail → để unresolved (caller fail stage).
-      if (txt) {
-        const fixed = await repairTranslationWithLlm(llm, {
-          source: seg.text, badTranslation: txt, prev: '', next: '',
-          targetLanguage, system,
-        }, { job, projectId, userId }).catch(() => null)
-        if (fixed && !/[{}[\]]/.test(fixed) && !hasHardTranslationError(seg.text, fixed, targetLanguage).hard) {
-          out.set(seg.index_num, fixed)
-        } else {
-          const errs = (validateTranslation(seg.text, txt, targetLanguage).errors || []).join(';')
-          console.warn(`[dubTranslate] Block segment #${seg.index_num}: llm-direct semantic gate failed [${errs}]`)
+  const collectedAll = new Map()
+  // Round 1: full batches, tối đa LLM_BATCH_CONCURRENCY calls cùng lúc.
+  {
+    const pending = [...groups]
+    const workers = Array.from(
+      { length: Math.min(LLM_BATCH_CONCURRENCY, pending.length) },
+      async () => {
+        while (pending.length) {
+          const group = pending.shift()
+          const { collected } = await translateOneGroup(group)
+          for (const [idx, txt] of collected) if (!collectedAll.has(idx)) collectedAll.set(idx, txt)
         }
+      }
+    )
+    await Promise.all(workers)
+  }
+
+  const byIndex = new Map(list.map((s) => [s.index_num, s]))
+  // Round 2: dòng còn thiếu gom batch 5 (TransFlow round 2) — batch nhỏ
+  // thường qua được khi batch lớn bị truncate/malformed.
+  {
+    const missingIdx = list.map((s) => s.index_num).filter((i) => !collectedAll.has(i))
+    for (let i = 0; i < missingIdx.length; i += 5) {
+      const chunk = missingIdx.slice(i, i + 5).map((idx) => byIndex.get(idx)).filter(Boolean)
+      if (!chunk.length) continue
+      const { collected } = await translateOneGroup(chunk)
+      for (const [idx, txt] of collected) if (!collectedAll.has(idx)) collectedAll.set(idx, txt)
+    }
+  }
+  // Round 3: từng dòng đơn lẻ (TransFlow round 3) — cứu dòng cuối cùng.
+  {
+    const missingIdx = list.map((s) => s.index_num).filter((i) => !collectedAll.has(i))
+    for (const idx of missingIdx) {
+      const seg = byIndex.get(idx)
+      if (!seg) continue
+      const { collected } = await translateOneGroup([seg])
+      for (const [k, txt] of collected) if (!collectedAll.has(k)) collectedAll.set(k, txt)
+    }
+  }
+
+  for (const seg of list) {
+    let txt = collectedAll.get(seg.index_num)
+    if (txt) txt = String(txt).trim()
+    // Từ chối JSON artifact lọt qua gate yếu (không phải bản dịch thật).
+    if (txt && !/[{}[\]]/.test(txt) && !hasHardTranslationError(seg.text, txt, targetLanguage).hard) {
+      out.set(seg.index_num, txt)
+      continue
+    }
+    // Semantic fail → repair bounded 1 lần. Vẫn fail → để unresolved (caller fail stage).
+    if (txt) {
+      const fixed = await repairTranslationWithLlm(llm, {
+        source: seg.text, badTranslation: txt, prev: '', next: '',
+        targetLanguage, system,
+      }, { job, projectId, userId }).catch(() => null)
+      if (fixed && !/[{}[\]]/.test(fixed) && !hasHardTranslationError(seg.text, fixed, targetLanguage).hard) {
+        out.set(seg.index_num, fixed)
+      } else {
+        const errs = (validateTranslation(seg.text, txt, targetLanguage).errors || []).join(';')
+        console.warn(`[dubTranslate] Block segment #${seg.index_num}: llm-direct semantic gate failed [${errs}]`)
       }
     }
   }
@@ -716,14 +851,14 @@ async function writeSrt(project, cues, runToken = null, expectedRevision = null)
 
 // Giữ lại translateGroup làm fallback (nếu Google Translate lỗi)
 export async function translateGroup(llm, system, prompt, job, projectId, opts = {}) {
-  const { requiredIndexes = null, maxOutputTokens = null, userId = null } = opts
+  const { requiredIndexes = null, maxOutputTokens = null, userId = null, temperature = 0.4 } = opts
   const call = (p) =>
     callProvider({
       provider: llm.id,
       type: 'llm',
       model: llm.provider.model || llm.id,
-      input: { system, prompt: p, json: true, temperature: 0.4, maxOutputTokens },
-      fn: () => llm.provider.complete({ system, prompt: p, json: true, temperature: 0.4, maxOutputTokens }),
+      input: { system, prompt: p, json: true, temperature, maxOutputTokens },
+      fn: () => llm.provider.complete({ system, prompt: p, json: true, temperature, maxOutputTokens }),
       userId,
       apiKeyId: llm.apiKeyId,
       projectId,
@@ -736,18 +871,10 @@ export async function translateGroup(llm, system, prompt, job, projectId, opts =
       .replace(/```[\s\S]*$/, '')
       .trim()
 
-  const parseToMap = (res) => {
-    const parsed = extractJsonBlock(sanitize(res.text)) || {}
-    const list = Array.isArray(parsed.segments) ? parsed.segments : []
-    const m = new Map()
-    for (const item of list) {
-      if (item && Number.isInteger(item.index) && typeof item.translation === 'string') {
-        const t = item.translation.trim()
-        if (t) m.set(item.index, t)
-      }
-    }
-    return m
-  }
+  // Multi-shape parser (TransFlow technique): models trả keyed list dưới
+  // nhiều dạng ({segments}/{translations}/{lines}/{"id":text}) — chấp nhận
+  // hết thay vì mất thầm lặng khi model đổi shape.
+  const parseToMap = (res) => parseLlmBatchPayload(sanitize(res.text))
 
   const collected = new Map()
   const MAX_ATTEMPTS = 3
@@ -908,6 +1035,10 @@ export function validateTranslation(src, tgt, targetLang = 'vi') {
   if (targetLang === 'vi' && /^[A-Za-z0-9\s.,!?'"():;—–-]+$/.test(t) && !looksVietnamese(t) && t.length > 12) {
     errors.push('wrong target language')
   }
+  // CJK script leakage: Vietnamese target must not contain Chinese/Han/CJK characters (TransFlow technique)
+  if (targetLang === 'vi' && countCjk(t) > 0) {
+    errors.push('wrong target language')
+  }
   const ratio = t.length / Math.max(1, s.length)
   // CJK chars expand ~3-8x into Vietnamese; the latin 0.3-3 band would reject
   // every correct zh->vi translation (live GT ratios 3.4-7.7).
@@ -973,16 +1104,18 @@ export async function repairTranslationWithLlm(llm, { source, badTranslation, pr
 
 function buildSystemPrompt(preset, targetLanguage) {
   const base =
-    `Bạn là biên tập viên lồng tiếng chuyên nghiệp. Nhiệm vụ: viết lại câu lồng tiếng sang ${languageName(targetLanguage)}.` +
-    ` Luôn giữ ý nghĩa gốc, không bịa thêm chi tiết.`
+    `Bạn là biên tập viên phụ đề và lồng tiếng chuyên nghiệp. Nhiệm vụ: viết lại câu lồng tiếng sang ${languageDescription(targetLanguage)}.` +
+    ` Luôn giữ ý nghĩa gốc, chọn đại từ nhân xưng tự nhiên theo ngữ cảnh, không bịa thêm chi tiết.` +
+    ` Các câu thoại ngắn, khẩu ngữ, tiếng lóng phải dịch tự nhiên sang ${languageName(targetLanguage)}, không chép lại nguyên văn chữ nước ngoài.` +
+    ` Dịch từng câu độc lập, không dồn chữ sang câu khác.`
   if (preset?.system_prompt) return `${base} Văn phong bắt buộc — ${preset.name}: ${preset.system_prompt}`
   return `${base} Văn phong trung tính tự nhiên.`
 }
 
 function buildRestyleSystemPrompt(preset, targetLanguage) {
   const base =
-    `Bạn là biên tập viên lồng tiếng chuyên nghiệp. Nhiệm vụ: VIẾT LẠI câu lồng tiếng đã được dịch sẵn sang ${languageName(targetLanguage)}.` +
-    ` BẢN DỊCH GỐC ĐÃ ĐÚNG NGHĨA — bạn CHỈ thay đổi văn phong, KHÔNG được thay đổi ý nghĩa.` +
+    `Bạn là biên tập viên phụ đề và lồng tiếng chuyên nghiệp. Nhiệm vụ: VIẾT LẠI câu lồng tiếng đã được dịch sẵn sang ${languageDescription(targetLanguage)}.` +
+    ` BẢN DỊCH GỐC ĐÃ ĐÚNG NGHĨA — bạn CHỈ thay đổi văn phong cho mượt mà, đúng ngữ cảnh lồng tiếng, KHÔNG được thay đổi ý nghĩa.` +
     ` KHÔNG thêm bớt nội dung, KHÔNG dịch lại từ đầu.`
   if (preset?.system_prompt) return `${base} Văn phong bắt buộc — ${preset.name}: ${preset.system_prompt}`
   return `${base} Văn phong trung tính tự nhiên.`
@@ -1013,6 +1146,22 @@ function parseParams(raw) {
 function languageName(code) {
   const names = { vi: 'tiếng Việt', en: 'tiếng Anh' }
   return names[code] || code
+}
+
+function languageDescription(code) {
+  const names = {
+    vi: 'tiếng Việt (Vietnamese)',
+    en: 'tiếng Anh (English)',
+    zh: 'tiếng Trung (Chinese, 中文)',
+    'zh-CN': 'tiếng Trung Giản thể (Simplified Chinese, 中文)',
+    'zh-TW': 'tiếng Trung Phồn thể (Traditional Chinese)',
+    ja: 'tiếng Nhật (Japanese, 日本語)',
+    ko: 'tiếng Hàn (Korean, 한국어)',
+    fr: 'tiếng Pháp (French)',
+    de: 'tiếng Đức (German)',
+    es: 'tiếng Tây Ban Nha (Spanish)',
+  }
+  return names[code] || languageName(code)
 }
 
 function srtTime(sec) {

@@ -4,14 +4,21 @@
 
 > Nguồn đối chiếu (source of truth, branch main): `backend/src/db/schema.js` (toàn file).
 
-CURRENT có đúng 21 tables (verbatim): users, reset_tokens, settings, projects, assets, generation_jobs, scenes, script_segments, timeline_clips, audios, subtitles, outputs, youtube_uploads, api_keys, provider_logs, provider_rate_limits, provider_cache, transcript_segments, ocr_regions, style_presets, upload_sessions.
+CURRENT có đúng 24 tables (verbatim): users, reset_tokens, settings, projects, assets, generation_jobs, scenes, script_segments, timeline_clips, audios, subtitles, outputs, youtube_uploads, api_keys, provider_logs, provider_rate_limits, provider_cache, transcript_segments, ocr_regions, style_presets, sse_tickets, project_idempotency, project_cleanup_tasks, upload_sessions.
 
 - Không FK constraints (manual cleanup): các `CREATE TABLE` không khai báo `FOREIGN KEY`; quan hệ dọn tay trong code (vd: xóa project đặt `provider_logs.project_id = NULL`). `PRAGMA foreign_keys = ON` trong `backend/src/db.js` nhưng schema không định nghĩa FK nào.
 - Lowercase enums: `status`/`role` lưu lowercase (`pending`, `queued`, `running`, `completed`, `failed`, `cancelled`, `user`, `admin`...), không dùng enum UPPERCASE của Prisma (SQLite không có native enum).
 - projects.status='completed' ngoài enum cũ: pipeline đánh `'completed'` khi xong (`backend/src/pipeline/runner.js`); enum `JobStatus` Prisma ở §2 [TARGET/FUTURE] không có giá trị này.
+- projects bổ sung tracking: `transcript_version` (tăng khi sửa transcript hoặc sửa mask APPROVED/DRAFT để đồng bộ `outputStale`), `run_token`, `lease_expires_at`, `video_hash`, `started_at`, `heartbeat_at`, `cancelled_at`, `expires_at`.
 - settings ~15 cột (voice_provider='edge_tts', default_style='cinematic', không maskMethod): defaults `voice_provider='edge_tts'`, `default_style='cinematic'`; không có cột `maskMethod` (mask method chỉ nằm trong `projects.params` JSON của TRANSLATE_DUB).
 - transcript_segments thiếu ttsAudioRef/startMs/endMs + wpm_warning TEXT: CURRENT chỉ có `tts_audio_id` (+ `subtitle_id`), `wpm_warning TEXT`, `is_time_manually_adjusted`; không có `ttsAudioRef`/`startMs`/`endMs` như model Prisma §2.
-- extras reset_tokens + upload_sessions: `reset_tokens` (flow quên mật khẩu) và `upload_sessions` (upload resumable TUS-style, `docs/06` §2.1) là bảng mở rộng, không có trong schema Prisma gốc §2. `upload_sessions` có `last_activity_at`, `expires_at`, index `(status, expires_at)` và state machine `pending → completing → completed|expired`; `storage_key` + `video_hash` là durable completion intent trước filesystem rename.
+- ocr_regions bổ sung mask lifecycle: `status TEXT DEFAULT 'DRAFT'` (`DRAFT` | `APPROVED` | `DISABLED`), `enabled INTEGER DEFAULT 1`. Chỉ mask `APPROVED` mới được đưa vào render. Mask `APPROVED` là bất biến (immutable về toạ độ, thời gian và kiểu mask).
+- extras sse_tickets, project_idempotency, project_cleanup_tasks, reset_tokens, upload_sessions:
+  - `sse_tickets`: lưu `ticket_hash = sha256(ticket)`, `expires_at` (TTL 30s), `used = 0|1` cho cơ chế vé xem EventSource một lần an toàn, không lộ JWT dài hạn trên query URL.
+  - `project_idempotency`: lưu `(user_id, idem_key)`, `request_fingerprint` (SHA-256 body), `expires_at` (TTL 7 ngày) chống tạo project trùng lặp an toàn.
+  - `project_cleanup_tasks`: outbox dọn file filesystem sau DELETE project (`status = pending|failed|completed`), commit cùng transaction với DB wipe.
+  - `reset_tokens`: lưu `token = sha256(raw_token)` thay vì lưu raw token, `expires_at`, `used`.
+  - `upload_sessions`: upload resumable TUS-style (`docs/06` §2.1) có `last_activity_at`, `expires_at`, index `(status, expires_at)` và state machine `pending → completing → completed|expired`; `storage_key` + `video_hash` là durable completion intent trước filesystem rename.
 - Prisma MediaConsent/MediaJob/MediaJobStage là NOT IMPLEMENTED (không table trong schema.js); CURRENT equivalents là generation_jobs(type,step) + transcript_segments/ocr_regions: tracking stage dùng `generation_jobs` (`type` = tên stage, `step`, `status`, `progress` + index `(project_id, type)`), dữ liệu dub dùng `transcript_segments`/`ocr_regions`.
 - Mapping snake↔camel (DB ↔ API/frontend): project_id↔projectId, start_sec↔startSec, tts_audio_id↔ttsAudioId, storage_key↔storageKey.
 
@@ -463,6 +470,11 @@ Backend MVP chạy bằng sql.js (SQLite) thay vì Prisma; schema SQL mirror [PA
 | Project lưu song song `_id` + `_key` | `sourceVideoId` tham chiếu Asset (mục 2), đồng thời giữ `source_video_key` vì API (`06`) nhận/trả storage key | Tương thích API hiện tại và tham chiếu chuẩn theo mục 2 |
 | Mode `TRANSLATE_DUB` lưu `'translate_dub'` | Giá trị mode lowercase có gạch dưới, thay cho `'style_edit'` cũ | Nhất quán với quy ước enum lowercase ở trên |
 | Bảng mới mirror 1-1 | `transcript_segments`, `ocr_regions`, `style_presets` (seed 13 preset khi migrate), `provider_rate_limits` (seed giá trị free-tier mặc định), `provider_cache` (xem `11`) | Đảm bảo schema MVP khớp thiết kế Prisma |
-| Bảng mở rộng `reset_tokens` | Flow quên mật khẩu (email + token + expires) | Không có trong schema gốc; xoá nếu bỏ flow forgot-password |
+| Bảng mở rộng `reset_tokens` | Flow quên mật khẩu (email + hash token + expires) | Không có trong schema gốc; token lưu dạng SHA-256 |
+| Bảng mở rộng `sse_tickets` | Vé xác thực ngắn hạn một lần cho SSE (`/projects/:id/events`) | Tránh lộ token JWT dài hạn trên query parameters |
+| Bảng mở rộng `project_idempotency` | Idempotency-Key kèm `request_fingerprint` (SHA-256) | Chống tạo duplicate project khi mạng retry; TTL 7 ngày |
+| Bảng mở rộng `project_cleanup_tasks` | Outbox dọn dẹp file tạm bền vững sau DELETE | Commit transaction cùng DB delete, retry độc lập khi lỗi FS |
+| Single-writer lock file | `sqlite_single_writer.lock` chứa metadata PID và host | Báo lỗi rõ ràng kèm PID/host sở hữu lock nếu tiến trình khác cố tranh chấp |
+| Persistence state | `HEALTHY`, `DEGRADED`, `WRITE_BLOCKED` | Theo dõi trạng thái ghi đĩa của sql.js; `/ready` trả 503 khi WRITE_BLOCKED |
 | Xoá project | `provider_logs.project_id` đặt `NULL` (không xoá log); `youtube_uploads` dọn qua join `outputs`; các bảng con còn lại xoá trực tiếp | Đúng quyết định "ProviderLog độc lập"; FK cascade chỉ áp dụng cho bảng tạo mới |
 | Seed | Admin mặc định từ env `ADMIN_EMAIL`/`ADMIN_PASSWORD` (fallback dev) + row `settings` + 13 `style_presets` + `provider_rate_limits` mặc định (free tier, xem `11` §2.1) | Tương đương `prisma db seed` |

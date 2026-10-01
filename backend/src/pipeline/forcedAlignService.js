@@ -12,17 +12,17 @@ import { clamp } from './context.js'
 
 // === Constants từ transflow doc 15 §5.3 ===
 export const TEMPO_MIN = 0.80   // Tối thiểu time-stretch (tối đa chậm 20%)
-export const TEMPO_MAX = 1.20   // Tối đa time-stretch (tối đa nhanh 20%)
+export const TEMPO_MAX = 1.35   // TransFlow: MAX_FIT_TEMPO = 1.35 (thay vì 1.20 để giữ độ tự nhiên)
 export const TOLERANCE = 0.08   // ±8% — dung sai nhỏ, giữ nguyên
 export const STRETCH_THRESHOLD = 0.20 // ±20% — ngưỡng xử lý lệch timing
 export const MAX_OVERLAP_SEC = 0.3
 
 /**
  * Fit một câu dub vào slot thời gian gốc.
- * Thuật toán theo transflow doc 15 §5.3 — 4 trường hợp rõ ràng:
+ * Thuật toán theo transflow doc 15 §5.3 kết hợp TransFlow dub_timeline pause-expansion:
  *
- * TRƯỜNG HỢP 1: Khớp (±20%) → giữ nguyên tempo, không pad
- * TRƯỜNG HỢP 2: Dài hơn >20% → đề xuất rút gọn câu dịch (shorten)
+ * TRƯỜNG HỢP 1: Khớp (±20%) hoặc nằm gọn trong pause trước câu kế → giữ nguyên tempo, không pad
+ * TRƯỜNG HỢP 2: Dài hơn slot và vượt quá khoảng lặng → đề xuất rút gọn câu dịch (shorten)
  * TRƯỜNG HỢP 3: Ngắn hơn >20% → chèn silence padding (30% đầu / 70% cuối)
  * TRƯỜNG HỢP 4: Lệch nhỏ (8-20%) → time-stretch nhẹ + pad
  *
@@ -30,6 +30,7 @@ export const MAX_OVERLAP_SEC = 0.3
  * @param {number} slotDur thời lượng slot gốc = endSec - startSec
  * @param {object} [opts]
  * @param {boolean} [opts.canShorten=true]  cho phép đề xuất rút gọn câu dịch
+ * @param {number} [opts.roomDur]  thời lượng khả dụng tính cả pause tới câu kế (TransFlow pause expansion)
  * @returns {{
  *   action: 'keep'|'stretch'|'pad'|'shorten',
  *   tempo: number,          // hệ số atempo áp lên audio (1.0 = giữ nguyên)
@@ -39,10 +40,57 @@ export const MAX_OVERLAP_SEC = 0.3
  *   targetCharsRatio?: number // tỷ lệ rút gọn câu (chỉ khi action='shorten')
  * }}
  */
-export function fitSegment(ttsDur, slotDur, { canShorten = true } = {}) {
+export function fitSegment(ttsDur, slotDur, { canShorten = true, roomDur = slotDur } = {}) {
   // Edge case: duration rỗng
   if (!(ttsDur > 0) || !(slotDur > 0)) {
     return { action: 'keep', tempo: 1, padBeforeSec: 0, padAfterSec: 0, effectiveDurSec: Math.max(0, ttsDur || 0) }
+  }
+
+  // TransFlow pause-expansion: Nếu câu dịch dài hơn slotDur nhưng nằm gọn trong khoảng lặng (roomDur)
+  // trước câu tiếp theo, giữ nguyên 1.0x tempo tự nhiên, không ép tốc độ hoặc rút gọn.
+  const effectiveMaxDur = Math.max(slotDur, roomDur || slotDur)
+  if (ttsDur > slotDur && ttsDur <= effectiveMaxDur) {
+    return {
+      action: 'keep',
+      tempo: 1,
+      padBeforeSec: 0,
+      padAfterSec: 0,
+      effectiveDurSec: round3(ttsDur),
+    }
+  }
+
+  // Nếu ttsDur vượt quá cả roomDur (khoảng lặng)
+  if (effectiveMaxDur > slotDur && ttsDur > effectiveMaxDur) {
+    const ratioOverRoom = ttsDur / effectiveMaxDur
+    if (ratioOverRoom <= (1 + STRETCH_THRESHOLD)) {
+      const neededTempo = clamp(round3(ttsDur / effectiveMaxDur), TEMPO_MIN, TEMPO_MAX)
+      return {
+        action: 'stretch',
+        tempo: neededTempo,
+        padBeforeSec: 0,
+        padAfterSec: 0,
+        effectiveDurSec: round3(effectiveMaxDur),
+      }
+    }
+    const targetCharsRatio = Math.max(0.55, effectiveMaxDur / ttsDur)
+    if (!canShorten) {
+      const tempo = clamp(ttsDur / effectiveMaxDur, TEMPO_MIN, TEMPO_MAX)
+      return {
+        action: 'stretch',
+        tempo: round3(tempo),
+        padBeforeSec: 0,
+        padAfterSec: 0,
+        effectiveDurSec: round3(ttsDur / tempo),
+      }
+    }
+    return {
+      action: 'shorten',
+      tempo: 1,
+      padBeforeSec: 0,
+      padAfterSec: 0,
+      effectiveDurSec: round3(effectiveMaxDur),
+      targetCharsRatio,
+    }
   }
 
   const ratio = ttsDur / slotDur
@@ -181,8 +229,10 @@ export function placeSegments(segments) {
     const startAt = Number(seg.startSec) || 0
     const slotDur = Math.max(0.2, (Number(seg.endSec) || 0) - startAt)
     const nextStart = i + 1 < segments.length ? Number(segments[i + 1].startSec) : Infinity
-    // Thời lượng tối đa: vừa đủ lấp slot, nhưng không vượt quá start đoạn kế
-    let dur = Math.min(Number(seg.effectiveDurSec) || 0, slotDur)
+    // TransFlow pause expansion: Mỗi đoạn giọng neo đúng start gốc, được mở rộng vào
+    // khoảng lặng (pause) trước đoạn kế (chừa 60ms an toàn) để câu dài tự nhiên không bị cắt cụt.
+    const maxRoom = Math.max(slotDur, nextStart !== Infinity ? Math.max(0.2, nextStart - 0.06 - startAt) : slotDur + 2.0)
+    let dur = Math.min(Number(seg.effectiveDurSec) || 0, maxRoom)
     if (startAt + dur > nextStart) dur = Math.max(0, nextStart - startAt)
     const clipped = dur < (Number(seg.effectiveDurSec) || 0) - 1e-3
     out.push({ startAtSec: round3(startAt), endAtSec: round3(startAt + Math.max(0, dur)), clipped })
