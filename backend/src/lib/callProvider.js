@@ -12,7 +12,7 @@ import crypto from 'crypto'
 import fs from 'node:fs'
 import { run, queryOne } from '../db/query.js'
 import { v4 as uuidv4 } from 'uuid'
-import { getRateLimiter, RateLimitExhaustedError } from '../lib/rateLimiter.js'
+import { getRateLimiter } from '../lib/rateLimiter.js'
 import { classifyProviderError, ERROR_KINDS } from './providerErrors.js'
 import { isCanonicalAsrCacheInput } from './asrCacheKey.js'
 
@@ -256,27 +256,31 @@ async function executeProviderCall({ provider, type, model, fn, userId, apiKeyId
     return result
   } catch (err) {
     const durationMs = Date.now() - startMs
-    // 429/quota keeps 'rate_limited' (with limiter cooldown); other
-    // transient failures (503/timeout) are logged distinctly.
-    const status = isRateLimitError(err)
-      ? 'rate_limited'
-      : (classifyProviderError(err).kind === ERROR_KINDS.TRANSIENT ? 'transient' : 'error')
+    // Distinguish quota vs rate-limit (TransFlow behavior): quota is NOT a
+    // generic transient — it cools down the key and triggers failover, never
+    // blind same-key retry. Rate-limit keeps limiter cooldown.
+    const cls = classifyProviderError(err)
+    const status = cls.code === 'PROVIDER_QUOTA_EXCEEDED'
+      ? 'quota_exceeded'
+      : cls.code === 'PROVIDER_RATE_LIMITED'
+        ? 'rate_limited'
+        : (cls.kind === ERROR_KINDS.TRANSIENT ? 'transient' : 'error')
 
     if (status === 'rate_limited') {
       limiter.markRateLimited()
     }
 
     await logCall({ projectId, jobId, provider, type, model, status, durationMs, error: err.message })
+    // Attach structured code so stage failover can classify without re-parsing.
+    try {
+      if (!err.code || typeof err.code !== 'string' || !err.code.startsWith('PROVIDER_')) {
+        err.errorCode = cls.code
+      }
+    } catch (_) {}
     throw err
   } finally {
     limiter.release()
   }
-}
-
-function isRateLimitError(err) {
-  if (err instanceof RateLimitExhaustedError) return true
-  const msg = (err.message || '').toLowerCase()
-  return msg.includes('429') || msg.includes('rate limit') || msg.includes('quota')
 }
 
 /**

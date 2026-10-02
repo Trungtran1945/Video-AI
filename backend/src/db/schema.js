@@ -361,6 +361,19 @@ export async function initSchema() {
     is_system INTEGER DEFAULT 1
   )`)
 
+  // TransFlow-inspired per-project glossary (phase 1: minimal table only).
+  // Rendered into the translation prompt as <glossary><term .../></glossary>.
+  db.run(`CREATE TABLE IF NOT EXISTS project_glossaries (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    source_term TEXT NOT NULL,
+    target_term TEXT NOT NULL,
+    case_sensitive INTEGER DEFAULT 0,
+    note TEXT,
+    created_date TEXT DEFAULT (datetime('now'))
+  )`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_glossaries_project ON project_glossaries(project_id)`)
+
   // SSE tickets: short-lived single-use auth for EventSource (no long-lived JWT in URL).
   // ticket_hash = sha256(ticket); TTL 60s; bound to user+project; consumed on first use.
   db.run(`CREATE TABLE IF NOT EXISTS sse_tickets (
@@ -499,6 +512,11 @@ export async function initSchema() {
   // Manual-edit source of truth (§8): phân biệt user sửa tay với AI-generated.
   addCol('transcript_segments', 'is_text_manually_edited', 'INTEGER DEFAULT 0')
   addCol('transcript_segments', 'is_translation_manually_edited', 'INTEGER DEFAULT 0')
+  // TTS resume provenance (TransFlow tts_clip_key): fingerprint
+  // (provider/voice/text/speed) của clip đã synth; rerun chỉ tái dùng khi khớp.
+  // Nullable + backward-compat: rows cũ thiếu vẫn synth lại bình thường.
+  addCol('transcript_segments', 'tts_clip_key', 'VARCHAR(64)')
+  addCol('transcript_segments', 'tts_duration_ms', 'BIGINT')
   // Transcript source discriminator + OCR evidence (bbox/confidence)
   addCol('transcript_segments', 'source', 'TEXT')
   addCol('transcript_segments', 'confidence', 'REAL')

@@ -29,14 +29,16 @@ const quotaErr = () => ({
   assert(dt < 5000, `maxRetries 0 -> fails fast without suggested-wait (took ${dt}ms)`)
 }
 
-// maxRetries: 1 -> at most 2 calls
+// maxRetries: 1 -> quota still single call (no blind same-key retry).
+// Quota failover happens across providers (providerFailover), never by
+// re-hitting the depleted key. Temporary errors (503/rate) still retry.
 {
   let calls = 0
   globalThis.fetch = async () => { calls++; return quotaErr() }
   try {
     await generateContent({ model: 'gemini-3.6-flash', apiKey: 'k', body: { contents: [] }, maxRetries: 1 })
   } catch (_) {}
-  assert(calls === 2, `maxRetries 1 -> exactly 2 HTTP calls (got ${calls})`)
+  assert(calls === 1, `quota maxRetries 1 -> still 1 HTTP call, failover handles retry (got ${calls})`)
 }
 
 // no opt -> default retry behavior unchanged (env default; no suggested-wait

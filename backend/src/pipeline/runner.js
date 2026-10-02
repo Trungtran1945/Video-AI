@@ -13,7 +13,7 @@ import {
 } from './context.js'
 import eventBus from './eventBus.js'
 import { safeAddNotify } from '../queue/notifyQueue.js'
-import { classifyProviderError, ERROR_KINDS } from '../lib/providerErrors.js'
+import { classifyProviderError, ERROR_KINDS, ERROR_CODES, cooldownMsForCode } from '../lib/providerErrors.js'
 import { firstRunnableStage } from './context.js'
 import { clearTranscript, clearTtsLinks } from '../services/transcriptMutationService.js'
 import {
@@ -29,9 +29,32 @@ import {
 
 function isRateLimitError(err) {
   if (err?.name === 'RateLimitExhaustedError') return true
-  const msg = (err?.message || '').toLowerCase()
-  return msg.includes('429') || msg.includes('rate limit') || msg.includes('quota')
-    || msg.includes('insufficient_quota') || msg.includes('retry-after')
+  if (err?.code === 'NO_PROVIDER_AVAILABLE') return false
+  try {
+    return classifyProviderError(err).code === ERROR_CODES.PROVIDER_RATE_LIMITED
+  } catch (_) {
+    const msg = (err?.message || '').toLowerCase()
+    if (/quota|insufficient_quota|quota exceeded|billing quota|free tier/.test(msg)) return false
+    return msg.includes('429') || msg.includes('rate limit') || msg.includes('retry-after')
+  }
+}
+
+function isQuotaError(err) {
+  if (err?.code === 'NO_PROVIDER_AVAILABLE' && err?.errorCode === ERROR_CODES.PROVIDER_QUOTA_EXCEEDED) return true
+  try {
+    return classifyProviderError(err).code === ERROR_CODES.PROVIDER_QUOTA_EXCEEDED
+  } catch (_) {
+    return false
+  }
+}
+
+function errorCodeOf(err) {
+  if (err?.code === 'NO_PROVIDER_AVAILABLE' && err?.errorCode) return err.errorCode
+  try {
+    return classifyProviderError(err).code || null
+  } catch (_) {
+    return null
+  }
 }
 
 function parseRetryAfter(err) {
@@ -404,10 +427,13 @@ export function describeFailure(errOrMessage, stage) {
   const err = typeof errOrMessage === 'string' ? { message: errOrMessage } : (errOrMessage || {})
   const message = String(err?.message || errOrMessage || '')
   if (message.startsWith('TRANSLATE_NEEDS_REVIEW:') || message.startsWith('BLOCK_RENDER:')) {
-    return { category: 'VALIDATION', retryable: false, provider: STAGE_PROVIDER[stage] || 'core' }
+    return { category: 'VALIDATION', retryable: false, provider: STAGE_PROVIDER[stage] || 'core', errorCode: null }
+  }
+  if (err?.code === 'NO_PROVIDER_AVAILABLE' || isQuotaError(err)) {
+    return { category: 'QUOTA_EXCEEDED', retryable: false, provider: STAGE_PROVIDER[stage] || 'core', errorCode: errorCodeOf(err) || ERROR_CODES.PROVIDER_QUOTA_EXCEEDED }
   }
   if (isRateLimitError(err)) {
-    return { category: 'RATE_LIMIT', retryable: true, provider: STAGE_PROVIDER[stage] || 'core' }
+    return { category: 'RATE_LIMIT', retryable: true, provider: STAGE_PROVIDER[stage] || 'core', errorCode: ERROR_CODES.PROVIDER_RATE_LIMITED }
   }
   if (message === 'Cancelled') {
     return { category: 'CANCELLED', retryable: false, provider: STAGE_PROVIDER[stage] || 'core' }
@@ -416,16 +442,18 @@ export function describeFailure(errOrMessage, stage) {
     const cls = classifyProviderError(err)
     return { category: cls.kind, retryable: cls.retryable === true, provider: STAGE_PROVIDER[stage] || 'core' }
   } catch (_) {
-    return { category: 'UNKNOWN', retryable: false, provider: STAGE_PROVIDER[stage] || 'core' }
+    return { category: 'UNKNOWN', retryable: false, provider: STAGE_PROVIDER[stage] || 'core', errorCode: null }
   }
 }
 
 function logStageFailure({ projectId, stage, errOrMessage, attempt, nextRetryAt = null }) {
-  const { category, retryable, provider } = describeFailure(errOrMessage, stage)
+  const { category, retryable, provider, errorCode } = describeFailure(errOrMessage, stage)
   const msg = String((errOrMessage && errOrMessage.message) || errOrMessage || '').slice(0, 300)
+  const cd = errorCode ? cooldownMsForCode(errorCode) : null
   console.error(
     `[Pipeline] project=${projectId} stage=${stage} category=${category} attempt=${attempt} ` +
-    `provider=${provider} retryable=${retryable} nextRetryAt=${nextRetryAt || '-'} error=${msg}`
+    `provider=${provider} retryable=${retryable} errorCode=${errorCode || '-'} ` +
+    `cooldownMs=${cd ?? '-'} nextRetryAt=${nextRetryAt || '-'} error=${msg}`
   )
 }
 
@@ -633,6 +661,17 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       await failJob(job, projectId, err.message, runToken)
       return false
     }
+    // Quota / no-provider: stage failover already tried every key — parking
+    // as retry would just loop on depleted keys. Fail fast with root cause.
+    if (err?.code === 'NO_PROVIDER_AVAILABLE' || isQuotaError(err)) {
+      const code = errorCodeOf(err) || ERROR_CODES.PROVIDER_QUOTA_EXCEEDED
+      const detail = err?.details?.attempted
+        ? ` (đã thử ${err.details.attempted.length} provider: ${err.details.attempted.map((a) => `${a.provider}:${a.code}`).join(', ')})`
+        : ''
+      const quotaMsg = `[${code}] AI provider đã hết quota. Hệ thống đã thử provider dự phòng nếu có. Vui lòng thử lại sau hoặc cấu hình provider khác.${detail} Gốc: ${String(err.message || '').slice(0, 300)}`
+      await failJob(job, projectId, quotaMsg, runToken)
+      return false
+    }
     if (isRateLimitError(err)) {
       // Rate-limited: retry with scheduled nextRetryAt (docs/11 §4.2)
       const MAX_RATE_LIMIT_RETRIES = 5
@@ -668,17 +707,22 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
     }
 
     // Transient provider failure (503/timeout/network blip) → bounded retry
-    // with stage backoff (RETRY_POLICY). Permanent/Configuration/Invalid →
+    // with stage backoff (RETRY_POLICY). Permanent/Configuration/Invalid/Quota →
     // fail fast (retrying cannot help). Validation already handled above.
-    // 'Cancelled' never retries.
+    // 'Cancelled' never retries. Note: QUOTA has kind TRANSIENT for backward
+    // compat but retryable=false — must check the flag, not just the kind.
     if (String(err?.message || '') !== 'Cancelled') {
+      let cls = null
       let kind = err?.transient || err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED' ? ERROR_KINDS.TRANSIENT : null
       if (!kind) {
         try {
-          kind = classifyProviderError(err).kind
+          cls = classifyProviderError(err)
+          kind = cls.kind
         } catch (_) {}
+      } else {
+        try { cls = classifyProviderError(err) } catch (_) {}
       }
-      if (kind === ERROR_KINDS.TRANSIENT) {
+      if (kind === ERROR_KINDS.TRANSIENT && (!cls || cls.retryable === true)) {
         const policy = RETRY_POLICY[job.type] || { maxRetries: 2, backoffMs: [10_000, 30_000] }
         const attempts = (job.attempts || 0) + 1
         if (attempts <= policy.maxRetries) {

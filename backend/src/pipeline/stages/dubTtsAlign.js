@@ -7,6 +7,7 @@ import { isProjectRunOwned, runProjectOwned, insertProjectOwned } from '../../se
 import {
   applyTempoAudio,
   trimAudioSilence,
+  normalizeVoiceLevel,
   probe,
 } from '../../media/mediaService.js'
 import { ffmpeg } from '../../media/ffmpeg.js'
@@ -23,6 +24,32 @@ export function buildAudioFileMap(fitted) {
   return m
 }
 
+// TransFlow prepare_voice: trim provider silence → normalize về mức speech
+// chung (−19 dBFS, peak −1 dBFS). Best-effort: thất bại giữ nguyên clip đầu vào.
+async function prepareVoiceClip(inPath, segDir, segKey) {
+  try {
+    const cleanPath = path.join(segDir, `seg_${segKey}_clean.mp3`)
+    await trimAudioSilence(inPath, cleanPath)
+    let cur = inPath
+    let dur = null
+    if (fs.existsSync(cleanPath)) {
+      const d = (await probe(cleanPath)).durationSec
+      if (d > 0.05) { cur = cleanPath; dur = d }
+    }
+    try {
+      const normPath = path.join(segDir, `seg_${segKey}_norm.mp3`)
+      await normalizeVoiceLevel(cur, normPath)
+      if (fs.existsSync(normPath)) {
+        const d = (await probe(normPath)).durationSec
+        if (d > 0.05) return { audioPath: normPath, durationSec: d }
+      }
+    } catch (_) {}
+    return cur === inPath ? null : { audioPath: cur, durationSec: dur }
+  } catch (_) {
+    return null
+  }
+}
+
 async function trimWavToDur(inPath, outPath, maxDurSec) {
   const dur = Math.max(0.1, maxDurSec)
   const fadeStart = Math.max(0, dur - 0.12)
@@ -35,9 +62,12 @@ async function trimWavToDur(inPath, outPath, maxDurSec) {
   ])
   return outPath
 }
-import { getProvider } from '../../providers/registry.js'
+import { listProvidersForCapability } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
-import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js'
+import { classifyProviderError, ERROR_CODES } from '../../lib/providerErrors.js'
+import { runWithProviderScope } from '../../lib/providerScope.js'
+import { withProviderFailover } from '../../lib/providerFailover.js'
+import { buildTtsCacheInput, ttsClipKey } from '../../lib/ttsCacheKey.js'
 import {
   projectDir, ensureDir, round3, clamp,
 } from '../context.js'
@@ -80,8 +110,8 @@ export async function dubTtsAlign(ctx) {
     throw error
   }
 
-  if (!params.enableDubbing) {
-    return { skipped: true, reason: 'enableDubbing=false', transcriptVersionSnapshot: transcriptVersion }
+  if (!params.enableDubbing || params.audioMode === 'ORIGINAL_ONLY') {
+    return { skipped: true, reason: params.audioMode === 'ORIGINAL_ONLY' ? 'audioMode=ORIGINAL_ONLY' : 'enableDubbing=false', transcriptVersionSnapshot: transcriptVersion }
   }
 
   const segments = await query(
@@ -91,33 +121,57 @@ export async function dubTtsAlign(ctx) {
   )
   if (!segments.length) throw new Error('Không có câu dịch nào để lồng tiếng — dub.translate chưa chạy?')
 
-  const tts = await getProvider(project.user_id, 'tts')
-  const llm = await getProvider(project.user_id, 'llm').catch(() => null)
+  const ttsCandidates = await listProvidersForCapability(project.user_id, 'tts')
+  if (!ttsCandidates.length) throw new Error('Chưa cấu hình TTS provider — kiểm tra trang API Keys / Cài đặt')
+  const llmCandidates = await listProvidersForCapability(project.user_id, 'llm').catch(() => [])
+  const llm = llmCandidates[0] || null
   const segDir = ensureDir(path.join(projectDir(project.id), 'audio_segments'))
   setProgress(3)
 
-  // Full-regeneration semantics: mỗi lần dub.ttsAlign chạy (kể cả retry sau
-  // partial fail) chỉ xoá audio_segments CỦA PROJECT NÀY rồi synth lại toàn bộ.
-  // Nguồn/outputs không bị đụng tới; reuse file cũ không thực hiện vì timing/
-  // bản dịch đã đổi thì file cũ sẽ lệch transcript một cách im lặng.
-  try { fs.rmSync(segDir, { recursive: true, force: true }); fs.mkdirSync(segDir, { recursive: true }) } catch (_) {}
+  // Resume semantics (TransFlow tts_clip_key): KHÔNG xóa audio_segments.
+  // Mỗi segment có fingerprint (provider/voice/text/speed); file còn hợp lệ
+  // thì reuse, chỉ synth phần thiếu. Đổi text/voice → fingerprint đổi → synth mới.
+  try { fs.mkdirSync(segDir, { recursive: true }) } catch (_) {}
 
   // Provider hỗ trợ tốc độ native (Edge/OpenAI) → synthesize đúng tốc độ,
   // tránh méo giọng do filter atempo (docs/05 §B.5).
   // TransFlow MAX_FIT_TEMPO = 1.35: Chặn tốc độ tối đa ở 1.35x để giữ pitch tự nhiên,
   // không biến giọng đọc thành sóc chuột lách chách.
-  const supportsNativeSpeed = tts.id === 'edge_tts' || tts.id === 'openai_tts'
+  const supportsNativeSpeedFor = (cand) => cand?.id === 'edge_tts' || cand?.id === 'openai_tts'
   const SPEED_MIN = 0.5
   const SPEED_MAX = 1.35
+  const KEY_LEVEL_CODES = new Set([
+    ERROR_CODES.PROVIDER_QUOTA_EXCEEDED,
+    ERROR_CODES.PROVIDER_AUTH_FAILED,
+    ERROR_CODES.PROVIDER_PERMISSION_DENIED,
+    ERROR_CODES.PROVIDER_MODEL_NOT_FOUND,
+  ])
+  const RATE_LIMIT_STREAK_TO_STOP = 3
 
   // Partial success tracking (transflow doc 15 §8.3)
   const fitted = []
   const errors = []
   let successCount = 0
   let errorCount = 0
+  let cacheHitCount = 0
+  let stopError = null
+  let rateLimitStreak = 0
+  let firstErrorCode = null
+  const usedProviderIds = new Map()
 
+  await runWithProviderScope(`dub.ttsAlign:${project.id}`, async () => {
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i]
+    if (stopError) {
+      errorCount++
+      errors.push({
+        segmentId: seg.id,
+        indexNum: seg.index_num,
+        error: stopError.message,
+        errorCode: stopError.errorCode || firstErrorCode || null,
+      })
+      continue
+    }
     const slotDur = Math.max(0.2, Number(seg.end_sec) - Number(seg.start_sec))
     const nextStart = segments[i + 1] ? Number(segments[i + 1].start_sec) : Infinity
     // TransFlow pause-expansion: Dòng phụ đề sở hữu slot của nó + khoảng lặng (pause)
@@ -126,8 +180,8 @@ export async function dubTtsAlign(ctx) {
     let translation = seg.translation
 
     // Bounded retry cho TTS transient (tối đa 1 retry = 2 attempts).
-    // PERMANENT/CONFIGURATION → không retry. Provider fallback hợp lệ
-    // hiện chưa có TTS thứ hai nên ghi nhận lỗi và fail strict ở cuối.
+    // Quota/auth/model → cooldown/exclude + failover provider khác (không retry
+    // cùng key). Key-level error → dừng batch, segment còn lại failed không gọi provider.
     let done = false
     for (let ttsAttempt = 0; ttsAttempt <= 1 && !done; ttsAttempt++) {
       try {
@@ -135,21 +189,19 @@ export async function dubTtsAlign(ctx) {
         // synthesize lại đúng tốc độ (speed = tempo cần thiết) thay vì dùng atempo.
         const segKey = sanitizeSegmentId(seg.id)
         const makeAudio = async (text) => {
-          let audio = await synth(tts, text, path.join(segDir, `seg_${segKey}.mp3`), job, project.id, 1, project.user_id)
+          let audio = await synthWithFailover(ttsCandidates, text, segDir, segKey, job, project.id, 1, project.user_id)
+          if (audio.cacheHit) cacheHitCount++
           // Loại bỏ khoảng lặng thừa ở đầu và cuối clip do TTS sinh ra (TransFlow prepare_voice)
           try {
-            const cleanPath = path.join(segDir, `seg_${segKey}_clean.mp3`)
-            await trimAudioSilence(audio.audioPath, cleanPath)
-            if (fs.existsSync(cleanPath)) {
-              const cleanedDur = (await probe(cleanPath)).durationSec
-              if (cleanedDur > 0.05) {
-                audio = { ...audio, audioPath: cleanPath, durationSec: cleanedDur }
-              }
-            }
+            const prepared = await prepareVoiceClip(audio.audioPath, segDir, segKey)
+            if (prepared) audio = { ...audio, ...prepared }
           } catch (_) {}
 
           let fit = fitSegment(audio.durationSec, slotDur, { roomDur })
-          if (supportsNativeSpeed) {
+          const nativeCapable = supportsNativeSpeedFor(
+            ttsCandidates.find((c) => c.id === audio.provider) || ttsCandidates[0]
+          )
+          if (nativeCapable) {
             let targetSpeed = 1
             if (fit.tempo !== 1) {
               targetSpeed = fit.tempo
@@ -158,7 +210,9 @@ export async function dubTtsAlign(ctx) {
             }
             if (targetSpeed !== 1) {
               const speed = clamp(targetSpeed, SPEED_MIN, SPEED_MAX)
-              audio = await synth(tts, text, audio.audioPath, job, project.id, speed, project.user_id)
+              const re = await synthWithFailover(ttsCandidates, text, segDir, segKey, job, project.id, speed, project.user_id)
+              audio = { ...re, audioPath: re.audioPath }
+              if (re.cacheHit) cacheHitCount++
               try {
                 const cleanPath = path.join(segDir, `seg_${segKey}_clean.mp3`)
                 await trimAudioSilence(audio.audioPath, cleanPath)
@@ -172,6 +226,7 @@ export async function dubTtsAlign(ctx) {
               fit = fitSegment(audio.durationSec, slotDur, { roomDur })
             }
           }
+          if (audio.providerId) usedProviderIds.set(audio.providerId, (usedProviderIds.get(audio.providerId) || 0) + 1)
           return { audio, fit }
         }
 
@@ -214,6 +269,8 @@ export async function dubTtsAlign(ctx) {
         // Manual translation trong DB là source of truth (manual > generated):
         // bản rút gọn (shorten) chỉ dùng in-memory cho TTS synthesis, KHÔNG
         // overwrite DB. Redub dùng lại translation hiện tại, không mất sửa tay.
+        // NOTE: chỉ xóa intermediate clip khi nó là file tạm KHÔNG phải clip
+        // cache dùng chung (clip_*.mp3 được giữ để rerun reuse).
         fitted.push({
           segmentId: seg.id,
           indexNum: seg.index_num,
@@ -221,13 +278,30 @@ export async function dubTtsAlign(ctx) {
           effectiveDurSec: round3(Math.min(finalDur, maxAllowed)),
           action: fit.action,
           tempo: fit.tempo,
+          providerId: audio.providerId || ttsCandidates[0]?.id || 'unknown',
         })
         successCount++
+        rateLimitStreak = 0
         done = true
       } catch (err) {
         const cls = classifyProviderError(err)
-        // Chỉ retry TRANSIENT, bounded 1 lần với backoff.
-        if (cls.kind === ERROR_KINDS.TRANSIENT && ttsAttempt < 1) {
+        const code = err?.code === 'NO_PROVIDER_AVAILABLE' ? (err.errorCode || cls.code) : cls.code
+        if (!firstErrorCode) firstErrorCode = code
+        if (code === ERROR_CODES.PROVIDER_RATE_LIMITED) {
+          rateLimitStreak++
+          if (rateLimitStreak >= RATE_LIMIT_STREAK_TO_STOP) {
+            stopError = err
+            stopError.errorCode = code
+          } else if (ttsAttempt < 1 && cls.retryable === true) {
+            await sleepMs(800 * (ttsAttempt + 1))
+            continue
+          }
+        } else if (KEY_LEVEL_CODES.has(code)) {
+          // Quota/auth/model: dừng batch ngay, segment còn lại không gọi provider.
+          stopError = err
+          stopError.errorCode = code
+        } else if (cls.retryable === true && ttsAttempt < 1) {
+          // Chỉ retry TRANSIENT retryable (timeout/network/unavailable), bounded 1 lần.
           await sleepMs(800 * (ttsAttempt + 1))
           continue
         }
@@ -238,22 +312,31 @@ export async function dubTtsAlign(ctx) {
           segmentId: seg.id,
           indexNum: seg.index_num,
           error: err.message,
+          errorCode: code,
         })
-        console.warn(`[dubTtsAlign] Segment ${seg.index_num} lỗi: ${err.message}`)
+        console.warn(`[dubTtsAlign] Segment ${seg.index_num} lỗi [${code}]: ${err.message}`)
         break
       }
     }
 
     setProgress(3 + Math.round(((i + 1) / segments.length) * 82))
   }
+  })
 
   // Invariant: enableDubbing=true → COMPLETED chỉ khi 100% required TTS hợp lệ.
   // Không success giả partial (render BLOCK_RENDER sẽ chặn, nhưng stage phải fail trước).
+  // Partial files được GIỮ (không xóa) để rerun chỉ synth phần thiếu.
   if (errorCount > 0) {
-    throw new Error(
+    const missing = errors.map((e) => e.indexNum)
+    const err = new Error(
       `dub.ttsAlign incomplete: ${successCount}/${segments.length} audio thành công` +
       ` (${errorCount} lỗi: ${errors.slice(0, 5).map((e) => `#${e.indexNum}:${String(e.error || '').slice(0, 120)}`).join('; ')})`
     )
+    err.completedSegments = successCount
+    err.missingSegments = missing
+    err.totalSegments = segments.length
+    err.errorCode = firstErrorCode
+    throw err
   }
 
   // Không cho chồng tiếng (docs/05 §B.5 invariant) — nhưng QUAN TRỌNG: neo mỗi
@@ -280,7 +363,7 @@ export async function dubTtsAlign(ctx) {
       kind: 'voice',
       storage_key: null, // file ở project dir, không cần storage key public
       duration_sec: round3(f.effectiveDurSec),
-      provider: tts.id,
+      provider: f.providerId || ttsCandidates[0]?.id || 'unknown',
     })
     if (!audioRow) {
       const error = new Error('RUN_ABORTED')
@@ -304,10 +387,13 @@ export async function dubTtsAlign(ctx) {
   }
 
   // Trả về kết quả partial success (transflow doc 15 §8.3)
+  const primaryProvider = [...usedProviderIds.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
+    || ttsCandidates[0]?.id || 'unknown'
   return {
     dubbedCount: fitted.length,
     skippedCount: (await countAll(project.id)) - fitted.length,
     errorCount,
+    cacheHitCount,
     // Persisted with this job's success — the frozen generation revision that
     // dub.render (and output provenance) reuses on resume.
     transcriptVersionSnapshot: transcriptVersion,
@@ -320,24 +406,51 @@ export async function dubTtsAlign(ctx) {
       action: f.action,
       tempo: f.tempo,
     })),
-    voiceProvider: tts.id,
+    voiceProvider: primaryProvider,
     // Stage COMPLETED nếu có ít nhất 1 segment thành công
     stageStatus: successCount > 0 ? 'completed' : 'failed',
   }
 }
 
-async function synth(tts, text, outPath, job, projectId, speed = 1, userId = null) {
-  return callProvider({
-    provider: tts.id,
-    type: 'tts',
-    model: tts.provider.model || tts.id,
-    input: { text, outPath, speed },
-    fn: () => tts.provider.synthesize({ text, outPath, speed }),
-    userId,
-    apiKeyId: tts.apiKeyId,
-    projectId,
-    jobId: job.id,
-  })
+// Canonical TTS synthesis with filesystem resume + provider failover.
+// Clip file is content-addressed by (provider/voice/text/speed): same input →
+// same file → no provider call. Changed text/voice → new file → new call.
+async function synthWithFailover(candidates, text, segDir, segKey, job, projectId, speed = 1, userId = null) {
+  const clean = String(text || '').trim()
+  if (!clean) throw new Error('TTS text rỗng')
+  const out = await withProviderFailover(
+    { capability: 'TTS', candidates, maxAttempts: Math.min(4, candidates.length) },
+    async (cand) => {
+      const voice = cand.provider.voice || cand.provider.model || cand.id
+      const model = cand.provider.model || cand.id
+      const canonical = buildTtsCacheInput({ provider: cand.id, voice, model, text: clean, speed })
+      const clip = ttsClipKey(canonical)
+      const clipPath = path.join(segDir, `clip_${clip.slice(0, 16)}.mp3`)
+      // Filesystem resume: valid clip already on disk → reuse without provider call.
+      try {
+        if (fs.existsSync(clipPath)) {
+          const d = (await probe(clipPath)).durationSec
+          if (d > 0.05) {
+            return { audioPath: clipPath, durationSec: d, provider: cand.id, providerId: cand.id, model, cacheHit: true }
+          }
+        }
+      } catch (_) {}
+      const res = await callProvider({
+        provider: cand.id,
+        type: 'tts',
+        model,
+        input: canonical,
+        fn: () => cand.provider.synthesize({ text: clean, outPath: clipPath, speed }),
+        userId,
+        apiKeyId: cand.apiKeyId,
+        projectId,
+        jobId: job.id,
+      })
+      const dur = res?.durationSec || (await probe(res?.audioPath || clipPath)).durationSec
+      return { audioPath: res?.audioPath || clipPath, durationSec: dur, provider: cand.id, providerId: cand.id, model, cacheHit: false }
+    }
+  )
+  return out.result
 }
 
 export async function shortenTranslation(llm, sourceText, translation, ratio, job, projectId, targetLanguage = 'vi', attempt = 0, userId = null) {

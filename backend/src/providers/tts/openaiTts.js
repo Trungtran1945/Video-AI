@@ -30,7 +30,9 @@ export class OpenAiTts {
     if (!res.ok) {
       const detail = await res.json().catch(() => null)
       const message = detail?.error?.message || `OpenAI TTS HTTP ${res.status}`
-      throw new Error(`TTS (OpenAI) lỗi: ${message}`)
+      const err = new Error(`TTS (OpenAI) lỗi: ${message}`)
+      err.status = res.status
+      throw err
     }
     const buffer = Buffer.from(await res.arrayBuffer())
     fs.mkdirSync(path.dirname(outPath), { recursive: true })

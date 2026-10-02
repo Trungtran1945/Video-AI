@@ -7,8 +7,9 @@ import { VideoTimeline } from '@/components/timeline';
 import MaskEditor from '@/components/MaskEditor';
 import { useTimelineStore } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info } from 'lucide-react';
-import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES } from '@/lib/constants';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus } from 'lucide-react';
+import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, AUDIO_MODE_LABELS } from '@/lib/constants';
+import { friendlyJobError } from '@/lib/providerErrorMessage';
 import { useJobEvents } from '@/hooks/useJobEvents';
 import ProjectHeader from '@/components/project/ProjectHeader';
 import PipelineStatus from '@/components/project/PipelineStatus';
@@ -34,8 +35,8 @@ const stageIcons = {
   'summary.subtitle': Captions,
   'summary.render': Video,
   'dub.ingest': FileAudio,
-  'dub.ocr': FileText,
   'dub.stt': Mic,
+  'dub.merge': Combine,
   'dub.translate': Languages,
   'dub.ttsAlign': AudioLines,
   'dub.render': Video,
@@ -43,7 +44,7 @@ const stageIcons = {
 
 const SUMMARY_STAGES = ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'];
 
-const DUB_STAGES_ALL = ['dub.ingest', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
+const DUB_STAGES_ALL = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
 
 const ACTIVE_STATUSES = ['pending', 'queued', 'generating', 'running'];
 
@@ -91,7 +92,14 @@ export default function ProjectDetail() {
   const [duration, setDuration] = useState(0);
   const [targetLanguage, setTargetLanguage] = useState('vi');
   const [activeRightTab, setActiveRightTab] = useState('video'); // 'video' | 'mask' | 'info'
+  const [retryingStage, setRetryingStage] = useState(null);
   const [timelineMinimized, setTimelineMinimized] = useState(false);
+  const [glossaryTerms, setGlossaryTerms] = useState([]);
+  const [loadingGlossary, setLoadingGlossary] = useState(false);
+  const [newSourceTerm, setNewSourceTerm] = useState('');
+  const [newTargetTerm, setNewTargetTerm] = useState('');
+  const [newTermNote, setNewTermNote] = useState('');
+  const [addingTerm, setAddingTerm] = useState(false);
   const videoRef = useRef(null);
   // Optimistic concurrency (§4.6): revision server cấp, seq chống stale response.
   const transcriptRevisionRef = useRef(null);
@@ -313,6 +321,57 @@ export default function ProjectDetail() {
     };
   }, [load, loadDubData]);
 
+  const loadGlossary = useCallback(async () => {
+    if (!id) return;
+    try {
+      setLoadingGlossary(true);
+      const res = await projectsApi.glossary(id);
+      setGlossaryTerms(res?.terms || []);
+    } catch {
+      // best-effort
+    } finally {
+      setLoadingGlossary(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (project?.id) {
+      loadGlossary();
+    }
+  }, [project?.id, loadGlossary]);
+
+  const handleAddGlossaryTerm = async (e) => {
+    e?.preventDefault();
+    if (!newSourceTerm.trim() || !newTargetTerm.trim() || addingTerm) return;
+    setAddingTerm(true);
+    try {
+      await projectsApi.addGlossaryTerm(id, {
+        source: newSourceTerm.trim(),
+        target: newTargetTerm.trim(),
+        note: newTermNote.trim() || null,
+      });
+      setNewSourceTerm('');
+      setNewTargetTerm('');
+      setNewTermNote('');
+      await loadGlossary();
+      toast({ title: 'Đã thêm thuật ngữ', description: `"${newSourceTerm.trim()}" → "${newTargetTerm.trim()}"` });
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Lỗi thêm thuật ngữ', description: err?.response?.data?.message || err.message });
+    } finally {
+      setAddingTerm(false);
+    }
+  };
+
+  const handleDeleteGlossaryTerm = async (termId) => {
+    try {
+      await projectsApi.deleteGlossaryTerm(id, termId);
+      setGlossaryTerms((prev) => prev.filter((t) => t.id !== termId));
+      toast({ title: 'Đã xoá thuật ngữ' });
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Lỗi xoá thuật ngữ', description: err?.response?.data?.message || err.message });
+    }
+  };
+
   // Poll progress while pipeline is active — fallback authoritative khi SSE
   // không khả dụng HOẶC stream đã closed mà project vẫn active (miss event).
   // DB (load) là source of truth duy nhất; không suy diễn completed từ SSE.
@@ -404,6 +463,21 @@ export default function ProjectDetail() {
       await load();
     } catch (e) {
       setError('Không thể huỷ project: ' + (e?.response?.data?.message || e.message));
+    }
+  };
+
+  const handleRetryStage = async (stageKey) => {
+    if (retryingStage) return;
+    setRetryingStage(stageKey);
+    setError('');
+    try {
+      await projectsApi.retryJob(id, stageKey);
+      toast({ title: 'Đã gửi retry', description: `Stage ${STAGE_LABELS[stageKey]?.label || stageKey} đang chạy lại.` });
+      await load();
+    } catch (e) {
+      setError('Không thể retry stage: ' + (e?.response?.data?.message || e.message));
+    } finally {
+      setRetryingStage(null);
     }
   };
 
@@ -505,6 +579,29 @@ export default function ProjectDetail() {
     }
   }, [project?.params]);
 
+  // QA issues từ dub.translate job.result.unresolvedDetails[].qa (flag + block —
+  // fix bằng sửa tay từng SegmentCard rồi Regenerate, không auto-repair).
+  // Hook đặt TRƯỚC early return (rules-of-hooks).
+  const qaByIndex = useMemo(() => {
+    const map = new Map();
+    const tj = (jobs || []).find((j) => j.type === 'dub.translate');
+    let details = [];
+    try {
+      const r = typeof tj?.result === 'string' ? JSON.parse(tj.result) : tj?.result;
+      details = r?.unresolvedDetails || r?.details || [];
+    } catch { details = []; }
+    for (const d of details) {
+      const list = [...(d?.qa || [])];
+      // Backward-compat: base/styled gate errors không có qa → 1 warning entry.
+      const gateErrs = [...(d?.baseErrors || []), ...(d?.styledErrors || [])].filter(Boolean);
+      if (!list.length && gateErrs.length && d?.index != null) {
+        list.push({ type: 'gate', severity: 'high', message: gateErrs.join('; '), blockingActions: [] });
+      }
+      if (list.length && d?.index != null) map.set(Number(d.index), list);
+    }
+    return map;
+  }, [jobs]);
+
   if (loading) return <Layout><Loading /></Layout>;
   if (!project) return <Layout><div className="p-8 text-center text-slate-400">Không tìm thấy dự án.</div></Layout>;
 
@@ -567,6 +664,8 @@ export default function ProjectDetail() {
             sseAvailable={sseAvailable}
             stages={stages}
             jobByStage={jobByStage}
+            onRetry={handleRetryStage}
+            retryingStage={retryingStage}
           />
 
           {/* 3. Main Workspace: Transcript (chính) + Video/output/mask tabs */}
@@ -591,12 +690,13 @@ export default function ProjectDetail() {
                 targetLanguage={targetLanguage}
                 onLanguageChange={setTargetLanguage}
                 activeSegmentId={activeSegmentId}
+                qaByIndex={qaByIndex}
               />
             </div>
 
             {/* Right Panel: Tabs (Video thành phẩm / Che chữ / Thông số) */}
             <div className="w-[42%] max-md:w-full flex flex-col min-h-0 bg-card border-l border-border max-md:border-l-0">
-              {/* Tab Navigation */}
+              {/* Tab Navigation — numbered workflow tabs (TransFlow-inspired IA) */}
               <div className="shrink-0 flex items-center justify-between border-b border-border bg-muted/20 px-3 py-2">
                 <div className="flex items-center gap-1">
                   <button
@@ -608,8 +708,10 @@ export default function ProjectDetail() {
                         : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
                     }`}
                   >
+                    <span className="font-mono font-bold opacity-60">1</span>
                     <Video className="w-3.5 h-3.5 text-primary" />
                     <span>Xem video</span>
+                    <span className={`w-1.5 h-1.5 rounded-full ${outputUrl ? 'bg-emerald-500' : isActive ? 'bg-primary animate-pulse' : 'bg-muted-foreground/40'}`} />
                   </button>
                   <button
                     type="button"
@@ -620,8 +722,10 @@ export default function ProjectDetail() {
                         : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
                     }`}
                   >
+                    <span className="font-mono font-bold opacity-60">2</span>
                     <Scissors className="w-3.5 h-3.5 text-primary" />
                     <span>Che chữ (Mask)</span>
+                    {outputStale && <span className="w-1.5 h-1.5 rounded-full bg-amber-500" title="Mask đổi chưa render lại" />}
                   </button>
                   <button
                     type="button"
@@ -632,6 +736,7 @@ export default function ProjectDetail() {
                         : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
                     }`}
                   >
+                    <span className="font-mono font-bold opacity-60">3</span>
                     <Info className="w-3.5 h-3.5 text-primary" />
                     <span>Thông số</span>
                   </button>
@@ -765,6 +870,12 @@ export default function ProjectDetail() {
                               : 'Tắt'}
                           </span>
                         </div>
+                        {(params.enableDubbing ?? params.enable_dubbing) && (
+                          <div className="flex justify-between items-center py-1.5 border-b border-border/40">
+                            <span className="text-muted-foreground">Chế độ âm thanh</span>
+                            <span className="font-semibold text-foreground">{AUDIO_MODE_LABELS[params.audioMode] || params.audioMode || 'Lồng tiếng + nền gốc'}</span>
+                          </div>
+                        )}
                         {params.voiceName && (
                           <div className="flex justify-between items-center py-1.5 border-b border-border/40">
                             <span className="text-muted-foreground">Giọng đọc</span>
@@ -782,6 +893,112 @@ export default function ProjectDetail() {
                           <span className="text-foreground">{formatDate(project.created_date)}</span>
                         </div>
                       </div>
+                    </div>
+
+                    {/* Bảng thuật ngữ cố định (Glossary) — TransFlow-style terminology */}
+                    <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <BookOpen className="w-4 h-4 text-primary" />
+                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                            Bảng thuật ngữ cố định (Glossary)
+                          </span>
+                        </div>
+                        <span className="text-[11px] font-mono text-muted-foreground">
+                          {glossaryTerms.length} từ
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground leading-relaxed">
+                        Thuật ngữ sẽ được truyền thẳng vào prompt dịch LLM trong thẻ <code className="text-primary font-mono">&lt;glossary&gt;</code> để đảm bảo dịch đồng nhất và chính xác.
+                      </p>
+
+                      {/* Form thêm từ mới */}
+                      <form onSubmit={handleAddGlossaryTerm} className="space-y-2 pt-1 border-t border-border/40">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[10px] text-muted-foreground block mb-0.5">Từ gốc (source)</label>
+                            <input
+                              type="text"
+                              value={newSourceTerm}
+                              onChange={(e) => setNewSourceTerm(e.target.value)}
+                              placeholder="e.g. prompt engineering"
+                              disabled={isActive || addingTerm}
+                              className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-muted/40 border border-border text-foreground placeholder:text-muted-foreground/50 focus:outline-hidden focus:border-primary"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-muted-foreground block mb-0.5">Dịch thành (target)</label>
+                            <input
+                              type="text"
+                              value={newTargetTerm}
+                              onChange={(e) => setNewTargetTerm(e.target.value)}
+                              placeholder="e.g. kỹ thuật đặt câu lệnh"
+                              disabled={isActive || addingTerm}
+                              className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-muted/40 border border-border text-foreground placeholder:text-muted-foreground/50 focus:outline-hidden focus:border-primary"
+                            />
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={newTermNote}
+                            onChange={(e) => setNewTermNote(e.target.value)}
+                            placeholder="Ghi chú ngữ cảnh (tuỳ chọn)..."
+                            disabled={isActive || addingTerm}
+                            className="flex-1 px-2.5 py-1.5 rounded-lg text-xs bg-muted/40 border border-border text-foreground placeholder:text-muted-foreground/50 focus:outline-hidden focus:border-primary"
+                          />
+                          <button
+                            type="submit"
+                            disabled={!newSourceTerm.trim() || !newTargetTerm.trim() || addingTerm || isActive}
+                            className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors flex items-center gap-1 shrink-0"
+                          >
+                            {addingTerm ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                            <span>Thêm</span>
+                          </button>
+                        </div>
+                      </form>
+
+                      {/* Danh sách từ đã lưu */}
+                      {loadingGlossary ? (
+                        <div className="py-3 flex justify-center text-xs text-muted-foreground">
+                          <Loader2 className="w-4 h-4 animate-spin mr-2" /> Đang tải thuật ngữ...
+                        </div>
+                      ) : glossaryTerms.length === 0 ? (
+                        <div className="py-2 text-center text-xs text-muted-foreground/70 italic">
+                          Chưa có thuật ngữ nào cho dự án này.
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1 pt-1">
+                          {glossaryTerms.map((t) => (
+                            <div
+                              key={t.id}
+                              className="flex items-center justify-between p-2 rounded-lg bg-muted/30 border border-border/50 text-xs hover:border-border transition-colors group"
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-semibold text-foreground truncate">{t.source || t.source_term}</span>
+                                  <span className="text-muted-foreground">→</span>
+                                  <span className="font-semibold text-primary truncate">{t.target || t.target_term}</span>
+                                </div>
+                                {t.note && (
+                                  <div className="text-[10px] text-muted-foreground truncate mt-0.5">
+                                    {t.note}
+                                  </div>
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteGlossaryTerm(t.id)}
+                                disabled={isActive}
+                                title="Xoá thuật ngữ"
+                                className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all shrink-0 ml-2"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -976,7 +1193,7 @@ export default function ProjectDetail() {
                         <Clock className="w-3 h-3" /> Đang chờ quota hồi phục lúc {new Date(job.next_retry_at).toLocaleTimeString('vi-VN')}
                       </div>
                     )}
-                    {job?.error_message && <div className="text-xs text-destructive truncate mt-0.5 font-medium">{job.error_message}</div>}
+                    {job?.error_message && <div className="text-xs text-destructive truncate mt-0.5 font-medium">{friendlyJobError(job.error_message)}</div>}
                     {job && <div className="text-xs text-muted-foreground mt-0.5 font-mono">{formatDate(job.created_date)}{job.attempts > 1 ? ` • ${job.attempts} lần thử` : ''}</div>}
                   </div>
                   {!job && !isCurrent && !isDone && <Circle className="w-4 h-4 text-muted-foreground/30" />}
@@ -1122,13 +1339,14 @@ function TranscriptEditor({
   targetLanguage = 'vi',
   onLanguageChange,
   activeSegmentId = null,
+  qaByIndex = new Map(),
 }) {
   // §7: chỉnh trực tiếp Original / Translation / Start / End. Không drag-and-drop.
   // edits: { [segmentId]: { text?, translation?, startSec?, endSec? } }
   const [edits, setEdits] = useState({});
   const [localError, setLocalError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [filter, setFilter] = useState('all'); // 'all' | 'dirty' | 'untranslated'
+  const [filter, setFilter] = useState('all'); // 'all' | 'dirty' | 'untranslated' | 'qa'
   const [autoScroll, setAutoScroll] = useState(true);
 
   const getField = (seg, field) => (edits[seg.id]?.[field] !== undefined ? edits[seg.id][field] : seg[field]);
@@ -1140,6 +1358,7 @@ function TranscriptEditor({
   const dirtyCount = transcript.filter(isDirtyRow).length;
   const translatedCount = transcript.filter((s) => String(getField(s, 'translation') || '').trim()).length;
   const untranslatedCount = transcript.length - translatedCount;
+  const qaCount = transcript.filter((s) => (qaByIndex.get(Number(s.index)) || []).length > 0).length;
 
   const setField = (seg, field, value) => {
     setLocalError('');
@@ -1240,6 +1459,7 @@ function TranscriptEditor({
     return transcript.filter((seg) => {
       if (filter === 'dirty' && !isDirtyRow(seg)) return false;
       if (filter === 'untranslated' && String(getField(seg, 'translation') || '').trim().length > 0) return false;
+      if (filter === 'qa' && !((qaByIndex.get(Number(seg.index)) || []).length > 0)) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const orig = String(getField(seg, 'text') || '').toLowerCase();
@@ -1249,7 +1469,7 @@ function TranscriptEditor({
       }
       return true;
     });
-  }, [transcript, filter, searchQuery, edits]);
+  }, [transcript, filter, searchQuery, edits, qaByIndex]);
 
   if (!transcript.length) {
     return (
@@ -1370,6 +1590,18 @@ function TranscriptEditor({
             >
               Chưa dịch ({untranslatedCount})
             </button>
+            {qaCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setFilter('qa')}
+                title="Câu bị QA gắn cờ — sửa tay rồi Chạy lại từ dub.translate"
+                className={`px-2 py-0.5 rounded font-medium transition ${
+                  filter === 'qa' ? 'bg-background text-foreground shadow-xs' : 'text-rose-600 dark:text-rose-300 hover:text-foreground'
+                }`}
+              >
+                Lỗi QA ({qaCount})
+              </button>
+            )}
           </div>
 
           {/* Auto-scroll toggle */}
@@ -1418,6 +1650,7 @@ function TranscriptEditor({
               onSeek={onSeek}
               hasVideo={hasVideo}
               disabled={disabled}
+              qaIssues={qaByIndex.get(Number(seg.index)) || []}
             />
           ))
         )}
@@ -1428,7 +1661,7 @@ function TranscriptEditor({
 
 // §7: thẻ subtitle chỉnh trực tiếp 4 trường (Original / Translation / Start / End).
 // Không kéo-thả, không draggable/dataTransfer.
-function SegmentCard({ seg, isDirty, isActive, getField, onField, onSeek, hasVideo, disabled }) {
+function SegmentCard({ seg, isDirty, isActive, getField, onField, onSeek, hasVideo, disabled, qaIssues = [] }) {
   const numCls = 'w-full bg-background border border-input rounded-md px-2 py-1 text-xs text-foreground tabular-nums focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60 font-mono';
   const areaCls = 'w-full resize-y rounded-md bg-background border border-input px-3 py-1.5 text-xs text-foreground leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60';
 
@@ -1480,6 +1713,14 @@ function SegmentCard({ seg, isDirty, isActive, getField, onField, onSeek, hasVid
           {isDirty && (
             <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-800 dark:text-amber-300">
               đã sửa
+            </span>
+          )}
+          {(qaIssues || []).length > 0 && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-rose-500/15 text-rose-700 dark:text-rose-300"
+              title={(qaIssues || []).map((q) => `[${q.severity || ''}/${q.type || ''}] ${q.message || ''}${q.suggestion ? ` → Gợi ý: ${q.suggestion}` : ''}`).join('\n')}
+            >
+              QA ({qaIssues.length})
             </span>
           )}
         </div>

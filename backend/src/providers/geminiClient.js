@@ -8,7 +8,7 @@
 // phải đổi code ở tầng stage.
 
 import { acquireGeminiQuota } from './rateLimit.js'
-import { classifyProviderError, ERROR_KINDS } from '../lib/providerErrors.js'
+import { classifyProviderError, ERROR_KINDS, ERROR_CODES } from '../lib/providerErrors.js'
 
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models'
 
@@ -83,13 +83,28 @@ export async function generateContent({ model, apiKey, body, json = false, maxOu
     const message = data?.error?.message || `Gemini HTTP ${res.status}`
     const probe = Object.assign(new Error(message), { status: res.status })
     const classification = classifyProviderError(probe)
-    const isQuota =
-      res.status === 429 ||
-      /quota|rate[ -_]?limit|resource has been exhausted|please retry/i.test(message)
-    // TRANSIENT covers 429/quota plus 503 high-demand, 5xx, timeouts and
+    // Quota/auth/model errors must NEVER be retried on the same key — they
+    // need cooldown/exclude + failover to another provider (TransFlow pool
+    // behavior). Only temporary pressure (rate/timeout/unavailable) retries.
+    const nonRetryableCodes = new Set([
+      ERROR_CODES.PROVIDER_QUOTA_EXCEEDED,
+      ERROR_CODES.PROVIDER_AUTH_FAILED,
+      ERROR_CODES.PROVIDER_PERMISSION_DENIED,
+      ERROR_CODES.PROVIDER_MODEL_NOT_FOUND,
+      ERROR_CODES.PROVIDER_INVALID_REQUEST,
+    ])
+    if (nonRetryableCodes.has(classification.code)) {
+      const err = new Error(`${label} lỗi: ${message}`)
+      err.status = res.status
+      err.code = classification.code
+      err.errorCode = classification.code
+      err.retryable = false
+      throw err
+    }
+    // TRANSIENT covers rate-limit plus 503 high-demand, 5xx, timeouts and
     // network blips. PERMANENT (401/403) and CONFIGURATION never retry.
     const isRetryable =
-      isQuota || classification.kind === ERROR_KINDS.TRANSIENT
+      classification.retryable === true && classification.kind === ERROR_KINDS.TRANSIENT
 
     if (!isRetryable) {
       throw new Error(`${label} lỗi: ${message}`)
@@ -97,10 +112,14 @@ export async function generateContent({ model, apiKey, body, json = false, maxOu
 
     attempt++
     if (attempt > retryBudget) {
-      throw new Error(
-        `${label} lỗi (quá giới hạn quota sau ${retryBudget} lần thử lại): ${message}. ` +
-          `Hãy nâng cấp gói Gemini hoặc đặt GEMINI_RPM thấp hơn để tránh vượt hạn mức.`
+      const err = new Error(
+        `${label} lỗi (quá ${retryBudget} lần thử lại, mã ${classification.code}): ${message}. ` +
+          `Hệ thống sẽ thử provider dự phòng nếu có thay vì retry cùng key.`
       )
+      err.status = res.status
+      err.errorCode = classification.code
+      err.retryable = classification.retryable
+      throw err
     }
 
     const suggested = parseRetryDelaySeconds(message)

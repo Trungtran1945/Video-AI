@@ -120,7 +120,7 @@ async function cols(table) {
 // ── 7. STT / Whisper ASR: provider + language hint ──
 {
   const stt = srcFile('pipeline', 'stages', 'dubStt.js')
-  assert(stt.includes('getProvider'), 'dubStt calls getProvider for ASR')
+  assert(stt.includes('listProvidersForCapability') || stt.includes('getProvider'), 'dubStt resolves ASR via provider pool (failover)')
   assert(stt.includes('languageHint'), 'dubStt passes languageHint to ASR')
   const gemini = srcFile('providers', 'vision', 'geminiVision.js')
   assert(gemini.includes('sourceLanguage'), 'Gemini detectSubtitle nhận sourceLanguage hint')

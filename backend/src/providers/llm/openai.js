@@ -29,7 +29,9 @@ export class OpenAiLlm {
     const data = await res.json().catch(() => null)
     if (!res.ok) {
       const message = data?.error?.message || `OpenAI HTTP ${res.status}`
-      throw new Error(`OpenAI LLM lỗi: ${message}`)
+      const err = new Error(`OpenAI LLM lỗi: ${message}`)
+      err.status = res.status
+      throw err
     }
     const text = data.choices?.[0]?.message?.content || ''
     if (!text.trim()) throw new Error('OpenAI trả về nội dung rỗng')

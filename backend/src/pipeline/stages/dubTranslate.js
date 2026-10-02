@@ -9,6 +9,9 @@ import { callProvider } from '../../lib/callProvider.js'
 import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js'
 import { projectDir, extractJsonBlock } from '../context.js'
 import { TRANSLATION_VERSION } from '../../lib/cacheKey.js'
+import { buildSegmentTranslatePrompt, checkGlossaryCompliance } from '../translatePrompt.js'
+import { loadGlossaryForPrompt } from '../../services/glossaryService.js'
+import { runDeterministicQa, runAiQa, blockingRenderIndexes } from '../translateQa.js'
 
 // Single source of truth cho cache version (đồng bộ với POST /projects
 // isCacheCompatible). Bump TRANSLATION_VERSION trong lib/cacheKey.js khi
@@ -189,113 +192,125 @@ export async function dubTranslate(ctx) {
   const sourceLanguage = params.sourceLanguage || 'auto'
   const hasStyle = !!preset?.system_prompt
 
-  // Lấy Google Translate provider (keyless, dùng Apps Script URL)
-  const gt = await getProvider(project.user_id, 'translate').catch(() => null)
-  // LLM provider cho bước restyle (chỉ cần khi có style preset)
-  const llm = hasStyle ? await getProvider(project.user_id, 'llm').catch(() => null) : null
+  // Lấy providers: LLM là primary (luôn thử), Google Translate là fallback
+//  // (chỉ gọi cho segment LLM unresolved). Không throw khi thiếu GT ở đây —
+  // GT thiếu thì LLM phải gánh toàn bộ; chỉ fail khi cả hai đều trống.
+  let llm = null
+  try { llm = await getProvider(project.user_id, 'llm') } catch (_) { llm = null }
+  let gt = null
+  try { gt = await getProvider(project.user_id, 'translate') } catch (_) { gt = null }
 
-  if (!gt) {
-    throw new Error(
-      'Không có Google Translate provider. Kiểm tra GOOGLE_TRANSLATE_SCRIPT_URL trong file .env'
-    )
-  }
+  // Glossary tối thiểu (phase 1): load best-effort, rỗng khi bảng chưa migrate.
+  let glossary = []
+  try { glossary = await loadGlossaryForPrompt(project.id) } catch (_) { glossary = [] }
 
   const system = buildSystemPrompt(preset, targetLanguage)
   setProgress(5)
 
-  // BƯỚC 1: Google Translate — dịch sát nghĩa từng câu.
+  // BƯỚC 1: LLM DIRECT PRIMARY — dịch trực tiếp source → target cho TOÀN BỘ
+  // segment bằng numbered XML batches (TransFlow segment_translation.py).
+  // Mỗi batch mang ≤30 dòng / ~2500 ký tự + 3 previous_lines context-only nên
+  // đại từ xưng hô/register/terminology giữ continuity mà không merge segment.
   // Mỗi segment độc lập: segment lỗi không làm hỏng segment khác.
-  // CONFIGURATION (404/missing) → sau 3 lỗi liên tiếp đánh dấu provider unhealthy
-  // cho job hiện tại, không gọi lại vô hạn (endpoint hỏng thì mọi segment đều 404).
-  // Lỗi CONFIGURATION rời rạc (1-2 segment) vẫn fault-isolated, LLM-direct cứu từng câu.
-  // TRANSIENT → retry bounded exponential backoff (tối đa 2 lần retry / segment).
-  const gtResults = new Map() // index_num → bản dịch Google Translate (base)
+  const gtResults = new Map() // index_num → base translation (LLM-primary, GT fallback)
   const gtErrors = new Map() // index_num → error kind (diagnostic)
   // §8: user edit là source of truth — segment đã sửa translation tay thì AI
   // không được overwrite. Chúng được seed vào `translations` ở dưới và loại
   // khỏi mọi vòng dịch/ghi DB.
   const isManualTranslation = (s) => s.is_translation_manually_edited && s.translation && String(s.translation).trim()
   const segmentsToTranslate = pool.filter((s) => s.text && s.text.trim() && !isManualTranslation(s))
-  let googleUnhealthy = false
-  let consecutiveConfig = 0
+  let usedLlmDirect = false
 
-  for (let i = 0; i < segmentsToTranslate.length; i++) {
-    const seg = segmentsToTranslate[i]
-    const text = (seg.text || '').trim()
-    if (!text) continue
-    if (googleUnhealthy) {
-      gtErrors.set(seg.index_num, ERROR_KINDS.CONFIGURATION)
-      continue
+  if (llm && segmentsToTranslate.length) {
+    const directMap = await translateMissingWithLlm(llm, segmentsToTranslate, {
+      system, targetLanguage, sourceLanguage, glossary,
+      job, projectId: project.id, userId: project.user_id,
+      allSegments: pool,
+    })
+    for (const [idx, txt] of directMap) {
+      gtResults.set(idx, txt)
+      usedLlmDirect = true
     }
-    let translated = null
-    let lastCls = null
-    for (let attempt = 0; attempt <= 2; attempt++) {
-      try {
-        // sourceLanguage verbatim: 'zh' normalized to 'zh-CN' inside provider,
-        // 'zh-TW' kept as-is, 'auto' sends no source param (auto-detect).
-        translated = await gt.provider.translate(text, sourceLanguage, targetLanguage)
-        break
-      } catch (err) {
-        // Diagnostic only: kind + endpoint (origin+path). Never log source
-        // text, query strings, keys or secrets.
-        const cls = classifyProviderError(err)
-        lastCls = cls
-        gtErrors.set(seg.index_num, cls.kind)
-        const where = err.endpoint ? ` endpoint=${err.endpoint}` : ''
-        console.warn(`[dubTranslate] Google Translate lỗi segment #${seg.index_num} [${cls.kind}]${where} attempt=${attempt + 1}: ${String(err.message || err).slice(0, 200)}`)
-        if (cls.kind === ERROR_KINDS.CONFIGURATION) {
-          // 404 endpoint — retrying the same URL cannot help. Sau 3 lỗi liên
-          // tiếp thì endpoint chắc chắn hỏng → short-circuit phần còn lại.
-          consecutiveConfig++
-          if (consecutiveConfig >= 3) {
-            googleUnhealthy = true
-          }
-          break
-        }
-        if (cls.kind === ERROR_KINDS.TRANSIENT && attempt < 2) {
-          await sleepMs(500 * (attempt + 1))
+    setProgress(5 + Math.round((gtResults.size / Math.max(1, segmentsToTranslate.length)) * 40))
+    // Glossary soft-check (warning only, never hard-fail phase 1).
+    if (glossary.length) {
+      for (const seg of segmentsToTranslate) {
+        const txt = gtResults.get(seg.index_num)
+        if (!txt) continue
+        const gw = checkGlossaryCompliance(seg.text, txt, glossary)
+        if (gw.length) console.warn(`[dubTranslate] segment #${seg.index_num} glossary warnings: ${gw.join('; ')}`)
+      }
+    }
+  } else if (segmentsToTranslate.length) {
+    console.warn('[dubTranslate] Thiếu LLM provider — dùng Google Translate làm primary tạm thời')
+  }
+
+  // BƯỚC 1b: GOOGLE TRANSLATE FALLBACK — chỉ cho segment LLM chưa có base.
+  // Mỗi segment độc lập, retry bounded; CONFIGURATION (404/missing) → sau 3 lỗi
+  // liên tiếp short-circuit phần còn lại. TRANSIENT → retry tối đa 2 lần.
+  const missingAfterLlm = segmentsToTranslate.filter((s) => !gtResults.has(s.index_num))
+  let usedGtFallback = false
+  if (missingAfterLlm.length > 0) {
+    if (!gt) {
+      console.warn(`[dubTranslate] Thiếu Google Translate fallback cho ${missingAfterLlm.length} segment LLM unresolved (indexes: ${missingAfterLlm.map((s) => s.index_num).join(',')})`)
+    } else {
+      let googleUnhealthy = false
+      let consecutiveConfig = 0
+      for (let i = 0; i < missingAfterLlm.length; i++) {
+        const seg = missingAfterLlm[i]
+        const text = (seg.text || '').trim()
+        if (!text) continue
+        if (googleUnhealthy) {
+          gtErrors.set(seg.index_num, ERROR_KINDS.CONFIGURATION)
           continue
         }
-        break
-      }
-    }
-    if (translated && translated !== text) {
-      gtResults.set(seg.index_num, translated.trim())
-      consecutiveConfig = 0
-    } else if (translated && translated === text && lastCls) {
-      // Giữ nguyên diagnostic; untranslated copy không tính là base hợp lệ.
-    } else if (!translated && !lastCls) {
-      consecutiveConfig = 0
-    }
-    setProgress(5 + Math.round(((i + 1) / segmentsToTranslate.length) * 40))
-  }
-
-  // BƯỚC 1b: LLM DIRECT TRANSLATION fallback cho segment chưa có base.
-  // Không chỉ restyle — dịch trực tiếp source → target, có validate + repair bounded.
-  const missingAfterGt = segmentsToTranslate.filter((s) => !gtResults.has(s.index_num))
-  let usedLlmDirect = false
-  if (missingAfterGt.length > 0) {
-    let fallbackLlm = llm
-    if (!fallbackLlm) {
-      fallbackLlm = await getProvider(project.user_id, 'llm').catch(() => null)
-    }
-    if (fallbackLlm) {
-      const directMap = await translateMissingWithLlm(fallbackLlm, missingAfterGt, {
-        system, targetLanguage, job, projectId: project.id, userId: project.user_id,
-        allSegments: pool,
-      })
-      for (const [idx, txt] of directMap) {
-        if (!gtResults.has(idx)) {
-          gtResults.set(idx, txt)
-          usedLlmDirect = true
+        let translated = null
+        let lastCls = null
+        for (let attempt = 0; attempt <= 2; attempt++) {
+          try {
+            // sourceLanguage verbatim: 'zh' normalized to 'zh-CN' inside provider,
+            // 'zh-TW' kept as-is, 'auto' sends no source param (auto-detect).
+            translated = await gt.provider.translate(text, sourceLanguage, targetLanguage)
+            break
+          } catch (err) {
+            // Diagnostic only: kind + endpoint (origin+path). Never log source
+            // text, query strings, keys or secrets.
+            const cls = classifyProviderError(err)
+            lastCls = cls
+            gtErrors.set(seg.index_num, cls.kind)
+            const where = err.endpoint ? ` endpoint=${err.endpoint}` : ''
+            console.warn(`[dubTranslate] Google Translate fallback lỗi segment #${seg.index_num} [${cls.kind}]${where} attempt=${attempt + 1}: ${String(err.message || err).slice(0, 200)}`)
+            if (cls.kind === ERROR_KINDS.CONFIGURATION) {
+              // 404 endpoint — retrying the same URL cannot help. Sau 3 lỗi liên
+              // tiếp thì endpoint chắc chắn hỏng → short-circuit phần còn lại.
+              consecutiveConfig++
+              if (consecutiveConfig >= 3) {
+                googleUnhealthy = true
+              }
+              break
+            }
+            if (cls.kind === ERROR_KINDS.TRANSIENT && attempt < 2) {
+              await sleepMs(500 * (attempt + 1))
+              continue
+            }
+            break
+          }
         }
+        if (translated && translated !== text) {
+          gtResults.set(seg.index_num, translated.trim())
+          usedGtFallback = true
+          consecutiveConfig = 0
+        } else if (translated && translated === text && lastCls) {
+          // Giữ nguyên diagnostic; untranslated copy không tính là base hợp lệ.
+        } else if (!translated && !lastCls) {
+          consecutiveConfig = 0
+        }
+        setProgress(5 + Math.round(((i + 1) / missingAfterLlm.length) * 40))
       }
-    } else {
-      console.warn(`[dubTranslate] Thiếu LLM fallback cho ${missingAfterGt.length} segment Google lỗi (indexes: ${missingAfterGt.map((s) => s.index_num).join(',')})`)
     }
   }
 
-  if (!gtResults.size) throw new Error('Google Translate không trả về bản dịch hợp lệ nào (kèm LLM fallback cũng thất bại)')
+  if (!gtResults.size) throw new Error('LLM không trả về bản dịch hợp lệ nào (kèm Google Translate fallback cũng thất bại)')
 
   // BƯỚC 2: LLM restyle (chỉ khi có style preset VÀ có LLM)
   const translations = new Map() // segment id → bản dịch cuối cùng
@@ -313,7 +328,8 @@ export async function dubTranslate(ctx) {
     const restyleSystem = buildRestyleSystemPrompt(preset, targetLanguage)
     const groups = groupByWindow(pool, getContextWindowSec(project))
     let styleFallback = false
-    const unresolved = []
+    let unresolved = []
+    let qaIssues = []
     const styledAll = new Map() // index_num → styled text (mọi group, cho quarantine details)
     for (let g = 0; g < groups.length; g++) {
       // Bỏ segment sửa tay khỏi group dịch (giữ nguyên DB) — group rỗng thì qua.
@@ -380,7 +396,7 @@ export async function dubTranslate(ctx) {
     }
     if (!translations.size) {
       await persistTranslateReview(job, buildTranslateReviewDetails(pool, unresolved, {
-        gtResults, styledAll, targetLanguage,
+        gtResults, styledAll, targetLanguage, qaIssues,
       }), runToken)
       throw new Error(
         `TRANSLATE_NEEDS_REVIEW: LLM không trả về bản dịch restyle hợp lệ nào` +
@@ -388,12 +404,19 @@ export async function dubTranslate(ctx) {
         ` — sửa bản dịch thủ công qua PATCH /projects/:id/segments/:segmentId/translation rồi chạy lại từ dub.translate`
       )
     }
+    // QA pass (flag + block): deterministic luôn chạy, AI best-effort.
+    // BLOCK_RENDER merge vào unresolved trước quarantine + assert.
+    try {
+      const qa = await runQaAndMerge(pool, translations, unresolved, { llm, job, project, targetLanguage })
+      qaIssues = qa.qaIssues
+      unresolved = qa.merged
+    } catch (_) {}
     // Invariant: COMPLETED chỉ khi 100% required translations hợp lệ.
     // Quarantine: còn unresolved → lưu details vào job.result TRƯỚC khi throw
     // để user sửa tay từng segment (PATCH .../segments/:id/translation) rồi
     // regenerate từ dub.translate, thay vì retry mù cùng lỗi.
     await persistTranslateReview(job, buildTranslateReviewDetails(pool, unresolved, {
-      gtResults, styledAll, targetLanguage,
+      gtResults, styledAll, targetLanguage, qaIssues,
     }), runToken)
     await persistGeneratedTranslations()
     // Restyle-down hint: group có nội dung nhưng LLM không trả styled nào
@@ -420,7 +443,9 @@ export async function dubTranslate(ctx) {
       segmentCount: pool.length,
       presetSlug: preset?.slug || null,
       targetLanguage,
-      method: usedLlmDirect ? 'google_translate + llm_direct + llm_restyle' : 'google_translate + llm_restyle',
+      method: usedGtFallback
+        ? (usedLlmDirect ? 'llm_direct + google_translate_fallback + llm_restyle' : 'google_translate_fallback + llm_restyle')
+        : (usedLlmDirect ? 'llm_direct + llm_restyle' : 'llm_restyle'),
       styleFallback,
       unresolved,
     }
@@ -463,10 +488,21 @@ export async function dubTranslate(ctx) {
 
   if (!translations.size) throw new Error('Không có bản dịch hợp lệ nào')
 
+  // QA pass (flag + block) cho nhánh no-style — cùng semantics nhánh style.
+  let qaIssuesNoStyle = []
+  try {
+    const qaLlm = llm || await getProvider(project.user_id, 'llm').catch(() => null)
+    const qa = await runQaAndMerge(pool, translations, noStyleUnresolved, {
+      llm: qaLlm, job, project, targetLanguage,
+    })
+    qaIssuesNoStyle = qa.qaIssues
+    noStyleUnresolved = qa.merged
+  } catch (_) {}
+
   // Invariant: COMPLETED chỉ khi 100% required translations hợp lệ.
   // Quarantine như nhánh style (xem trên).
   await persistTranslateReview(job, buildTranslateReviewDetails(pool, noStyleUnresolved, {
-    gtResults, styledAll: null, targetLanguage,
+    gtResults, styledAll: null, targetLanguage, qaIssues: qaIssuesNoStyle,
   }), runToken)
   await persistGeneratedTranslations()
   assertTranslateComplete(pool, translations, noStyleUnresolved)
@@ -482,7 +518,9 @@ export async function dubTranslate(ctx) {
     segmentCount: pool.length,
     presetSlug: preset?.slug || null,
     targetLanguage,
-    method: usedLlmDirect ? 'google_translate + llm_direct' : (hasStyle ? 'google_translate + llm_restyle' : 'google_translate'),
+    method: usedGtFallback
+      ? (usedLlmDirect ? 'llm_direct + google_translate_fallback' : (hasStyle ? 'google_translate_fallback' : 'google_translate_fallback'))
+      : (usedLlmDirect ? 'llm_direct' : (hasStyle ? 'google_translate + llm_restyle' : 'google_translate')),
     styleFallback: false,
     unresolved: noStyleUnresolved,
   }
@@ -506,13 +544,44 @@ export function assertTranslateComplete(segments, translations, unresolved) {
   }
 }
 
+// QA pass (flag + block only — never rewrites translations).
+// Runs deterministic guards always + best-effort AI judge when LLM exists.
+// BLOCK_RENDER issues merge into unresolved so assertTranslateComplete fails
+// the stage via the existing TRANSLATE_NEEDS_REVIEW quarantine.
+async function runQaAndMerge(pool, translations, unresolved, { llm, job, project, targetLanguage }) {
+  let qaIssues = []
+  try {
+    qaIssues = runDeterministicQa(pool, translations) || []
+  } catch (_) { qaIssues = [] }
+  if (llm) {
+    const pairs = pool
+      .filter((s) => translations.has(s.id))
+      .map((s) => ({ segmentId: s.id, index: s.index_num, source: s.text, translation: translations.get(s.id) }))
+    try {
+      const ai = await runAiQa(llm, pairs, { job, projectId: project.id, userId: project.user_id })
+      if (ai?.issues?.length) qaIssues = [...qaIssues, ...ai.issues]
+    } catch (_) {}
+  }
+  const merged = Array.isArray(unresolved) ? [...unresolved] : []
+  for (const idx of blockingRenderIndexes(qaIssues)) {
+    if (!merged.includes(idx)) merged.push(idx)
+  }
+  return { qaIssues, merged }
+}
+
 // Quarantine details cho segment unresolved: đủ để user sửa tay mà không cần
 // chạy lại provider (source + base/styled thử qua + lỗi gate từng bản).
 // Trả về [] khi không có unresolved (caller persist no-op).
-export function buildTranslateReviewDetails(segments, unresolved, { gtResults, styledAll, targetLanguage = 'vi' } = {}) {
+export function buildTranslateReviewDetails(segments, unresolved, { gtResults, styledAll, targetLanguage = 'vi', qaIssues = [] } = {}) {
   const list = Array.isArray(unresolved) ? unresolved : []
   if (!list.length) return []
   const byIndex = new Map((segments || []).map((s) => [s.index_num, s]))
+  const qaByIndex = new Map()
+  for (const q of qaIssues || []) {
+    if (q?.index == null) continue
+    if (!qaByIndex.has(q.index)) qaByIndex.set(q.index, [])
+    qaByIndex.get(q.index).push(q)
+  }
   return list.map((idx) => {
     const seg = byIndex.get(idx) || {}
     const base = gtResults?.get(idx) ?? null
@@ -531,6 +600,7 @@ export function buildTranslateReviewDetails(segments, unresolved, { gtResults, s
       styled,
       baseErrors,
       styledErrors,
+      qa: qaByIndex.get(idx) || [],
     }
   })
 }
@@ -551,11 +621,12 @@ export async function persistTranslateReview(job, details, runToken = null) {
   }
 }
 
-// LLM DIRECT TRANSLATION fallback cho segment Google lỗi (404/configuration).
-// Dịch trực tiếp source → target (không phải restyle), có validate + repair bounded.
+// LLM DIRECT TRANSLATION primary cho mọi segment (TransFlow segment_translation).
+// Numbered XML batches one-to-one + previous_lines context-only + glossary.
+// Dịch trực tiếp source → target, có validate + repair bounded.
 // Không bịa translation, không copy source. Preserve index_num. Bounded: mỗi group
 // tối đa 2 attempts cho TRANSIENT, PERMANENT/CONFIGURATION → dừng ngay.
-export async function translateMissingWithLlm(llm, missingSegments, { system, targetLanguage, job, projectId, userId, allSegments = [] }) {
+export async function translateMissingWithLlm(llm, missingSegments, { system, targetLanguage, sourceLanguage = 'auto', glossary = [], job, projectId, userId, allSegments = [] }) {
   const out = new Map() // index_num → validated translation
   if (!llm || !missingSegments?.length) return out
   const list = [...missingSegments].sort((a, b) => (a.index_num || 0) - (b.index_num || 0))
@@ -566,46 +637,56 @@ export async function translateMissingWithLlm(llm, missingSegments, { system, ta
   const buildPrompt = (group) => {
     const requiredIndexes = group.map((s) => s.index_num)
     const firstIndex = group[0]?.index_num ?? 0
-    // Sliding context: lấy 3 câu thoại liền trước để hiểu ngôi xưng và ngữ cảnh đàm thoại (TransFlow technique)
+    // Sliding context: 3 câu thoại liền trước, context-only (TransFlow previous_lines).
     const prevSegs = (allSegments || [])
       .filter((s) => s.index_num < firstIndex && s.text && s.text.trim())
       .slice(-LLM_CONTEXT_LINES)
-    const contextLines = prevSegs.map((s) => `- ${normalizeSourceText(s.text)}`).join('\n')
-    const contextPrompt = contextLines
-      ? `Ngữ cảnh các câu thoại trước (chỉ để nắm đại từ xưng hô, CẤM dịch các câu này):\n${contextLines}\n\n`
-      : ''
-    const prompt =
-      `Dịch các câu sau sang ${languageDescription(targetLanguage)}.\n` +
-      `- BẮT BUỘC giữ đúng nghĩa, đúng ngôi xưng hô tự nhiên, tên riêng, con số, phủ định, nghi vấn.\n` +
-      `- Dịch độc lập từng câu, KHÔNG dồn chữ sang câu khác, giữ nguyên index.\n` +
-      `- Câu thoại ngắn, khẩu ngữ, tiếng lóng bắt buộc dịch hoặc phóng tác tự nhiên sang tiếng Việt, CẤM copy nguyên văn chữ nước ngoài.\n\n` +
-      `${contextPrompt}` +
-      `Mỗi dòng có định dạng "index|src:câu nguồn". Giữ nguyên index.\n\n` +
-      group.map((s) => `${s.index_num}|src:${normalizeSourceText(s.text)}`).join('\n') +
-      `\n\nTrả về DUY NHẤT JSON: {"segments":[{"index":int,"translation":string}]}`
+    const previousLines = prevSegs.map((s) => normalizeSourceText(s.text))
+    // Numbered per-batch 1-based ids (TransFlow) mapped back to index_num below.
+    const lines = group.map((s, n) => [String(n + 1), normalizeSourceText(s.text)])
+    const { system: segSystem, prompt } = buildSegmentTranslatePrompt(
+      sourceLanguage, targetLanguage, lines, glossary, previousLines
+    )
     const estTokens = group.reduce((n, s) => n + Math.max(8, Math.ceil(String(s.text || '').length * 2.5)), 0) + 256
     const maxOutputTokens = Math.min(65536, Math.max(1024, Math.ceil(estTokens * 1.5)))
-    return { prompt, requiredIndexes, maxOutputTokens }
+    return { system: segSystem, prompt, requiredIndexes, maxOutputTokens }
   }
 
   // Một group qua translateGroup với retry bounded cho TRANSIENT (temp 0.2:
   // dịch trung thành, ít sáng tạo bậy — TransFlow default).
   const translateOneGroup = async (group) => {
-    const { prompt, requiredIndexes, maxOutputTokens } = buildPrompt(group)
+    const { system: segSystem, prompt, requiredIndexes, maxOutputTokens } = buildPrompt(group)
+    // Map batch-local "1".."N" ids back to real index_num for the caller.
+    const idToIndex = new Map(group.map((s, n) => [String(n + 1), s.index_num]))
+    const remap = (m) => {
+      const r = new Map()
+      for (const [k, v] of m) {
+        const real = idToIndex.get(String(k))
+        if (real == null) {
+          // Fallback: model echoed global index_num directly.
+          if (requiredIndexes.includes(Number(k))) r.set(Number(k), v)
+          continue
+        }
+        r.set(real, v)
+      }
+      return r
+    }
     let collected = new Map()
     let lastErr = null
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        collected = await translateGroup(llm, system, prompt, job, projectId, {
+        const raw = await translateGroup(llm, segSystem, prompt, job, projectId, {
           requiredIndexes, maxOutputTokens, userId, temperature: 0.2,
         })
+        collected = remap(raw)
         lastErr = null
         break
       } catch (err) {
         lastErr = err
         const cls = classifyProviderError(err)
-        console.warn(`[dubTranslate] llm-direct attempt ${attempt} failed [${cls.kind}]: ${String(err.message || err).slice(0, 200)}`)
-        if (cls.kind === ERROR_KINDS.TRANSIENT && attempt < 2) {
+        console.warn(`[dubTranslate] llm-direct attempt ${attempt} failed [${cls.code || cls.kind}]: ${String(err.message || err).slice(0, 200)}`)
+        // Quota must NOT be retried on the same key — fail over to GT fallback.
+        if (cls.retryable === true && attempt < 2) {
           await sleepMs(1000 * attempt)
           continue
         }
@@ -616,42 +697,70 @@ export async function translateMissingWithLlm(llm, missingSegments, { system, ta
   }
 
   const collectedAll = new Map()
+  let providerDown = false
   // Round 1: full batches, tối đa LLM_BATCH_CONCURRENCY calls cùng lúc.
   {
     const pending = [...groups]
     const workers = Array.from(
       { length: Math.min(LLM_BATCH_CONCURRENCY, pending.length) },
       async () => {
-        while (pending.length) {
+        while (pending.length && !providerDown) {
           const group = pending.shift()
-          const { collected } = await translateOneGroup(group)
+          const { collected, lastErr } = await translateOneGroup(group)
           for (const [idx, txt] of collected) if (!collectedAll.has(idx)) collectedAll.set(idx, txt)
+          if (lastErr) {
+            const cls = classifyProviderError(lastErr)
+            // Quota/auth/model/config → stop LLM rounds, fall back to GT now.
+            if (cls.kind === ERROR_KINDS.CONFIGURATION || cls.kind === ERROR_KINDS.PERMANENT || cls.retryable === false) {
+              providerDown = true
+            }
+          }
         }
       }
     )
     await Promise.all(workers)
   }
 
-  const byIndex = new Map(list.map((s) => [s.index_num, s]))
-  // Round 2: dòng còn thiếu gom batch 5 (TransFlow round 2) — batch nhỏ
-  // thường qua được khi batch lớn bị truncate/malformed.
-  {
+  // Fast-fail: nếu Round 1 gặp lỗi provider nghiêm trọng hoặc 0 kết quả thu được,
+  // bỏ qua Round 2 & 3 để chuyển ngay sang Google Translate fallback (tránh nghẽn vô ích).
+  if (!providerDown && collectedAll.size > 0) {
+    const byIndex = new Map(list.map((s) => [s.index_num, s]))
+    // Round 2: dòng còn thiếu gom batch 5 (TransFlow round 2) — batch nhỏ
+    // thường qua được khi batch lớn bị truncate/malformed.
     const missingIdx = list.map((s) => s.index_num).filter((i) => !collectedAll.has(i))
-    for (let i = 0; i < missingIdx.length; i += 5) {
-      const chunk = missingIdx.slice(i, i + 5).map((idx) => byIndex.get(idx)).filter(Boolean)
-      if (!chunk.length) continue
-      const { collected } = await translateOneGroup(chunk)
-      for (const [idx, txt] of collected) if (!collectedAll.has(idx)) collectedAll.set(idx, txt)
+    if (missingIdx.length > 0) {
+      for (let i = 0; i < missingIdx.length; i += 5) {
+        if (providerDown) break
+        const chunk = missingIdx.slice(i, i + 5).map((idx) => byIndex.get(idx)).filter(Boolean)
+        if (!chunk.length) continue
+        const { collected, lastErr } = await translateOneGroup(chunk)
+        for (const [idx, txt] of collected) if (!collectedAll.has(idx)) collectedAll.set(idx, txt)
+        if (lastErr) {
+          const cls = classifyProviderError(lastErr)
+          if (cls.kind === ERROR_KINDS.CONFIGURATION || cls.kind === ERROR_KINDS.PERMANENT || cls.retryable === false) {
+            providerDown = true
+            break
+          }
+        }
+      }
     }
-  }
-  // Round 3: từng dòng đơn lẻ (TransFlow round 3) — cứu dòng cuối cùng.
-  {
-    const missingIdx = list.map((s) => s.index_num).filter((i) => !collectedAll.has(i))
-    for (const idx of missingIdx) {
-      const seg = byIndex.get(idx)
-      if (!seg) continue
-      const { collected } = await translateOneGroup([seg])
-      for (const [k, txt] of collected) if (!collectedAll.has(k)) collectedAll.set(k, txt)
+    // Round 3: từng dòng đơn lẻ (TransFlow round 3) — cứu dòng cuối cùng.
+    if (!providerDown) {
+      const stillMissing = list.map((s) => s.index_num).filter((i) => !collectedAll.has(i))
+      for (const idx of stillMissing) {
+        if (providerDown) break
+        const seg = byIndex.get(idx)
+        if (!seg) continue
+        const { collected, lastErr } = await translateOneGroup([seg])
+        for (const [k, txt] of collected) if (!collectedAll.has(k)) collectedAll.set(k, txt)
+        if (lastErr) {
+          const cls = classifyProviderError(lastErr)
+          if (cls.kind === ERROR_KINDS.CONFIGURATION || cls.kind === ERROR_KINDS.PERMANENT || cls.retryable === false) {
+            providerDown = true
+            break
+          }
+        }
+      }
     }
   }
 
@@ -664,7 +773,7 @@ export async function translateMissingWithLlm(llm, missingSegments, { system, ta
       continue
     }
     // Semantic fail → repair bounded 1 lần. Vẫn fail → để unresolved (caller fail stage).
-    if (txt) {
+    if (txt && !providerDown) {
       const fixed = await repairTranslationWithLlm(llm, {
         source: seg.text, badTranslation: txt, prev: '', next: '',
         targetLanguage, system,
@@ -681,8 +790,8 @@ export async function translateMissingWithLlm(llm, missingSegments, { system, ta
 }
 
 // ── Fault isolation cho style transformation ─────────────────────────
-// sourceText → baseTranslation (Google, đã validate) → styledTranslation
-// (LLM, phải qua validate) → finalTranslation.
+// sourceText → baseTranslation (LLM-direct primary, GT fallback, đã validate)
+// → styledTranslation (LLM, phải qua validate) → finalTranslation.
 //
 // Quy tắc: base đã validate KHÔNG BAO GIỜ bị hủy chỉ vì style lỗi.
 // styled hợp lệ → dùng styled; ngược lại → dùng base; cả hai lỗi → null
@@ -715,8 +824,8 @@ async function restyleWithFallback(llm, restyleSystem, groupTranslations, preset
     } catch (err) {
       lastError = err
       const classification = classifyProviderError(err)
-      console.warn(`[dubTranslate] restyle attempt ${attempt} failed [${classification.kind}]: ${String(err.message || err).slice(0, 200)}`)
-      if (classification.kind === ERROR_KINDS.TRANSIENT && attempt < 2) {
+      console.warn(`[dubTranslate] restyle attempt ${attempt} failed [${classification.code || classification.kind}]: ${String(err.message || err).slice(0, 200)}`)
+      if (classification.retryable === true && attempt < 2) {
         await sleepMs(1500 * attempt)
         continue
       }

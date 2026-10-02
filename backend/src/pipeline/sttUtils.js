@@ -324,6 +324,33 @@ export function dedupeOverlapSegments(sortedSegments, { windowSec = 1.0, overlap
   return out
 }
 
+// STT transcript sanity (minimal port of TransFlow TranscriptSanityValidator):
+// rejects timelines inconsistent with real media duration BEFORE they reach
+// downstream projection. Pure — exported for unit tests.
+export const STT_SANITY_TOLERANCE_SEC = 3
+export function validateSttTiming(segments, durationSec) {
+  const list = Array.isArray(segments) ? segments : []
+  if (!list.length) return { ok: false, reason: 'empty', maxEndMs: null }
+  let maxEnd = -Infinity
+  for (let i = 0; i < list.length; i++) {
+    const s = list[i]
+    const start = Number(s?.start ?? s?.start_sec)
+    const end = Number(s?.end ?? s?.end_sec)
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      return { ok: false, reason: 'non_numeric_timing', firstInvalidIndex: i, maxEndMs: null }
+    }
+    if (start < 0 || end <= start) {
+      return { ok: false, reason: 'invalid_interval', firstInvalidIndex: i, maxEndMs: null }
+    }
+    if (end > maxEnd) maxEnd = end
+  }
+  const total = Number(durationSec)
+  if (Number.isFinite(total) && total > 0 && maxEnd - total > STT_SANITY_TOLERANCE_SEC) {
+    return { ok: false, reason: 'compressed_timeline', maxEndMs: Math.round(maxEnd * 1000), assetDurationMs: Math.round(total * 1000) }
+  }
+  return { ok: true, reason: 'valid', maxEndMs: Math.round(maxEnd * 1000) }
+}
+
 // sha256 of file content for ASR cache keys (path alone is not stable:
 // tmp paths are reused across runs with different audio).
 // Streaming: never loads the whole audio file into RAM just to hash.
@@ -346,11 +373,13 @@ export async function hashFileContent(filePath) {
 export default {
   STT_CHUNK_SEC,
   STT_OVERLAP_SEC,
+  STT_SANITY_TOLERANCE_SEC,
   normalizeSttLanguage,
   resolveSttSourceLanguage,
   buildSttChunks,
   isHallucinatedText,
   filterHallucinatedSegments,
   dedupeOverlapSegments,
+  validateSttTiming,
   hashFileContent,
 }

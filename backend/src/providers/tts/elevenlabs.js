@@ -35,7 +35,9 @@ export class ElevenLabsTts {
         const parsed = JSON.parse(detail)
         message = parsed?.detail?.message || parsed?.detail?.status || message
       } catch (_) {}
-      throw new Error(`TTS (ElevenLabs) lỗi: ${message}`)
+      const err = new Error(`TTS (ElevenLabs) lỗi: ${message}`)
+      err.status = res.status
+      throw err
     }
     const buffer = Buffer.from(await res.arrayBuffer())
     fs.mkdirSync(path.dirname(outPath), { recursive: true })

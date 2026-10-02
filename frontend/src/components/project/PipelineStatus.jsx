@@ -1,9 +1,10 @@
 import { motion } from 'framer-motion';
 import {
   FileText, Scissors, Sparkles, Combine, Mic, Captions, Video, FileAudio,
-  Languages, AudioLines, Circle, Loader2, CheckCircle, AlertCircle, Clock,
+  Languages, AudioLines, Circle, Loader2, CheckCircle, AlertCircle, Clock, RotateCcw,
 } from 'lucide-react';
 import { STAGE_LABELS } from '@/lib/constants';
+import { friendlyJobError } from '@/lib/providerErrorMessage';
 
 const stageIcons = {
   'summary.transcribe': FileText,
@@ -15,22 +16,26 @@ const stageIcons = {
   'summary.subtitle': Captions,
   'summary.render': Video,
   'dub.ingest': FileAudio,
-  'dub.ocr': FileText,
   'dub.stt': Mic,
+  'dub.merge': Combine,
   'dub.translate': Languages,
   'dub.ttsAlign': AudioLines,
   'dub.render': Video,
 };
 
+// Pinned pipeline stepper (TransFlow-inspired): sticky, numbered, per-stage
+// status + attempt/max + Retry for failed stages. Read-only except onRetry.
 export default function PipelineStatus({
   progress,
   isActive,
   sseAvailable,
   stages = [],
   jobByStage = {},
+  onRetry = null,
+  retryingStage = null,
 }) {
   return (
-    <div className="shrink-0 px-4 py-2.5 bg-card border-b border-border">
+    <div className="sticky top-0 z-10 shrink-0 px-4 py-2.5 bg-card border-b border-border">
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-[11px] font-bold text-foreground">Pipeline</span>
@@ -56,7 +61,7 @@ export default function PipelineStatus({
           </div>
         )}
         <div className="flex-1 flex flex-wrap gap-1.5">
-          {stages.map((stageKey) => {
+          {stages.map((stageKey, idx) => {
             const stage = STAGE_LABELS[stageKey];
             const Icon = stageIcons[stageKey] || Circle;
             const job = jobByStage[stageKey];
@@ -64,9 +69,16 @@ export default function PipelineStatus({
             const isDone = job?.status === 'success';
             const isError = ['failed', 'error', 'timeout'].includes(job?.status);
             const isRetry = job?.status === 'retry';
+            const attempts = job?.attempts;
+            const maxAttempts = job?.max_attempts ?? job?.maxAttempts;
+            const attemptText = attempts != null && maxAttempts != null
+              ? ` ${attempts}/${maxAttempts}`
+              : attempts != null ? ` #${attempts}` : '';
+            const title = `${idx + 1}. ${stage?.label || stageKey}${job?.status ? ` — ${job.status}${attemptText}` : ''}${job?.error_message ? `: ${friendlyJobError(job.error_message)}` : ''}`;
             return (
               <div
                 key={stageKey}
+                title={title}
                 className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium border transition-colors ${
                   isCurrent ? 'bg-primary/10 text-primary border-primary/30' :
                   isDone ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/25' :
@@ -75,12 +87,29 @@ export default function PipelineStatus({
                   'bg-muted/50 text-muted-foreground border-border/60'
                 }`}
               >
+                <span className="font-mono font-bold opacity-70">{idx + 1}</span>
                 {isDone ? <CheckCircle className="w-2.5 h-2.5" /> :
                  isError ? <AlertCircle className="w-2.5 h-2.5" /> :
                  isRetry ? <Clock className="w-2.5 h-2.5" /> :
                  isCurrent ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> :
                  <Icon className="w-2.5 h-2.5" />}
                 <span className="truncate max-w-[80px]">{stage?.label || stageKey.split('.').pop()}</span>
+                {attemptText && (
+                  <span className="font-mono opacity-70">{attemptText}</span>
+                )}
+                {isError && onRetry && (
+                  <button
+                    type="button"
+                    title={`Thử lại stage ${stage?.label || stageKey}`}
+                    disabled={retryingStage === stageKey}
+                    onClick={(e) => { e.stopPropagation(); onRetry(stageKey); }}
+                    className="ml-0.5 inline-flex items-center gap-0.5 text-destructive hover:text-foreground transition-colors disabled:opacity-50"
+                  >
+                    {retryingStage === stageKey
+                      ? <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                      : <RotateCcw className="w-2.5 h-2.5" />}
+                  </button>
+                )}
               </div>
             );
           })}

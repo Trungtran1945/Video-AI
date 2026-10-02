@@ -91,7 +91,9 @@ export class OpenAiWhisperAsr {
     const data = await res.json().catch(() => null)
     if (!res.ok) {
       const message = data?.error?.message || `OpenAI Whisper HTTP ${res.status}`
-      throw new Error(`ASR (Whisper) lỗi: ${message}`)
+      const err = new Error(`ASR (Whisper) lỗi: ${message}`)
+      err.status = res.status
+      throw err
     }
     const segments = (data.segments || []).map((s) => ({
       start: Number(s.start) || 0,

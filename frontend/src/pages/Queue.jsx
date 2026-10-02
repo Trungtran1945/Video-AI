@@ -8,6 +8,7 @@ import EmptyState from '@/components/EmptyState';
 import { motion } from 'framer-motion';
 import { ListOrdered, RefreshCw, Clock, AlertCircle } from 'lucide-react';
 import { StatusBadge, STAGE_LABELS, formatDate, formatDuration } from '@/lib/constants';
+import { friendlyJobError } from '@/lib/providerErrorMessage';
 
 export default function Queue() {
   const [loading, setLoading] = useState(true);
@@ -93,7 +94,7 @@ export default function Queue() {
                     {job.error_message && (
                       <div className="flex items-center gap-1.5 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg px-2.5 py-1.5 mt-2 max-w-xl">
                         <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                        <span className="truncate">{job.error_message}</span>
+                        <span className="truncate">{friendlyJobError(job.error_message)}</span>
                       </div>
                     )}
                   </div>

@@ -130,6 +130,62 @@ async function getUserChoice(userId, type) {
   return DEFAULTS[type]
 }
 
+async function resolveApiKeyRow(userId, providerId) {
+  const rows = await query(
+    `SELECT id, encrypted_key, priority FROM api_keys WHERE user_id = ? AND provider = ? AND is_active = 1 ORDER BY priority ASC, created_date ASC`,
+    [userId, providerId]
+  )
+  const out = []
+  for (const row of rows) {
+    if (!row.encrypted_key) continue
+    try {
+      const key = decrypt(row.encrypted_key)
+      if (key) out.push({ key, apiKeyId: row.id })
+    } catch (_) {}
+  }
+  return out
+}
+
+// Ordered candidates for failover (minimal pool): user keys by priority →
+// env fallback → keyless. Never throws for missing keys; caller decides.
+export async function listProvidersForCapability(userId, type, { id } = {}) {
+  const factories = REGISTRY[type] || {}
+  const preferred = id || (await getUserChoice(userId, type))
+  const order = [preferred, ...Object.keys(factories).filter((k) => k !== preferred)]
+  const candidates = []
+  for (const providerId of order) {
+    const factory = factories[providerId]
+    if (factory === undefined || factory === null) continue
+    if (KEYLESS.has(providerId)) {
+      candidates.push({ id: providerId, provider: factory(null), apiKeyId: null })
+      continue
+    }
+    let rows = []
+    try {
+      rows = await resolveApiKeyRow(userId, providerId)
+    } catch (_) {
+      rows = []
+    }
+    for (const r of rows) {
+      try {
+        candidates.push({ id: providerId, provider: factory(r.key), apiKeyId: r.apiKeyId })
+      } catch (_) {}
+    }
+    // Env fallback as one candidate when no DB keys.
+    if (!rows.length) {
+      for (const envName of ENV_KEYS[providerId] || []) {
+        if (process.env[envName]) {
+          try {
+            candidates.push({ id: providerId, provider: factory(process.env[envName]), apiKeyId: null })
+          } catch (_) {}
+          break
+        }
+      }
+    }
+  }
+  return candidates
+}
+
 export async function getProvider(userId, type, { id } = {}) {
   const providerId = id || (await getUserChoice(userId, type))
   const factory = REGISTRY[type]?.[providerId]
@@ -156,4 +212,4 @@ export async function getProvider(userId, type, { id } = {}) {
   return { id: providerId, provider: factory(apiKey), apiKeyId }
 }
 
-export default { getProvider, PROVIDER_LABELS, ProviderError }
+export default { getProvider, listProvidersForCapability, PROVIDER_LABELS, ProviderError }

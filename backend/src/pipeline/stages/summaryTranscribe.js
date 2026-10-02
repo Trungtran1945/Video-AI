@@ -1,8 +1,11 @@
 import fs from 'node:fs'
 import path from 'path'
 import { extractAudio, sliceAudio, probe, compressAudioForUpload } from '../../media/mediaService.js'
-import { getProvider } from '../../providers/registry.js'
+import { listProvidersForCapability } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
+import { classifyProviderError } from '../../lib/providerErrors.js'
+import { runWithProviderScope } from '../../lib/providerScope.js'
+import { withProviderFailover } from '../../lib/providerFailover.js'
 import { projectDir, tmpDirOf, ensureDir, requireSourceFile, writeJson, toStorageKey, round2 } from '../context.js'
 import {
   STT_CHUNK_SEC,
@@ -48,10 +51,16 @@ export async function summaryTranscribe(ctx) {
     }
   }
 
-  const asr = await getProvider(project.user_id, 'asr')
+  const asrCandidates = await listProvidersForCapability(project.user_id, 'asr')
+  if (!asrCandidates.length) {
+    const e = new Error('Chưa cấu hình API key cho ASR/STT')
+    e.code = 'PROV_001'
+    throw e
+  }
   let language = initialHint || null
   let lockedLanguage = initialHint || null
   const rawSegments = []
+  await runWithProviderScope(`summary.transcribe:${project.id}`, async () => {
   for (let i = 0; i < chunks.length; i++) {
     const effectiveLang = lockedLanguage || undefined
     // Nén MP3 như nhánh dub để đồng nhất chất lượng + tránh giới hạn upload.
@@ -68,17 +77,30 @@ export async function summaryTranscribe(ctx) {
       responseFormat: effective.responseFormat,
       endpoint: effective.endpoint,
     })
-    const res = await callProvider({
-      provider: asr.id,
-      type: 'asr',
-      model: effective.model,
-      input: canonicalInput,
-      fn: () => asr.provider.transcribe(uploadFile, { language: effectiveLang, effectiveConfig: effective }),
-      userId: project.user_id,
-      apiKeyId: asr.apiKeyId,
-      projectId: project.id,
-      jobId: job.id,
-    })
+    let res
+    try {
+      const out = await withProviderFailover(
+        { capability: 'STT', candidates: asrCandidates, maxAttempts: Math.min(4, asrCandidates.length) },
+        (cand) => callProvider({
+          provider: cand.id,
+          type: 'asr',
+          model: effective.model,
+          input: { ...canonicalInput, provider: cand.id },
+          fn: () => cand.provider.transcribe(uploadFile, { language: effectiveLang, effectiveConfig: effective }),
+          userId: project.user_id,
+          apiKeyId: cand.apiKeyId,
+          projectId: project.id,
+          jobId: job.id,
+        })
+      )
+      res = out.result
+    } catch (err) {
+      try { fs.unlinkSync(uploadFile) } catch (_) {}
+      err.completedChunks = i
+      err.totalChunks = chunks.length
+      err.errorCode = err.code === 'NO_PROVIDER_AVAILABLE' ? (err.errorCode || classifyProviderError(err).code) : classifyProviderError(err).code
+      throw err
+    }
     try { fs.unlinkSync(uploadFile) } catch (_) {}
     const detected = normalizeSttLanguage(res.language)
     if (!lockedLanguage && detected && (res.segments || []).length > 0) {
@@ -95,6 +117,7 @@ export async function summaryTranscribe(ctx) {
     }
     setProgress(12 + Math.round(((i + 1) / chunks.length) * 84))
   }
+  })
   const segments = dedupeOverlapSegments(rawSegments, { windowSec: 1.0, overlapSec: STT_OVERLAP_SEC })
 
   const transcriptPath = writeJson(path.join(dir, 'transcript.json'), {

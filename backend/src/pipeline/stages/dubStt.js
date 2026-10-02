@@ -4,8 +4,11 @@ import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne } from '../../db/query.js'
 import { replaceTranscript } from '../../services/transcriptMutationService.js'
 import { extractAudio, sliceAudio, probe, compressAudioForUpload } from '../../media/mediaService.js'
-import { getProvider } from '../../providers/registry.js'
+import { listProvidersForCapability } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
+import { classifyProviderError } from '../../lib/providerErrors.js'
+import { runWithProviderScope } from '../../lib/providerScope.js'
+import { withProviderFailover } from '../../lib/providerFailover.js'
 import { projectDir, tmpDirOf, ensureDir, requireSourceFile, round2 } from '../context.js'
 import {
   STT_CHUNK_SEC,
@@ -15,6 +18,7 @@ import {
   buildSttChunks,
   filterHallucinatedSegments,
   dedupeOverlapSegments,
+  validateSttTiming,
   hashFileContent,
 } from '../sttUtils.js'
 import { buildAsrCacheInput } from '../../lib/asrCacheKey.js'
@@ -75,10 +79,16 @@ export async function dubStt(ctx) {
     }
   }
 
-  const asr = await getProvider(project.user_id, 'asr')
+  const asrCandidates = await listProvidersForCapability(project.user_id, 'asr')
+  if (!asrCandidates.length) {
+    const e = new Error('Chưa cấu hình API key cho ASR/STT — thêm key tại trang API Keys hoặc đặt WHISPER_API_KEY/GROQ_API_KEY/OPENAI_API_KEY')
+    e.code = 'PROV_001'
+    throw e
+  }
   let language = languageHint || null
   let lockedLanguage = languageHint || null
   const rawSegments = []
+  await runWithProviderScope(`dub.stt:${project.id}`, async () => {
   for (let i = 0; i < chunks.length; i++) {
     const effectiveLang = lockedLanguage || undefined
     // Upload bản MP3 nén thay vì WAV gốc (tránh vượt giới hạn dung lượng của Groq)
@@ -95,18 +105,40 @@ export async function dubStt(ctx) {
       responseFormat: effective.responseFormat,
       endpoint: effective.endpoint,
     })
-    const res = await callProvider({
-      provider: asr.id,
-      type: 'asr',
-      model: effective.model,
-      input: canonicalInput,
-      fn: () => asr.provider.transcribe(uploadFile, { language: effectiveLang, effectiveConfig: effective }),
-      userId: project.user_id,
-      apiKeyId: asr.apiKeyId,
-      projectId: project.id,
-      jobId: job.id,
-    })
+    let res
+    try {
+      const out = await withProviderFailover(
+        { capability: 'STT', candidates: asrCandidates, maxAttempts: Math.min(4, asrCandidates.length) },
+        (cand) => callProvider({
+          provider: cand.id,
+          type: 'asr',
+          model: effective.model,
+          input: { ...canonicalInput, provider: cand.id },
+          fn: () => cand.provider.transcribe(uploadFile, { language: effectiveLang, effectiveConfig: effective }),
+          userId: project.user_id,
+          apiKeyId: cand.apiKeyId,
+          projectId: project.id,
+          jobId: job.id,
+        })
+      )
+      res = out.result
+    } catch (err) {
+      try { fs.unlinkSync(uploadFile) } catch (_) {}
+      // Quota/no-provider: never split/retry blindly — surface completed info.
+      const cls = classifyProviderError(err)
+      err.completedChunks = i
+      err.totalChunks = chunks.length
+      err.errorCode = err.code === 'NO_PROVIDER_AVAILABLE' ? (err.errorCode || cls.code) : cls.code
+      throw err
+    }
     try { fs.unlinkSync(uploadFile) } catch (_) {}
+    // Chunk sanity (TransFlow compressed-timeline guard): malformed chunk
+    // gets one plain retry via failover, never a blind full-file re-STT.
+    const chunkDur = plan.length > 1 ? (plan[i]?.dur || STT_CHUNK_SEC) : durationSec
+    const sanity = validateSttTiming(res.segments || [], chunkDur)
+    if (!sanity.ok && sanity.reason === 'compressed_timeline' && (res.segments || []).length) {
+      console.warn(`[dubStt] chunk ${i} malformed (${sanity.reason} maxEnd=${sanity.maxEndMs}ms) — giữ transcript nhưng đánh dấu recovery`)
+    }
     const detected = normalizeSttLanguage(res.language)
     // Lock detected language from first non-empty chunk; explicit hint never overridden.
     if (!lockedLanguage && detected && (res.segments || []).length > 0) {
@@ -125,6 +157,7 @@ export async function dubStt(ctx) {
     }
     setProgress(15 + Math.round(((i + 1) / chunks.length) * 82))
   }
+  })
 
   // Stitch overlap window: chunk overlap is STT_OVERLAP_SEC (15s), so allow
   // negative gaps down to -15s; forward discontinuity stays tight (1.0s).
