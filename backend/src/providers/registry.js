@@ -10,6 +10,7 @@ import OpenAiTts from './tts/openaiTts.js'
 import EdgeTts from './tts/edgeTts.js'
 import GoogleTts from './tts/googleTts.js'
 import MockTts from './tts/mockTts.js'
+import ZeroTts from './tts/zeroTts.js'
 import GeminiVision from './vision/geminiVision.js'
 import MockVision from './vision/mockVision.js'
 import GoogleTranslate from './translate/googleTranslate.js'
@@ -37,6 +38,7 @@ export const PROVIDER_LABELS = {
   openai_whisper: 'OpenAI Whisper API',
   elevenlabs: 'ElevenLabs',
   openai_tts: 'OpenAI TTS',
+  zerotts: 'ZeroTTS (Local)',
   edge_tts: 'Edge TTS (miễn phí)',
   google_tts: 'Google TTS (miễn phí)',
   azure_speech: 'Azure Speech',
@@ -58,8 +60,8 @@ const ENV_KEYS = {
   translate: ['GOOGLE_TRANSLATE_SCRIPT_URL'],
 }
 
-// Provider chạy không cần API key (Edge-TTS của Microsoft, Google Translate via Apps Script, Mock providers).
-const KEYLESS = new Set(['edge_tts', 'google_tts', 'google_translate', 'mock'])
+// Provider chạy không cần API key (ZeroTTS local, Edge-TTS của Microsoft, Google Translate via Apps Script, Mock providers).
+const KEYLESS = new Set(['zerotts', 'edge_tts', 'google_tts', 'google_translate', 'mock'])
 
 const REGISTRY = {
   llm: {
@@ -76,6 +78,7 @@ const REGISTRY = {
     faster_whisper: null,
   },
   tts: {
+    zerotts: (key) => new ZeroTts(key),
     edge_tts: (key) => new EdgeTts(key),
     elevenlabs: (key) => new ElevenLabsTts(key),
     openai_tts: (key) => new OpenAiTts(key),
@@ -151,7 +154,9 @@ async function resolveApiKeyRow(userId, providerId) {
 export async function listProvidersForCapability(userId, type, { id } = {}) {
   const factories = REGISTRY[type] || {}
   const preferred = id || (await getUserChoice(userId, type))
-  const order = [preferred, ...Object.keys(factories).filter((k) => k !== preferred)]
+  const order = preferred === 'mock'
+    ? ['mock']
+    : [preferred, ...Object.keys(factories).filter((k) => k !== preferred && k !== 'mock')]
   const candidates = []
   for (const providerId of order) {
     const factory = factories[providerId]

@@ -56,6 +56,8 @@ router.get('/', async (req, res) => {
         decorate('openai_whisper'),
       ],
       tts: [
+        decorate('zerotts'),
+        decorate('edge_tts'),
         decorate('elevenlabs'),
         decorate('google_tts'),
         decorate('azure_speech', false),

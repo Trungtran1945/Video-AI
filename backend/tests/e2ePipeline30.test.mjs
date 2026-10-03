@@ -1,4 +1,5 @@
-// E2E contract: 30 segs, GT 404 on 5 -> LLM rescue 30/30, TTS 30/30 mapping,
+// E2E contract: 30 segs via LLM-primary XML batches 30/30 (GT fallback idle
+// here — its loop is covered by googleTranslate.test.mjs), TTS 30/30 mapping,
 // align no-overlap, ASS uses bbox, render gates pass, outputs row created.
 // Run: node backend/tests/e2ePipeline30.test.mjs
 import fs from 'node:fs'
@@ -47,12 +48,22 @@ globalThis.fetch = async (url, opts) => {
       return mkRes({ ok: true, status: 200, json: { candidates: [{ content: { parts: [{ text: t }] } }], usageMetadata: {} } })
     }
     const segs = []
+    const xmlUnescape = (s) => String(s || '').replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&')
     for (const line of prompt.split('\n')) {
+      // Legacy "index|src:" shape (kept for backward-compat)
       const m = line.match(/^(\d+)\|src:(.*)$/)
       if (m && !line.includes('|tgt:')) {
         const src = m[2].trim()
         const idx = SOURCES.indexOf(src)
         if (idx >= 0) segs.push({ index: Number(m[1]), translation: BASES[idx] })
+      }
+      // Current XML batch shape: <line id="N">text</line> (ids are batch-local
+      // 1-based; the pipeline remaps them to global index_num).
+      const xm = line.match(/<line id="(\d+)">([\s\S]*?)<\/line>/)
+      if (xm) {
+        const src = xmlUnescape(xm[2]).trim()
+        const idx = SOURCES.indexOf(src)
+        if (idx >= 0) segs.push({ id: xm[1], translation: BASES[idx] })
       }
     }
     // Restyle path not used in this e2e (no style preset) — return empty if no direct lines

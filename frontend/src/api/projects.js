@@ -25,6 +25,10 @@ export const projectsApi = {
   createMask: (id, body) => api.post(`/projects/${id}/masks`, body).then((r) => r.data),
   updateMask: (id, maskId, body) => api.patch(`/projects/${id}/masks/${maskId}`, body).then((r) => r.data),
   deleteMask: (id, maskId) => api.delete(`/projects/${id}/masks/${maskId}`).then((r) => r.data),
+  // Per-project glossary (phase 1: API only, chưa có UI quản lý)
+  glossary: (id) => api.get(`/projects/${id}/glossary`).then((r) => r.data),
+  addGlossaryTerm: (id, body) => api.post(`/projects/${id}/glossary`, body).then((r) => r.data),
+  deleteGlossaryTerm: (id, termId) => api.delete(`/projects/${id}/glossary/${termId}`).then((r) => r.data),
   // Group 1: Confirm preview (FR-J2)
   confirmPreview: (id) => api.post(`/projects/${id}/translate-dub/confirm-preview`).then((r) => r.data),
   // SSE ticket single-use TTL 60s (không để JWT dài hạn trong URL)

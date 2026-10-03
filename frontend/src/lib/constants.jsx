@@ -26,16 +26,22 @@ export const STATUS_LABELS = {
     'summary.render': { label: 'Xuất video', icon: 'Video' },
     // TRANSLATE_DUB pipeline
     'dub.ingest': { label: 'Tách âm thanh & chuẩn hoá', icon: 'FileAudio' },
-    'dub.ocr': { label: 'Nhận dạng phụ đề (OCR)', icon: 'ScanText' },
     'dub.stt': { label: 'Nhận dạng giọng nói', icon: 'Mic' },
+    'dub.merge': { label: 'Gộp & làm sạch transcript', icon: 'Combine' },
     'dub.translate': { label: 'Dịch theo phong cách', icon: 'Languages' },
     'dub.ttsAlign': { label: 'Lồng tiếng & khớp thời gian', icon: 'AudioLines' },
     'dub.render': { label: 'Xuất video & phụ đề', icon: 'Video' },
   };
 
+  export const AUDIO_MODE_LABELS = {
+    ORIGINAL_ONLY: 'Giữ tiếng gốc',
+    DUB_MIX: 'Lồng tiếng + nền gốc',
+    DUB_REPLACE: 'Thay thế hoàn toàn',
+  };
+
   export const STAGE_ORDER = [
     ...['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'],
-    ...['dub.ingest', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'],
+    ...['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.ttsAlign', 'dub.render'],
   ];
 
   export const MODE_LABELS = {
@@ -46,7 +52,7 @@ export const STATUS_LABELS = {
     translate_dub: 'Dịch & Lồng tiếng',
   };
 
-  export const DUB_STAGES = ['dub.ingest', 'dub.stt', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
+  export const DUB_STAGES = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
 
 
 
@@ -101,6 +107,7 @@ export const STATUS_LABELS = {
   };
   
   export const VOICE_PROVIDER_LABELS = {
+    zerotts: 'ZeroTTS (Local)',
     edge_tts: 'Edge TTS (Miễn phí)',
     elevenlabs: 'ElevenLabs',
     google_tts: 'Google TTS',
@@ -111,7 +118,7 @@ export const STATUS_LABELS = {
   export const LLM_PROVIDERS = ['gemini', 'openai', 'anthropic', 'huggingface'];
   export const IMAGE_PROVIDERS = ['flux', 'stable_diffusion', 'google_image', 'huggingface_inference'];
   export const VIDEO_PROVIDERS = ['kling', 'hailuo', 'pixverse', 'runway', 'luma'];
-  export const VOICE_PROVIDERS = ['edge_tts', 'elevenlabs', 'google_tts', 'azure_speech', 'openai_tts'];
+  export const VOICE_PROVIDERS = ['zerotts', 'edge_tts', 'elevenlabs', 'google_tts', 'azure_speech', 'openai_tts'];
   export const SUBTITLE_PROVIDERS = ['whisper', 'openai_whisper', 'faster_whisper'];
   
   // Canonical project statuses: pending/queued/running/completed/failed/cancelled.

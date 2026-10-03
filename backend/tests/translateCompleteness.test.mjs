@@ -9,6 +9,7 @@ const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-tcomp-'))
 process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.GEMINI_API_KEY = 'test-key'
+process.env.GEMINI_MAX_RETRIES = '1'
 process.env.GOOGLE_TRANSLATE_SCRIPT_URL = 'https://script.google.com/macros/s/TEST/exec'
 process.env.GEMINI_RPM = '1000'
 
@@ -35,6 +36,7 @@ let gtCalls = 0
 let gtCallsByText = new Map()
 let geminiMode = 'ok' // ok | 503
 let directBases = new Map() // source -> valid VI translation for LLM-direct
+let directSkip = new Set() // sources the LLM mock answers EMPTY for (forces GT-fallback path)
 let styledSuffix = ''
 
 globalThis.fetch = async (url, opts) => {
@@ -64,15 +66,21 @@ globalThis.fetch = async (url, opts) => {
       const segments = idxs.map((i) => ({ index: i, translation: `${tgtByIndex.get(i) ?? ''}${styledSuffix}`.trim() }))
       return mkRes({ ok: true, status: 200, json: { candidates: [{ content: { parts: [{ text: JSON.stringify({ segments }) }] } }], usageMetadata: {} } })
     }
-    // Direct: lines "index|src:text"
+    // Direct: legacy "index|src:text" lines + current XML <line id="N">text</line>
+    // batches (ids batch-local 1-based; pipeline remaps to global index_num).
     const segs = []
+    const xmlUnescape = (s) => String(s || '').replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&')
+    const pushDirect = (key, src) => {
+      const text = String(src || '').trim()
+      if (directSkip.has(text)) return // force GT-fallback path for this source
+      const t = directBases.get(text) || gtBases.get(text) || ''
+      if (t) segs.push({ index: Number(key), translation: t })
+    }
     for (const line of prompt.split('\n')) {
       const m = line.match(/^(\d+)\|src:(.*)$/)
-      if (m) {
-        const src = m[2].trim()
-        const t = directBases.get(src) || gtBases.get(src) || ''
-        if (t) segs.push({ index: Number(m[1]), translation: t })
-      }
+      if (m) pushDirect(m[1], m[2])
+      const xm = line.match(/<line id="(\d+)">([\s\S]*?)<\/line>/)
+      if (xm) pushDirect(xm[1], xmlUnescape(xm[2]))
     }
     return mkRes({ ok: true, status: 200, json: { candidates: [{ content: { parts: [{ text: JSON.stringify({ segments: segs }) }] } }], usageMetadata: {} } })
   }
@@ -115,15 +123,17 @@ async function makeProject({ sources, presetSlug = null }) {
 function resetMocks() {
   gtBases = new Map(); gt404 = new Set(); gt503Once = new Set()
   gtCalls = 0; gtCallsByText = new Map()
-  geminiMode = 'ok'; directBases = new Map(); styledSuffix = ''
+  geminiMode = 'ok'; directBases = new Map(); directSkip = new Set(); styledSuffix = ''
   return run('DELETE FROM provider_cache').catch(() => {})
 }
 
-// 1. Google 200 -> success (no style)
+// 1. Google 200 -> success (no style). LLM skipped for these sources so the
+// pure GT path (now the fallback) is exercised end-to-end.
 await resetMocks()
 {
   const src = ['hello world', 'how are you?']
   gtBases = new Map([['hello world', 'xin chào thế giới'], ['how are you?', 'bạn có khỏe không?']])
+  directSkip = new Set(src)
   const { project, ctx } = await makeProject({ sources: src })
   const res = await dubTranslate(ctx)
   assert(res.translatedCount === 2 && res.segmentCount === 2, `GT200: 2/2 success (got ${res.translatedCount})`)
@@ -132,12 +142,12 @@ await resetMocks()
   assert(v.valid === true, 'GT200: render validation passes')
 }
 
-// 2. Google 404 -> LLM direct fallback rescues all
+// 2. Google 404 -> LLM direct rescues all (LLM-primary answers here, GT idle)
 await resetMocks()
 {
   const src = ['good morning', 'see you soon', 'take care']
   const bases = ['chào buổi sáng', 'hẹn sớm gặp lại', 'giữ gìn sức khỏe nhé']
-  // GT 404 on ALL (simulates bad endpoint) — stage must short-circuit + LLM rescue
+  // GT 404 on ALL (simulates bad endpoint) — LLM answers, GT fallback stays idle
   gtBases = new Map()
   gt404 = new Set(src)
   directBases = new Map(src.map((s, i) => [s, bases[i]]))
@@ -151,12 +161,14 @@ await resetMocks()
   assert(v.valid === true, '404->LLM: render validation passes after fallback')
 }
 
-// 3. Google transient 503 -> bounded retry then success
+// 3. Google transient 503 -> bounded retry then success (LLM skipped so the
+// GT retry loop is exercised)
 await resetMocks()
 {
   const src = ['hello again']
   gtBases = new Map([['hello again', 'xin chào lần nữa']])
   gt503Once = new Set(['hello again'])
+  directSkip = new Set(src)
   const { project, ctx } = await makeProject({ sources: src })
   const res = await dubTranslate(ctx)
   assert(res.translatedCount === 1, '503 transient: eventually succeeds')
@@ -178,7 +190,8 @@ await resetMocks()
   assert(res.styleFallback === true, 'style503: fallback flag set')
 }
 
-// 5. Semantic mismatch -> repair or strict fail (no fabrication)
+// 5. Semantic mismatch -> repair or strict fail (no fabrication).
+// LLM skipped for this source so GT's bad base reaches the repair path.
 await resetMocks()
 {
   // validateTranslation unit: number mismatch must fail
@@ -190,6 +203,7 @@ await resetMocks()
   const src = ['i have 2 apples']
   gtBases = new Map([['i have 2 apples', 'tôi có 3 quả táo']])
   directBases = new Map([['i have 2 apples', 'tôi có 2 quả táo']])
+  directSkip = new Set(src)
   const { project, ctx } = await makeProject({ sources: src })
   const res = await dubTranslate(ctx)
   const rows = await query('SELECT translation FROM transcript_segments WHERE project_id = ? ORDER BY index_num', [project.id])

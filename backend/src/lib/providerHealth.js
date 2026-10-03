@@ -7,8 +7,9 @@ import { isExcludedInScope, scopeKey } from './providerScope.js'
 const cooldownUntil = new Map() // providerKey -> epoch ms
 const downUntil = new Map() // providerKey -> epoch ms (AUTH/PERMISSION/MODEL)
 
-export function providerKeyOf({ provider, apiKeyId }) {
-  return `${String(provider || '')}:${String(apiKeyId || 'env')}`
+export function providerKeyOf({ provider, apiKeyId, id } = {}) {
+  const p = (typeof provider === 'object' && provider !== null ? (provider.id || id) : provider) || id || ''
+  return `${String(p)}:${String(apiKeyId || 'env')}`
 }
 
 function nowMs() {

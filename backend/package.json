@@ -10,7 +10,8 @@
     "start": "node server.js",
     "check:redis": "node scripts/check-redis.mjs",
     "test": "node scripts/run-tests.mjs",
-    "lint": "eslint src tests scripts --quiet"
+    "lint": "eslint src tests scripts --quiet",
+    "zerotts:start": "python scripts/zerotts_service.py"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

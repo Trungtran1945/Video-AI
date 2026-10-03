@@ -86,6 +86,7 @@ export default function CreateProject() {
     targetLanguage: 'vi',
     stylePreset: null,
     enableDubbing: false,
+    audioMode: 'DUB_MIX',
     voiceProvider: 'elevenlabs',
     voiceName: '',
     subPosition: 'bottom',
@@ -186,6 +187,7 @@ export default function CreateProject() {
           targetLanguage: form.targetLanguage,
           stylePreset: form.stylePreset,
           enableDubbing: form.enableDubbing,
+          audioMode: form.enableDubbing ? (form.audioMode || 'DUB_MIX') : 'ORIGINAL_ONLY',
           subPosition: form.subPosition,
           sourceVideoKey: form.sourceVideoKey,
           videoHash: form.videoHash,
@@ -537,7 +539,33 @@ export default function CreateProject() {
                   </div>
 
                   {form.enableDubbing && (
-                    <div className="pt-2 border-t border-border">
+                    <div className="pt-2 border-t border-border space-y-3">
+                      {/* Chế độ âm thanh: DUB_MIX (voice-over + ducking) / DUB_REPLACE (thay hoàn toàn) */}
+                      <div>
+                        <label className="text-xs font-bold text-foreground block mb-2">
+                          Chế độ âm thanh
+                        </label>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {[
+                            { value: 'DUB_MIX', title: 'Lồng tiếng + nền gốc', desc: 'Giọng AI nổi trên nhạc/tiếng động gốc (tự ducking khi nói).' },
+                            { value: 'DUB_REPLACE', title: 'Thay thế hoàn toàn', desc: 'Bỏ tiếng gốc, chỉ giữ giọng AI trên nền im lặng.' },
+                          ].map((m) => (
+                            <button
+                              key={m.value}
+                              type="button"
+                              onClick={() => update('audioMode', m.value)}
+                              className={`p-3 rounded-xl border text-left transition-all ${
+                                (form.audioMode || 'DUB_MIX') === m.value
+                                  ? 'border-primary bg-primary/10 ring-1 ring-primary/30'
+                                  : 'border-border bg-card hover:bg-muted/40'
+                              }`}
+                            >
+                              <div className="text-xs font-bold text-foreground">{m.title}</div>
+                              <p className="text-[11px] text-muted-foreground leading-relaxed mt-0.5">{m.desc}</p>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       <VoiceStep form={form} update={update} />
                     </div>
                   )}
@@ -585,6 +613,7 @@ export default function CreateProject() {
                             ['Ngôn ngữ', `${SOURCE_LANGUAGES[form.sourceLanguage]} → ${TARGET_LANGUAGES[form.targetLanguage]}`],
                             ['Phong cách dịch', selectedPreset ? `${selectedPreset.name}` : form.stylePreset],
                             ['Lồng tiếng AI', form.enableDubbing ? `Bật (${VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider})` : 'Tắt'],
+                            ...(form.enableDubbing ? [['Chế độ âm thanh', form.audioMode === 'DUB_REPLACE' ? 'Thay thế hoàn toàn' : 'Lồng tiếng + nền gốc']] : []),
                           ]
                         : [
                             ['Chế độ', MODE_LABELS.SUMMARY],

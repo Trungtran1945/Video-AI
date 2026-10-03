@@ -14,6 +14,7 @@ import { firstRunnableStage } from '../../pipeline/context.js'
 import { TRANSLATION_VERSION, isCacheCompatible, parseProjectParams } from '../../lib/cacheKey.js'
 import { computeProjectFingerprint } from '../../lib/idempotencyFingerprint.js'
 import { hasHardTranslationError } from '../../pipeline/stages/dubTranslate.js'
+import { listGlossary, addGlossaryTerm, deleteGlossaryTerm } from '../../services/glossaryService.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -72,6 +73,17 @@ router.post('/', async (req, res) => {
       params.sourceLanguage = b.sourceLanguage || params.sourceLanguage || 'auto'
       params.targetLanguage = b.targetLanguage || params.targetLanguage || 'vi'
       params.enableDubbing = Boolean(b.enableDubbing ?? params.enableDubbing ?? false)
+      // Audio modes (TransFlow-inspired): DUB_MIX / DUB_REPLACE / ORIGINAL_ONLY.
+      const rawMode = b.audioMode || params.audioMode
+      params.audioMode = ['ORIGINAL_ONLY', 'DUB_MIX', 'DUB_REPLACE'].includes(rawMode)
+        ? rawMode
+        : (params.enableDubbing ? 'DUB_MIX' : 'ORIGINAL_ONLY')
+      // Source separation (Demucs) DEFERRED — extension point only: stored but
+      // not consumed by the pipeline yet (ducking full-mix thay thế).
+      params.sourceSeparationEnabled = Boolean(b.sourceSeparationEnabled ?? params.sourceSeparationEnabled ?? false)
+      if (params.sourceSeparationEnabled) {
+        console.warn('[Projects] sourceSeparationEnabled=true chưa được hỗ trợ — pipeline hiện dùng ducking full-mix (xem mediaService AUDIO_MODES)')
+      }
       if (params.enableDubbing && !b.voiceId && !params.voiceProvider && !params.voiceName) {
         // voice tuỳ chọn — chỉ cảnh báo qua log, không chặn tạo dự án
         console.warn('[Projects] TRANSLATE_DUB enableDubbing=true nhưng chưa chọn voice; dùng voice mặc định của provider')
@@ -429,7 +441,7 @@ router.delete('/:id', async (req, res) => {
       // Same rows deleteProjectTranscript() would remove — inlined because a
       // nested withTransaction would deadlock on the single-writer queue.
       await tx.runAffected('DELETE FROM transcript_segments WHERE project_id = ?', [req.params.id])
-      for (const t of ['generation_jobs', 'assets', 'scenes', 'script_segments', 'ocr_regions', 'timeline_clips', 'audios', 'subtitles', 'outputs']) {
+      for (const t of ['generation_jobs', 'assets', 'scenes', 'script_segments', 'ocr_regions', 'timeline_clips', 'audios', 'subtitles', 'outputs', 'project_glossaries']) {
         await tx.run(`DELETE FROM ${t} WHERE project_id = ?`, [req.params.id])
       }
       await tx.run('DELETE FROM project_idempotency WHERE project_id = ?', [req.params.id])
@@ -472,6 +484,46 @@ router.delete('/:id', async (req, res) => {
     res.json({ message: 'Deleted' })
   } catch (err) {
     console.error('Delete project error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
+// GET /api/v1/projects/:id/glossary — minimal per-project terminology.
+// Rendered into the LLM prompt as <glossary><term .../></glossary>.
+router.get('/:id/glossary', requireProjectOwner, async (req, res) => {
+  try {
+    res.json(await listGlossary(req.project.id))
+  } catch (err) {
+    console.error('List glossary error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
+// POST /api/v1/projects/:id/glossary {source, target, caseSensitive?, note?}
+router.post('/:id/glossary', requireProjectOwner, async (req, res) => {
+  try {
+    const term = await addGlossaryTerm(req.project.id, {
+      source: req.body?.source ?? req.body?.sourceTerm,
+      target: req.body?.target ?? req.body?.targetTerm,
+      caseSensitive: req.body?.caseSensitive ?? req.body?.case_sensitive ?? false,
+      note: req.body?.note ?? null,
+    })
+    res.status(201).json(term)
+  } catch (err) {
+    if (err?.statusCode === 400) return sendError(res, 400, ERR.VALIDATION, err.message, { field: 'source' })
+    console.error('Add glossary error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
+// DELETE /api/v1/projects/:id/glossary/:termId
+router.delete('/:id/glossary/:termId', requireProjectOwner, async (req, res) => {
+  try {
+    const ok = await deleteGlossaryTerm(req.project.id, req.params.termId)
+    if (!ok) return sendError(res, 404, ERR.VALIDATION, 'Glossary term not found', { field: 'termId' })
+    res.json({ message: 'Deleted' })
+  } catch (err) {
+    console.error('Delete glossary error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })

@@ -109,12 +109,15 @@ export async function dubRender(ctx) {
 
   // ── 3. Audio mix + mux (docs/05 §B.7, transflow doc 15 §5.3) ──────────
   const enableDubbing = !!params.enableDubbing
+  // Audio modes: DUB_MIX (voice + gốc ducking) / DUB_REPLACE (silent bed + voice)
+  // / ORIGINAL_ONLY (giữ gốc). Mặc định suy từ enableDubbing để tương thích cũ.
+  const audioMode = params.audioMode || (enableDubbing ? 'DUB_MIX' : 'ORIGINAL_ONLY')
   await assertRunOwner(project.id, runToken)
   const ext = params.outputFormat === 'mkv' ? '.mkv' : '.mp4'
   const finalFile = path.join(dir, `final${ext}`)
   let fallbackToOriginal = 0
 
-  if (enableDubbing) {
+  if (enableDubbing && audioMode !== 'ORIGINAL_ONLY') {
     // Explicit segmentId → audioId → file mapping (NEVER array index).
     const rows = await query(
       `SELECT ts.id, ts.start_sec, ts.end_sec, a.id AS audio_id FROM transcript_segments ts
@@ -184,11 +187,12 @@ export async function dubRender(ctx) {
 
     const dubTrackWav = path.join(dir, 'dub_track.wav')
     await buildDubTrack({
-      originalMedia: src, // audio gốc làm background, duck ×0.25
+      originalMedia: src, // DUB_MIX: audio gốc làm background, duck ×0.25. DUB_REPLACE: bỏ qua, dùng silent bed.
       entries: entriesWithTts,
       totalSec,
       out: dubTrackWav,
       backgroundVolume: 0.25,
+      audioMode,
       timeout: DUB_TRACK_TIMEOUT,
     })
     setProgress(75)

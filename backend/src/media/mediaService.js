@@ -478,15 +478,71 @@ export async function applyTempoAudio(inFile, out, { tempo = 1, padBeforeSec = 0
   return out
 }
 
+// Đo mean/max volume của 1 file audio (dBFS) qua volumedetect.
+// Trả về {meanDb, maxDb} (null khi không đo được / -inf). Không throw.
+export async function measureAudioLevel(file) {
+  try {
+    const { stderr } = await ffmpeg([
+      '-y', '-i', file,
+      '-af', 'volumedetect',
+      '-f', 'null', '-',
+    ])
+    const mean = /mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/.exec(stderr || '')
+    const max = /max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/.exec(stderr || '')
+    return {
+      meanDb: mean ? Number(mean[1]) : null,
+      maxDb: max ? Number(max[1]) : null,
+    }
+  } catch (_) {
+    return { meanDb: null, maxDb: null }
+  }
+}
+
+// Chuẩn hoá clip voice về một mức speech chung, peak-limited
+// (TransFlow prepare_voice: target −19 dBFS, ceiling −1 dBFS, cap ±20 dB).
+// Không đổi duration. Gain < 0.1 dB → copy. Không throw (fallback copy).
+export async function normalizeVoiceLevel(inFile, out, { targetDbfs = -19, ceilingDbfs = -1, maxGainDb = 20 } = {}) {
+  ensureDir(out)
+  try {
+    const { meanDb, maxDb } = await measureAudioLevel(inFile)
+    if (!Number.isFinite(meanDb) || !Number.isFinite(maxDb)) {
+      if (inFile !== out) fs.copyFileSync(inFile, out)
+      return out
+    }
+    let gain = targetDbfs - meanDb
+    gain = Math.max(-maxGainDb, Math.min(maxGainDb, gain))
+    gain = Math.min(gain, ceilingDbfs - maxDb)
+    if (Math.abs(gain) < 0.1) {
+      if (inFile !== out) fs.copyFileSync(inFile, out)
+      return out
+    }
+    await ffmpeg(['-y', '-i', inFile, '-af', `volume=${gain.toFixed(2)}dB`, '-ac', '2', '-ar', '48000', out])
+    const info = await probe(out).catch(() => null)
+    if (info && info.durationSec > 0.05) return out
+    fs.copyFileSync(inFile, out)
+    return out
+  } catch (_) {
+    try { fs.copyFileSync(inFile, out) } catch (__) {}
+    return out
+  }
+}
+
 // Cắt khoảng lặng đầu và cuối clip TTS (TransFlow prepare_voice):
-// Loại bỏ 100-300ms im lặng thừa do provider sinh ra trước/sau giọng nói,
+// Ngưỡng tương đối theo peak của chính clip (max−35dB, sàn −60dBFS) nên provider
+// nhỏ tiếng không bị trim oan, provider lớn tiếng vẫn sạch 100-300ms silence thừa.
+// start_duration 0.03s ≈ giữ lại 30ms edge (TransFlow EDGE_KEEP_MS).
 // giúp đo đạc duration chính xác, tránh bị ép tốc độ giả.
 export async function trimAudioSilence(inFile, out) {
   ensureDir(out)
+  let thresholdDb = -45
+  try {
+    const { maxDb } = await measureAudioLevel(inFile)
+    if (Number.isFinite(maxDb)) thresholdDb = Math.max(-60, maxDb - 35)
+  } catch (_) {}
   try {
     await ffmpeg([
       '-y', '-i', inFile,
-      '-af', 'silenceremove=start_periods=1:start_duration=0.03:start_threshold=-45dB:detection=peak,areverse,silenceremove=start_periods=1:start_duration=0.03:start_threshold=-45dB:detection=peak,areverse',
+      '-af', `silenceremove=start_periods=1:start_duration=0.03:start_threshold=${thresholdDb}dB:detection=peak,areverse,silenceremove=start_periods=1:start_duration=0.03:start_threshold=${thresholdDb}dB:detection=peak,areverse`,
       '-ac', '2', '-ar', '48000',
       out,
     ])
@@ -500,12 +556,26 @@ export async function trimAudioSilence(inFile, out) {
   }
 }
 
+// Audio modes (TransFlow-inspired, đơn giản hoá — không có STUDIO/source-separation):
+// - DUB_MIX: giọng AI + audio gốc với ducking (mặc định khi enableDubbing).
+// - DUB_REPLACE: silent bed + giọng AI, KHÔNG trộn audio gốc (tránh double-speech).
+// - ORIGINAL_ONLY: giữ audio gốc, bỏ voice (xem trước / thuần phụ đề).
+// Source separation (Demucs) DEFERRED: extension point là params.sourceSeparationEnabled
+// (lưu trong project.params, hiện chưa dùng) — dependency ~GBs + GPU/CPU 15-phút/job
+// không phù hợp single-worker hiện tại trong khi ducking đã đủ tốt.
+export const AUDIO_MODES = ['ORIGINAL_ONLY', 'DUB_MIX', 'DUB_REPLACE']
+// Dòng dub được phép tràn khỏi slot gốc tối đa bấy nhiêu trước khi BLOCK_RENDER
+// (TransFlow MAX_LAG_MS=1200: line may run into the pause, truncated + fade only
+// as a last resort). Trong khoảng cho phép → warn AUDIO_DELAYED, không throw.
+export const DUB_MAX_LAG_SEC = 1.2
+
 // Ghép các segment dub theo offset + trộn với audio gốc làm nền (ducking −12dB ≈ ×0.25).
 // Hỗ trợ dynamic sidechain ducking (TransFlow mix_executor): nhạc nền tự động giảm âm lượng khi có tiếng nói
 // và hồi phục âm lượng đầy đủ khi nhân vật ngắt nghỉ / im lặng.
 // entries: [{file, offsetSec, segmentId?, startAtSec?, endAtSec?}] — timeline xác định, không overlap.
-export async function buildDubTrack({ originalMedia, entries = [], totalSec, out, backgroundVolume = 0.25, useSidechainDucking = true, timeout = 0 } = {}) {
+export async function buildDubTrack({ originalMedia, entries = [], totalSec, out, backgroundVolume = 0.25, useSidechainDucking = true, audioMode = 'DUB_MIX', maxLagSec = DUB_MAX_LAG_SEC, timeout = 0 } = {}) {
   ensureDir(out)
+  const mode = AUDIO_MODES.includes(audioMode) ? audioMode : 'DUB_MIX'
   // Deterministic scheduler guard: physical voice timeline must not overlap.
   const sorted = [...entries].sort((a, b) => (a.offsetSec || 0) - (b.offsetSec || 0))
   let prevEnd = -Infinity
@@ -518,8 +588,12 @@ export async function buildDubTrack({ originalMedia, entries = [], totalSec, out
     const dur = await durationOf(e.file)
     if (!(dur > 0)) throw new Error(`BLOCK_RENDER: empty voice file for segment ${e?.segmentId || '?'}`)
     const slot = e.endAtSec != null && e.startAtSec != null ? Number(e.endAtSec) - Number(e.startAtSec) : null
-    if (slot != null && dur > slot + 0.15) {
-      throw new Error(`BLOCK_RENDER: physical audio (${dur.toFixed(2)}s) exceeds slot (${slot.toFixed(2)}s) for segment ${e?.segmentId || '?'}`)
+    if (slot != null && dur > slot + 0.15 + maxLagSec) {
+      throw new Error(`BLOCK_RENDER: physical audio (${dur.toFixed(2)}s) exceeds slot (${slot.toFixed(2)}s) + lag ${(maxLagSec).toFixed(2)}s for segment ${e?.segmentId || '?'}`)
+    } else if (slot != null && dur > slot + 0.15) {
+      // Trong khoảng lag cho phép: line chạy lấn vào pause — warn để user biết,
+      // không throw (TransFlow AUDIO_DELAYED).
+      console.warn(`[buildDubTrack] AUDIO_DELAYED: segment ${e?.segmentId || '?'} audio ${dur.toFixed(2)}s exceeds slot ${slot.toFixed(2)}s by ${(dur - slot).toFixed(2)}s (within lag allowance)`)
     }
     prevEnd = Math.max(prevEnd, start + dur)
   }
@@ -543,7 +617,26 @@ export async function buildDubTrack({ originalMedia, entries = [], totalSec, out
   }
 
   let mapLabel
-  if (tail && info.hasAudio) {
+  if (mode === 'ORIGINAL_ONLY' || (!tail && mode !== 'DUB_REPLACE')) {
+    // ORIGINAL_ONLY (hoặc DUB_MIX không có voice): giữ audio gốc nguyên.
+    if (info.hasAudio) {
+      filters.push(`[0:a]volume=1.0,apad,atrim=0:${round3(totalSec)},loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[aout]`)
+      mapLabel = '[aout]'
+    } else {
+      filters.push(`anullsrc=channel_layout=stereo:sample_rate=48000,atrim=0:${round3(totalSec)}[aout]`)
+      mapLabel = '[aout]'
+    }
+  } else if (mode === 'DUB_REPLACE') {
+    // DUB_REPLACE: silent bed + voice, KHÔNG trộn audio gốc (tránh double-speech).
+    if (tail) {
+      filters.push(`anullsrc=channel_layout=stereo:sample_rate=48000,atrim=0:${round3(totalSec)}[bed]`)
+      filters.push(`${tail}[bed]amix=inputs=2:duration=first:normalize=0,apad,atrim=0:${round3(totalSec)},loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[aout]`)
+      mapLabel = '[aout]'
+    } else {
+      filters.push(`anullsrc=channel_layout=stereo:sample_rate=48000,atrim=0:${round3(totalSec)}[aout]`)
+      mapLabel = '[aout]'
+    }
+  } else if (tail && info.hasAudio) {
     if (useSidechainDucking) {
       // Dynamic sidechain ducking (TransFlow): Speech ducks background music by -12dB (attack 50ms, release 250ms),
       // but background audio breathes back to full volume during pauses between sentences.

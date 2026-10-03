@@ -135,6 +135,7 @@ export async function dubTtsAlign(ctx) {
 
   // Provider hỗ trợ tốc độ native (Edge/OpenAI) → synthesize đúng tốc độ,
   // tránh méo giọng do filter atempo (docs/05 §B.5).
+  // ZeroTTS upstream ONNX model không hỗ trợ tham số speed trực tiếp, nên sử dụng FFmpeg tempo fitting.
   // TransFlow MAX_FIT_TEMPO = 1.35: Chặn tốc độ tối đa ở 1.35x để giữ pitch tự nhiên,
   // không biến giọng đọc thành sóc chuột lách chách.
   const supportsNativeSpeedFor = (cand) => cand?.id === 'edge_tts' || cand?.id === 'openai_tts'

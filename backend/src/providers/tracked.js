@@ -11,8 +11,8 @@ const COST_PER_1K_TOKENS = {
 }
 
 const ASR_USD_PER_MIN = { 'whisper-1': 0.006 }
-// edge_tts miễn phí → giá 0
-const TTS_USD_PER_1K_CHARS = { elevenlabs: 0.18, 'tts-1': 0.015, 'tts-1-hd': 0.03, edge_tts: 0, google_tts: 0 }
+// edge_tts / zerotts miễn phí → giá 0
+const TTS_USD_PER_1K_CHARS = { elevenlabs: 0.18, 'tts-1': 0.015, 'tts-1-hd': 0.03, edge_tts: 0, google_tts: 0, zerotts: 0 }
 
 export function estimateCostUsd({ type, model, tokensIn = 0, tokensOut = 0, durationSec = 0, chars = 0, provider }) {
   const rate = COST_PER_1K_TOKENS[model]
