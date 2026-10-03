@@ -1,5 +1,5 @@
 // End-to-end integration test for ZeroTTS local service in Video-AI
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { ZeroTts } from '../src/providers/tts/zeroTts.js'
@@ -12,6 +12,29 @@ import { runWithProviderScope } from '../src/lib/providerScope.js'
 import { clearProviderHealthForTests } from '../src/lib/providerHealth.js'
 import { fitSegment } from '../src/pipeline/forcedAlignService.js'
 import { applyTempoAudio, probe } from '../src/media/mediaService.js'
+import { ERROR_CODES } from '../src/lib/providerErrors.js'
+
+// Decouple heavyweight model integration test from generic npm test
+const isExplicit = process.env.RUN_ZEROTTS_INTEGRATION === '1' || process.env.npm_lifecycle_event === 'test:zerotts'
+const isBatchRunner = process.env.RUN_TESTS_RUNNER === '1' || process.env.npm_lifecycle_event === 'test'
+
+if (isBatchRunner && !isExplicit) {
+  console.log('SKIP: ZeroTTS integration test is decoupled from default `npm test` (uses 900MB model weights).')
+  console.log('      To run this full E2E test, use: npm run test:zerotts')
+  process.exit(0)
+}
+
+// Probe Python and zerotts package availability
+const pyProbe = spawnSync('python', ['-c', 'import zerotts'], { encoding: 'utf8' })
+if (pyProbe.status !== 0) {
+  if (isExplicit) {
+    console.error('FAIL: Python or zerotts package is not installed. Run: pip install zerotts')
+    process.exit(1)
+  } else {
+    console.log('SKIP: Python or zerotts package not available. Skipping ZeroTTS integration test.')
+    process.exit(0)
+  }
+}
 
 let failures = 0
 const assert = (c, m) => {
@@ -83,6 +106,34 @@ try {
   const zeroTts = new ZeroTts()
   zeroTts.baseUrl = BASE_URL
   zeroTts.voice = 'maichi'
+
+  // 2b. Test GET /voices endpoint
+  const voicesRes = await fetch(`${BASE_URL}/voices`)
+  const voicesData = await voicesRes.json()
+  assert(voicesRes.ok && Array.isArray(voicesData.voices) && voicesData.voices.includes('maichi'), 'GET /voices returns valid voice list')
+
+  // 2c. Test invalid voice rejection on live service
+  let invalidVoiceThrew = false
+  try {
+    await zeroTts.synthesize({ text: 'Kiểm tra giọng lỗi', outPath: path.join(tmpDir, 'invalid.wav'), voice: 'unknown_voice_123' })
+  } catch (err) {
+    invalidVoiceThrew = true
+    assert(err.code === ERROR_CODES.PROVIDER_INVALID_REQUEST, 'Invalid voice throws PROVIDER_INVALID_REQUEST')
+  }
+  assert(invalidVoiceThrew, 'Live service rejected invalid voice')
+
+  // 2d. Test client timeout
+  let timeoutThrew = false
+  const fastZeroTts = new ZeroTts()
+  fastZeroTts.baseUrl = BASE_URL
+  fastZeroTts.timeoutMs = 1 // 1ms force client timeout
+  try {
+    await fastZeroTts.synthesize({ text: 'Kiểm tra timeout', outPath: path.join(tmpDir, 'timeout.wav') })
+  } catch (err) {
+    timeoutThrew = true
+    assert(err.code === ERROR_CODES.PROVIDER_TIMEOUT, 'Client timeout throws PROVIDER_TIMEOUT')
+  }
+  assert(timeoutThrew, 'Timeout handled properly')
 
   // 3. Synthesize first Vietnamese sentence
   const sentence1 = 'Xin chào, đây là bài kiểm tra tích hợp ZeroTTS vào hệ thống Video AI.'

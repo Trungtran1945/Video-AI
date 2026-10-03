@@ -15,7 +15,7 @@ let failed = []
 for (const f of files) {
   const full = path.join(testsDir, f)
   console.log(`\n=== ${f} ===`)
-  const r = spawnSync(process.execPath, [full], { stdio: 'inherit' })
+  const r = spawnSync(process.execPath, [full], { stdio: 'inherit', env: { ...process.env, RUN_TESTS_RUNNER: '1' } })
   if (r.status !== 0) {
     failed.push(f)
     console.error(`FAIL: ${f} (exit ${r.status})`)

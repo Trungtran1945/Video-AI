@@ -15,7 +15,7 @@ import { ERROR_CODES } from '../../lib/providerErrors.js'
 export class ZeroTts {
   constructor(apiKey) {
     this.id = 'zerotts'
-    this.model = process.env.ZEROTTS_MODEL || 'zerotts'
+    this.model = process.env.ZEROTTS_MODEL || process.env.ZEROTTS_MODEL_DIR || process.env.ZEROTTS_MODEL_ID || 'zerotts'
     this.voice = process.env.ZEROTTS_VOICE || 'maichi'
     this.apiKey = null // Keyless provider
 
@@ -156,7 +156,7 @@ export class ZeroTts {
         throw missingErr
       }
 
-      if (isMp3) {
+      if (isMp3 && actualSaved !== targetPath) {
         try {
           await ffmpeg(['-y', '-i', actualSaved, '-c:a', 'libmp3lame', '-q:a', '2', targetPath])
         } catch (_) {

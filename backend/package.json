@@ -11,7 +11,8 @@
     "check:redis": "node scripts/check-redis.mjs",
     "test": "node scripts/run-tests.mjs",
     "lint": "eslint src tests scripts --quiet",
-    "zerotts:start": "python scripts/zerotts_service.py"
+    "zerotts:start": "python scripts/zerotts_service.py",
+    "test:zerotts": "node tests/zeroTtsIntegration.test.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

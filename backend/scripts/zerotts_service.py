@@ -19,13 +19,18 @@ import sys
 import threading
 import time
 from http import HTTPStatus
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 # Configuration defaults
 DEFAULT_HOST = os.environ.get("ZEROTTS_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.environ.get("ZEROTTS_PORT", "5005"))
-DEFAULT_MODEL = os.environ.get("ZEROTTS_MODEL_DIR") or os.environ.get("ZEROTTS_MODEL_ID") or "zeroweight-ai/ZeroTTS"
+DEFAULT_MODEL = (
+    os.environ.get("ZEROTTS_MODEL")
+    or os.environ.get("ZEROTTS_MODEL_DIR")
+    or os.environ.get("ZEROTTS_MODEL_ID")
+    or "zeroweight-ai/ZeroTTS"
+)
 DEFAULT_VOICE = os.environ.get("ZEROTTS_VOICE") or os.environ.get("ZEROTTS_DEFAULT_VOICE") or "maichi"
 DEFAULT_THREADS = int(os.environ.get("ZEROTTS_THREADS", "4"))
 DEFAULT_CONCURRENCY = int(os.environ.get("ZEROTTS_CONCURRENCY", "1"))
@@ -239,7 +244,7 @@ def run_server(host: str, port: int, model_id: str, default_voice: str, threads:
 
     load_model(model_id, intra_threads=threads)
 
-    server = HTTPServer((host, port), ZeroTTSRequestHandler)
+    server = ThreadingHTTPServer((host, port), ZeroTTSRequestHandler)
     print(f"[ZeroTTS Service] Listening on http://{host}:{port}")
     print(f"[ZeroTTS Service] Concurrency limit: {concurrency}, intra_threads: {threads}")
 
