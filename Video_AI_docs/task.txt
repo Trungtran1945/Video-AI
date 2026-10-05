@@ -1,14 +1,14 @@
-Bạn là Senior Full-Stack + AI Infrastructure Engineer chuyên Node.js, Python inference service, TTS/STT, provider failover, caching, filesystem security, FFmpeg, sql.js, Redis/BullMQ và Docker.
+Bạn là Senior Full-Stack + Backend Infrastructure Engineer chuyên Node.js, sql.js, provider failover, API quota/rate-limit, caching, pipeline orchestration, React và observability.
 
-Hãy trực tiếp sửa SOURCE CODE repo Video-AI tại HEAD:
+Hãy trực tiếp sửa SOURCE CODE repo Video-AI tại HEAD hiện tại:
 
-6003ef953f89f5561ab2f2896c736296ce213d0b
+b3f075028512a0f97d1d159129a63d429fbca3ca
 
 KHÔNG chỉ tạo Markdown.
 KHÔNG chỉ tạo plan.
 PHẢI đọc source code hiện tại trước khi sửa.
 PHẢI sửa source code thực tế.
-PHẢI cập nhật tests/config/Docker/CI/docs/frontend khi cần.
+PHẢI cập nhật tests/docs/config/frontend khi cần.
 PHẢI chạy verification thực tế.
 KHÔNG tự ý commit hoặc push GitHub.
 
@@ -16,163 +16,152 @@ KHÔNG tự ý commit hoặc push GitHub.
 1. MỤC TIÊU
 ==================================================
 
-1. Loại bỏ hoàn toàn khả năng cross-project/cross-user reuse của project-local TTS artifact.
-2. Sửa cả persistent provider cache và process-local single-flight để chúng không share project-local filesystem paths không có ownership.
-3. Tách provider computation/result khỏi project-owned artifact lifecycle.
-4. Bổ sung admission control/backpressure cho ZeroTTS sau khi sử dụng ThreadingHTTPServer.
-5. Giới hạn request body/text và bảo vệ memory/thread resources.
-6. Bảo vệ ZeroTTS khỏi arbitrary filesystem writes.
-7. Đảm bảo MP3 output luôn là MP3 thật.
-8. Sửa provider failover dedupe và maxAttempts.
-9. Preserve retryability semantics của aggregate provider failures.
-10. Cải thiện ZeroTTS observability.
-11. Đảm bảo ZeroTTS E2E có verification riêng.
-12. Giữ backward compatibility với các provider TTS/STT hiện có.
-13. Không phá pipeline hiện tại, forced alignment, TTS resume, SSE, upload, cleanup hoặc sql.js single-writer architecture.
+1. Sửa chính xác semantics của quota accounting.
+2. Không tính provider-cache hit như một external provider API request.
+3. Phân biệt rõ daily quota và per-minute rate limit.
+4. Không để quota UI hiển thị sai phần trăm.
+5. Làm rõ quota snapshot là per-user/provider hay per-key.
+6. Giảm N+1 polling từ QuotaBanner.
+7. Sửa provider failover để dedupe trước khi áp dụng maxAttempts.
+8. Preserve aggregate retryability/error classification.
+9. Giữ backward compatibility với provider registry, API-key priority, quota banner, pipeline và các provider hiện có.
+10. Không phá ZeroTTS, STT, translation, TTS cache, SSE, preview/confirm hoặc project admission.
 
 ==================================================
 2. BỐI CẢNH / PHÁT HIỆN
 ==================================================
 
-### P0 — Process-local single-flight có thể cross-project
+### P0/P1 — Quota accounting tính cả cache_hit
 
-backend/src/lib/callProvider.js hiện dùng:
+backend/src/services/quotaGuardService.js:
 
-inFlightProviderCalls
+getQuotaSnapshot() đang COUNT provider_logs theo:
 
-với key:
+user
+provider
+created_date
 
-provider + type + inputHash
+nhưng không filter status.
 
-Key không chứa:
+backend/src/lib/callProvider.js khi provider cache hit ghi:
 
-projectId
-userId
-ownership boundary.
+status = 'cache_hit'
 
-Trong backend/src/pipeline/stages/dubTtsAlign.js, fn() truyền vào callProvider tạo audio tại:
+Do đó:
 
-projectDir(project.id)/audio_segments/...
+provider request thật
+→ status=ok
 
-Scenario nguy hiểm:
+cache hit
+→ status=cache_hit
 
-Project A:
-same TTS key
-→ provider call
-→ result chứa /project-A/audio.mp3
+có thể bị tính thành 2 quota requests.
 
-Project B đồng thời:
-same TTS key
-→ await cùng Promise
-→ nhận result chứa /project-A/audio.mp3
+Ngoài ra các provider attempt thất bại cũng có thể bị tính tùy status.
 
-Như vậy single-flight có thể tạo cross-project artifact reuse ngay cả khi persistent provider_cache chưa tồn tại.
+Quota accounting phải phản ánh external provider consumption, không phải số lượng application log events.
 
 --------------------------------------------------
 
-### P0 — Persistent provider cache cũng trộn computation và artifact ownership
+### P1 — Daily quota và minute rate limit đang bị gộp
 
-backend/src/lib/callProvider.js lưu nguyên provider result vào provider_cache.
+getQuotaSnapshot():
 
-TTS result có thể chứa:
+pctDaily = usedToday / limitToday
+pctMinute = usedThisMinute / limitThisMinute
+percentUsed = max(pctDaily, pctMinute)
 
-audioPath
+Frontend lại hiển thị percentUsed cùng:
 
-Cache identity không chứa project ownership.
+usedToday / limitToday
 
-Không được giải quyết bằng cách đơn giản thêm projectId vào cache key nếu vẫn muốn shared deterministic computation.
+Ví dụ:
 
-Phải tách:
+daily = 10%
+minute = 90%
 
-provider computation/result
+UI có thể hiển thị:
 
-khỏi:
+90% (100/1000)
 
-project-owned artifact.
+→ gây hiểu nhầm rằng daily quota đã dùng 90%.
 
---------------------------------------------------
+checkQuotaWarning() cũng có message:
 
-### P1 — ThreadingHTTPServer chưa có admission control
+"Đã sử dụng XX% quota hôm nay"
 
-backend/scripts/zerotts_service.py hiện dùng:
-
-ThreadingHTTPServer
-
-nhưng mỗi request handler thread có thể chờ:
-
-model_lock.acquire(timeout=120)
-
-ZEROTTS_CONCURRENCY chỉ giới hạn inference, không giới hạn HTTP requests đang chờ.
-
-Ví dụ concurrency=1:
-
-1 inference
-99 waiting threads.
-
-Điều này có thể gây thread/memory pressure.
+dù percentUsed có thể đến từ minute limit.
 
 --------------------------------------------------
 
-### P1 — Request body không bounded
+### P1/P2 — selectBestApiKey trả snapshot chung cho mọi key
 
-zerotts_service.py đọc toàn bộ:
+selectBestApiKey(userId, provider):
 
-self.rfile.read(content_length)
+load active API keys theo priority.
 
-trước khi có MAX_BODY_BYTES.
+Sau đó:
 
-Chưa có:
+const snapshot = await getQuotaSnapshot(userId, provider)
 
-ZEROTTS_MAX_BODY_BYTES
-ZEROTTS_MAX_TEXT_CHARS.
+và trả snapshot cùng apiKey.
 
---------------------------------------------------
+Snapshot hiện là user/provider-level, không phải apiKey-level.
 
-### P1 — Arbitrary filesystem write
+Phải xác định contract rõ ràng.
 
-zerotts_service.py nhận:
+Nếu quota per user/provider:
 
-out_path
+đặt tên/contract rõ ràng.
 
-rồi:
+Nếu quota thực sự per key:
 
-Path(out_path).resolve()
-target.parent.mkdir(...)
+thêm apiKeyId vào quota query.
 
-Không có:
-
-ZEROTTS_OUTPUT_ROOT
-
-Không có symlink/path traversal protection.
+Không để caller hiểu nhầm.
 
 --------------------------------------------------
 
-### P1 — MP3 conversion failure
+### P1 — QuotaBanner N+1 polling
 
-Python service có:
+frontend/src/components/QuotaBanner.jsx:
 
-except Exception:
-    pass
+mỗi 60 giây:
 
-Node zeroTts.js cũng fallback copy raw audio khi FFmpeg fail.
+1. apiKeysApi.list()
+2. hard-code probe:
+   gemini
+   openai
+   elevenlabs
+3. quota() cho từng provider.
 
-ZeroTTS raw output là WAV.
+Component nằm trong Layout nên có thể xuất hiện trên toàn bộ protected app.
 
-Không được trả:
+Nhiều tab sẽ nhân tải.
 
-foo.mp3
-
-nếu bytes thực tế là WAV.
+Backend quota endpoint thực hiện nhiều DB COUNT queries.
 
 --------------------------------------------------
 
-### P1 — Failover dedupe sau maxAttempts
+### P2 — Provider chưa cấu hình vẫn bị probe
 
-providerFailover.js hiện:
+PROBE_PROVIDERS:
+
+gemini
+openai
+elevenlabs
+
+được gọi ngay cả khi user không có active key provider đó.
+
+--------------------------------------------------
+
+### P1 — Failover dedupe sai thứ tự
+
+backend/src/lib/providerFailover.js:
 
 ordered.slice(0, maxAttempts)
 
-trước:
+xảy ra trước:
 
 tried.has(key)
 
@@ -188,361 +177,337 @@ có thể không thử B.
 
 --------------------------------------------------
 
-### P1 — Aggregate retryability
+### P1 — Aggregate failure retry semantics chưa đủ
 
-NO_PROVIDER_AVAILABLE hiện có thể:
+NO_PROVIDER_AVAILABLE:
 
 retryable=false
 
-ngay cả khi mọi failure là transient.
+và errorCode chỉ lấy first error.
 
-Phải phân biệt:
+Ví dụ:
 
-ALL_TRANSIENT
-ALL_QUOTA
-ALL_AUTH
-ALL_CONFIGURATION
-MIXED.
+A timeout
+B 503
+C network
 
---------------------------------------------------
+phải được classify ALL_TRANSIENT.
 
-### P2 — Timeout integration test
+Ví dụ:
 
-zeroTtsIntegration.test.mjs dùng:
+A quota
+B quota
 
-timeoutMs=1
+phải được classify ALL_QUOTA.
 
-Client timeout không đảm bảo server inference cancellation.
-
-Cần kiểm tra lifecycle thật:
-
-timeout
-→ cleanup
-→ lock release
-→ next request succeeds.
+Không thể dùng first error làm aggregate semantics.
 
 --------------------------------------------------
 
-### P2 — Cache hit metadata
+### P2 — REPORT.md không phải evidence của HEAD hiện tại
 
-dubTtsAlign.js tăng cacheHitCount dựa trên audio.cacheHit.
+REPORT.md chứa:
 
-callProvider() provider-cache hit chưa propagate cacheHit metadata.
+HEAD 32a8954
 
---------------------------------------------------
+trong khi repo hiện tại:
 
-### P2 — ZeroTTS observability
+b3f07502.
 
-/health hiện thiếu:
-
-queue depth
-active requests
-active inference
-failed
-abandoned.
+Không được dùng report cũ làm bằng chứng verification cho HEAD mới.
 
 ==================================================
 3. PHẠM VI FILE/MODULE
 ==================================================
 
-PHẢI đọc ít nhất:
+PHẢI đọc:
 
+backend/src/services/quotaGuardService.js
 backend/src/lib/callProvider.js
 backend/src/lib/providerFailover.js
-backend/src/lib/providerHealth.js
-backend/src/lib/providerScope.js
 backend/src/lib/providerErrors.js
-backend/src/lib/ttsCacheKey.js
-
-backend/src/pipeline/stages/dubTtsAlign.js
+backend/src/lib/providerHealth.js
+backend/src/providers/registry.js
 backend/src/pipeline/runner.js
-
-backend/src/providers/tts/zeroTts.js
-backend/scripts/zerotts_service.py
-
+backend/src/config.js
 backend/src/db/schema.js
 backend/src/db/query.js
-backend/src/config.js
 
-backend/tests/zeroTtsIntegration.test.mjs
-backend/tests/zeroTtsProvider.test.mjs
+backend/tests/quotaRoundRobin.test.mjs
+backend/tests/quotaPrecheck.test.mjs
 backend/tests/providerFailover.test.mjs
 backend/tests/providerQuotaClassification.test.mjs
-backend/tests/ttsCacheResume.test.mjs
 
-docker-compose.yml
-docker/api.Dockerfile
-.github/workflows/ci.yml
-
-frontend/src/lib/constants.jsx
-frontend/src/lib/providerErrorMessage.js
-frontend/src/hooks/useJobEvents.js
+frontend/src/components/QuotaBanner.jsx
+frontend/src/components/Layout.jsx
+frontend/src/pages/ApiKeys.jsx
 frontend/src/pages/ProviderSettings.jsx
 frontend/src/pages/ProjectDetail.jsx
+frontend/src/components/project/PipelineStatus.jsx
+frontend/src/api/extra.js
 
-README.md
-Video_AI_docs/docs/03_THIET_KE_BACKEND.md
-Video_AI_docs/docs/05_THIET_KE_PIPELINE_CHI_TIET.md
-Video_AI_docs/docs/08_TRIEN_KHAI_VA_VAN_HANH.md
-Video_AI_docs/docs/11_RATE_LIMIT_VA_FREE_TIER.md
+scripts/team-orchestrator.mjs
+REPORT.md
+.gitignore
 
 Search toàn repo:
 
-provider_cache
-inFlightProviderCalls
-singleFlightKey
-audioPath
-clipPath
-out_path
-ThreadingHTTPServer
-model_lock
-ZEROTTS_CONCURRENCY
-ZEROTTS_THREADS
-cacheHit
+provider_logs
+cache_hit
+status = 'ok'
+status = 'rate_limited'
+status = 'quota_exceeded'
+quota
+percentUsed
+limitToday
+limitThisMinute
+selectBestApiKey
+PROBE_PROVIDERS
 maxAttempts
 NO_PROVIDER_AVAILABLE
 retryable
-ZEROTTS
 
 ==================================================
 4. THAY ĐỔI BẮT BUỘC
 ==================================================
 
-### 4.1. Tách provider computation khỏi artifact ownership
+### 4.1. Thiết kế quota accounting contract
 
-Thiết kế:
+Trước khi sửa query, xác định rõ:
 
-canonical provider request
-→ shared deterministic computation
-→ safe content/result/immutable artifact identity
-→ project-specific materialization
-→ project-owned artifact.
+- application call;
+- provider attempt;
+- successful external request;
+- rate-limited external request;
+- quota-exceeded request;
+- cache hit;
+- local/mock execution.
 
-Không để shared provider result chứa project-local audioPath.
+Document contract.
 
-Nếu provider hiện tại bắt buộc outPath:
+Quota usage không được đồng nghĩa đơn giản với:
 
-- không lưu project-local path vào shared cache;
-- materialize riêng cho caller;
-- hoặc cache MISS nếu không thể chứng minh ownership.
-
-Ưu tiên không dùng projectId làm cách duy nhất để phá single-flight.
+COUNT(provider_logs).
 
 --------------------------------------------------
 
-### 4.2. Sửa single-flight
+### 4.2. Không tính cache_hit là provider consumption
 
-Không cho:
+provider_logs:
 
-Project A
-→ Promise chứa /project-A/...
+status='cache_hit'
 
-được Project B await và sử dụng trực tiếp.
+không được tính là external provider request.
 
-Ưu tiên:
+Đặc biệt:
 
-single-flight chỉ share provider computation/content.
+callProvider() có cache hit:
 
-Mỗi caller tạo/materialize artifact riêng dưới project storage của mình.
+→ provider không được gọi.
 
-Bổ sung regression test concurrent:
+Quota snapshot:
 
-Project A + Project B
-same provider
-same input.
+→ không tăng.
 
-Expected:
-
-- không có project-A path trả cho B;
-- mỗi project có artifact hợp lệ;
-- nếu computation được dedupe thì artifact materialization vẫn tách biệt.
+Bổ sung regression test.
 
 --------------------------------------------------
 
-### 4.3. Sửa persistent provider cache
+### 4.3. Xác định status nào được tính quota
 
-provider_cache không được lưu project-local audioPath như shared result.
+Tạo helper hoặc constant duy nhất, ví dụ:
 
-Legacy cache có local audioPath nhưng không có ownership proof:
+isQuotaCountingProviderLog(status)
 
-CACHE MISS.
+Không duplicate danh sách status trong nhiều module.
 
-Không xóa toàn bộ cache database một cách mù quáng.
+Chỉ count status thực sự đại diện cho attempt/request đã gửi tới provider.
 
-Có thể invalidate unsafe cache entry khi phát hiện.
+Nếu semantics provider-specific khác nhau:
 
---------------------------------------------------
-
-### 4.4. Artifact ownership
-
-Project-owned artifact phải được xác định bằng:
-
-projectId + artifactId/storageKey.
-
-Không dùng filesystem path làm authorization proof.
-
-Nếu shared immutable artifact được hỗ trợ:
-
-- content-addressed;
-- immutable;
-- explicit reference;
-- explicit authorization;
-- cleanup không được xóa artifact còn được project khác reference.
+document rõ và không giả định sai.
 
 --------------------------------------------------
 
-### 4.5. ZeroTTS admission control
+### 4.4. Tách daily quota và minute rate limit
 
-Không để ThreadingHTTPServer tạo unlimited waiting threads.
+Không trả một:
 
-Thiết kế:
+percentUsed
 
-HTTP
-→ bounded admission
-→ bounded queue
-→ inference workers.
+duy nhất được tạo bằng max(daily, minute).
 
-Hoặc ít nhất thêm:
+Thay vào đó trả:
 
-ZEROTTS_MAX_INFLIGHT_REQUESTS
+{
+  daily: {
+    used,
+    limit,
+    percent
+  },
+  minute: {
+    used,
+    limit,
+    percent
+  }
+}
 
-để reject request trước khi chờ model semaphore.
+Có thể giữ các field cũ:
 
-Khi capacity đầy:
+usedToday
+limitToday
+usedThisMinute
+limitThisMinute
+percentUsed
 
-HTTP 429 hoặc 503.
+nếu cần backward compatibility, nhưng percentUsed phải được định nghĩa rõ hoặc deprecated.
 
-Structured code:
-
-SERVER_BUSY
-hoặc QUEUE_FULL.
-
-Không để hàng trăm request giữ thread chờ 120 giây.
-
---------------------------------------------------
-
-### 4.6. Request body limit
-
-Thêm:
-
-ZEROTTS_MAX_BODY_BYTES
-
-và:
-
-ZEROTTS_MAX_TEXT_CHARS.
-
-Kiểm tra Content-Length trước read().
-
-Nếu vượt:
-
-HTTP 413.
-
-Text quá dài:
-
-HTTP 400/413.
-
-Nếu Content-Length không có:
-
-dùng bounded read hoặc reject rõ ràng.
-
-Không đọc unlimited body.
+Không để frontend dùng percent minute như daily percent.
 
 --------------------------------------------------
 
-### 4.7. Resource config validation
+### 4.5. Warning semantics
 
-Validate:
+precheckStage() phải xác định rõ warning:
 
-ZEROTTS_THREADS >= 1
-ZEROTTS_CONCURRENCY >= 1
-ZEROTTS_MAX_INFLIGHT_REQUESTS >= 1
+daily_quota_risk
 
-và giới hạn upper bound hợp lý.
+hay:
 
-Invalid config:
+minute_rate_limit_risk.
 
-fail-fast.
+Không gộp thành quota_risk nếu mất semantics.
 
-Document:
+Nếu warning daily:
 
-HTTP admission
-queue
-inference concurrency
-ONNX threads.
+estimatedRequests phải vượt daily limit.
 
---------------------------------------------------
+Nếu warning minute:
 
-### 4.8. Output root security
+phải dùng window minute tương ứng.
 
-Thêm:
-
-ZEROTTS_OUTPUT_ROOT.
-
-Mọi output phải nằm dưới root.
-
-Reject:
-
-../ traversal
-absolute path ngoài root
-symlink escape
-arbitrary parent directory.
-
-Nếu có thể, loại bỏ arbitrary out_path khỏi public API.
-
-Service tự tạo safe filename/artifact ID.
+Không warning giả chỉ vì minute utilization cao rồi hiển thị thành daily quota.
 
 --------------------------------------------------
 
-### 4.9. MP3 phải là MP3 thật
+### 4.6. selectBestApiKey contract
 
-Nếu requested MP3:
+Quyết định và document:
 
-ZeroTTS raw WAV
-→ FFmpeg
-→ MP3
-→ ffprobe validation.
+quota là per-user/provider
+hoặc
+quota là per-api-key.
 
-Nếu FFmpeg unavailable:
+Nếu hiện tại provider limits trong schema là user/provider:
 
-FAIL.
+giữ user/provider semantics và đổi tên snapshot rõ ràng.
 
-Nếu conversion failure:
+Ví dụ:
 
-FAIL.
+providerQuotaSnapshot
 
-Không:
+Không gọi nó:
 
-WAV bytes → .mp3.
+apiKeySnapshot.
 
-Không:
+Nếu có provider thực sự quota per-key:
 
-except Exception: pass.
+bổ sung apiKeyId có kiểm soát.
 
-Node và Python đều phải enforce invariant.
-
---------------------------------------------------
-
-### 4.10. Speed contract
-
-ZeroTTS native model không hỗ trợ speed trực tiếp nếu implementation hiện tại không truyền speed vào model.
-
-Architecture:
-
-ZeroTTS raw audio
-→ FFmpeg tempo fitting
-→ final audio.
-
-Cache identity phải phản ánh final output semantics.
-
-Không để API contract làm caller hiểu rằng ZeroTTS native synthesis đã áp dụng speed.
-
-Không phá native speed của Edge/OpenAI.
+Không fake per-key quota bằng cách chia quota user cho số key.
 
 --------------------------------------------------
 
-### 4.11. Failover dedupe
+### 4.7. Aggregate quota endpoint
 
-Thứ tự bắt buộc:
+Thay vì frontend gọi:
+
+GET /providers/gemini/quota
+GET /providers/openai/quota
+GET /providers/elevenlabs/quota
+
+nên cân nhắc thêm:
+
+GET /providers/quota-summary
+
+Endpoint trả tất cả provider cần thiết trong một response.
+
+Ví dụ:
+
+{
+  "providers": {
+    "gemini": {...},
+    "openai": {...},
+    "elevenlabs": {...}
+  }
+}
+
+Chỉ query providers user thực sự cần.
+
+Không expose API keys/secrets.
+
+Giữ endpoint cũ để backward compatibility nếu frontend/API consumers đang sử dụng.
+
+--------------------------------------------------
+
+### 4.8. QuotaBanner
+
+Thay:
+
+apiKeysApi.list()
++
+N quota requests
+
+bằng aggregate quota endpoint nếu phù hợp.
+
+Poll mỗi 60 giây vẫn được giữ.
+
+Không probe provider không có active key, trừ khi có lý do product rõ ràng.
+
+Nếu aggregate endpoint chưa thể thêm:
+
+ít nhất cache result client-side và chỉ query providers active.
+
+Cleanup interval khi unmount.
+
+Không tạo duplicate polling khi Layout re-render.
+
+--------------------------------------------------
+
+### 4.9. UI quota semantics
+
+ApiKeys.jsx:
+
+Không hiển thị:
+
+90% quota ngày
+
+nếu 90% thực tế là minute rate.
+
+Hiển thị riêng:
+
+Ngày: 10% (100/1000)
+Phút: 90% (9/10)
+
+Nếu một metric không có limit:
+
+hiển thị N/A hoặc bỏ qua.
+
+QuotaBanner phải cảnh báo đúng:
+
+"Rate limit/phút gần đầy"
+
+hoặc:
+
+"Quota ngày gần đầy".
+
+Không dùng message chung gây hiểu nhầm.
+
+--------------------------------------------------
+
+### 4.10. Failover dedupe
+
+providerFailover.js bắt buộc:
 
 normalize
 → providerKey
@@ -550,7 +515,171 @@ normalize
 → health ordering
 → maxAttempts.
 
-Test:
+Không slice trước dedupe.
+
+Bổ sung test:
+
+A:key1
+A:key1
+B:key2
+
+maxAttempts=2
+
+phải thử A rồi B.
+
+Test thêm:
+
+A:key1
+A:key2
+B:key3
+
+để chứng minh dedupe theo đúng identity.
+
+--------------------------------------------------
+
+### 4.11. Aggregate provider failure
+
+Thu thập:
+
+provider
+errorCode
+kind
+retryable
+attempt
+
+và classify:
+
+ALL_TRANSIENT
+ALL_QUOTA
+ALL_AUTH
+ALL_PERMISSION
+ALL_CONFIGURATION
+MIXED.
+
+NO_PROVIDER_AVAILABLE vẫn có thể giữ để backward compatibility.
+
+Nhưng:
+
+retryable
+
+phải phản ánh aggregate.
+
+Không dùng first error làm semantics duy nhất.
+
+Frontend error mapping phải tiếp tục hoạt động.
+
+--------------------------------------------------
+
+### 4.12. Retry-After
+
+Giữ parseRetryAfter() hiện có.
+
+Nếu aggregate failure chứa nhiều Retry-After:
+
+chọn policy rõ ràng, ví dụ:
+
+- max retry-after cho ALL_TRANSIENT;
+- provider-specific failover trước;
+- không retry ngay với ALL_QUOTA.
+
+Không hard-code một giá trị không liên quan.
+
+--------------------------------------------------
+
+### 4.13. REPORT.md
+
+Không coi REPORT.md là runtime evidence nếu SHA không trùng HEAD.
+
+Có thể:
+
+- cập nhật REPORT.md với verified commit SHA;
+- hoặc ghi rõ "historical report";
+- hoặc thêm generated-at + verified SHA.
+
+Không xóa report nếu repo cần nó, nhưng phải loại bỏ ambiguity.
+
+==================================================
+5. TIÊU CHÍ NGHIỆM THU
+==================================================
+
+### Quota accounting
+
+Provider thực:
+
+1 call
+→ usage +1.
+
+Cache hit:
+
+→ usage +0.
+
+Local/mock:
+
+→ không tính external provider quota.
+
+Rate limited:
+
+→ được tính theo contract đã document nếu request đã tới provider.
+
+Không có status ambiguity.
+
+--------------------------------------------------
+
+### Daily/minute
+
+Ví dụ:
+
+daily 100/1000
+minute 9/10
+
+API phải trả:
+
+daily.percent = 10
+minute.percent = 90.
+
+UI không được hiển thị:
+
+90% quota ngày.
+
+Warning phải nói đúng:
+
+minute rate limit.
+
+--------------------------------------------------
+
+### API key semantics
+
+Nếu quota user/provider:
+
+snapshot contract phải nói rõ.
+
+selectBestApiKey không được trả object khiến caller tưởng snapshot là key-specific.
+
+--------------------------------------------------
+
+### QuotaBanner
+
+Một polling cycle:
+
+→ tối đa một aggregate quota request + request cần thiết để biết active providers.
+
+Không:
+
+1 + N quota requests
+
+nếu aggregate endpoint đã được triển khai.
+
+Unmount:
+
+→ interval cleanup.
+
+Multiple renders:
+
+→ không tạo duplicate intervals.
+
+--------------------------------------------------
+
+### Failover
 
 A:key1
 A:key1
@@ -565,296 +694,45 @@ B:key2.
 
 --------------------------------------------------
 
-### 4.12. Aggregate provider failure
-
-Preserve:
-
-provider
-errorCode
-kind
-retryable
-attempt.
-
-Classify:
-
-ALL_TRANSIENT
-ALL_QUOTA
-ALL_AUTH
-ALL_PERMISSION
-ALL_CONFIGURATION
-MIXED.
-
-Backward-compatible:
-
-NO_PROVIDER_AVAILABLE
-
-nhưng retryable phải phản ánh aggregate.
-
-Không expose secrets.
-
---------------------------------------------------
-
-### 4.13. Cache hit metadata
-
-Propagate:
-
-cacheHit=true
-
-cho:
-
-filesystem cache hit
-provider DB cache hit.
-
-Provider execution:
-
-cacheHit=false.
-
-Không làm thay đổi persisted result contract không cần thiết.
-
---------------------------------------------------
-
-### 4.14. ZeroTTS observability
-
-Bổ sung nếu phù hợp:
-
-queueDepth
-activeRequests
-activeInference
-started
-completed
-failed
-abandoned.
-
-Health không leak:
-
-absolute private paths
-secrets
-API keys
-full private text.
-
-Nếu cần, tách:
-
-/health
-
-và:
-
-/diagnostics.
-
---------------------------------------------------
-
-### 4.15. Graceful shutdown
-
-SIGTERM/SIGINT:
-
-STOPPING
-→ reject new requests
-→ drain bounded active work
-→ shutdown queue
-→ release resources.
-
-Thêm:
-
-ZEROTTS_SHUTDOWN_TIMEOUT_MS.
-
-Không shutdown vô hạn.
-
---------------------------------------------------
-
-### 4.16. Docker
-
-Nếu ZeroTTS là production-supported:
-
-tạo service riêng:
-
-zerotts
-
-API dùng:
-
-ZEROTTS_URL=http://zerotts:5005
-
-Không dùng:
-
-127.0.0.1:5005
-
-giữa containers.
-
-Có reproducible Python dependencies.
-
-Có healthcheck.
-
-Không expose ZeroTTS public port mặc định nếu không cần.
-
---------------------------------------------------
-
-### 4.17. CI
-
-Giữ npm test nhẹ.
-
-Tạo dedicated ZeroTTS E2E job:
-
-Python
-→ locked dependencies
-→ FFmpeg
-→ model cache
-→ service startup
-→ readiness
-→ test:zerotts
-→ cleanup.
-
-Không coi SKIPPED là PASS.
-
---------------------------------------------------
-
-### 4.18. Documentation
-
-Cập nhật README/docs:
-
-- ZeroTTS provider;
-- Docker topology;
-- provider cache vs artifact cache;
-- single-flight semantics;
-- admission/backpressure;
-- filesystem security;
-- speed semantics;
-- CI verification.
-
-Document:
-
-ZEROTTS_URL
-ZEROTTS_MODEL
-ZEROTTS_MODEL_DIR
-ZEROTTS_MODEL_ID
-ZEROTTS_THREADS
-ZEROTTS_CONCURRENCY
-ZEROTTS_MAX_INFLIGHT_REQUESTS
-ZEROTTS_MAX_BODY_BYTES
-ZEROTTS_MAX_TEXT_CHARS
-ZEROTTS_OUTPUT_ROOT
-ZEROTTS_TIMEOUT_MS
-ZEROTTS_SHUTDOWN_TIMEOUT_MS.
-
-==================================================
-5. TIÊU CHÍ NGHIỆM THU
-==================================================
-
-### Cache isolation
-
-Concurrent Project A + Project B cùng TTS input:
-
-- không project nào nhận local path của project kia;
-- shared computation chỉ được dùng nếu artifact ownership vẫn an toàn;
-- mỗi project có artifact hợp lệ.
-
-Legacy unsafe cache:
-
-→ CACHE MISS.
-
-### Single-flight
-
-Hai project đồng thời cùng TTS request:
-
-→ không cross-project local audioPath.
-
-### Backpressure
-
-ZEROTTS_CONCURRENCY=1.
-
-Gửi nhiều request đồng thời.
-
-Expected:
-
-- active request bounded;
-- queue bounded;
-- excess request trả 429/503;
-- không tạo unlimited waiting threads;
-- request tiếp theo thành công sau khi capacity giải phóng.
-
-### Request limit
-
-Body > MAX_BODY_BYTES:
-
-→ 413.
-
-Text > MAX_TEXT_CHARS:
-
-→ 400/413.
-
-### Filesystem
-
-Valid output dưới output root:
-
-→ success.
-
-Traversal/outside root/symlink escape:
-
-→ reject.
-
-### MP3
-
-MP3 output:
-
-→ ffprobe xác nhận codec/container đúng.
-
-FFmpeg fail:
-
-→ provider failure.
-
-### Timeout
-
-Client timeout:
-
-→ PROVIDER_TIMEOUT.
-
-Không permanent semaphore/queue leak.
-
-Request tiếp theo:
-
-→ success.
-
-### Failover
-
-Duplicate candidate:
-
-→ không consume attempt budget sai.
+### Aggregate error
 
 All transient:
 
-→ retryable.
+retryable=true.
 
 All quota:
 
-→ không blind retry.
+retryable=false hoặc policy phù hợp với retry scheduler, nhưng phải nhất quán và có classification ALL_QUOTA.
 
 Mixed:
 
-→ structured classification.
+classification=MIXED.
 
-### Docker
+--------------------------------------------------
 
-docker compose config --quiet
+### Backward compatibility
 
-PASS.
+Giữ:
 
-Nếu Docker daemon khả dụng:
+GET /providers/:provider/quota
 
-docker compose up -d --build
+nếu consumer hiện tại còn dùng.
 
-Verify:
+Không phá:
 
-redis
-zerotts
-api
-web
-
-và:
-
-API → ZeroTTS → model → audio.
+ApiKeys
+PipelineStatus
+ProjectDetail
+provider registry
+callProvider
+quotaGuard
+provider failover.
 
 ==================================================
 6. KIỂM THỬ / VERIFICATION
 ==================================================
 
-Trước tiên đọc package.json và CI để xác nhận command thực tế.
+Trước tiên đọc package.json để xác nhận scripts.
 
 Backend:
 
@@ -865,54 +743,30 @@ npm test
 
 Targeted:
 
+node tests/quotaRoundRobin.test.mjs
+node tests/quotaPrecheck.test.mjs
 node tests/providerFailover.test.mjs
 node tests/providerQuotaClassification.test.mjs
-node tests/ttsCacheResume.test.mjs
-node tests/zeroTtsProvider.test.mjs
-node tests/zeroTtsIntegration.test.mjs
 
-Bổ sung tests cho:
+Bổ sung tests:
 
-- cross-project single-flight isolation;
-- cross-project persistent cache isolation;
-- unsafe legacy cache;
-- concurrent admission;
-- queue full;
-- body size limit;
-- text size limit;
-- invalid concurrency;
-- invalid threads;
-- invalid max inflight;
-- output root traversal;
-- symlink escape;
-- MP3 conversion failure;
-- timeout lifecycle;
-- semaphore release;
-- cacheHit metadata;
-- failover duplicate candidates;
-- aggregate retryability.
-
-ZeroTTS:
-
-npm run test:zerotts
-
-Docker:
-
-docker compose config --quiet
-
-Nếu Docker daemon khả dụng:
-
-docker compose up -d --build
-
-Verify actual:
-
-redis
-ZeroTTS readiness
-API health
-Web health
-API → ZeroTTS
-real synthesis
-real MP3.
+1. cache_hit không tăng quota;
+2. successful provider call tăng quota;
+3. rate-limited status theo contract;
+4. quota-exceeded status theo contract;
+5. daily/minute percentages độc lập;
+6. daily warning;
+7. minute warning;
+8. no-limit behavior;
+9. selectBestApiKey snapshot semantics;
+10. aggregate quota endpoint;
+11. QuotaBanner không probe provider không active;
+12. QuotaBanner interval cleanup;
+13. duplicate failover candidates;
+14. aggregate ALL_TRANSIENT;
+15. aggregate ALL_QUOTA;
+16. aggregate MIXED;
+17. Retry-After aggregate.
 
 Frontend:
 
@@ -922,7 +776,21 @@ npm run lint
 npm run typecheck
 npm run build
 
-Nếu command nào không chạy được do environment:
+Nếu có frontend test script thì chạy script thực tế.
+
+Docker:
+
+docker compose config --quiet
+
+Nếu Docker daemon khả dụng:
+
+docker compose up -d --build
+
+Nếu Redis khả dụng:
+
+verify quota/provider/pipeline flow với Redis.
+
+Nếu environment không đủ:
 
 ghi rõ:
 
@@ -931,8 +799,6 @@ BLOCKED
 hoặc:
 
 NOT_VERIFIED
-
-kèm nguyên nhân.
 
 Không báo PASS giả.
 
@@ -946,46 +812,40 @@ Không:
 - chỉ tạo plan;
 - chỉ sửa test để pass;
 - commit/push GitHub;
-- log secrets;
-- log API keys;
-- log full private transcript;
-- cho arbitrary filesystem writes;
-- tạo fake MP3;
-- để unlimited request threads;
-- để unlimited request body;
-- coi client timeout là server cancellation;
-- trả project-local artifact của A cho B;
-- slice failover trước dedupe;
+- log API key;
+- log secret;
+- log private transcript;
+- tính cache_hit như provider request;
+- gộp daily quota và minute rate thành một con số gây hiểu nhầm;
+- fake per-key quota;
+- probe provider không cần thiết;
+- tạo N+1 polling không cần thiết;
+- slice failover candidates trước dedupe;
+- coi first provider error là aggregate classification;
 - coi SKIPPED là PASS;
 - coi NOT_VERIFIED là PASS;
-- phá EdgeTTS;
-- phá ElevenLabs;
-- phá Google TTS;
-- phá OpenAI TTS;
-- phá Mock;
+- phá ZeroTTS;
 - phá STT;
 - phá translation;
-- phá forced alignment;
-- phá TTS resume;
+- phá TTS;
 - phá SSE;
-- phá upload;
-- phá cleanup;
-- phá sql.js single-writer invariant;
+- phá preview/confirm;
+- phá API-key priority;
+- phá project admission;
+- phá sql.js single-writer;
 - migrate database architecture sang PostgreSQL trong task này.
 
-Không refactor lan man ngoài phạm vi nếu một thay đổi surgical đã giải quyết được issue.
+Không refactor lan man.
 
-Nếu ownership không chứng minh được:
+Ưu tiên thay đổi surgical nhưng phải sửa tận gốc semantics quota.
 
-→ CACHE MISS.
+Nếu một API contract cũ cần giữ:
 
-Nếu ZeroTTS unavailable:
+→ giữ backward-compatible response fields.
 
-→ provider failover.
+Nếu field cũ có semantics sai:
 
-Nếu Docker/model/runtime không verify được:
-
-→ NOT_VERIFIED.
+→ đánh dấu deprecated và document semantics mới.
 
 ==================================================
 8. BÁO CÁO CUỐI CÙNG
@@ -999,40 +859,31 @@ added
 modified
 deleted.
 
-### Cache architecture
+### Quota
 
-- provider response cache;
-- single-flight;
-- artifact ownership;
-- cache identity;
-- legacy cache behavior;
-- cross-project isolation.
+- accounting semantics;
+- statuses được tính;
+- cache-hit handling;
+- daily quota;
+- minute rate;
+- warning semantics;
+- per-user/per-key semantics.
 
-### ZeroTTS
+### Frontend
 
-- admission control;
-- queue;
-- concurrency;
-- body/text limits;
-- filesystem security;
-- timeout;
-- shutdown;
-- metrics;
-- MP3 validation.
+- QuotaBanner;
+- ApiKeys;
+- PipelineStatus;
+- API calls;
+- polling behavior.
 
 ### Failover
 
 - dedupe;
 - maxAttempts;
+- aggregate classification;
 - retryability;
-- aggregate classification.
-
-### Docker/CI
-
-- ZeroTTS service;
-- dependency/model setup;
-- healthcheck;
-- E2E job.
+- Retry-After.
 
 ### Tests
 
@@ -1044,19 +895,19 @@ SKIPPED
 BLOCKED
 NOT_VERIFIED
 
-kèm evidence/output quan trọng.
+kèm evidence quan trọng.
 
 ### Remaining risks
 
 Chỉ nêu risk thực sự còn lại.
 
-Không tuyên bố hoàn thành nếu chưa có verification.
+Không tuyên bố hoàn thành nếu chưa verification.
 
 PHẢI SỬA SOURCE CODE THỰC TẾ.
 
 PHẢI CẬP NHẬT TESTS.
 
-PHẢI CẬP NHẬT CONFIG/DOCKER/CI/DOCS/FRONTEND KHI CẦN.
+PHẢI CẬP NHẬT DOCS/CONFIG/API CONTRACT KHI CẦN.
 
 PHẢI CHẠY BUILD/TEST/SMOKE THỰC TẾ.
 

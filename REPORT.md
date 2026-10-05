@@ -152,3 +152,21 @@ docker compose config --quiet                         # PASS bắt buộc sau đ
 3. Task lint-fix riêng cho 3–4 lỗi backend lint có sẵn.
 4. Future work (đã ghi trong BACKEND_REPORT): bytes-based shared computation cache (hết last-writer-wins), bỏ `out_path` arbitrary khỏi public API ZeroTTS.
 5. Cập nhật `Video_AI_docs/docs/03,05,08,11` + `README.md` (env ZeroTTS mới, cache-vs-artifact, admission, speed semantics) nếu Backend chưa làm trong turn docs.
+
+---
+
+## Verification stamp — quota accounting cycle (2026-10-06, append-only BE-R01)
+
+- **verified SHA:** `dc5d152ea29c0bd61f27c403d23dbc4bf61c43ed` (HEAD lúc chạy verification; PLAN ghi baseline
+  `b3f0750` nhưng repo đã ở `dc5d152` — chu kỳ TTS-cache trước đã vào `main`).
+- **generated-at:** 2026-10-06 (UTC).
+- **Scope chu kỳ này:** Quota Accounting Semantics + Failover Dedupe/Aggregate
+  (`Video_AI_docs/task.txt` mới). Backend: `quotaGuardService.js` (accounting contract,
+  status filter, daily/minute, warning scope, snapshot contract), `routes/v1/providers.js`
+  (`GET /quota-summary`), `providerFailover.js` (Retry-After aggregate + docs),
+  tests `quotaAccounting` + `quotaSummary` mới.
+- **Verification:** `cd backend; npm test` → **ALL TEST FILES PASS — 134 files**
+  (132 cũ + 2 mới `quotaAccounting`, `quotaSummary`); `docker compose config --quiet` → PASS;
+  lint file chạm 0 error (3 pre-existing ngoài phạm vi). Chi tiết: `.team/BACKEND_REPORT.md`.
+- **Lưu ý trung thực:** mọi nội dung phía TRÊN stamp này là **historical**
+  (SHA `6003ef9`/`32a8954`/`b3f0750`) — không dùng làm evidence cho HEAD mới.

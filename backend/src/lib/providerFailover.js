@@ -1,4 +1,4 @@
-import { classifyProviderError, ERROR_CODES } from './providerErrors.js'
+import { classifyProviderError, ERROR_CODES, retryDelayMs } from './providerErrors.js'
 import { recordProviderResolution, excludeProviderInScope, isExcludedInScope } from './providerScope.js'
 import { reportProviderFailure, isProviderAvailable } from './providerHealth.js'
 import { providerKeyOf } from './providerHealth.js'
@@ -23,6 +23,27 @@ export function isFailoverError(err) {
   } catch (_) {
     return false
   }
+}
+
+/**
+ * BE-F02 Retry-After aggregate policy (task §4.12 — giữ parseRetryAfter ở runner
+ * cho per-stage retry; helper này quyết định "có nên retry sau bao lâu" từ aggregate):
+ * - ALL_TRANSIENT → max retry-after các attempt (ms); không hint nào → null (caller
+ *   dùng backoff mặc định của nó, không hard-code số không liên quan ở đây).
+ * - ALL_QUOTA / ALL_AUTH / ALL_PERMISSION / ALL_CONFIGURATION / MIXED → null
+ *   (không retry ngay: quota/auth phải failover provider-specific trước; mixed
+ *   không có một khoảng chờ đúng cho mọi lỗi).
+ * @param {Array} attempted entries {code, retryable, retryAfterMs}
+ * @returns {number|null} ms hoặc null (= không có khoảng chờ khả thi).
+ */
+export function aggregateRetryAfterMs(attempted) {
+  if (classifyAggregateFailover(attempted) !== 'ALL_TRANSIENT') return null
+  let max = null
+  for (const a of attempted || []) {
+    const ms = Number(a?.retryAfterMs)
+    if (Number.isFinite(ms) && ms > 0 && (max == null || ms > max)) max = ms
+  }
+  return max
 }
 
 export function classifyAggregateFailover(attempted) {
@@ -87,7 +108,12 @@ export async function withProviderFailover({ capability = '', candidates = [], m
       return { result, provider: cand, attempt }
     } catch (err) {
       const cls = classifyProviderError(err)
-      errors.push({ provider: cand.id, apiKeyId: cand.apiKeyId || null, code: cls.code, kind: cls.kind, retryable: cls.retryable === true, attempt, message: String(err?.message || '').slice(0, 300) })
+      let retryAfterMs = null
+      try {
+        const ms = retryDelayMs(err, 0)
+        if (Number.isFinite(ms) && ms > 0) retryAfterMs = ms
+      } catch (_) {}
+      errors.push({ provider: cand.id, apiKeyId: cand.apiKeyId || null, code: cls.code, kind: cls.kind, retryable: cls.retryable === true, attempt, retryAfterMs, message: String(err?.message || '').slice(0, 300) })
       if (!isFailoverError(err)) throw err
       reportProviderFailure(
         { provider: cand.id, apiKeyId: cand.apiKeyId, errorCode: cls.code },
@@ -106,6 +132,8 @@ export async function withProviderFailover({ capability = '', candidates = [], m
   )
   e.code = 'NO_PROVIDER_AVAILABLE'
   e.capability = capability
+  // e.errorCode = first error — CHỈ là representative cho message 1 dòng và mapping
+  // lỗi frontend cũ. Authoritative là e.aggregate + e.details.attempted (BE-F02).
   e.errorCode = first?.code || null
   // BE-F02: aggregate classification — retryable phản ánh tổng, không mù false.
   // all-transient → true (caller được retry/backoff); all-quota/auth/permission/
@@ -114,7 +142,8 @@ export async function withProviderFailover({ capability = '', candidates = [], m
   e.details = { attempted: errors, totalCandidates: list.length, aggregate }
   e.aggregate = aggregate
   e.retryable = aggregate === 'ALL_TRANSIENT'
+  e.retryAfterMs = aggregateRetryAfterMs(errors)
   throw e
 }
 
-export default { withProviderFailover, isFailoverError }
+export default { withProviderFailover, isFailoverError, classifyAggregateFailover, aggregateRetryAfterMs }

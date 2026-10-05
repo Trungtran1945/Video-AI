@@ -55,11 +55,15 @@ async function seedLogs(n, provider = 'pretest') {
   assert(Number.isFinite(pre.warning?.estimatedShortfall) && pre.warning.estimatedShortfall > 0, `shortfall dương (got ${pre.warning?.estimatedShortfall})`)
 }
 
-// 3. Provider không RPD (elevenlabs seed RPD null) → không warning.
+// 3. Provider không RPD (elevenlabs seed RPD null, RPM=2): 5 calls/phút → minute
+// warning (contract mới BE-Q05 — không còn early-return khi thiếu RPD); provider
+// hoàn toàn không limits → không warning (§6 item 8).
 {
   await seedLogs(5, 'elevenlabs')
-  const pre = await precheckStage(userId, 'elevenlabs', 10)
-  assert(pre.allowed === true && pre.warning === null, 'không RPD → không warning')
+  const preMinute = await precheckStage(userId, 'elevenlabs', 10)
+  assert(preMinute.allowed === true && preMinute.warning?.type === 'minute_rate_limit_risk', `RPD null + minute 250% → minute warning (got ${preMinute.warning?.type})`)
+  const preNone = await precheckStage(userId, 'nolimits_xyz', 10)
+  assert(preNone.allowed === true && preNone.warning === null, 'không limits nào → không warning')
 }
 
 // 4. BE-08: parseRetryAfter ưu tiên structured field, fallback message.

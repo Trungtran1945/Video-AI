@@ -81,7 +81,42 @@ router.get('/', async (req, res) => {
   }
 })
 
+// BE-Q07/Q08: GET /api/v1/providers/quota-summary — aggregate quota cho Banner.
+// Đặt TRƯỚC route /:provider/quota để không bị param-route nuốt. FE (QuotaBanner)
+// dùng 1 request này thay cho list() + N quota() (task §4.7/4.8); nếu chưa dùng được
+// thì ít nhất cache client-side + chỉ query providers có active key.
+// Chỉ query providers user thực sự cần: có active key, hoặc request explicitly qua
+// ?providers=a,b (cho keyless providers như zerotts/edge_tts). Không expose keys.
+router.get('/quota-summary', async (req, res) => {
+  try {
+    let keyProviders = []
+    try {
+      const rows = await query('SELECT DISTINCT provider FROM api_keys WHERE user_id = ? AND is_active = 1', [req.user.id])
+      keyProviders = rows.map((r) => r.provider).filter(Boolean)
+    } catch (_) {}
+    const requested = String(req.query.providers || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 20)
+    const providers = [...new Set([...keyProviders, ...requested])]
+    const out = {}
+    for (const p of providers) {
+      try {
+        out[p] = await getQuotaSnapshot(req.user.id, p)
+      } catch (_) {
+        out[p] = { provider: p, error: 'unavailable' }
+      }
+    }
+    res.json({ providers: out })
+  } catch (err) {
+    console.error('Quota summary error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
 // GET /api/v1/providers/:provider/quota — quota usage for current user
+// (giữ nguyên backward-compat cho ApiKeys + consumer hiện tại).
 router.get('/:provider/quota', async (req, res) => {
   try {
     const snapshot = await getQuotaSnapshot(req.user.id, req.params.provider)
