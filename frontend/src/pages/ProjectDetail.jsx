@@ -99,6 +99,7 @@ export default function ProjectDetail() {
   const [newSourceTerm, setNewSourceTerm] = useState('');
   const [newTargetTerm, setNewTargetTerm] = useState('');
   const [newTermNote, setNewTermNote] = useState('');
+  const [newTermCaseSensitive, setNewTermCaseSensitive] = useState(false);
   const [addingTerm, setAddingTerm] = useState(false);
   const videoRef = useRef(null);
   // Optimistic concurrency (§4.6): revision server cấp, seq chống stale response.
@@ -326,7 +327,7 @@ export default function ProjectDetail() {
     try {
       setLoadingGlossary(true);
       const res = await projectsApi.glossary(id);
-      setGlossaryTerms(res?.terms || []);
+      setGlossaryTerms(Array.isArray(res) ? res : res?.terms || []);
     } catch {
       // best-effort
     } finally {
@@ -348,11 +349,13 @@ export default function ProjectDetail() {
       await projectsApi.addGlossaryTerm(id, {
         source: newSourceTerm.trim(),
         target: newTargetTerm.trim(),
+        caseSensitive: Boolean(newTermCaseSensitive),
         note: newTermNote.trim() || null,
       });
       setNewSourceTerm('');
       setNewTargetTerm('');
       setNewTermNote('');
+      setNewTermCaseSensitive(false);
       await loadGlossary();
       toast({ title: 'Đã thêm thuật ngữ', description: `"${newSourceTerm.trim()}" → "${newTargetTerm.trim()}"` });
     } catch (err) {
@@ -947,6 +950,16 @@ export default function ProjectDetail() {
                             disabled={isActive || addingTerm}
                             className="flex-1 px-2.5 py-1.5 rounded-lg text-xs bg-muted/40 border border-border text-foreground placeholder:text-muted-foreground/50 focus:outline-hidden focus:border-primary"
                           />
+                          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground shrink-0 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={newTermCaseSensitive}
+                              onChange={(e) => setNewTermCaseSensitive(e.target.checked)}
+                              disabled={isActive || addingTerm}
+                              className="rounded border-border text-primary focus:ring-primary w-3.5 h-3.5"
+                            />
+                            <span>Phân biệt hoa/thường</span>
+                          </label>
                           <button
                             type="submit"
                             disabled={!newSourceTerm.trim() || !newTargetTerm.trim() || addingTerm || isActive}
@@ -969,34 +982,45 @@ export default function ProjectDetail() {
                         </div>
                       ) : (
                         <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1 pt-1">
-                          {glossaryTerms.map((t) => (
-                            <div
-                              key={t.id}
-                              className="flex items-center justify-between p-2 rounded-lg bg-muted/30 border border-border/50 text-xs hover:border-border transition-colors group"
-                            >
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="font-semibold text-foreground truncate">{t.source || t.source_term}</span>
-                                  <span className="text-muted-foreground">→</span>
-                                  <span className="font-semibold text-primary truncate">{t.target || t.target_term}</span>
-                                </div>
-                                {t.note && (
-                                  <div className="text-[10px] text-muted-foreground truncate mt-0.5">
-                                    {t.note}
-                                  </div>
-                                )}
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteGlossaryTerm(t.id)}
-                                disabled={isActive}
-                                title="Xoá thuật ngữ"
-                                className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all shrink-0 ml-2"
+                          {glossaryTerms.map((t) => {
+                            const isCaseSensitive = Boolean(t.case_sensitive ?? t.caseSensitive);
+                            return (
+                              <div
+                                key={t.id}
+                                className="flex items-center justify-between p-2 rounded-lg bg-muted/30 border border-border/50 text-xs hover:border-border transition-colors group"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          ))}
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-semibold text-foreground truncate">{t.source || t.source_term}</span>
+                                    <span className="text-muted-foreground">→</span>
+                                    <span className="font-semibold text-primary truncate">{t.target || t.target_term}</span>
+                                    {isCaseSensitive && (
+                                      <span
+                                        className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-primary/10 text-primary border border-primary/20 shrink-0"
+                                        title="Phân biệt chữ hoa / chữ thường"
+                                      >
+                                        Aa
+                                      </span>
+                                    )}
+                                  </div>
+                                  {t.note && (
+                                    <div className="text-[10px] text-muted-foreground truncate mt-0.5">
+                                      {t.note}
+                                    </div>
+                                  )}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteGlossaryTerm(t.id)}
+                                  disabled={isActive}
+                                  title="Xoá thuật ngữ"
+                                  className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all shrink-0 ml-2"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>

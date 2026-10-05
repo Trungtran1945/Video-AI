@@ -7,7 +7,7 @@ import StatCard from '@/components/StatCard';
 import Loading from '@/components/Loading';
 import { Link } from 'react-router-dom';
 import { Video, Layers, ListOrdered, HardDrive, Cpu, Clock, ArrowRight, Plus, CheckCircle2, Film } from 'lucide-react';
-import { STAGE_LABELS, STAGE_ORDER, formatDate } from '@/lib/constants';
+import { STAGE_LABELS, formatDate } from '@/lib/constants';
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
@@ -44,7 +44,8 @@ export default function Dashboard() {
   const completed = (projects || []).filter(p => p.status === 'completed');
   const runningJobs = (jobs || []).filter(j => j.status === 'running' || j.status === 'pending');
 
-  const stages = STAGE_ORDER.map(s => STAGE_LABELS[s]);
+  const summaryStages = ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'].map(s => STAGE_LABELS[s]);
+  const dubStages = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.ttsAlign', 'dub.render'].map(s => STAGE_LABELS[s]);
 
   return (
     <Layout>
@@ -79,20 +80,48 @@ export default function Dashboard() {
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h2 className="text-sm sm:text-base font-semibold text-foreground">Quy Trình Pipeline Tự Động</h2>
-                  <p className="text-xs text-muted-foreground mt-0.5">Các công đoạn xử lý tuần tự từ nhận dạng dữ liệu đến xuất video</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Các công đoạn xử lý tuần tự theo từng chế độ sản xuất video</p>
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-1.5 sm:gap-2">
-                {stages.map((stage, i) => (
-                  <div key={i} className="flex items-center gap-1.5 sm:gap-2">
-                    <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-muted/50 border border-border/70 text-xs text-foreground">
-                      <span className="text-[10px] text-muted-foreground font-mono font-bold">{i + 1}</span>
-                      <span className="font-medium">{stage.label}</span>
-                    </div>
-                    {i < stages.length - 1 && <ArrowRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />}
+              <div className="space-y-4">
+                {/* SUMMARY mode pipeline */}
+                <div>
+                  <div className="text-[11px] font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+                    <span>Review Phim (SUMMARY — 8 bước)</span>
                   </div>
-                ))}
+                  <div className="flex flex-wrap gap-1.5 sm:gap-2">
+                    {summaryStages.map((stage, i) => (
+                      <div key={i} className="flex items-center gap-1.5 sm:gap-2">
+                        <div className="flex items-center gap-2 px-2 py-1 rounded-lg bg-muted/50 border border-border/70 text-xs text-foreground">
+                          <span className="text-[10px] text-muted-foreground font-mono font-bold">{i + 1}</span>
+                          <span className="font-medium">{stage.label}</span>
+                        </div>
+                        {i < summaryStages.length - 1 && <ArrowRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* TRANSLATE_DUB mode pipeline */}
+                <div>
+                  <div className="text-[11px] font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    <span>Dịch &amp; Lồng Tiếng (TRANSLATE_DUB — 6 bước)</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 sm:gap-2">
+                    {dubStages.map((stage, i) => (
+                      <div key={i} className="flex items-center gap-1.5 sm:gap-2">
+                        <div className="flex items-center gap-2 px-2 py-1 rounded-lg bg-muted/50 border border-border/70 text-xs text-foreground">
+                          <span className="text-[10px] text-muted-foreground font-mono font-bold">{i + 1}</span>
+                          <span className="font-medium">{stage.label}</span>
+                        </div>
+                        {i < dubStages.length - 1 && <ArrowRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
 

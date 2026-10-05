@@ -34,4 +34,12 @@ export const apiKeysApi = {
 export const adminApi = {
   users: () => api.get('/admin/users').then((r) => r.data),
   setRole: (id, role) => api.put(`/admin/users/${id}`, { role }).then((r) => r.data),
+  providers: () => api.get('/admin/providers').then((r) => r.data),
+  cleanupTasks: (params) => api.get('/admin/cleanup-tasks', { params }).then((r) => r.data),
+  retryCleanupTask: (id) => api.post(`/admin/cleanup-tasks/${id}/retry`).then((r) => r.data),
+}
+
+export const systemApi = {
+  health: () => api.get('/health', { baseURL: '' }).then((r) => r.data),
+  ready: () => api.get('/ready', { baseURL: '' }).then((r) => r.data),
 }

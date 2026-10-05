@@ -6,6 +6,7 @@ const COST_PER_1K_TOKENS = {
   'gemini-1.5-pro': { in: 0.00125, out: 0.005 },
   'gemini-2.5-flash': { in: 0.0003, out: 0.0025 },
   'gemini-3.6-flash': { in: 0.0003, out: 0.0025 },
+  'gemini-3.8-flash': { in: 0.0003, out: 0.0025 },
   'gpt-4o-mini': { in: 0.00015, out: 0.0006 },
   'gpt-4o': { in: 0.0025, out: 0.01 },
 }

@@ -95,7 +95,7 @@ import dubIngest from './stages/dubIngest.js'
 import dubStt from './stages/dubStt.js'
 
 import dubMerge from './stages/dubMerge.js'
-import { validateForRender, dedupeTranscriptSegments } from './stages/dubMerge.js'
+import { validateForRender, dedupeTranscriptSegments, sanitizeTranscriptOverlaps } from './stages/dubMerge.js'
 import dubTranslate from './stages/dubTranslate.js'
 import dubTtsAlign from './stages/dubTtsAlign.js'
 import dubRender from './stages/dubRender.js'
@@ -602,7 +602,14 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       // the audio was synthesized, the conflict is surfaced instead of merging
       // rows this generation never produced audio for.
       try {
-        await dedupeTranscriptSegments(projectId, generation.transcriptVersionSnapshot, { runToken })
+        const dedupeRes = await dedupeTranscriptSegments(projectId, generation.transcriptVersionSnapshot, { runToken })
+        if (dedupeRes?.changed && Number.isInteger(dedupeRes.revision)) {
+          generation.transcriptVersionSnapshot = dedupeRes.revision
+        }
+        const sanitizeRes = await sanitizeTranscriptOverlaps(projectId, generation.transcriptVersionSnapshot, { runToken })
+        if (sanitizeRes?.changed && Number.isInteger(sanitizeRes.revision)) {
+          generation.transcriptVersionSnapshot = sanitizeRes.revision
+        }
       } catch (e) {
         console.warn(`[RenderValidation] auto-merge bỏ qua: ${String(e?.message || e).slice(0, 160)}`)
       }

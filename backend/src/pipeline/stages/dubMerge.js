@@ -3,7 +3,7 @@ import path from 'node:path'
 import { query } from '../../db/query.js'
 import { logProviderCall } from '../../providers/tracked.js'
 import { hasHardTranslationError } from './dubTranslate.js'
-import { dedupeTranscriptSegments as mutateDedupeTranscriptSegments, findDuplicateGroups } from '../../services/transcriptMutationService.js'
+import { dedupeTranscriptSegments as mutateDedupeTranscriptSegments, sanitizeTranscriptOverlaps as mutateSanitizeTranscriptOverlaps, findDuplicateGroups } from '../../services/transcriptMutationService.js'
 import { validateNoOverlap } from '../forcedAlignService.js'
 import { projectDir } from '../context.js'
 
@@ -15,6 +15,10 @@ export { findDuplicateGroups }
 
 export async function dedupeTranscriptSegments(projectId, expectedRevision = null, options = {}) {
   return mutateDedupeTranscriptSegments(projectId, expectedRevision, options)
+}
+
+export async function sanitizeTranscriptOverlaps(projectId, expectedRevision = null, options = {}) {
+  return mutateSanitizeTranscriptOverlaps(projectId, expectedRevision, options)
 }
 
 /**
@@ -264,10 +268,13 @@ export default async function dubMerge({ project, job, setProgress, runToken }) 
   let deduped = 0
   try {
     const current = await query('SELECT transcript_version FROM projects WHERE id = ?', [projectId])
-    const r = await dedupeTranscriptSegments(projectId, Number(current?.[0]?.transcript_version ?? 0), { runToken })
+    const curRev = Number(current?.[0]?.transcript_version ?? 0)
+    const r = await dedupeTranscriptSegments(projectId, curRev, { runToken })
     deduped = r.removedCount
+    const r2 = await sanitizeTranscriptOverlaps(projectId, Number(r?.revision ?? curRev), { runToken })
+    if (r2.removedCount) deduped += r2.removedCount
   } catch (e) {
-    console.warn(`[dubMerge] auto-merge bỏ qua: ${String(e?.message || e).slice(0, 160)}`)
+    console.warn(`[dubMerge] auto-merge / sanitize bỏ qua: ${String(e?.message || e).slice(0, 160)}`)
   }
 
   setProgress(90)

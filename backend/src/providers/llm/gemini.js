@@ -3,7 +3,7 @@ import { generateContent } from '../geminiClient.js'
 export class GeminiLlm {
   constructor(apiKey) {
     this.id = 'gemini'
-    this.model = process.env.GEMINI_MODEL || 'gemini-3.6-flash'
+    this.model = process.env.GEMINI_MODEL || 'gemini-3.8-flash'
     this.apiKey = apiKey
   }
 

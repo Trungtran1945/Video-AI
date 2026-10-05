@@ -28,7 +28,7 @@ export default function ApiKeys() {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [visibleKeys, setVisibleKeys] = useState({});
-  const [form, setForm] = useState({ provider: 'gemini', category: 'llm', api_key_encrypted: '', tier: 'free', priority: 0 });
+  const [form, setForm] = useState({ provider: 'gemini', label: '', category: 'llm', api_key_encrypted: '', tier: 'free', priority: 0 });
   const [quotas, setQuotas] = useState({});
 
   useEffect(() => {
@@ -58,13 +58,14 @@ export default function ApiKeys() {
   const handleAdd = async () => {
     if (!form.api_key_encrypted.trim()) return;
     try {
-      const created = await apiKeysApi.create(form.provider, form.category, form.api_key_encrypted, {
+      const resolvedLabel = form.label.trim() || `${providerLabels[form.provider] || form.provider} (${form.category.toUpperCase()})`;
+      const created = await apiKeysApi.create(form.provider, resolvedLabel, form.api_key_encrypted, {
         tier: form.tier,
         priority: Number(form.priority),
       });
       setKeys([created, ...keys]);
       setShowAdd(false);
-      setForm({ provider: 'gemini', category: 'llm', api_key_encrypted: '', tier: 'free', priority: 0 });
+      setForm({ provider: 'gemini', label: '', category: 'llm', api_key_encrypted: '', tier: 'free', priority: 0 });
     } catch (e) {
       console.error(e);
       alert('Không thể thêm khóa: ' + (e.message || ''));
@@ -178,6 +179,17 @@ export default function ApiKeys() {
                   {categories.map(c => <option key={c} value={c}>{c.toUpperCase()}</option>)}
                 </select>
               </div>
+            </div>
+
+            <div className="mb-3.5">
+              <label className="block text-xs font-semibold text-foreground mb-1.5">Tên gợi nhớ (Tùy chọn)</label>
+              <input
+                type="text"
+                value={form.label}
+                onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
+                placeholder={`e.g. ${providerLabels[form.provider] || form.provider} Chính...`}
+                className="w-full px-3 py-2 rounded-lg bg-background border border-input text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+              />
             </div>
 
             <div className="mb-3.5">

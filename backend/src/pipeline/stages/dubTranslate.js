@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne, updateById, insert, run, withTransaction } from '../../db/query.js'
 import { updateGenerationJobOwned, isProjectRunOwned } from '../../services/projectAdmission.js'
-import { applyGeneratedTranslations, TranscriptRevisionConflict } from '../../services/transcriptMutationService.js'
+import { applyGeneratedTranslations, sanitizeTranscriptOverlaps, TranscriptRevisionConflict } from '../../services/transcriptMutationService.js'
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
 import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js'
@@ -126,6 +126,15 @@ export async function dubTranslate(ctx) {
 
   const currentProject = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [project.id])
   let transcriptVersion = Number(currentProject?.transcript_version ?? project.transcript_version ?? 0)
+
+  // Dọn overlap/duplicate timing trước khi dịch để không bị QA block_render oan
+  try {
+    const sRes = await sanitizeTranscriptOverlaps(project.id, transcriptVersion, { runToken })
+    if (sRes.changed) transcriptVersion = sRes.revision
+  } catch (e) {
+    console.warn(`[dubTranslate] sanitize overlaps bỏ qua: ${String(e?.message || e).slice(0, 160)}`)
+  }
+
   const segments = await query(
     'SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC',
     [project.id]
@@ -1149,16 +1158,18 @@ export function validateTranslation(src, tgt, targetLang = 'vi') {
     errors.push('wrong target language')
   }
   const ratio = t.length / Math.max(1, s.length)
-  // CJK chars expand ~3-8x into Vietnamese; the latin 0.3-3 band would reject
-  // every correct zh->vi translation (live GT ratios 3.4-7.7).
-  const maxRatio = countCjk(s) > 0 ? 8 : 3
-  // Ba tầng length (incident seg #15/#34 — câu EN ngắn nở câu tự nhiên + style
-  // preset cố ý nở câu, ratio 3-8x latin KHÔNG chứng minh sai nghĩa):
-  // - ratio < 0.3 (rụng nội dung, vd LLM trả "nhé" cho câu 27 ký tự) → HARD.
-  // - ratio > 8 (bịa/nở cực đoan, vd CJK 5 chữ → VI 100 chữ) → HARD.
-  // - giữa maxRatio..8 (nở vừa, câu ngắn/style) → soft warning, pipeline/PATCH
+  const isCjk = countCjk(s) > 0
+  // CJK chars expand ~3-9x into Vietnamese for short sentences (live GT ratios up to ~8.8
+  // for natural 4-9 char phrases like "再拖下去" -> "Nếu tình trạng này kéo dài hơn nữa").
+  // Latin expands up to ~3x (style up to 8x).
+  const maxRatio = isCjk ? 8 : 3
+  const maxHardRatio = isCjk ? 12 : 8
+  // Ba tầng length:
+  // - ratio < 0.3 (rụng nội dung) → HARD.
+  // - ratio > maxHardRatio (bịa/nở cực đoan, vd CJK 5 chữ → VI >60 chữ) → HARD.
+  // - giữa maxRatio..maxHardRatio (nở vừa, câu ngắn/style) → soft warning, pipeline/PATCH
   //   cho qua như 'entity changed'. Number/language/empty vẫn bắt HARD.
-  if (ratio < 0.3 || ratio > 8) errors.push('length implausible (hallucination?)')
+  if (ratio < 0.3 || ratio > maxHardRatio) errors.push('length implausible (hallucination?)')
   else if (ratio > maxRatio) errors.push('length expansion (style?)')
   return { ok: errors.length === 0, errors }
 }

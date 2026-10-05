@@ -17,6 +17,8 @@ export default defineConfig({
     proxy: {
       '/api': { target: 'http://localhost:3001', changeOrigin: true },
       '/storage': { target: 'http://localhost:3001', changeOrigin: true },
+      '/health': { target: 'http://localhost:3001', changeOrigin: true },
+      '/ready': { target: 'http://localhost:3001', changeOrigin: true },
     },
   },
 });

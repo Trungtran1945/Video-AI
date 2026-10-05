@@ -530,6 +530,105 @@ export async function deleteProjectTranscript(projectId) {
   }, { op: 'transcript.project.delete' })
 }
 
+function getCommonPrefixLength(a, b) {
+  let i = 0
+  const minLen = Math.min(a.length, b.length)
+  while (i < minLen && a[i].toLowerCase() === b[i].toLowerCase()) i++
+  return i
+}
+
+function countCjkChars(s) {
+  const m = String(s || '').match(/[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef\uac00-\ud7af]/g)
+  return m ? m.length : 0
+}
+
+export async function sanitizeTranscriptOverlaps(projectId, expectedRevision = null, options = {}) {
+  return withTransaction(async (tx) => {
+    const project = await loadProject(tx, projectId)
+    await assertRunOwner(tx, projectId, options.runToken)
+    const currentRevision = projectVersion(project)
+    if (expectedRevision !== null && expectedRevision !== undefined) assertRevision(currentRevision, expectedRevision)
+    const rows = await tx.query(
+      `SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY start_sec ASC, index_num ASC`,
+      [projectId]
+    )
+    if (rows.length <= 1) return { changed: false, removedCount: 0, clampedCount: 0, revision: currentRevision }
+
+    const removedIds = []
+    let changed = false
+    let clampedCount = 0
+
+    // Pass 1: Chunk-boundary duplicate fragments (starts within 1.0s and share common prefix >= 2 CJK chars or >= 5 letters)
+    const kept = []
+    for (let i = 0; i < rows.length; i++) {
+      const cur = rows[i]
+      const prev = kept.length ? kept[kept.length - 1] : null
+      if (prev && Math.abs(Number(cur.start_sec) - Number(prev.start_sec)) < 1.0) {
+        const pText = normalizeDupText(prev.text)
+        const cText = normalizeDupText(cur.text)
+        const isCjk = countCjkChars(pText) > 0 || countCjkChars(cText) > 0
+        const minPrefix = isCjk ? 2 : 5
+        const commonPrefixLen = getCommonPrefixLength(pText, cText)
+        if (commonPrefixLen >= minPrefix) {
+          // If prev had a translation and cur does not, preserve it
+          if (!cur.translation && prev.translation) {
+            cur.translation = prev.translation
+            cur.is_translation_manually_edited = prev.is_translation_manually_edited
+            await tx.run(
+              `UPDATE transcript_segments SET translation = ?, is_translation_manually_edited = ? WHERE id = ?`,
+              [cur.translation, cur.is_translation_manually_edited, cur.id]
+            )
+          }
+          removedIds.push(prev.id)
+          kept[kept.length - 1] = cur
+          changed = true
+          continue
+        }
+      }
+      kept.push(cur)
+    }
+
+    // Pass 2: Clamp any remaining overlaps so cur.start_sec >= prev.end_sec
+    for (let i = 1; i < kept.length; i++) {
+      const prev = kept[i - 1]
+      const cur = kept[i]
+      const prevEnd = Number(prev.end_sec) || 0
+      const curStart = Number(cur.start_sec) || 0
+      if (curStart < prevEnd - 0.01) {
+        const clampedEnd = Math.max(Number(prev.start_sec) + 0.05, curStart)
+        if (Math.abs(clampedEnd - prevEnd) > 0.001) {
+          prev.end_sec = clampedEnd
+          await tx.run(
+            `UPDATE transcript_segments SET end_sec = ? WHERE id = ?`,
+            [clampedEnd, prev.id]
+          )
+          changed = true
+          clampedCount++
+        }
+      }
+    }
+
+    if (removedIds.length) {
+      for (const id of removedIds) {
+        await tx.run('DELETE FROM transcript_segments WHERE id = ?', [id])
+      }
+    }
+
+    // Renumber index_num to ensure 0..N-1 contiguous order
+    for (let idx = 0; idx < kept.length; idx++) {
+      if (kept[idx].index_num !== idx) {
+        kept[idx].index_num = idx
+        await tx.run('UPDATE transcript_segments SET index_num = ? WHERE id = ?', [idx, kept[idx].id])
+        changed = true
+      }
+    }
+
+    let revision = currentRevision
+    if (changed) revision = await bumpVersion(tx, projectId, currentRevision)
+    return { changed, removedCount: removedIds.length, clampedCount, revision }
+  }, { op: 'transcript.sanitize_overlaps' })
+}
+
 export default {
   TranscriptRevisionRequired,
   TranscriptRevisionConflict,
@@ -544,6 +643,7 @@ export default {
   copyTranscript,
   findDuplicateGroups,
   dedupeTranscriptSegments,
+  sanitizeTranscriptOverlaps,
   clearTtsLinks,
   attachTtsAudio,
   deleteProjectTranscript,
