@@ -101,6 +101,7 @@ export default function ProjectDetail() {
   const [newTermNote, setNewTermNote] = useState('');
   const [newTermCaseSensitive, setNewTermCaseSensitive] = useState(false);
   const [addingTerm, setAddingTerm] = useState(false);
+  const [confirmingPreview, setConfirmingPreview] = useState(false);
   const videoRef = useRef(null);
   // Optimistic concurrency (§4.6): revision server cấp, seq chống stale response.
   const transcriptRevisionRef = useRef(null);
@@ -574,6 +575,39 @@ export default function ProjectDetail() {
     }
   };
 
+  const handleConfirmPreview = async () => {
+    if (confirmingPreview || isActive) return;
+    setConfirmingPreview(true);
+    try {
+      await projectsApi.confirmPreview(id);
+      // Khi enableDubbing=false -> confirm enqueue th?ng dub.render; khi true -> enqueue dub.ttsAlign -> dub.render
+      const pParams = project?.params || {};
+      const dubEnabled = pParams.enableDubbing ?? pParams.enable_dubbing ?? false;
+      const nextStage = dubEnabled ? 'dub.ttsAlign' : 'dub.render';
+      try {
+        await projectsApi.regenerate(id, nextStage);
+      } catch (e) {
+        if (e?.response?.status !== 409) {
+          console.warn('Regenerate trigger after confirm preview note:', e);
+        }
+      }
+      toast({
+        title: 'Đã xác nhận xem trước',
+        description: 'Bắt đầu kết xuất bản video thành phẩm...',
+      });
+      await load();
+    } catch (err) {
+      console.error('Confirm preview error:', err);
+      toast({
+        variant: 'destructive',
+        title: 'Lỗi xác nhận xem trước',
+        description: err?.response?.data?.message || err?.message || 'Không thể xác nhận bản xem trước.',
+      });
+    } finally {
+      setConfirmingPreview(false);
+    }
+  };
+
   // Sync targetLanguage from project params once loaded
   useEffect(() => {
     if (project?.params) {
@@ -641,6 +675,9 @@ export default function ProjectDetail() {
 
   // Find active segment for timeline
   const activeSegmentId = transcript.find(s => currentTime >= s.startSec && currentTime < s.endSec)?.id || null;
+  const activeSegment = transcript.find(s => currentTime >= s.startSec && currentTime < s.endSec) || null;
+  const isTranslateSuccess = jobByStage['dub.translate']?.status === 'success';
+  const isPreviewConfirmed = Boolean(params.previewConfirmed);
 
   // TRANSLATE_DUB: Subtitle sync editor layout
   if (isDub) {
@@ -670,6 +707,49 @@ export default function ProjectDetail() {
             onRetry={handleRetryStage}
             retryingStage={retryingStage}
           />
+
+          {/* Section preview & Confirm preview (FR-J2) */}
+          {isDub && isTranslateSuccess && (
+            <div className="shrink-0 bg-card border-b border-border px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap shadow-xs">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-bold text-foreground flex items-center gap-2">
+                    <span>Xem trước & Xác nhận (FR-J2)</span>
+                    {isPreviewConfirmed && (
+                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 text-[10px] font-semibold border border-emerald-500/20 flex items-center gap-1">
+                        <CheckCircle className="w-3 h-3" /> Đã xác nhận
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground truncate">
+                    Bản dịch hoàn tất. Vui lòng rà soát phụ đề dịch và vùng che chữ (Mask) trước khi render bản cuối.
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={isActive || confirmingPreview}
+                onClick={handleConfirmPreview}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {confirmingPreview ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Đang xác nhận...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle className="w-3.5 h-3.5" />
+                    <span>Xác nhận & Render bản cuối</span>
+                  </>
+                )}
+              </button>
+            </div>
+          )}
 
           {/* 3. Main Workspace: Transcript (chính) + Video/output/mask tabs */}
           <div className="flex-1 flex min-h-0 max-md:flex-col">
@@ -822,6 +902,68 @@ export default function ProjectDetail() {
                         <div className="shrink-0 flex items-center justify-between text-xs text-muted-foreground px-1 py-1">
                           <span className="font-mono">{fmtSec(currentTime)} / {fmtSec(duration)}</span>
                           <span className="font-medium">{MODE_LABELS[project.mode] || project.mode}</span>
+                        </div>
+                      </div>
+                    ) : sourceUrl && isTranslateSuccess ? (
+                      <div className="flex-1 flex flex-col min-h-0 gap-2">
+                        {/* Video Container (Source video for preview) */}
+                        <div className="relative flex-1 min-h-[220px] bg-black rounded-xl overflow-hidden group">
+                          <video
+                            ref={videoRef}
+                            id="output-video"
+                            src={sourceUrl}
+                            className="w-full h-full object-contain"
+                            onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+                          />
+                          {/* Subtitle Preview Overlay */}
+                          {activeSegment && (
+                            <div className="absolute bottom-6 inset-x-4 flex justify-center pointer-events-none z-10">
+                              <div className="bg-black/75 backdrop-blur-xs px-3.5 py-1.5 rounded-lg text-white text-xs sm:text-sm font-medium text-center shadow-lg border border-white/10 max-w-[85%] leading-relaxed">
+                                {activeSegment.translation || activeSegment.text}
+                              </div>
+                            </div>
+                          )}
+                          {/* Play/Pause Overlay Button */}
+                          <AnimatePresence>
+                            {!isPlaying && (
+                              <motion.button
+                                initial={{ opacity: 0, scale: 0.8 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                exit={{ opacity: 0, scale: 0.8 }}
+                                transition={{ duration: 0.15 }}
+                                onClick={handlePlayPause}
+                                className="absolute inset-0 flex items-center justify-center z-10"
+                              >
+                                <div className="w-14 h-14 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/10 hover:bg-white/30 transition-colors">
+                                  <Play className="w-6 h-6 text-white fill-white ml-1" />
+                                </div>
+                              </motion.button>
+                            )}
+                          </AnimatePresence>
+                          {/* Pause indicator on hover when playing */}
+                          <AnimatePresence>
+                            {isPlaying && (
+                              <motion.button
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 0 }}
+                                whileHover={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                onClick={handlePlayPause}
+                                className="absolute inset-0 flex items-center justify-center z-10"
+                              >
+                                <div className="w-14 h-14 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center border border-white/10">
+                                  <Pause className="w-6 h-6 text-white" />
+                                </div>
+                              </motion.button>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                        {/* Video Info Bar */}
+                        <div className="shrink-0 flex items-center justify-between text-xs text-muted-foreground px-1 py-1">
+                          <span className="font-mono">{fmtSec(currentTime)} / {fmtSec(duration)}</span>
+                          <span className="text-[11px] font-medium text-primary bg-primary/10 px-2 py-0.5 rounded border border-primary/20">
+                            Bản xem trước (Video gốc + Phụ đề dịch)
+                          </span>
                         </div>
                       </div>
                     ) : (

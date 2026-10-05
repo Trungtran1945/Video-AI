@@ -16,6 +16,8 @@ import { safeAddNotify } from '../queue/notifyQueue.js'
 import { classifyProviderError, ERROR_KINDS, ERROR_CODES, cooldownMsForCode } from '../lib/providerErrors.js'
 import { firstRunnableStage } from './context.js'
 import { clearTranscript, clearTtsLinks } from '../services/transcriptMutationService.js'
+import { listProvidersForCapability } from '../providers/registry.js'
+import { precheckStage } from '../services/quotaGuardService.js'
 import {
   acquireProjectRun,
   markProjectRunning,
@@ -57,7 +59,12 @@ function errorCodeOf(err) {
   }
 }
 
-function parseRetryAfter(err) {
+// Exported for quota tests. Prefers structured Retry-After (err.retryAfter /
+// headers) over message parsing; message fallback kept for provider clients
+// that only embed it in text (geminiClient "retry in Xs" handled upstream).
+export function parseRetryAfter(err) {
+  const headerSec = Number(err?.retryAfter ?? err?.headers?.['retry-after'])
+  if (Number.isFinite(headerSec) && headerSec > 0) return Math.floor(headerSec)
   const msg = err?.message || ''
   const match = msg.match(/retry[_-]?after[:\s]*(\d+)/i)
   if (match) return parseInt(match[1], 10)
@@ -73,7 +80,7 @@ export function isValidationError(err) {
   return msg.startsWith('TRANSLATE_NEEDS_REVIEW:') || msg.startsWith('BLOCK_RENDER:')
 }
 
-async function getNextRetryAt(provider) {
+export async function getNextRetryAt(provider) {
   await queryOne(
     `SELECT requests_per_minute FROM provider_rate_limits WHERE provider = ? AND tier = 'free' LIMIT 1`,
     [provider]
@@ -331,6 +338,23 @@ const RESETS = {
   'dub.translate': ['audios', 'subtitles', 'outputs'],
   'dub.ttsAlign': ['audios', 'outputs'],
   'dub.render': ['outputs'],
+}
+
+// Stages whose impl calls an AI provider (registry capability names).
+// QuotaGuard pre-check (docs/11 §4.1) only runs for these; ffmpeg/core skip.
+const AI_CAPABILITIES = new Set(['asr', 'vision', 'llm', 'tts'])
+
+// Heuristic request estimate for the quota pre-check: batch stages scale with
+// segment count, single-call stages default to 10. Fail-open (returns 10).
+async function estimateStageRequests(project, stageType) {
+  try {
+    if (isDubProject(project) && (stageType === 'dub.ttsAlign' || stageType === 'dub.translate')) {
+      const row = await queryOne('SELECT COUNT(*) as c FROM transcript_segments WHERE project_id = ?', [project.id])
+      const n = Number(row?.c || 0)
+      if (n > 0) return n
+    }
+  } catch (_) {}
+  return 10
 }
 
 async function assertRunOwner(projectId, runToken) {
@@ -629,6 +653,20 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       }
     }
 
+    // QuotaGuard pre-check (docs/11 §4.1): warn-only, never blocks. Fail-open:
+    // resolution/snapshot errors skip the check, the stage still runs.
+    let quotaWarning = null
+    if (AI_CAPABILITIES.has(STAGE_PROVIDER[job.type])) {
+      try {
+        const cands = await listProvidersForCapability(project.user_id, STAGE_PROVIDER[job.type])
+        const providerId = cands[0]?.id || null
+        if (providerId && providerId !== 'mock') {
+          const pre = await precheckStage(project.user_id, providerId, await estimateStageRequests(project, job.type))
+          quotaWarning = pre?.warning || null
+        }
+      } catch (_) {}
+    }
+
     const impl = stageImplOverrides.get(job.type) || STAGE_IMPL[job.type]
     if (!impl) throw new Error(`Stage không được hỗ trợ: ${job.type}`)
     const stageTimeout = STAGE_TIMEOUTS[job.type] || DEFAULT_STAGE_TIMEOUT
@@ -646,11 +684,15 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
     )
     results[job.type] = result
 
+    // Merge quota_risk warning (if any) so FE stepper/banner can display it.
+    const persistedResult = quotaWarning
+      ? { ...(result || {}), warnings: [...((result && result.warnings) || []), quotaWarning] }
+      : (result || {})
     const updated = await updateGenerationJobOwned(projectId, job.id, {
       status: 'success',
       step: 'done',
       progress: 100,
-      result: JSON.stringify(result || {}),
+      result: JSON.stringify(persistedResult),
     }, runToken)
     if (!updated) return false
     // Transcript-producing stages may bump projects.transcript_version — keep

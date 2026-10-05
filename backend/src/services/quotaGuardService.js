@@ -1,5 +1,6 @@
 import { query, queryOne } from '../db/query.js'
 import { config } from '../config.js'
+import { isProviderAvailable } from '../lib/providerHealth.js'
 
 /**
  * QuotaGuardService — monitors API quota usage per provider
@@ -87,7 +88,9 @@ export async function checkQuotaWarning(userId, provider) {
 }
 
 /**
- * Get the best API key for a provider (round-robin by remaining capacity).
+ * Get the best API key for a provider (priority order + per-key cooldown).
+ * Skips keys the failover health marks unavailable (429/quota/auth cooldown on
+ * THAT key only — never a global skip). First available in priority order wins.
  * @param {string} userId
  * @param {string} provider
  * @returns {Promise<{apiKey: object|null, snapshot: QuotaSnapshot|null}>}
@@ -100,29 +103,15 @@ export async function selectBestApiKey(userId, provider) {
 
   if (!keys.length) return { apiKey: null, snapshot: null }
 
-  let bestKey = null
-  let bestSnapshot = null
-  let lowestUsage = Infinity
-
+  const snapshot = await getQuotaSnapshot(userId, provider)
   for (const key of keys) {
-    // Check if this key has been rate-limited recently
-    const recentLimit = await queryOne(
-      `SELECT COUNT(*) as cnt FROM provider_logs
-       WHERE provider = ? AND status = 'rate_limited' AND created_date >= ?`,
-      [provider, new Date(Date.now() - 15 * 60 * 1000).toISOString()]
-    )
-
-    if (recentLimit?.cnt > 0) continue // Skip rate-limited keys
-
-    const snapshot = await getQuotaSnapshot(userId, provider)
-    if (snapshot.usedToday < lowestUsage) {
-      lowestUsage = snapshot.usedToday
-      bestKey = key
-      bestSnapshot = snapshot
-    }
+    try {
+      if (!isProviderAvailable({ provider, apiKeyId: key.id })) continue
+    } catch (_) {}
+    return { apiKey: key, snapshot }
   }
 
-  return { apiKey: bestKey, snapshot: bestSnapshot }
+  return { apiKey: null, snapshot }
 }
 
 /**
@@ -153,9 +142,43 @@ export async function logProviderCallWithQuota({ projectId, jobId, provider, typ
   )
 }
 
+/**
+ * Pre-check before enqueueing a request-heavy stage (docs/11 §4.1).
+ * Warn-only: never blocks the job ({ allowed: true } always).
+ * Warns when usage is past the threshold AND the estimate overruns today's limit.
+ * @param {string} userId
+ * @param {string} provider
+ * @param {number} [estimatedRequests]
+ * @returns {Promise<{allowed: boolean, warning: object|null}>}
+ */
+export async function precheckStage(userId, provider, estimatedRequests = 10) {
+  const snapshot = await getQuotaSnapshot(userId, provider)
+  const threshold = config.quotaWarningThreshold || 0.8
+  if (snapshot.limitToday == null) return { allowed: true, warning: null }
+  const est = Number.isFinite(Number(estimatedRequests)) && Number(estimatedRequests) > 0
+    ? Number(estimatedRequests)
+    : 10
+  if (snapshot.percentUsed >= threshold * 100 && snapshot.usedToday + est > snapshot.limitToday) {
+    return {
+      allowed: true,
+      warning: {
+        type: 'quota_risk',
+        provider: snapshot.provider,
+        percentUsed: snapshot.percentUsed,
+        usedToday: snapshot.usedToday,
+        limitToday: snapshot.limitToday,
+        estimatedRequests: est,
+        estimatedShortfall: snapshot.usedToday + est - snapshot.limitToday,
+      },
+    }
+  }
+  return { allowed: true, warning: null }
+}
+
 export default {
   getQuotaSnapshot,
   checkQuotaWarning,
   selectBestApiKey,
+  precheckStage,
   logProviderCallWithQuota,
 }

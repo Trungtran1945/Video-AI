@@ -112,19 +112,30 @@ export default function ApiKeys() {
 
   const QuotaBar = ({ provider }) => {
     const q = quotas[provider];
-    if (!q || q.limitToday === null) return null;
+    if (!q) return null;
+    const used = q.usedToday ?? 0;
+    const limit = q.limitToday;
     const pct = Math.min(q.percentUsed || 0, 100);
     const isHigh = pct >= 80;
     return (
-      <div className="flex items-center gap-2 mt-2">
-        <BarChart3 className={`w-3.5 h-3.5 ${isHigh ? 'text-amber-500' : 'text-muted-foreground'}`} />
-        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all ${isHigh ? 'bg-amber-500' : 'bg-primary'}`}
-            style={{ width: `${pct}%` }}
-          />
+      <div className="flex items-center gap-2 mt-2 flex-wrap">
+        <div className="flex items-center gap-1.5 flex-1 min-w-[180px] max-w-[260px]">
+          <BarChart3 className={`w-3.5 h-3.5 shrink-0 ${isHigh ? 'text-amber-500' : 'text-muted-foreground'}`} />
+          <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all ${isHigh ? 'bg-amber-500' : 'bg-primary'}`}
+              style={{ width: limit ? `${pct}%` : '100%' }}
+            />
+          </div>
         </div>
-        <span className="text-[11px] text-muted-foreground font-medium">{q.usedToday}/{q.limitToday}</span>
+        <span className="text-[11px] text-muted-foreground font-medium font-mono">
+          {limit != null ? `${used}/${limit} req/ngày (${pct.toFixed(0)}%)` : `${used} req/ngày`}
+        </span>
+        {isHigh && (
+          <span className="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-700 dark:text-amber-400 text-[10px] font-semibold">
+            Sắp chạm hạn mức
+          </span>
+        )}
       </div>
     );
   };

@@ -108,7 +108,7 @@ const SETTINGS_COLUMN = {
 
 async function resolveApiKey(userId, providerId) {
   const rows = await query(
-    `SELECT id, encrypted_key FROM api_keys WHERE user_id = ? AND provider = ? AND is_active = 1 ORDER BY created_date DESC`,
+    `SELECT id, encrypted_key FROM api_keys WHERE user_id = ? AND provider = ? AND is_active = 1 ORDER BY priority ASC, created_date ASC`,
     [userId, providerId]
   )
   for (const row of rows) {

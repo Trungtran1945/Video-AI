@@ -11,6 +11,7 @@
 import crypto from 'crypto'
 import fs from 'node:fs'
 import { run, queryOne } from '../db/query.js'
+import { config } from '../config.js'
 import { v4 as uuidv4 } from 'uuid'
 import { getRateLimiter } from '../lib/rateLimiter.js'
 import { classifyProviderError, ERROR_KINDS } from './providerErrors.js'
@@ -192,6 +193,15 @@ export async function callProvider({
   cacheTtlDays = 90,
   rateLimitOpts,
 }) {
+  // BE-03: kill-switch cache toàn cục (docs/11 §3.2). Tắt → chạy provider
+  // trực tiếp (vẫn rate-limit + log), không đọc/ghi provider_cache.
+  if (config.providerCacheEnabled === false) {
+    return executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts })
+  }
+  // BE-03: TTL cấu hình thắng default 90 ngày (không đổi chữ ký hàm).
+  const effectiveTtlDays = Number.isFinite(config.providerCacheTtlDays)
+    ? config.providerCacheTtlDays
+    : cacheTtlDays
   const skipCache = isUnsafeAsrCacheInput(type, input)
   // 1. Cache check (+ stale local-artifact invalidation before provider call)
   if (!skipCache) {
@@ -219,7 +229,7 @@ export async function callProvider({
   const flight = (async () => {
     try {
       const result = await executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts })
-      await storeCache(provider, type, model, input, result, cacheTtlDays)
+      await storeCache(provider, type, model, input, result, effectiveTtlDays)
       return result
     } finally {
       // Always cleanup so retries are possible and no memory leaks.
@@ -235,13 +245,43 @@ export async function callProvider({
   return flightPromise
 }
 
+// BE-02: rate-limit đọc đúng DB (docs/11 §2.1). Override per-user thắng default
+// hệ thống (ORDER BY user_id DESC — mẫu quotaGuardService); nhân safetyMargin
+// (docs/11 §8: margin là phần dùng được, 0.8 = 80% giới hạn công bố); lỗi DB
+// hoặc không có row → fallback cũ (rpm 10). Explicit rateLimitOpts thắng DB.
+async function resolveRateLimitOpts(provider, userId, rateLimitOpts) {
+  if (rateLimitOpts?.requestsPerMinute || rateLimitOpts?.requestsPerDay || rateLimitOpts?.concurrency) {
+    return {
+      requestsPerMinute: rateLimitOpts.requestsPerMinute || 10,
+      requestsPerDay: rateLimitOpts.requestsPerDay || null,
+      concurrency: rateLimitOpts.concurrency || 1,
+    }
+  }
+  try {
+    const row = await queryOne(
+      `SELECT requests_per_minute, requests_per_day, concurrency FROM provider_rate_limits
+       WHERE provider = ? AND (user_id = ? OR user_id IS NULL)
+       ORDER BY user_id DESC LIMIT 1`,
+      [provider, userId || null]
+    )
+    if (!row) return { requestsPerMinute: 10, requestsPerDay: null, concurrency: 1 }
+    const margin = Number(config.providerRateLimitSafetyMargin)
+    const factor = Number.isFinite(margin) && margin > 0 && margin <= 1 ? margin : 1
+    return {
+      requestsPerMinute: Math.max(1, Math.floor(Number(row.requests_per_minute || 10) * factor)),
+      requestsPerDay: row.requests_per_day != null
+        ? Math.max(1, Math.floor(Number(row.requests_per_day) * factor))
+        : null,
+      concurrency: Math.max(1, Number(row.concurrency || 1)),
+    }
+  } catch (_) {
+    return { requestsPerMinute: 10, requestsPerDay: null, concurrency: 1 }
+  }
+}
+
 async function executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts }) {
   // 2. Rate limiter
-  const limiter = getRateLimiter(userId || 'system', provider, apiKeyId, {
-    requestsPerMinute: rateLimitOpts?.requestsPerMinute || 10,
-    requestsPerDay: rateLimitOpts?.requestsPerDay || null,
-    concurrency: rateLimitOpts?.concurrency || 1,
-  })
+  const limiter = getRateLimiter(userId || 'system', provider, apiKeyId, await resolveRateLimitOpts(provider, userId, rateLimitOpts))
 
   await limiter.acquire()
   const startMs = Date.now()

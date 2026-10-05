@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useState, useMemo } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import QuotaBanner from '@/components/QuotaBanner';
 import {
   LayoutDashboard, FolderPlus, FolderKanban, ListOrdered, Film,
   Settings, KeyRound, ScrollText, BarChart3, ShieldCheck, Sparkles,
@@ -210,6 +211,9 @@ export default function Layout({ children }) {
             <ThemeToggle />
           </div>
         </header>
+
+        {/* Global API Quota Risk Banner */}
+        <QuotaBanner />
 
         {/* Viewport content */}
         <main className="flex-1 overflow-y-auto min-w-0">

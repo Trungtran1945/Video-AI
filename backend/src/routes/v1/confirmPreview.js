@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { confirmPreviewUseCase } from '../../usecases/confirmPreviewUseCase.js'
 import { sendError } from '../../lib/httpError.js'
@@ -6,7 +7,7 @@ import { sendError } from '../../lib/httpError.js'
 const router = Router()
 
 // POST /api/v1/projects/:id/translate-dub/confirm-preview — FR-J2
-router.post('/:id/translate-dub/confirm-preview', requireProjectOwner, async (req, res) => {
+router.post('/:id/translate-dub/confirm-preview', authMiddleware, requireProjectOwner, async (req, res) => {
   try {
     const result = await confirmPreviewUseCase(req.params.id)
     res.status(202).json(result)
