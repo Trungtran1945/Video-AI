@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne } from '../../db/query.js'
 import { attachTtsAudio, TranscriptRevisionConflict } from '../../services/transcriptMutationService.js'
-import { isProjectRunOwned, runProjectOwned, insertProjectOwned } from '../../services/projectAdmission.js'
+import { isProjectRunOwned, runProjectOwned, insertProjectOwned, updateGenerationJobOwned } from '../../services/projectAdmission.js'
 import {
   applyTempoAudio,
   trimAudioSilence,
@@ -331,12 +331,30 @@ export async function dubTtsAlign(ctx) {
     const missing = errors.map((e) => e.indexNum)
     const err = new Error(
       `dub.ttsAlign incomplete: ${successCount}/${segments.length} audio thành công` +
-      ` (${errorCount} lỗi: ${errors.slice(0, 5).map((e) => `#${e.indexNum}:${String(e.error || '').slice(0, 120)}`).join('; ')})`
+      ` (${errorCount} lỗi: ${errors.slice(0, 5).map((e) => `#${e.indexNum}:${String(e.error || '').slice(0, 120)}`).join('; ')})` +
+      (firstErrorCode ? ` [${firstErrorCode}]` : '') +
+      ` — chạy lại từ dub.ttsAlign sau khi fix segment thiếu (chi tiết ở dub.ttsAlign job.result.missingSegments)`
     )
     err.completedSegments = successCount
     err.missingSegments = missing
     err.totalSegments = segments.length
     err.errorCode = firstErrorCode
+    // BE-E02: persist partial diagnostics vào job.result TRƯỚC khi throw để
+    // frontend render danh sách segment thiếu mà không parse string.
+    // Best-effort, không throw (failJob chỉ giữ error_message 500 ký tự).
+    try {
+      const partial = JSON.stringify({
+        ttsPartial: true,
+        completedSegments: successCount,
+        missingSegments: missing,
+        totalSegments: segments.length,
+        errorCode: firstErrorCode || null,
+        errors,
+      })
+      if (job?.project_id) {
+        await updateGenerationJobOwned(job.project_id, job.id, { result: partial }, runToken)
+      }
+    } catch (_) {}
     throw err
   }
 

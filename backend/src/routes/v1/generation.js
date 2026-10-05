@@ -57,13 +57,17 @@ router.post('/:id/translate-dub/redub', requireProjectOwner, async (req, res) =>
   if (!translated || !translated.c) {
     return sendError(res, 400, ERR.VALIDATION, 'Không có bản dịch nào để lồng tiếng', { field: 'translation' })
   }
+  // BE-E06: 429 khi stage chờ quota + trả fromStage cho toast.
+  const jobs = await query('SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?', [req.project.id])
+  const r = firstRunnableStage(stagesForProject(req.project), jobs)
+  if (r.waiting) return sendError(res, 429, 'RETRY_WAITING', `Stage ${r.type} đang chờ quota`, { stage: r.type, nextRetryAt: r.nextRetryAt })
   const admission = await acquireProjectRun(req.project.id, { allowReserved: true, reclaimExpiredRunning: true })
   if (!admission.admitted) {
     const status = admission.reason === 'concurrency' ? 429 : 409
     return sendError(res, status, status === 429 ? ERR.CONCURRENCY_LIMIT : 'PIPELINE_BUSY', admission.reason || 'Project is not available')
   }
   runPipeline(req.project.id, 'dub.ttsAlign', admission.runToken).catch(() => {})
-  res.json({ message: 'Re-dub started', status: admission.project.status })
+  res.json({ message: 'Re-dub started', status: admission.project.status, fromStage: 'dub.ttsAlign' })
 })
 
 // GET /api/v1/projects/:id/jobs

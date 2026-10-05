@@ -166,6 +166,11 @@ export default function CreateProject() {
     setCreating(true);
     setError('');
     try {
+      if (form.mode === 'TRANSLATE_DUB' && !form.stylePreset) {
+        setError('Vui lòng chọn phong cách dịch thuật (Style Preset) trước khi tạo dự án.');
+        setCreating(false);
+        return;
+      }
       let payload;
       if (form.mode === 'SUMMARY') {
         payload = {
@@ -180,27 +185,48 @@ export default function CreateProject() {
           params: { tone: form.tone, spoilerAllowed: form.spoilerAllowed, voiceProvider: form.voiceProvider, voiceName: form.voiceName },
         };
       } else {
+        const isDub = Boolean(form.enableDubbing);
         payload = {
           mode: 'TRANSLATE_DUB',
           title: form.title.trim() || 'Video Việt hoá mới',
-          sourceLanguage: form.sourceLanguage,
-          targetLanguage: form.targetLanguage,
+          sourceLanguage: form.sourceLanguage || 'auto',
+          targetLanguage: form.targetLanguage || 'vi',
           stylePreset: form.stylePreset,
-          enableDubbing: form.enableDubbing,
-          audioMode: form.enableDubbing ? (form.audioMode || 'DUB_MIX') : 'ORIGINAL_ONLY',
-          subPosition: form.subPosition,
+          enableDubbing: isDub,
+          audioMode: isDub ? (form.audioMode || 'DUB_MIX') : 'ORIGINAL_ONLY',
+          subPosition: form.subPosition || 'bottom',
           sourceVideoKey: form.sourceVideoKey,
           videoHash: form.videoHash,
           copyrightAcknowledged: copyrightAck,
-          params: form.enableDubbing
-            ? { voiceProvider: form.voiceProvider, voiceName: form.voiceName, subPosition: form.subPosition }
-            : { subPosition: form.subPosition },
+          params: isDub
+            ? {
+                stylePreset: form.stylePreset,
+                sourceLanguage: form.sourceLanguage || 'auto',
+                targetLanguage: form.targetLanguage || 'vi',
+                enableDubbing: true,
+                audioMode: form.audioMode || 'DUB_MIX',
+                voiceProvider: form.voiceProvider,
+                voiceName: form.voiceName,
+                subPosition: form.subPosition || 'bottom',
+              }
+            : {
+                stylePreset: form.stylePreset,
+                sourceLanguage: form.sourceLanguage || 'auto',
+                targetLanguage: form.targetLanguage || 'vi',
+                enableDubbing: false,
+                audioMode: 'ORIGINAL_ONLY',
+                subPosition: form.subPosition || 'bottom',
+              },
         };
       }
       const project = await projectsApi.create(payload);
       navigate(`/projects/${project.id}`);
     } catch (err) {
-      setError('Không thể tạo dự án: ' + (err?.response?.data?.message || err?.response?.data?.error?.message || err.message));
+      const respData = err?.response?.data;
+      const field = respData?.field || respData?.error?.field;
+      const errMsg = respData?.message || respData?.error?.message || err.message;
+      const displayMsg = field ? `[Trường ${field}] ${errMsg}` : errMsg;
+      setError('Không thể tạo dự án: ' + displayMsg);
       setCreating(false);
     }
   };

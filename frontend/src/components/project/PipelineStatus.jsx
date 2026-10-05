@@ -62,7 +62,7 @@ export default function PipelineStatus({
   if (failedStageKey) {
     const fJob = jobByStage[failedStageKey];
     const sLabel = STAGE_LABELS[failedStageKey]?.label || failedStageKey;
-    const friendly = fJob?.error_message ? friendlyJobError(fJob.error_message) : 'Đã xảy ra lỗi khi thực thi';
+    const friendly = fJob?.error_message ? friendlyJobError(fJob) : 'Đã xảy ra lỗi khi thực thi';
     isTransientError = fJob?.retryable === true || /bận|tạm thời|thử lại/i.test(friendly);
     failedStageMessage = `${sLabel}: ${friendly}`;
   }
@@ -141,13 +141,15 @@ export default function PipelineStatus({
               ? ` ${attempts}/${maxAttempts}`
               : attempts != null ? ` #${attempts}` : '';
 
+            const errDetail = job?.error_message
+              ? `: ${friendlyJobError(job)}${job.error_message !== friendlyJobError(job) ? `\nChi tiết: ${job.error_message}` : ''}`
+              : '';
+
             const title = isRetry
               ? `${idx + 1}. ${stage?.label || stageKey} — ${retryLabel}${attemptText}`
-              : `${idx + 1}. ${stage?.label || stageKey}${job?.status ? ` — ${job.status}${attemptText}` : ''}${
-                  job?.error_message ? `: ${friendlyJobError(job.error_message)}` : ''
-                }${hasQuotaRisk ? ` [${quotaRiskMessage}]` : ''}${
-                  cacheHitCount > 0 ? ` [⚡ ${cacheHitCount} clip cache]` : ''
-                }`;
+              : `${idx + 1}. ${stage?.label || stageKey}${job?.status ? ` — ${job.status}${attemptText}` : ''}${errDetail}${
+                  hasQuotaRisk ? ` [${quotaRiskMessage}]` : ''
+                }${cacheHitCount > 0 ? ` [⚡ ${cacheHitCount} clip cache]` : ''}`;
 
             return (
               <div
@@ -211,10 +213,13 @@ export default function PipelineStatus({
         </div>
       )}
       {failedStageMessage && !activeRetryMessage && (
-        <div className="mt-2 flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-destructive/10 border border-destructive/25 text-xs text-destructive font-medium">
+        <div
+          title={failedStageMessage}
+          className="mt-2 flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-destructive/10 border border-destructive/25 text-xs text-destructive font-medium"
+        >
           <div className="flex items-center gap-2 min-w-0">
             <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-            <span className="truncate">{failedStageMessage}</span>
+            <span className="truncate" title={failedStageMessage}>{failedStageMessage}</span>
             {isTransientError && (
               <span className="shrink-0 text-[10px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
                 Lỗi tạm thời

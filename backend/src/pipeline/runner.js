@@ -470,9 +470,22 @@ export function describeFailure(errOrMessage, stage) {
   }
 }
 
+// BE-E01: truncate ở giữa để giữ prefix mã máy-đọc được
+// (TRANSLATE_NEEDS_REVIEW: / BLOCK_RENDER: / [PROVIDER_*] / PROV_001/002)
+// ở đầu + đoạn action cuối (PATCH path + regenerate hint) ở đuôi.
+// DB column giới hạn 500 ký tự nên cắt middle, không cắt đuôi.
+export function truncateErrorMessage(message, maxLen = 500) {
+  const s = String(message ?? '')
+  if (s.length <= maxLen) return s
+  const marker = '\n…[truncated]…\n'
+  const keepTail = 130
+  const keepHead = Math.max(0, maxLen - marker.length - keepTail)
+  return s.slice(0, keepHead) + marker + s.slice(s.length - keepTail)
+}
+
 function logStageFailure({ projectId, stage, errOrMessage, attempt, nextRetryAt = null }) {
   const { category, retryable, provider, errorCode } = describeFailure(errOrMessage, stage)
-  const msg = String((errOrMessage && errOrMessage.message) || errOrMessage || '').slice(0, 300)
+  const msg = String((errOrMessage && errOrMessage.message) || errOrMessage || '').slice(0, 2000)
   const cd = errorCode ? cooldownMsForCode(errorCode) : null
   console.error(
     `[Pipeline] project=${projectId} stage=${stage} category=${category} attempt=${attempt} ` +
@@ -483,11 +496,12 @@ function logStageFailure({ projectId, stage, errOrMessage, attempt, nextRetryAt 
 
 async function failJob(job, projectId, message, runToken = null) {
   const attempt = (job.attempts || 0) + 1
+  const truncated = truncateErrorMessage(message, 500)
   const updated = await updateGenerationJobOwned(projectId, job.id, {
     status: 'failed',
     step: 'error',
     progress: 0,
-    error_message: String(message).slice(0, 500),
+    error_message: truncated,
   }, runToken)
   if (!updated) return false
   logStageFailure({ projectId, stage: job.type, errOrMessage: message, attempt })
@@ -498,7 +512,7 @@ async function failJob(job, projectId, message, runToken = null) {
     provider: STAGE_PROVIDER[job.type] || 'core',
     type: 'media',
     status: 'error',
-    error: String(message).slice(0, 500),
+    error: truncated,
   })
   return true
 }

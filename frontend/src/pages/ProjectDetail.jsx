@@ -444,18 +444,25 @@ export default function ProjectDetail() {
   }, [streamClosed, load, loadDubData]);
 
   const isActive = project && ACTIVE_STATUSES.includes(project.status);
-  const canRegenerate = project && ['completed', 'failed'].includes(project.status);
+  const canRegenerate = project && ['completed', 'failed'].includes(project.status) && !isActive;
   const canCancel = project && ['running', 'queued', 'pending'].includes(project.status); // Group 1: Cancel
 
-  const handleRegenerate = async (fromStage) => {
-    if (regenerating) return;
+  const handleRegenerate = async (stageArg) => {
+    if (regenerating || isActive) return;
+    const fromStage = typeof stageArg === 'string' ? stageArg : undefined;
     setRegenerating(true);
     setError('');
     try {
-      await projectsApi.regenerate(id, fromStage);
+      const res = await projectsApi.regenerate(id, fromStage);
+      const actualFrom = res?.fromStage || fromStage;
+      const stageLabel = actualFrom ? (STAGE_LABELS[actualFrom]?.label || actualFrom) : '';
+      toast({
+        title: 'Đang chạy lại pipeline',
+        description: stageLabel ? `Đang chạy lại từ bước ${stageLabel}...` : 'Pipeline đang được thực thi lại...',
+      });
       await load();
     } catch (e) {
-      setError('Không thể chạy lại pipeline: ' + (e?.response?.data?.message || e.message));
+      setError('Không thể chạy lại pipeline: ' + (e?.response?.data?.message || e?.response?.data?.error?.message || e.message));
     } finally {
       setRegenerating(false);
     }
@@ -466,20 +473,25 @@ export default function ProjectDetail() {
       await projectsApi.cancel(id);
       await load();
     } catch (e) {
-      setError('Không thể huỷ project: ' + (e?.response?.data?.message || e.message));
+      setError('Không thể huỷ project: ' + (e?.response?.data?.message || e?.response?.data?.error?.message || e.message));
     }
   };
 
   const handleRetryStage = async (stageKey) => {
-    if (retryingStage) return;
+    if (retryingStage || isActive) return;
     setRetryingStage(stageKey);
     setError('');
     try {
-      await projectsApi.retryJob(id, stageKey);
-      toast({ title: 'Đã gửi retry', description: `Stage ${STAGE_LABELS[stageKey]?.label || stageKey} đang chạy lại.` });
+      const res = await projectsApi.retryJob(id, stageKey);
+      const actualFrom = res?.fromStage || stageKey;
+      const stageLabel = STAGE_LABELS[actualFrom]?.label || actualFrom;
+      toast({
+        title: 'Đã gửi yêu cầu thử lại',
+        description: `Đang chạy lại từ bước ${stageLabel}...`,
+      });
       await load();
     } catch (e) {
-      setError('Không thể retry stage: ' + (e?.response?.data?.message || e.message));
+      setError('Không thể retry stage: ' + (e?.response?.data?.message || e?.response?.data?.error?.message || e.message));
     } finally {
       setRetryingStage(null);
     }
@@ -550,7 +562,17 @@ export default function ProjectDetail() {
         toast({ variant: 'destructive', title: 'Xung đột chỉnh sửa', description: msg });
         return null;
       }
-      setTranscriptError('Chưa lưu được: ' + (e?.response?.data?.message || e.message));
+      if (status === 422) {
+        const valErrors = e?.response?.data?.errors;
+        const errDetails = Array.isArray(valErrors) ? `: ${valErrors.join('; ')}` : '';
+        const msg = (e?.response?.data?.message || 'Dữ liệu chỉnh sửa không hợp lệ') + errDetails;
+        setTranscriptError(msg);
+        toast({ variant: 'destructive', title: 'Lỗi kiểm định', description: msg });
+        return null;
+      }
+      const rawErrMsg = e?.response?.data?.message || e?.response?.data?.error?.message || e.message;
+      setTranscriptError('Chưa lưu được: ' + rawErrMsg);
+      toast({ variant: 'destructive', title: 'Lỗi lưu transcript', description: rawErrMsg });
       return null;
     } finally {
       if (seq === transcriptSaveSeqRef.current) {
@@ -561,15 +583,20 @@ export default function ProjectDetail() {
   };
 
   const handleRedub = async () => {
-    if (redubbing) return;
+    if (redubbing || isActive) return;
     setRedubbing(true);
     setTranscriptError('');
     try {
-      await projectsApi.redub(id);
-      toast({ title: 'Đang lồng tiếng lại', description: 'Video sẽ được cập nhật sau khi hoàn tất.' });
+      const res = await projectsApi.redub(id);
+      const actualFrom = res?.fromStage || 'dub.ttsAlign';
+      const stageLabel = STAGE_LABELS[actualFrom]?.label || actualFrom;
+      toast({
+        title: 'Đang thực thi lại',
+        description: `Đang chạy lại từ bước ${stageLabel} (giữ nguyên bản dịch đã chỉnh sửa)...`,
+      });
       await load();
     } catch (e) {
-      setTranscriptError('Không thể chạy lại: ' + (e?.response?.data?.message || e.message));
+      setTranscriptError('Không thể chạy lại: ' + (e?.response?.data?.message || e?.response?.data?.error?.message || e.message));
     } finally {
       setRedubbing(false);
     }
@@ -580,20 +607,23 @@ export default function ProjectDetail() {
     setConfirmingPreview(true);
     try {
       await projectsApi.confirmPreview(id);
-      // Khi enableDubbing=false -> confirm enqueue th?ng dub.render; khi true -> enqueue dub.ttsAlign -> dub.render
+      // Khi enableDubbing=false -> confirm enqueue thẳng dub.render; khi true -> enqueue dub.ttsAlign -> dub.render
       const pParams = project?.params || {};
       const dubEnabled = pParams.enableDubbing ?? pParams.enable_dubbing ?? false;
       const nextStage = dubEnabled ? 'dub.ttsAlign' : 'dub.render';
+      let regenRes = null;
       try {
-        await projectsApi.regenerate(id, nextStage);
+        regenRes = await projectsApi.regenerate(id, nextStage);
       } catch (e) {
         if (e?.response?.status !== 409) {
           console.warn('Regenerate trigger after confirm preview note:', e);
         }
       }
+      const actualFrom = regenRes?.fromStage || nextStage;
+      const stageLabel = STAGE_LABELS[actualFrom]?.label || actualFrom;
       toast({
         title: 'Đã xác nhận xem trước',
-        description: 'Bắt đầu kết xuất bản video thành phẩm...',
+        description: `Bắt đầu kết xuất bản video thành phẩm từ bước ${stageLabel}...`,
       });
       await load();
     } catch (err) {
@@ -601,7 +631,7 @@ export default function ProjectDetail() {
       toast({
         variant: 'destructive',
         title: 'Lỗi xác nhận xem trước',
-        description: err?.response?.data?.message || err?.message || 'Không thể xác nhận bản xem trước.',
+        description: err?.response?.data?.message || err?.response?.data?.error?.message || err?.message || 'Không thể xác nhận bản xem trước.',
       });
     } finally {
       setConfirmingPreview(false);
@@ -617,7 +647,8 @@ export default function ProjectDetail() {
   }, [project?.params]);
 
   // QA issues từ dub.translate job.result.unresolvedDetails[].qa (flag + block —
-  // fix bằng sửa tay từng SegmentCard rồi Regenerate, không auto-repair).
+  // fix bằng sửa tay từng SegmentCard rồi Regenerate, không auto-repair)
+  // và partial errors từ dub.ttsAlign job.result (BE-E02, FE-E03).
   // Hook đặt TRƯỚC early return (rules-of-hooks).
   const qaByIndex = useMemo(() => {
     const map = new Map();
@@ -629,13 +660,51 @@ export default function ProjectDetail() {
     } catch { details = []; }
     for (const d of details) {
       const list = [...(d?.qa || [])];
-      // Backward-compat: base/styled gate errors không có qa → 1 warning entry.
+      // Backward-compat & comprehensive: base/styled gate errors cộng thêm vào list.
       const gateErrs = [...(d?.baseErrors || []), ...(d?.styledErrors || [])].filter(Boolean);
-      if (!list.length && gateErrs.length && d?.index != null) {
-        list.push({ type: 'gate', severity: 'high', message: gateErrs.join('; '), blockingActions: [] });
+      if (gateErrs.length) {
+        list.push({ type: 'gate', severity: 'high', message: `Kiểm tra chất lượng dịch: ${gateErrs.join('; ')}`, blockingActions: ['edit_translation'] });
       }
       if (list.length && d?.index != null) map.set(Number(d.index), list);
     }
+
+    // TTS partial diagnostics từ dub.ttsAlign (BE-E02, FE-E03)
+    const ttsJob = (jobs || []).find((j) => j.type === 'dub.ttsAlign');
+    if (ttsJob && ['failed', 'error'].includes(ttsJob.status)) {
+      try {
+        const tr = typeof ttsJob.result === 'string' ? JSON.parse(ttsJob.result) : ttsJob.result;
+        if (Array.isArray(tr?.errors)) {
+          for (const errItem of tr.errors) {
+            const idx = errItem.indexNum != null ? Number(errItem.indexNum) : null;
+            if (idx != null) {
+              const existing = map.get(idx) || [];
+              existing.push({
+                type: 'tts',
+                severity: 'high',
+                message: `Lỗi lồng tiếng: ${errItem.error || 'Tạo giọng đọc thất bại'}${errItem.errorCode ? ` [${errItem.errorCode}]` : ''}`,
+                blockingActions: ['retry_tts'],
+              });
+              map.set(idx, existing);
+            }
+          }
+        } else if (Array.isArray(tr?.missingSegments)) {
+          for (const missingIdx of tr.missingSegments) {
+            const idx = Number(missingIdx);
+            if (!isNaN(idx)) {
+              const existing = map.get(idx) || [];
+              existing.push({
+                type: 'tts',
+                severity: 'high',
+                message: 'Thiếu file âm thanh lồng tiếng cho câu này',
+                blockingActions: ['retry_tts'],
+              });
+              map.set(idx, existing);
+            }
+          }
+        }
+      } catch {}
+    }
+
     return map;
   }, [jobs]);
 
@@ -1090,7 +1159,7 @@ export default function ProjectDetail() {
                             </div>
                             {isErr && (
                               <div className="py-1.5 text-destructive text-xs space-y-1">
-                                <div className="font-medium">{friendlyJobError(ttsJob.error_message)}</div>
+                                <div className="font-medium" title={ttsJob.error_message}>{friendlyJobError(ttsJob.error_message)}</div>
                                 {isRet && (
                                   <span className="inline-block text-[10px] text-amber-700 dark:text-amber-300 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
                                     Lỗi tạm thời — có thể thử lại
@@ -1423,7 +1492,7 @@ export default function ProjectDetail() {
                       </div>
                     )}
                     {job?.error_message && (
-                      <div className="text-xs text-destructive truncate mt-0.5 font-medium">
+                      <div className="text-xs text-destructive truncate mt-0.5 font-medium" title={job.error_message}>
                         {friendlyJobError(job.error_message)}
                       </div>
                     )}
@@ -2011,6 +2080,27 @@ function SegmentCard({ seg, isDirty, isActive, getField, onField, onSeek, hasVid
             placeholder="Bản dịch tiếng Việt (sửa tay được giữ nguyên khi chạy lại)..."
             className={areaCls}
           />
+          {(qaIssues || []).length > 0 && (
+            <div className="mt-1.5 space-y-1">
+              {qaIssues.map((q, qIdx) => (
+                <div
+                  key={qIdx}
+                  className="flex items-start gap-1.5 p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/25 text-[11px] text-rose-700 dark:text-rose-300 leading-normal"
+                >
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-rose-500" />
+                  <div className="flex-1 min-w-0">
+                    <span className="font-semibold">
+                      {q.type === 'tts' ? '[Lồng tiếng]' : q.type === 'gate' ? '[Kiểm định]' : '[QA]'}:{' '}
+                    </span>
+                    <span>{q.message}</span>
+                    {q.suggestion && (
+                      <span className="block italic text-muted-foreground mt-0.5">Gợi ý: {q.suggestion}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
