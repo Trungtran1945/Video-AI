@@ -10,7 +10,12 @@ import { ERROR_CODES } from '../../lib/providerErrors.js'
  * - Local inference (CPU-optimized, zero cloud quota/rate-limits).
  * - Persistent service architecture (model loaded once in Python HTTP service).
  * - Keyless provider (no API key required).
- * - Native speed is NOT supported by the upstream model; tempo fitting is performed via FFmpeg (applyTempoAudio).
+ * - BE-Z06 speed contract: native speed NOT supported by upstream model (speed param
+ *   không truyền vào model); tempo fitting via FFmpeg downstream (dubTtsAlign
+ *   applyTempoAudio). Cache identity (ttsCacheKey gồm speed) phản ánh final output.
+ *   Không phá native speed Edge/OpenAI (dubTtsAlign supportsNativeSpeedFor giữ nguyên).
+ * - BE-Z05 MP3 fail-closed: không bao giờ trả WAV bytes đội lốt `.mp3`; convert fail
+ *   → throw PROVIDER_UNAVAILABLE/RESPONSE_MALFORMED; verify header/ffprobe trước return.
  */
 export class ZeroTts {
   constructor(apiKey) {
@@ -131,16 +136,21 @@ export class ZeroTts {
 
     if (!res.ok) {
       const detail = await res.json().catch(() => null)
+      const serverCode = detail?.code || ''
       const message = detail?.error || `ZeroTTS HTTP ${res.status}`
       const err = new Error(`TTS (ZeroTTS) lỗi: ${message}`)
       err.status = res.status
-      if (res.status === 400) {
+      err.serverCode = serverCode || undefined
+      if (res.status === 400 || res.status === 413) {
         err.code = ERROR_CODES.PROVIDER_INVALID_REQUEST
       } else if (res.status === 404) {
-        err.code = detail?.code === 'VOICE_NOT_FOUND'
+        err.code = serverCode === 'VOICE_NOT_FOUND'
           ? ERROR_CODES.PROVIDER_INVALID_REQUEST
           : ERROR_CODES.PROVIDER_MODEL_NOT_FOUND
-      } else if (res.status === 503 || res.status === 500) {
+      } else if (res.status === 429 || serverCode === 'SERVER_BUSY' || serverCode === 'QUEUE_FULL') {
+        // BE-Z01 backpressure: bounded admission vượt capacity → retryable ngắn.
+        err.code = ERROR_CODES.PROVIDER_RATE_LIMITED
+      } else if (res.status === 503 || res.status === 500 || res.status === 502) {
         err.code = ERROR_CODES.PROVIDER_UNAVAILABLE
       }
       throw err
@@ -157,15 +167,23 @@ export class ZeroTts {
       }
 
       if (isMp3 && actualSaved !== targetPath) {
+        // BE-Z05 fail-closed: WAV→MP3 bắt buộc qua FFmpeg; convert fail → throw,
+        // không copy WAV bytes vào `.mp3` giả.
         try {
           await ffmpeg(['-y', '-i', actualSaved, '-c:a', 'libmp3lame', '-q:a', '2', targetPath])
-        } catch (_) {
-          fs.copyFileSync(actualSaved, targetPath)
+        } catch (convErr) {
+          try { fs.unlinkSync(targetPath) } catch (_) {}
+          const failErr = new Error(`ZeroTTS MP3 convert thất bại: ${convErr.message}`)
+          failErr.code = ERROR_CODES.PROVIDER_UNAVAILABLE
+          throw failErr
         } finally {
           try { fs.unlinkSync(actualSaved) } catch (_) {}
         }
+        await assertRealMp3(targetPath)
       } else if (actualSaved !== targetPath) {
         fs.renameSync(actualSaved, targetPath)
+      } else if (isMp3) {
+        await assertRealMp3(targetPath)
       }
 
       const probeInfo = await probe(targetPath)
@@ -191,11 +209,15 @@ export class ZeroTts {
         fs.writeFileSync(tmpWav, buffer)
         try {
           await ffmpeg(['-y', '-i', tmpWav, '-c:a', 'libmp3lame', '-q:a', '2', targetPath])
-        } catch (_) {
-          fs.writeFileSync(targetPath, buffer)
+        } catch (convErr) {
+          try { fs.unlinkSync(targetPath) } catch (_) {}
+          const failErr = new Error(`ZeroTTS MP3 convert thất bại: ${convErr.message}`)
+          failErr.code = ERROR_CODES.PROVIDER_UNAVAILABLE
+          throw failErr
         } finally {
           try { fs.unlinkSync(tmpWav) } catch (_) {}
         }
+        await assertRealMp3(targetPath)
       } else {
         fs.writeFileSync(targetPath, buffer)
       }
@@ -213,8 +235,47 @@ export class ZeroTts {
 }
 
 /**
- * If a file has an .mp3 extension but is actually RIFF/WAV, convert it in-place to MP3.
+ * BE-Z05: verify `.mp3` là MP3 thật (fail-closed). WAV đội lốt MP3 có header RIFF;
+ * MP3 thật bắt đầu bằng ID3 hoặc frame-sync FF FB. ffprobe validate container/codec.
+ * Convert fail / header sai / probe sai → throw, caller xóa file giả.
  */
+async function assertRealMp3(filePath) {
+  let header = Buffer.alloc(3)
+  try {
+    const fd = fs.openSync(filePath, 'r')
+    try { fs.readSync(fd, header, 0, 3, 0) } finally { fs.closeSync(fd) }
+  } catch (readErr) {
+    const err = new Error(`ZeroTTS: không đọc được MP3 output: ${readErr.message}`)
+    err.code = ERROR_CODES.PROVIDER_RESPONSE_MALFORMED
+    throw err
+  }
+  if (header.toString('ascii', 0, 4) === 'RIFF' || header.toString('ascii', 0, 3) === 'RIF') {
+    const err = new Error('ZeroTTS trả về WAV đội lốt .mp3 (header RIFF) — từ chối fail-closed')
+    err.code = ERROR_CODES.PROVIDER_RESPONSE_MALFORMED
+    throw err
+  }
+  try {
+    const info = await probe(filePath)
+    const fmt = String(info?.formatName || '').toLowerCase()
+    if (!fmt.includes('mp3')) {
+      const err = new Error(`ZeroTTS MP3 validate thất bại (format=${info?.formatName || 'unknown'})`)
+      err.code = ERROR_CODES.PROVIDER_RESPONSE_MALFORMED
+      throw err
+    }
+  } catch (err) {
+    if (err?.code && String(err.code).startsWith('PROVIDER_')) throw err
+    const wrap = new Error(`ZeroTTS MP3 validate thất bại: ${err.message}`)
+    wrap.code = ERROR_CODES.PROVIDER_RESPONSE_MALFORMED
+    throw wrap
+  }
+}
+
+/**
+ * If a file has an .mp3 extension but is actually RIFF/WAV, convert it in-place to MP3.
+ * NOTE: legacy helper, hiện không còn được synthesize() dùng (fail-closed thay thế).
+ * Giữ lại để backward-compat, không dùng cho path mới.
+ */
+// eslint-disable-next-line no-unused-vars
 async function ensureMp3Format(filePath) {
   try {
     const fd = fs.openSync(filePath, 'r')

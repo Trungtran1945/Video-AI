@@ -7,7 +7,7 @@ import { VideoTimeline } from '@/components/timeline';
 import MaskEditor from '@/components/MaskEditor';
 import { useTimelineStore } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus } from 'lucide-react';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap } from 'lucide-react';
 import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, AUDIO_MODE_LABELS } from '@/lib/constants';
 import { friendlyJobError } from '@/lib/providerErrorMessage';
 import { useJobEvents } from '@/hooks/useJobEvents';
@@ -1040,6 +1040,69 @@ export default function ProjectDetail() {
                       </div>
                     </div>
 
+                    {/* Thông tin thực thi & Cache TTS */}
+                    {(() => {
+                      const ttsJob = jobByStage['dub.ttsAlign'] || jobByStage['summary.tts'];
+                      if (!ttsJob) return null;
+                      let ttsRes = null;
+                      if (ttsJob.result) {
+                        try {
+                          ttsRes = typeof ttsJob.result === 'string' ? JSON.parse(ttsJob.result) : ttsJob.result;
+                        } catch {}
+                      }
+                      const cacheHits = ttsRes?.cacheHitCount || 0;
+                      const dubbed = ttsRes?.dubbedCount || 0;
+                      const primaryProv = ttsRes?.voiceProvider || params.voiceProvider;
+                      const isErr = ['failed', 'error', 'timeout'].includes(ttsJob.status);
+                      const isRet = ttsJob.retryable === true;
+                      return (
+                        <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Zap className="w-4 h-4 text-emerald-500" />
+                              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                                Lồng tiếng & Tối ưu Cache (TTS)
+                              </span>
+                            </div>
+                            <span className="text-[11px] font-mono text-muted-foreground">
+                              {ttsJob.status}
+                            </span>
+                          </div>
+                          <div className="space-y-2 text-xs">
+                            <div className="flex justify-between items-center py-1.5 border-b border-border/40">
+                              <span className="text-muted-foreground">Nhà cung cấp sử dụng</span>
+                              <span className="font-semibold text-foreground">
+                                {VOICE_PROVIDER_LABELS[primaryProv] || primaryProv || '—'}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center py-1.5 border-b border-border/40">
+                              <span className="text-muted-foreground">Tái sử dụng Cache</span>
+                              <span className="font-mono text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
+                                {cacheHits > 0 ? (
+                                  <>
+                                    <Zap className="w-3 h-3" />
+                                    <span>{cacheHits}{dubbed > 0 ? ` / ${dubbed}` : ''} đoạn âm thanh</span>
+                                  </>
+                                ) : (
+                                  <span>0 đoạn (tạo mới)</span>
+                                )}
+                              </span>
+                            </div>
+                            {isErr && (
+                              <div className="py-1.5 text-destructive text-xs space-y-1">
+                                <div className="font-medium">{friendlyJobError(ttsJob.error_message)}</div>
+                                {isRet && (
+                                  <span className="inline-block text-[10px] text-amber-700 dark:text-amber-300 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                                    Lỗi tạm thời — có thể thử lại
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
                     {/* Bảng thuật ngữ cố định (Glossary) — TransFlow-style terminology */}
                     <div className="rounded-xl border border-border bg-card p-4 space-y-3">
                       <div className="flex items-center justify-between">
@@ -1359,7 +1422,36 @@ export default function ProjectDetail() {
                         <Clock className="w-3 h-3" /> Đang chờ quota hồi phục lúc {new Date(job.next_retry_at).toLocaleTimeString('vi-VN')}
                       </div>
                     )}
-                    {job?.error_message && <div className="text-xs text-destructive truncate mt-0.5 font-medium">{friendlyJobError(job.error_message)}</div>}
+                    {job?.error_message && (
+                      <div className="text-xs text-destructive truncate mt-0.5 font-medium">
+                        {friendlyJobError(job.error_message)}
+                      </div>
+                    )}
+                    {(() => {
+                      let cacheHitCount = 0;
+                      if (job?.result) {
+                        try {
+                          const res = typeof job.result === 'string' ? JSON.parse(job.result) : job.result;
+                          if (typeof res?.cacheHitCount === 'number') cacheHitCount = res.cacheHitCount;
+                        } catch {}
+                      }
+                      if (cacheHitCount > 0) {
+                        return (
+                          <div className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1 mt-0.5 font-mono">
+                            <Zap className="w-3 h-3" />
+                            <span>Đã tái sử dụng {cacheHitCount} đoạn âm thanh từ cache</span>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
+                    {isError && job?.retryable === true && (
+                      <div className="mt-0.5">
+                        <span className="text-[10px] text-amber-700 dark:text-amber-400 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20 font-medium">
+                          Lỗi tạm thời — có thể thử lại
+                        </span>
+                      </div>
+                    )}
                     {job && <div className="text-xs text-muted-foreground mt-0.5 font-mono">{formatDate(job.created_date)}{job.attempts > 1 ? ` • ${job.attempts} lần thử` : ''}</div>}
                   </div>
                   {!job && !isCurrent && !isDone && <Circle className="w-4 h-4 text-muted-foreground/30" />}

@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import {
   FileText, Scissors, Sparkles, Combine, Mic, Captions, Video, FileAudio,
-  Languages, AudioLines, Circle, Loader2, CheckCircle, AlertCircle, AlertTriangle, Clock, RotateCcw,
+  Languages, AudioLines, Circle, Loader2, CheckCircle, AlertCircle, AlertTriangle, Clock, RotateCcw, Zap,
 } from 'lucide-react';
 import { STAGE_LABELS } from '@/lib/constants';
 import { friendlyJobError } from '@/lib/providerErrorMessage';
@@ -53,6 +53,18 @@ export default function PipelineStatus({
     activeRetryMessage = timeStr
       ? `Stage ${stageLabel}: Đang chờ quota provider hồi phục lúc ${timeStr}`
       : `Stage ${stageLabel}: Đang chờ quota provider hồi phục`;
+  }
+
+  // Find any failed/error stage to surface friendly error and quick retry
+  const failedStageKey = stages.find((s) => ['failed', 'error', 'timeout'].includes(jobByStage[s]?.status));
+  let failedStageMessage = null;
+  let isTransientError = false;
+  if (failedStageKey) {
+    const fJob = jobByStage[failedStageKey];
+    const sLabel = STAGE_LABELS[failedStageKey]?.label || failedStageKey;
+    const friendly = fJob?.error_message ? friendlyJobError(fJob.error_message) : 'Đã xảy ra lỗi khi thực thi';
+    isTransientError = fJob?.retryable === true || /bận|tạm thời|thử lại/i.test(friendly);
+    failedStageMessage = `${sLabel}: ${friendly}`;
   }
 
   return (
@@ -107,6 +119,7 @@ export default function PipelineStatus({
 
             let hasQuotaRisk = false;
             let quotaRiskMessage = '';
+            let cacheHitCount = 0;
             if (job?.result) {
               try {
                 const res = typeof job.result === 'string' ? JSON.parse(job.result) : job.result;
@@ -115,6 +128,9 @@ export default function PipelineStatus({
                 if (qr) {
                   hasQuotaRisk = true;
                   quotaRiskMessage = qr.message || 'Sắp chạm giới hạn API — có thể chậm hơn dự kiến';
+                }
+                if (typeof res?.cacheHitCount === 'number') {
+                  cacheHitCount = res.cacheHitCount;
                 }
               } catch {}
             }
@@ -129,7 +145,9 @@ export default function PipelineStatus({
               ? `${idx + 1}. ${stage?.label || stageKey} — ${retryLabel}${attemptText}`
               : `${idx + 1}. ${stage?.label || stageKey}${job?.status ? ` — ${job.status}${attemptText}` : ''}${
                   job?.error_message ? `: ${friendlyJobError(job.error_message)}` : ''
-                }${hasQuotaRisk ? ` [${quotaRiskMessage}]` : ''}`;
+                }${hasQuotaRisk ? ` [${quotaRiskMessage}]` : ''}${
+                  cacheHitCount > 0 ? ` [⚡ ${cacheHitCount} clip cache]` : ''
+                }`;
 
             return (
               <div
@@ -150,6 +168,15 @@ export default function PipelineStatus({
                  isCurrent ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> :
                  <Icon className="w-2.5 h-2.5" />}
                 <span className="truncate max-w-[80px]">{stage?.label || stageKey.split('.').pop()}</span>
+                {isDone && cacheHitCount > 0 && (
+                  <span
+                    className="inline-flex items-center gap-0.5 font-mono text-[9px] text-emerald-600 dark:text-emerald-400 font-bold"
+                    title={`Đã tái sử dụng ${cacheHitCount} đoạn âm thanh từ cache`}
+                  >
+                    <Zap className="w-2.5 h-2.5" />
+                    {cacheHitCount}
+                  </span>
+                )}
                 {isRetry && retryTimeStr && (
                   <span className="font-mono text-amber-600 dark:text-amber-400 font-semibold">{retryTimeStr}</span>
                 )}
@@ -181,6 +208,30 @@ export default function PipelineStatus({
         <div className="mt-2 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-xs text-amber-700 dark:text-amber-300 font-medium">
           <Clock className="w-3.5 h-3.5 text-amber-500 shrink-0 animate-pulse" />
           <span>{activeRetryMessage}</span>
+        </div>
+      )}
+      {failedStageMessage && !activeRetryMessage && (
+        <div className="mt-2 flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-destructive/10 border border-destructive/25 text-xs text-destructive font-medium">
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">{failedStageMessage}</span>
+            {isTransientError && (
+              <span className="shrink-0 text-[10px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
+                Lỗi tạm thời
+              </span>
+            )}
+          </div>
+          {onRetry && (
+            <button
+              type="button"
+              disabled={retryingStage === failedStageKey}
+              onClick={() => onRetry(failedStageKey)}
+              className="shrink-0 inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[11px] font-semibold bg-destructive/20 hover:bg-destructive/30 text-destructive transition-colors disabled:opacity-50"
+            >
+              {retryingStage === failedStageKey ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+              <span>Thử lại</span>
+            </button>
+          )}
         </div>
       )}
     </div>

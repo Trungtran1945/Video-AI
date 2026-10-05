@@ -24,20 +24,25 @@ const providerLabels = {
   whisper: 'Whisper (OpenAI/Groq)', openai_whisper: 'OpenAI Whisper', faster_whisper: 'Faster Whisper',
 };
 
+const KEYLESS_PROVIDERS = new Set(['zerotts', 'edge_tts']);
+
 export default function ProviderSettings() {
   const [settings, setSettings] = useState(null);
   const [providersData, setProvidersData] = useState(null);
+  const [zerottsHealth, setZerottsHealth] = useState(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
-        const [s, p] = await Promise.all([
+        const [s, p, zh] = await Promise.all([
           settingsApi.get(),
           providersApi.list().catch(() => null),
+          providersApi.zerottsHealth().catch(() => null),
         ]);
         setSettings(s);
         setProvidersData(p);
+        if (zh) setZerottsHealth(zh);
       } catch (e) {
         console.error(e);
       }
@@ -90,6 +95,7 @@ export default function ProviderSettings() {
                   const provInfo = Array.isArray(provList) ? provList.find(x => x.id === p) : null;
                   const isAvailable = provInfo ? provInfo.available !== false : true;
                   const hasKey = Boolean(provInfo?.hasKey);
+                  const isKeyless = KEYLESS_PROVIDERS.has(p);
                   const successRate = provInfo?.health?.calls > 0 ? provInfo.health.successRate : null;
 
                   return (
@@ -121,6 +127,11 @@ export default function ProviderSettings() {
                                 <KeyRound className="w-2.5 h-2.5" /> Có Key
                               </span>
                             )}
+                            {isKeyless && (
+                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-blue-500/10 text-blue-700 dark:text-blue-400 font-medium">
+                                {p === 'zerotts' ? 'Local / Keyless' : 'Miễn phí'}
+                              </span>
+                            )}
                             {successRate !== null && (
                               <span className="text-muted-foreground font-mono">
                                 {successRate}% OK
@@ -129,6 +140,15 @@ export default function ProviderSettings() {
                           </>
                         )}
                       </div>
+
+                      {p === 'zerotts' && zerottsHealth && (
+                        <div className="w-full mt-2 pt-1.5 border-t border-border/40 text-[10px] text-muted-foreground flex items-center justify-between font-mono">
+                          <span className="truncate">{zerottsHealth.model || 'ZeroTTS'}</span>
+                          {zerottsHealth.queueDepth != null && (
+                            <span className="shrink-0">Hàng đợi: {zerottsHealth.queueDepth}</span>
+                          )}
+                        </div>
+                      )}
                     </button>
                   );
                 })}

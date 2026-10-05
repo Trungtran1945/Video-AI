@@ -1,0 +1,1063 @@
+Bạn là Senior Full-Stack + AI Infrastructure Engineer chuyên Node.js, Python inference service, TTS/STT, provider failover, caching, filesystem security, FFmpeg, sql.js, Redis/BullMQ và Docker.
+
+Hãy trực tiếp sửa SOURCE CODE repo Video-AI tại HEAD:
+
+6003ef953f89f5561ab2f2896c736296ce213d0b
+
+KHÔNG chỉ tạo Markdown.
+KHÔNG chỉ tạo plan.
+PHẢI đọc source code hiện tại trước khi sửa.
+PHẢI sửa source code thực tế.
+PHẢI cập nhật tests/config/Docker/CI/docs/frontend khi cần.
+PHẢI chạy verification thực tế.
+KHÔNG tự ý commit hoặc push GitHub.
+
+==================================================
+1. MỤC TIÊU
+==================================================
+
+1. Loại bỏ hoàn toàn khả năng cross-project/cross-user reuse của project-local TTS artifact.
+2. Sửa cả persistent provider cache và process-local single-flight để chúng không share project-local filesystem paths không có ownership.
+3. Tách provider computation/result khỏi project-owned artifact lifecycle.
+4. Bổ sung admission control/backpressure cho ZeroTTS sau khi sử dụng ThreadingHTTPServer.
+5. Giới hạn request body/text và bảo vệ memory/thread resources.
+6. Bảo vệ ZeroTTS khỏi arbitrary filesystem writes.
+7. Đảm bảo MP3 output luôn là MP3 thật.
+8. Sửa provider failover dedupe và maxAttempts.
+9. Preserve retryability semantics của aggregate provider failures.
+10. Cải thiện ZeroTTS observability.
+11. Đảm bảo ZeroTTS E2E có verification riêng.
+12. Giữ backward compatibility với các provider TTS/STT hiện có.
+13. Không phá pipeline hiện tại, forced alignment, TTS resume, SSE, upload, cleanup hoặc sql.js single-writer architecture.
+
+==================================================
+2. BỐI CẢNH / PHÁT HIỆN
+==================================================
+
+### P0 — Process-local single-flight có thể cross-project
+
+backend/src/lib/callProvider.js hiện dùng:
+
+inFlightProviderCalls
+
+với key:
+
+provider + type + inputHash
+
+Key không chứa:
+
+projectId
+userId
+ownership boundary.
+
+Trong backend/src/pipeline/stages/dubTtsAlign.js, fn() truyền vào callProvider tạo audio tại:
+
+projectDir(project.id)/audio_segments/...
+
+Scenario nguy hiểm:
+
+Project A:
+same TTS key
+→ provider call
+→ result chứa /project-A/audio.mp3
+
+Project B đồng thời:
+same TTS key
+→ await cùng Promise
+→ nhận result chứa /project-A/audio.mp3
+
+Như vậy single-flight có thể tạo cross-project artifact reuse ngay cả khi persistent provider_cache chưa tồn tại.
+
+--------------------------------------------------
+
+### P0 — Persistent provider cache cũng trộn computation và artifact ownership
+
+backend/src/lib/callProvider.js lưu nguyên provider result vào provider_cache.
+
+TTS result có thể chứa:
+
+audioPath
+
+Cache identity không chứa project ownership.
+
+Không được giải quyết bằng cách đơn giản thêm projectId vào cache key nếu vẫn muốn shared deterministic computation.
+
+Phải tách:
+
+provider computation/result
+
+khỏi:
+
+project-owned artifact.
+
+--------------------------------------------------
+
+### P1 — ThreadingHTTPServer chưa có admission control
+
+backend/scripts/zerotts_service.py hiện dùng:
+
+ThreadingHTTPServer
+
+nhưng mỗi request handler thread có thể chờ:
+
+model_lock.acquire(timeout=120)
+
+ZEROTTS_CONCURRENCY chỉ giới hạn inference, không giới hạn HTTP requests đang chờ.
+
+Ví dụ concurrency=1:
+
+1 inference
+99 waiting threads.
+
+Điều này có thể gây thread/memory pressure.
+
+--------------------------------------------------
+
+### P1 — Request body không bounded
+
+zerotts_service.py đọc toàn bộ:
+
+self.rfile.read(content_length)
+
+trước khi có MAX_BODY_BYTES.
+
+Chưa có:
+
+ZEROTTS_MAX_BODY_BYTES
+ZEROTTS_MAX_TEXT_CHARS.
+
+--------------------------------------------------
+
+### P1 — Arbitrary filesystem write
+
+zerotts_service.py nhận:
+
+out_path
+
+rồi:
+
+Path(out_path).resolve()
+target.parent.mkdir(...)
+
+Không có:
+
+ZEROTTS_OUTPUT_ROOT
+
+Không có symlink/path traversal protection.
+
+--------------------------------------------------
+
+### P1 — MP3 conversion failure
+
+Python service có:
+
+except Exception:
+    pass
+
+Node zeroTts.js cũng fallback copy raw audio khi FFmpeg fail.
+
+ZeroTTS raw output là WAV.
+
+Không được trả:
+
+foo.mp3
+
+nếu bytes thực tế là WAV.
+
+--------------------------------------------------
+
+### P1 — Failover dedupe sau maxAttempts
+
+providerFailover.js hiện:
+
+ordered.slice(0, maxAttempts)
+
+trước:
+
+tried.has(key)
+
+Ví dụ:
+
+A:key1
+A:key1
+B:key2
+
+maxAttempts=2
+
+có thể không thử B.
+
+--------------------------------------------------
+
+### P1 — Aggregate retryability
+
+NO_PROVIDER_AVAILABLE hiện có thể:
+
+retryable=false
+
+ngay cả khi mọi failure là transient.
+
+Phải phân biệt:
+
+ALL_TRANSIENT
+ALL_QUOTA
+ALL_AUTH
+ALL_CONFIGURATION
+MIXED.
+
+--------------------------------------------------
+
+### P2 — Timeout integration test
+
+zeroTtsIntegration.test.mjs dùng:
+
+timeoutMs=1
+
+Client timeout không đảm bảo server inference cancellation.
+
+Cần kiểm tra lifecycle thật:
+
+timeout
+→ cleanup
+→ lock release
+→ next request succeeds.
+
+--------------------------------------------------
+
+### P2 — Cache hit metadata
+
+dubTtsAlign.js tăng cacheHitCount dựa trên audio.cacheHit.
+
+callProvider() provider-cache hit chưa propagate cacheHit metadata.
+
+--------------------------------------------------
+
+### P2 — ZeroTTS observability
+
+/health hiện thiếu:
+
+queue depth
+active requests
+active inference
+failed
+abandoned.
+
+==================================================
+3. PHẠM VI FILE/MODULE
+==================================================
+
+PHẢI đọc ít nhất:
+
+backend/src/lib/callProvider.js
+backend/src/lib/providerFailover.js
+backend/src/lib/providerHealth.js
+backend/src/lib/providerScope.js
+backend/src/lib/providerErrors.js
+backend/src/lib/ttsCacheKey.js
+
+backend/src/pipeline/stages/dubTtsAlign.js
+backend/src/pipeline/runner.js
+
+backend/src/providers/tts/zeroTts.js
+backend/scripts/zerotts_service.py
+
+backend/src/db/schema.js
+backend/src/db/query.js
+backend/src/config.js
+
+backend/tests/zeroTtsIntegration.test.mjs
+backend/tests/zeroTtsProvider.test.mjs
+backend/tests/providerFailover.test.mjs
+backend/tests/providerQuotaClassification.test.mjs
+backend/tests/ttsCacheResume.test.mjs
+
+docker-compose.yml
+docker/api.Dockerfile
+.github/workflows/ci.yml
+
+frontend/src/lib/constants.jsx
+frontend/src/lib/providerErrorMessage.js
+frontend/src/hooks/useJobEvents.js
+frontend/src/pages/ProviderSettings.jsx
+frontend/src/pages/ProjectDetail.jsx
+
+README.md
+Video_AI_docs/docs/03_THIET_KE_BACKEND.md
+Video_AI_docs/docs/05_THIET_KE_PIPELINE_CHI_TIET.md
+Video_AI_docs/docs/08_TRIEN_KHAI_VA_VAN_HANH.md
+Video_AI_docs/docs/11_RATE_LIMIT_VA_FREE_TIER.md
+
+Search toàn repo:
+
+provider_cache
+inFlightProviderCalls
+singleFlightKey
+audioPath
+clipPath
+out_path
+ThreadingHTTPServer
+model_lock
+ZEROTTS_CONCURRENCY
+ZEROTTS_THREADS
+cacheHit
+maxAttempts
+NO_PROVIDER_AVAILABLE
+retryable
+ZEROTTS
+
+==================================================
+4. THAY ĐỔI BẮT BUỘC
+==================================================
+
+### 4.1. Tách provider computation khỏi artifact ownership
+
+Thiết kế:
+
+canonical provider request
+→ shared deterministic computation
+→ safe content/result/immutable artifact identity
+→ project-specific materialization
+→ project-owned artifact.
+
+Không để shared provider result chứa project-local audioPath.
+
+Nếu provider hiện tại bắt buộc outPath:
+
+- không lưu project-local path vào shared cache;
+- materialize riêng cho caller;
+- hoặc cache MISS nếu không thể chứng minh ownership.
+
+Ưu tiên không dùng projectId làm cách duy nhất để phá single-flight.
+
+--------------------------------------------------
+
+### 4.2. Sửa single-flight
+
+Không cho:
+
+Project A
+→ Promise chứa /project-A/...
+
+được Project B await và sử dụng trực tiếp.
+
+Ưu tiên:
+
+single-flight chỉ share provider computation/content.
+
+Mỗi caller tạo/materialize artifact riêng dưới project storage của mình.
+
+Bổ sung regression test concurrent:
+
+Project A + Project B
+same provider
+same input.
+
+Expected:
+
+- không có project-A path trả cho B;
+- mỗi project có artifact hợp lệ;
+- nếu computation được dedupe thì artifact materialization vẫn tách biệt.
+
+--------------------------------------------------
+
+### 4.3. Sửa persistent provider cache
+
+provider_cache không được lưu project-local audioPath như shared result.
+
+Legacy cache có local audioPath nhưng không có ownership proof:
+
+CACHE MISS.
+
+Không xóa toàn bộ cache database một cách mù quáng.
+
+Có thể invalidate unsafe cache entry khi phát hiện.
+
+--------------------------------------------------
+
+### 4.4. Artifact ownership
+
+Project-owned artifact phải được xác định bằng:
+
+projectId + artifactId/storageKey.
+
+Không dùng filesystem path làm authorization proof.
+
+Nếu shared immutable artifact được hỗ trợ:
+
+- content-addressed;
+- immutable;
+- explicit reference;
+- explicit authorization;
+- cleanup không được xóa artifact còn được project khác reference.
+
+--------------------------------------------------
+
+### 4.5. ZeroTTS admission control
+
+Không để ThreadingHTTPServer tạo unlimited waiting threads.
+
+Thiết kế:
+
+HTTP
+→ bounded admission
+→ bounded queue
+→ inference workers.
+
+Hoặc ít nhất thêm:
+
+ZEROTTS_MAX_INFLIGHT_REQUESTS
+
+để reject request trước khi chờ model semaphore.
+
+Khi capacity đầy:
+
+HTTP 429 hoặc 503.
+
+Structured code:
+
+SERVER_BUSY
+hoặc QUEUE_FULL.
+
+Không để hàng trăm request giữ thread chờ 120 giây.
+
+--------------------------------------------------
+
+### 4.6. Request body limit
+
+Thêm:
+
+ZEROTTS_MAX_BODY_BYTES
+
+và:
+
+ZEROTTS_MAX_TEXT_CHARS.
+
+Kiểm tra Content-Length trước read().
+
+Nếu vượt:
+
+HTTP 413.
+
+Text quá dài:
+
+HTTP 400/413.
+
+Nếu Content-Length không có:
+
+dùng bounded read hoặc reject rõ ràng.
+
+Không đọc unlimited body.
+
+--------------------------------------------------
+
+### 4.7. Resource config validation
+
+Validate:
+
+ZEROTTS_THREADS >= 1
+ZEROTTS_CONCURRENCY >= 1
+ZEROTTS_MAX_INFLIGHT_REQUESTS >= 1
+
+và giới hạn upper bound hợp lý.
+
+Invalid config:
+
+fail-fast.
+
+Document:
+
+HTTP admission
+queue
+inference concurrency
+ONNX threads.
+
+--------------------------------------------------
+
+### 4.8. Output root security
+
+Thêm:
+
+ZEROTTS_OUTPUT_ROOT.
+
+Mọi output phải nằm dưới root.
+
+Reject:
+
+../ traversal
+absolute path ngoài root
+symlink escape
+arbitrary parent directory.
+
+Nếu có thể, loại bỏ arbitrary out_path khỏi public API.
+
+Service tự tạo safe filename/artifact ID.
+
+--------------------------------------------------
+
+### 4.9. MP3 phải là MP3 thật
+
+Nếu requested MP3:
+
+ZeroTTS raw WAV
+→ FFmpeg
+→ MP3
+→ ffprobe validation.
+
+Nếu FFmpeg unavailable:
+
+FAIL.
+
+Nếu conversion failure:
+
+FAIL.
+
+Không:
+
+WAV bytes → .mp3.
+
+Không:
+
+except Exception: pass.
+
+Node và Python đều phải enforce invariant.
+
+--------------------------------------------------
+
+### 4.10. Speed contract
+
+ZeroTTS native model không hỗ trợ speed trực tiếp nếu implementation hiện tại không truyền speed vào model.
+
+Architecture:
+
+ZeroTTS raw audio
+→ FFmpeg tempo fitting
+→ final audio.
+
+Cache identity phải phản ánh final output semantics.
+
+Không để API contract làm caller hiểu rằng ZeroTTS native synthesis đã áp dụng speed.
+
+Không phá native speed của Edge/OpenAI.
+
+--------------------------------------------------
+
+### 4.11. Failover dedupe
+
+Thứ tự bắt buộc:
+
+normalize
+→ providerKey
+→ dedupe
+→ health ordering
+→ maxAttempts.
+
+Test:
+
+A:key1
+A:key1
+B:key2
+
+maxAttempts=2
+
+Expected:
+
+A:key1
+B:key2.
+
+--------------------------------------------------
+
+### 4.12. Aggregate provider failure
+
+Preserve:
+
+provider
+errorCode
+kind
+retryable
+attempt.
+
+Classify:
+
+ALL_TRANSIENT
+ALL_QUOTA
+ALL_AUTH
+ALL_PERMISSION
+ALL_CONFIGURATION
+MIXED.
+
+Backward-compatible:
+
+NO_PROVIDER_AVAILABLE
+
+nhưng retryable phải phản ánh aggregate.
+
+Không expose secrets.
+
+--------------------------------------------------
+
+### 4.13. Cache hit metadata
+
+Propagate:
+
+cacheHit=true
+
+cho:
+
+filesystem cache hit
+provider DB cache hit.
+
+Provider execution:
+
+cacheHit=false.
+
+Không làm thay đổi persisted result contract không cần thiết.
+
+--------------------------------------------------
+
+### 4.14. ZeroTTS observability
+
+Bổ sung nếu phù hợp:
+
+queueDepth
+activeRequests
+activeInference
+started
+completed
+failed
+abandoned.
+
+Health không leak:
+
+absolute private paths
+secrets
+API keys
+full private text.
+
+Nếu cần, tách:
+
+/health
+
+và:
+
+/diagnostics.
+
+--------------------------------------------------
+
+### 4.15. Graceful shutdown
+
+SIGTERM/SIGINT:
+
+STOPPING
+→ reject new requests
+→ drain bounded active work
+→ shutdown queue
+→ release resources.
+
+Thêm:
+
+ZEROTTS_SHUTDOWN_TIMEOUT_MS.
+
+Không shutdown vô hạn.
+
+--------------------------------------------------
+
+### 4.16. Docker
+
+Nếu ZeroTTS là production-supported:
+
+tạo service riêng:
+
+zerotts
+
+API dùng:
+
+ZEROTTS_URL=http://zerotts:5005
+
+Không dùng:
+
+127.0.0.1:5005
+
+giữa containers.
+
+Có reproducible Python dependencies.
+
+Có healthcheck.
+
+Không expose ZeroTTS public port mặc định nếu không cần.
+
+--------------------------------------------------
+
+### 4.17. CI
+
+Giữ npm test nhẹ.
+
+Tạo dedicated ZeroTTS E2E job:
+
+Python
+→ locked dependencies
+→ FFmpeg
+→ model cache
+→ service startup
+→ readiness
+→ test:zerotts
+→ cleanup.
+
+Không coi SKIPPED là PASS.
+
+--------------------------------------------------
+
+### 4.18. Documentation
+
+Cập nhật README/docs:
+
+- ZeroTTS provider;
+- Docker topology;
+- provider cache vs artifact cache;
+- single-flight semantics;
+- admission/backpressure;
+- filesystem security;
+- speed semantics;
+- CI verification.
+
+Document:
+
+ZEROTTS_URL
+ZEROTTS_MODEL
+ZEROTTS_MODEL_DIR
+ZEROTTS_MODEL_ID
+ZEROTTS_THREADS
+ZEROTTS_CONCURRENCY
+ZEROTTS_MAX_INFLIGHT_REQUESTS
+ZEROTTS_MAX_BODY_BYTES
+ZEROTTS_MAX_TEXT_CHARS
+ZEROTTS_OUTPUT_ROOT
+ZEROTTS_TIMEOUT_MS
+ZEROTTS_SHUTDOWN_TIMEOUT_MS.
+
+==================================================
+5. TIÊU CHÍ NGHIỆM THU
+==================================================
+
+### Cache isolation
+
+Concurrent Project A + Project B cùng TTS input:
+
+- không project nào nhận local path của project kia;
+- shared computation chỉ được dùng nếu artifact ownership vẫn an toàn;
+- mỗi project có artifact hợp lệ.
+
+Legacy unsafe cache:
+
+→ CACHE MISS.
+
+### Single-flight
+
+Hai project đồng thời cùng TTS request:
+
+→ không cross-project local audioPath.
+
+### Backpressure
+
+ZEROTTS_CONCURRENCY=1.
+
+Gửi nhiều request đồng thời.
+
+Expected:
+
+- active request bounded;
+- queue bounded;
+- excess request trả 429/503;
+- không tạo unlimited waiting threads;
+- request tiếp theo thành công sau khi capacity giải phóng.
+
+### Request limit
+
+Body > MAX_BODY_BYTES:
+
+→ 413.
+
+Text > MAX_TEXT_CHARS:
+
+→ 400/413.
+
+### Filesystem
+
+Valid output dưới output root:
+
+→ success.
+
+Traversal/outside root/symlink escape:
+
+→ reject.
+
+### MP3
+
+MP3 output:
+
+→ ffprobe xác nhận codec/container đúng.
+
+FFmpeg fail:
+
+→ provider failure.
+
+### Timeout
+
+Client timeout:
+
+→ PROVIDER_TIMEOUT.
+
+Không permanent semaphore/queue leak.
+
+Request tiếp theo:
+
+→ success.
+
+### Failover
+
+Duplicate candidate:
+
+→ không consume attempt budget sai.
+
+All transient:
+
+→ retryable.
+
+All quota:
+
+→ không blind retry.
+
+Mixed:
+
+→ structured classification.
+
+### Docker
+
+docker compose config --quiet
+
+PASS.
+
+Nếu Docker daemon khả dụng:
+
+docker compose up -d --build
+
+Verify:
+
+redis
+zerotts
+api
+web
+
+và:
+
+API → ZeroTTS → model → audio.
+
+==================================================
+6. KIỂM THỬ / VERIFICATION
+==================================================
+
+Trước tiên đọc package.json và CI để xác nhận command thực tế.
+
+Backend:
+
+cd backend
+npm ci
+npm run lint
+npm test
+
+Targeted:
+
+node tests/providerFailover.test.mjs
+node tests/providerQuotaClassification.test.mjs
+node tests/ttsCacheResume.test.mjs
+node tests/zeroTtsProvider.test.mjs
+node tests/zeroTtsIntegration.test.mjs
+
+Bổ sung tests cho:
+
+- cross-project single-flight isolation;
+- cross-project persistent cache isolation;
+- unsafe legacy cache;
+- concurrent admission;
+- queue full;
+- body size limit;
+- text size limit;
+- invalid concurrency;
+- invalid threads;
+- invalid max inflight;
+- output root traversal;
+- symlink escape;
+- MP3 conversion failure;
+- timeout lifecycle;
+- semaphore release;
+- cacheHit metadata;
+- failover duplicate candidates;
+- aggregate retryability.
+
+ZeroTTS:
+
+npm run test:zerotts
+
+Docker:
+
+docker compose config --quiet
+
+Nếu Docker daemon khả dụng:
+
+docker compose up -d --build
+
+Verify actual:
+
+redis
+ZeroTTS readiness
+API health
+Web health
+API → ZeroTTS
+real synthesis
+real MP3.
+
+Frontend:
+
+cd frontend
+npm ci
+npm run lint
+npm run typecheck
+npm run build
+
+Nếu command nào không chạy được do environment:
+
+ghi rõ:
+
+BLOCKED
+
+hoặc:
+
+NOT_VERIFIED
+
+kèm nguyên nhân.
+
+Không báo PASS giả.
+
+==================================================
+7. GIỚI HẠN VÀ LƯU Ý
+==================================================
+
+Không:
+
+- chỉ tạo Markdown;
+- chỉ tạo plan;
+- chỉ sửa test để pass;
+- commit/push GitHub;
+- log secrets;
+- log API keys;
+- log full private transcript;
+- cho arbitrary filesystem writes;
+- tạo fake MP3;
+- để unlimited request threads;
+- để unlimited request body;
+- coi client timeout là server cancellation;
+- trả project-local artifact của A cho B;
+- slice failover trước dedupe;
+- coi SKIPPED là PASS;
+- coi NOT_VERIFIED là PASS;
+- phá EdgeTTS;
+- phá ElevenLabs;
+- phá Google TTS;
+- phá OpenAI TTS;
+- phá Mock;
+- phá STT;
+- phá translation;
+- phá forced alignment;
+- phá TTS resume;
+- phá SSE;
+- phá upload;
+- phá cleanup;
+- phá sql.js single-writer invariant;
+- migrate database architecture sang PostgreSQL trong task này.
+
+Không refactor lan man ngoài phạm vi nếu một thay đổi surgical đã giải quyết được issue.
+
+Nếu ownership không chứng minh được:
+
+→ CACHE MISS.
+
+Nếu ZeroTTS unavailable:
+
+→ provider failover.
+
+Nếu Docker/model/runtime không verify được:
+
+→ NOT_VERIFIED.
+
+==================================================
+8. BÁO CÁO CUỐI CÙNG
+==================================================
+
+Báo cáo chính xác:
+
+### Files changed
+
+added
+modified
+deleted.
+
+### Cache architecture
+
+- provider response cache;
+- single-flight;
+- artifact ownership;
+- cache identity;
+- legacy cache behavior;
+- cross-project isolation.
+
+### ZeroTTS
+
+- admission control;
+- queue;
+- concurrency;
+- body/text limits;
+- filesystem security;
+- timeout;
+- shutdown;
+- metrics;
+- MP3 validation.
+
+### Failover
+
+- dedupe;
+- maxAttempts;
+- retryability;
+- aggregate classification.
+
+### Docker/CI
+
+- ZeroTTS service;
+- dependency/model setup;
+- healthcheck;
+- E2E job.
+
+### Tests
+
+Với TỪNG command:
+
+PASS
+FAIL
+SKIPPED
+BLOCKED
+NOT_VERIFIED
+
+kèm evidence/output quan trọng.
+
+### Remaining risks
+
+Chỉ nêu risk thực sự còn lại.
+
+Không tuyên bố hoàn thành nếu chưa có verification.
+
+PHẢI SỬA SOURCE CODE THỰC TẾ.
+
+PHẢI CẬP NHẬT TESTS.
+
+PHẢI CẬP NHẬT CONFIG/DOCKER/CI/DOCS/FRONTEND KHI CẦN.
+
+PHẢI CHẠY BUILD/TEST/SMOKE THỰC TẾ.
+
+KHÔNG ĐƯỢC CHỈ TẠO FILE MARKDOWN.

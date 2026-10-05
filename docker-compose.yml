@@ -51,6 +51,8 @@ services:
       - WHISPER_TEMPERATURE=${WHISPER_TEMPERATURE:-0}
       - WHISPER_INITIAL_PROMPT=${WHISPER_INITIAL_PROMPT:-}
       - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - ZEROTTS_URL=${ZEROTTS_URL:-http://zerotts:5005}
+      - ZEROTTS_TIMEOUT_MS=${ZEROTTS_TIMEOUT_MS:-60000}
     volumes:
       - storage_data:/app/storage
       - db_data:/app/data
@@ -62,6 +64,34 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # BE-D02: ZeroTTS local inference riêng (ONNX Runtime, keyless). Không expose public
+  # port mặc định; api gọi qua http://zerotts:5005 (không 127.0.0.1 giữa containers).
+  zerotts:
+    build:
+      context: .
+      dockerfile: docker/zerotts.Dockerfile
+    environment:
+      - ZEROTTS_HOST=0.0.0.0
+      - ZEROTTS_PORT=5005
+      - ZEROTTS_MODEL=${ZEROTTS_MODEL:-zeroweight-ai/ZeroTTS}
+      - ZEROTTS_VOICE=${ZEROTTS_VOICE:-maichi}
+      - ZEROTTS_THREADS=${ZEROTTS_THREADS:-4}
+      - ZEROTTS_CONCURRENCY=${ZEROTTS_CONCURRENCY:-1}
+      - ZEROTTS_MAX_INFLIGHT_REQUESTS=${ZEROTTS_MAX_INFLIGHT_REQUESTS:-8}
+      - ZEROTTS_MAX_BODY_BYTES=${ZEROTTS_MAX_BODY_BYTES:-65536}
+      - ZEROTTS_MAX_TEXT_CHARS=${ZEROTTS_MAX_TEXT_CHARS:-2000}
+      - ZEROTTS_OUTPUT_ROOT=${ZEROTTS_OUTPUT_ROOT:-/tmp/zerotts_service}
+      - ZEROTTS_SHUTDOWN_TIMEOUT_MS=${ZEROTTS_SHUTDOWN_TIMEOUT_MS:-15000}
+    volumes:
+      - zerotts_models:/root/.cache
+      - zerotts_out:/tmp/zerotts_service
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5005/health',timeout=4).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
 
   # NOTE: there is deliberately NO separate `worker` service. The API service
   # runs queue workers in-process (server.js, INSTANCE_MODE=single) — a second
@@ -82,3 +112,5 @@ volumes:
   redis_data:
   storage_data:
   db_data:
+  zerotts_models:
+  zerotts_out:

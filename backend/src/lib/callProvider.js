@@ -6,10 +6,26 @@
  *   4. Tracked execution with timing + provider_logs (docs/03 §6)
  *   5. Rate limiter release
  *   6. Cache write on success
+ *
+ * Contract "shared computation vs project artifact" (BE-C01):
+ * - provider_cache là computation cache (content-addressed theo provider/type/
+ *   input_hash), KHÔNG phải artifact store.
+ * - Shared result CHỈ an toàn khi không chứa local path (text/bytes/duration/
+ *   immutable identity). Mọi `audioPath/clipPath` local là project-owned artifact,
+ *   ownership thuộc về `audios` + `transcript_segments.tts_clip_key` + file dưới
+ *   `storage/projects/<projectId>/` của chính project (xem dubTtsAlign).
+ * - Vì vậy: single-flight + persistent cache KHÔNG được trả local path của project
+ *   khác cho caller. Chưa chứng minh ownership → CACHE MISS (không xóa mù quáng
+ *   entry của owner khác). Filesystem path không bao giờ là auth proof.
+ * - Tương lai (bytes-based materialization): provider trả bytes → mỗi caller tự
+ *   ghi `clip_<hash>.mp3` riêng; lúc đó mới strip path khi store + share computation
+ *   cross-project. Hiện tại single-flight key gồm projectId để chặn leak (đánh đổi
+ *   1 lần synth dư khi 2 project trùng input đồng thời — an toàn hơn dedupe sai).
  */
 
 import crypto from 'crypto'
 import fs from 'node:fs'
+import path from 'node:path'
 import { run, queryOne } from '../db/query.js'
 import { config } from '../config.js'
 import { v4 as uuidv4 } from 'uuid'
@@ -55,7 +71,10 @@ function inputHash(provider, type, model, input) {
 // later concurrent requests await the same promise. No distributed lock.
 const inFlightProviderCalls = new Map()
 
-function singleFlightKey(provider, type, hash) {
+function singleFlightKey(provider, type, hash, projectId) {
+  // BE-C02: single-flight chỉ share trong cùng project khi kết quả có thể chứa
+  // local artifact. projectId=null (tests/legacy) giữ key cũ để backward-compat.
+  if (projectId) return `${provider}\0${type}\0${hash}\0p:${projectId}`
   return `${provider}\0${type}\0${hash}`
 }
 
@@ -106,6 +125,11 @@ async function checkCache(provider, type, model, input) {
 
 /**
  * Store result in provider cache.
+ * BE-C03: không persist `cacheHit` flag (metadata của lần đọc, không phải identity).
+ * Giữ nguyên artifact cho path-bound inputs (input chứa outPath → cùng file → HIT an
+ * toàn, backward-compat với callProvider.cacheArtifacts.test). Canonical TTS inputs
+ * (không outPath) được bảo vệ bởi ownership check khi đọc (BE-C04) thay vì strip
+ * mù quáng — strip hoàn toàn đòi bytes-based materialization ở dubTtsAlign (future).
  */
 async function storeCache(provider, type, model, input, result, ttlDays) {
   let hash = ''
@@ -116,7 +140,7 @@ async function storeCache(provider, type, model, input, result, ttlDays) {
       : null
     await run(
       `INSERT OR REPLACE INTO provider_cache (id, provider, type, input_hash, result, expires_date) VALUES (?, ?, ?, ?, ?, ?)`,
-      [uuidv4(), provider, type, hash, JSON.stringify(result), expiresDate]
+      [uuidv4(), provider, type, hash, JSON.stringify(withoutCacheHitFlag(result)), expiresDate]
     )
   } catch (err) {
     // Cache write failure is non-fatal
@@ -138,12 +162,44 @@ function isRemoteArtifact(p) {
   const s = String(p || '').trim()
   return /^(https?:\/\/|data:|blob:)/i.test(s)
 }
+function localArtifactPath(cached) {
+  if (!cached || typeof cached !== 'object' || Array.isArray(cached)) return null
+  for (const key of ['audioPath', 'clipPath']) {
+    const p = cached[key]
+    if (typeof p === 'string' && p.trim() !== '' && !isRemoteArtifact(p)) return p
+  }
+  return null
+}
 function isStaleLocalArtifact(cached) {
-  if (!cached || typeof cached !== 'object' || Array.isArray(cached)) return false
-  const p = cached.audioPath
-  if (typeof p !== 'string' || p.trim() === '') return false
-  if (isRemoteArtifact(p)) return false
+  const p = localArtifactPath(cached)
+  if (!p) return false
   try { return !fs.existsSync(p) } catch (_) { return false }
+}
+// BE-C03/C04: cached có local path nhưng không chứng minh được ownership → unsafe.
+// - File missing → stale (caller invalidate entry đó, không xóa cả DB).
+// - projectId có + path nằm ngoài storage/projects/<projectId>/ → cross-project → MISS
+//   (KHÔNG delete: entry có thể vẫn hợp lệ với owner gốc).
+// - projectId null (tests/legacy generic callers) → giữ hành vi cũ (chỉ check exists)
+//   để backward-compat; ownership thực sự do dubTtsAlign filesystem resume đảm nhiệm.
+function isUnsafeCachedArtifact(cached, projectId) {
+  const p = localArtifactPath(cached)
+  if (!p) return false
+  try {
+    if (!fs.existsSync(p)) return true
+  } catch (_) { return false }
+  if (!projectId) return false
+  try {
+    const ownerDir = path.resolve(config.storageDir, 'projects', String(projectId))
+    const abs = path.resolve(String(p))
+    return !(abs === ownerDir || abs.startsWith(ownerDir + path.sep))
+  } catch (_) { return false }
+}
+function withoutCacheHitFlag(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result
+  if (!('cacheHit' in result)) return result
+  const copy = { ...result }
+  delete copy.cacheHit
+  return copy
 }
 
 /**
@@ -196,33 +252,42 @@ export async function callProvider({
   // BE-03: kill-switch cache toàn cục (docs/11 §3.2). Tắt → chạy provider
   // trực tiếp (vẫn rate-limit + log), không đọc/ghi provider_cache.
   if (config.providerCacheEnabled === false) {
-    return executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts })
+    const direct = await executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts })
+    if (direct && typeof direct === 'object' && !Array.isArray(direct) && !('cacheHit' in direct)) return { ...direct, cacheHit: false }
+    return direct
   }
   // BE-03: TTL cấu hình thắng default 90 ngày (không đổi chữ ký hàm).
   const effectiveTtlDays = Number.isFinite(config.providerCacheTtlDays)
     ? config.providerCacheTtlDays
     : cacheTtlDays
   const skipCache = isUnsafeAsrCacheInput(type, input)
-  // 1. Cache check (+ stale local-artifact invalidation before provider call)
+  // 1. Cache check (+ stale/unsafe local-artifact handling before provider call)
   if (!skipCache) {
     const cached = await checkCache(provider, type, model, input)
     if (cached !== null) {
       if (isStaleLocalArtifact(cached)) {
         await invalidateCacheRow(provider, type, model, input, 'provider_cache_stale_artifact')
+      } else if (isUnsafeCachedArtifact(cached, projectId)) {
+        // BE-C03/C04: local path không chứng minh ownership → MISS, không delete
+        // mù quáng entry của owner khác. Nếu ownership không chứng minh được → MISS.
+        logCacheDiag('provider_cache_ownership_miss', { provider, type, hash: inputHash(provider, type, model, input) })
       } else {
-        // Still log for analytics but mark as cache hit
+        // Still log for analytics but mark as cache hit (BE-C05, không persist flag).
         await logCall({ projectId, jobId, provider, type, model, status: 'cache_hit', durationMs: 0 })
-        return cached
+        return { ...cached, cacheHit: true }
       }
     }
   } else {
     // Non-cacheable calls never participate in single-flight.
-    return executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts })
+    const direct = await executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts })
+    if (direct && typeof direct === 'object' && !Array.isArray(direct) && !('cacheHit' in direct)) return { ...direct, cacheHit: false }
+    return direct
   }
 
-  // 1b. Process-local single-flight: same cache key → one provider call.
+  // 1b. Process-local single-flight: same project + cache key → one provider call.
+  // BE-C02: key gồm projectId để waiter khác project không nhận audioPath project-local.
   const hash = inputHash(provider, type, model, input)
-  const flightKey = singleFlightKey(provider, type, hash)
+  const flightKey = singleFlightKey(provider, type, hash, projectId)
   const existing = inFlightProviderCalls.get(flightKey)
   if (existing) return existing
 
@@ -230,6 +295,8 @@ export async function callProvider({
     try {
       const result = await executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts })
       await storeCache(provider, type, model, input, result, effectiveTtlDays)
+      // BE-C05: execution → cacheHit:false (không persist thêm trường vào DB).
+      if (result && typeof result === 'object' && !Array.isArray(result) && !('cacheHit' in result)) return { ...result, cacheHit: false }
       return result
     } finally {
       // Always cleanup so retries are possible and no memory leaks.

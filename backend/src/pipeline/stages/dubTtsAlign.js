@@ -416,6 +416,14 @@ export async function dubTtsAlign(ctx) {
 // Canonical TTS synthesis with filesystem resume + provider failover.
 // Clip file is content-addressed by (provider/voice/text/speed): same input →
 // same file → no provider call. Changed text/voice → new file → new call.
+//
+// BE-C01/C04 contract "shared computation vs project artifact":
+// - provider_cache chỉ là computation cache; ownership artifact thuộc về file dưới
+//   segDir của CHÍNH project (`clip_<hash>.mp3`) + `audios` + `transcript_segments`.
+// - Filesystem resume (`fs.existsSync(clipPath)` + probe>0.05) là project-local nên
+//   đúng ownership và được giữ nguyên. Không dùng filesystem path làm auth proof
+//   cross-project; callProvider chặn cross-project cache/single-flight reuse.
+// - `audio.cacheHit` đếm cả fs-hit (ở đây) lẫn DB-hit (callProvider trả cacheHit:true).
 async function synthWithFailover(candidates, text, segDir, segKey, job, projectId, speed = 1, userId = null) {
   const clean = String(text || '').trim()
   if (!clean) throw new Error('TTS text rỗng')

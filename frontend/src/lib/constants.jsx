@@ -12,6 +12,9 @@ export const STATUS_LABELS = {
   success: { label: 'Thành công', color: 'bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 border-emerald-500/25', dot: 'bg-emerald-500' },
   error: { label: 'Lỗi', color: 'bg-destructive/10 text-destructive dark:text-rose-300 border-destructive/25', dot: 'bg-destructive' },
   timeout: { label: 'Quá hạn', color: 'bg-orange-500/10 text-orange-800 dark:text-orange-300 border-orange-500/25', dot: 'bg-orange-500' },
+  busy: { label: 'Máy chủ bận', color: 'bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-500/25', dot: 'bg-amber-500' },
+  server_busy: { label: 'Máy chủ bận', color: 'bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-500/25', dot: 'bg-amber-500' },
+  rate_limited: { label: 'Giới hạn tần suất', color: 'bg-amber-500/10 text-amber-800 dark:text-amber-300 border-amber-500/25', dot: 'bg-amber-500' },
 };
   
   export const STAGE_LABELS = {

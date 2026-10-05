@@ -1,9 +1,9 @@
-# BÁO CÁO TỔNG HỢP HOÀN CHỈNH — Hoàn thiện các mục PARTIAL / NOT IMPLEMENTED (Roadmap `10_TASKS.md`)
+# BÁO CÁO TỔNG HỢP HOÀN CHỈNH — TTS Cache Isolation + ZeroTTS Hardening + Failover (task.txt)
 
 **Ngày:** 2026-10-05 (UTC+07)
-**Nhiệm vụ gốc:** `Video_AI_docs/task.txt` rỗng → scope suy ra từ các mục `[PARTIAL]` / `[NOT IMPLEMENTED]` trong `Video_AI_docs/docs/10_TASKS.md` (xem `.team/PLAN.md` §1).
-**Đầu vào đã đọc:** `.team/PLAN.md`, `.team/BACKEND_REPORT.md`, `.team/FRONTEND_REPORT.md`, `.team/TEST_REPORT.md` + `git status` / `git diff` / `git log` trên nhánh `main` + tự chạy lại 2 file test mới.
-**Lưu ý trung thực:** `.team/TEST_REPORT.md` thuộc **chu kỳ cũ** (viết cho plan docs-sync trước đây: vẫn ghi `FRONTEND_REPORT.md NOT FOUND`, vẫn ghi bug `confirmPreview` "chờ duyệt riêng", suite 128 files). Các số liệu kiểm thử mới nhất lấy từ `BACKEND_REPORT.md` / `FRONTEND_REPORT.md` + xác thực độc lập của tôi (xem §4). Không commit/push (đúng Git Rules) — mọi thay đổi vẫn nằm trên working tree.
+**Nhiệm vụ gốc:** `Video_AI_docs/task.txt` (HEAD `6003ef9`) — 13 mục tiêu: chặn cross-project TTS artifact reuse, hardening ZeroTTS, sửa failover dedupe + aggregate retryability, giữ backward-compat pipeline.
+**Đầu vào đã đọc:** `.team/PLAN.md`, `.team/BACKEND_REPORT.md`, `.team/FRONTEND_REPORT.md`, `.team/TEST_REPORT.md` + `git status` / `git diff --stat` / `git log` trên nhánh `main`.
+**Lưu ý trung thực (quan trọng):** `.team/TEST_REPORT.md` thuộc **chu kỳ cũ** (nửa đầu: chu kỳ docs-sync 128 files + bug `confirmPreview` "chờ duyệt"; nửa sau "Đợt 2": chu kỳ quota/preview 130 files + defect orphan handler FE-01; §2 của nó còn ghi `FRONTEND_REPORT.md NOT FOUND`). Các số liệu kiểm thử **mới nhất của chu kỳ hiện tại** lấy từ `BACKEND_REPORT.md` + `FRONTEND_REPORT.md` (ngày 2026-10-05, đúng scope working tree). Turn này tôi **không chạy lại suite** — chỉ đọc reports + kiểm chứng git; mọi con số PASS đều ghi rõ nguồn. Không commit/push (đúng Git Rules).
 
 ---
 
@@ -11,85 +11,103 @@
 
 | Hạng mục | Kết quả | Bằng chứng |
 |---|---|---|
-| **Kế hoạch** | Xong — `.team/PLAN.md` (146 dòng). Chốt 6 nhóm việc A–F từ `10_TASKS.md`, tasks BE-01→BE-10 / FE-01→FE-06 / QA-00→QA-04, whitelist file chạm, nhóm F (Flow Producer) marked OPTIONAL | `.team/PLAN.md` |
-| **Backend** | Xong BE-01→BE-08, BE-10 (không migration); **BE-09 SKIP có lý do** (Redis DOWN, sequential đang đúng — plan cho phép optional). 5 file sửa + 2 file test mới | `.team/BACKEND_REPORT.md`, `git diff --stat`, tự verify diff + chạy test |
-| **Frontend** | Xong FE-01→FE-06. 1 file mới (`QuotaBanner.jsx`) + 5 file sửa (extra, Layout, PipelineStatus, ApiKeys, ProjectDetail); lint/build/typecheck PASS | `.team/FRONTEND_REPORT.md`, `git diff --stat` |
-| **Kiểm thử** | 2 file test mới tự chạy lại: **ALL PASS** (`quotaRoundRobin` 9/9, `quotaPrecheck` 12/12 — xem log đuôi §4). Full suite theo báo cáo team: backend 130/130 files PASS, frontend 3 gates PASS | §4 + 2 team reports |
-| **Git** | Nhánh `main` (HEAD `32a8954`), up-to-date. 13 files `M` + 4 untracked (task.txt rỗng, 2 test mới, QuotaBanner). Không commit/push | `git status`, `git log --oneline -8` |
+| **Kế hoạch** | Xong — `.team/PLAN.md` (160 dòng). Chốt mapping 13 mục tiêu → module, thứ tự P0 trước P1, whitelist file, gates QA-CACHE/SF/BP/LIMIT/FS/MP3/TO/FO/CH/OBS/REG/FE | `.team/PLAN.md` |
+| **Backend** | Xong BE-C01→C06, BE-Z01→Z08, BE-F01→F03, BE-D01→D03. 8 files sửa + 3 files mới, 0 file xóa | `.team/BACKEND_REPORT.md` + `git status/diff` (khớp) |
+| **Frontend** | Xong FE-01→FE-04. 6 files sửa, 0 thêm/0 xóa; lint/typecheck/build PASS | `.team/FRONTEND_REPORT.md` |
+| **Kiểm thử** | Mới nhất (từ team reports): backend **132 files PASS** (130 cũ + 2 mới), 2 suites mới ALL PASS; frontend 3 gates PASS. `TEST_REPORT.md` hiện tại **stale** — chưa có kết quả cho chu kỳ này | §4 (ghi rõ nguồn từng con số) |
+| **Git** | Nhánh `main`, HEAD `b3f0750`, up-to-date. 14 files `M` + 4 untracked. Không commit/push | `git status`, `git log` (§2.1) |
 
-**Kết luận 1 dòng:** Mọi mục PARTIAL trong roadmap đã được hiện thực end-to-end (confirm-preview, rate-limit đúng DB, round-robin đa key, QuotaGuard pre-check + banner quota) với test chứng minh; tồn đọng: 4 lỗi backend lint có sẵn (ngoài phạm vi), Redis local DOWN (expected), Flow Producer để plan riêng.
+**Kết luận 1 dòng:** Mọi mục P0/P1 trong `task.txt` đã được hiện thực trên working tree (cache isolation, ZeroTTS admission/limits/fs-jail/fail-closed-MP3/observability/shutdown, failover dedupe + aggregate, Docker service + CI job riêng, error mapping frontend); tồn đọng xác thực: ZeroTTS live E2E với model thật **NOT_VERIFIED** (chờ CI `zerotts-e2e`), Redis local DOWN (expected), vài lỗi lint có sẵn ngoài phạm vi.
 
 ---
 
 ## 2. Chi tiết các thay đổi Backend
 
-> Nguồn: `.team/BACKEND_REPORT.md` + `git diff` (đã đối chiếu trực tiếp 2 diff mẫu — khớp báo cáo).
+> Nguồn: `.team/BACKEND_REPORT.md` + `git status` / `git diff --stat` (đã đối chiếu — khớp).
 
 ### 2.1. Trạng thái git thực tế (đã kiểm chứng lúc tổng hợp)
 
-- Branch `main`, HEAD `32a8954 test herdr`. 13 files modified, 558 insertions(+) / 355 deletions(−):
-  - `.team/`: `PLAN.md`, `BACKEND_REPORT.md`, `FRONTEND_REPORT.md` (viết lại cho chu kỳ hiện thực này).
-  - Backend (5): `src/routes/v1/confirmPreview.js` (+3/−1), `src/providers/registry.js` (1 dòng query), `src/lib/callProvider.js` (+52), `src/services/quotaGuardService.js` (+65), `src/pipeline/runner.js` (+48).
-  - Frontend (5): `src/api/extra.js` (+1), `src/components/Layout.jsx` (+4), `src/components/project/PipelineStatus.jsx` (+78), `src/pages/ApiKeys.jsx` (+29), `src/pages/ProjectDetail.jsx` (+142).
-- Untracked: `Video_AI_docs/task.txt` (rỗng, 0 bytes), `backend/tests/quotaRoundRobin.test.mjs`, `backend/tests/quotaPrecheck.test.mjs`, `frontend/src/components/QuotaBanner.jsx`.
+- Branch `main`, HEAD `b3f0750 feat(quota,preview): warn-only precheck, priority key failover, DB rate limits, quota UX and preview confirm` (mới hơn HEAD `32a8954` mà `REPORT.md` cũ ghi — các commit quota/preview đã vào `main`).
+- 14 files modified, **972 insertions(+) / 140 deletions(−)**:
+  - CI/Docker (2): `.github/workflows/ci.yml` (+41), `docker-compose.yml` (+32)
+  - Backend (6): `backend/scripts/zerotts_service.py` (+536/−nhiều), `backend/src/config.js` (+19), `backend/src/lib/callProvider.js` (+93), `backend/src/lib/providerFailover.js` (+50), `backend/src/pipeline/stages/dubTtsAlign.js` (+8), `backend/src/providers/tts/zeroTts.js` (+77)
+  - Frontend (6): `frontend/src/api/extra.js` (+1), `frontend/src/components/project/PipelineStatus.jsx` (+55), `frontend/src/lib/constants.jsx` (+3), `frontend/src/lib/providerErrorMessage.js` (+79), `frontend/src/pages/ProjectDetail.jsx` (+96), `frontend/src/pages/ProviderSettings.jsx` (+22)
+- Untracked (4): `Video_AI_docs/task.txt`, `backend/tests/providerCacheIsolation.test.mjs`, `backend/tests/providerFailoverAggregate.test.mjs`, `docker/zerotts.Dockerfile`.
+- Deleted: none. Không chạm: `.env`, `data.db`, `storage/*`, enum status, STT/translation/alignment/resume/SSE/upload/cleanup/sql.js single-writer.
+- Lưu ý: `.team/` bị gitignore (commit `0b93c88`) nên docs team không hiện trong `git status` — bình thường.
 
-### 2.2. Từng thay đổi (BE-01 → BE-10)
+### 2.2. Nhóm CACHE — tách computation khỏi artifact (P0)
 
-- **BE-01 — Fix auth `confirm-preview`:** `confirmPreview.js:9` thêm `authMiddleware` trước `requireProjectOwner` (verified qua `git diff`). Trước đây thiếu auth → `req.user` undefined → TypeError 500; nay không Bearer trả `401 AUTH_001` đúng. Contract giữ nguyên (POST, 202).
-- **BE-02 — `callProvider` đọc đúng DB:** mới `resolveRateLimitOpts()` trong `lib/callProvider.js`: query `provider_rate_limits` (per-user thắng system default), nhân safety margin từ `config.js`, fallback `rpm: 10` khi DB thiếu row; `rateLimitOpts` explicit thắng DB; lỗi DB → fallback, không vỡ provider call. **Lệch plan có chủ ý, đã ghi trong báo cáo:** plan ghi nhân `(1−margin)` nhưng `config` + docs/11 §8 định nghĩa margin là phần dùng được (`0.8` = 80%) → dùng trực tiếp làm multiplier, clamp (0,1]. Hệ quả: RPM hiệu dụng = seed × 0.8 (gemini free 10 → 8).
-- **BE-03 — Tôn trọng cờ cache:** `providerCacheEnabled === false` → bỏ qua `checkCache` + `storeCache` (vẫn rate-limit + log); `providerCacheTtlDays` thắng default 90 ngày. Không đổi chữ ký, không đổi schema `provider_cache`.
-- **BE-04 — `resolveApiKey` tôn trọng `priority`:** `registry.js` đổi `ORDER BY created_date DESC` → `ORDER BY priority ASC, created_date ASC` (verified qua `git diff`, đúng 1 dòng — khớp `resolveApiKeyRow` và `selectBestApiKey`).
-- **BE-05 — Hồi sinh `selectBestApiKey` (bỏ dead code):** viết lại `quotaGuardService.js:95-126`: bỏ đếm `rate_limited` toàn cục (bug cũ — 1 lỗi 429 ở đâu cũng skip **mọi** key) + bỏ snapshot chung vô nghĩa; dùng `isProviderAvailable({provider, apiKeyId})` per-key + giữ thứ tự priority. **Không sửa 3 stages** (`dubStt.js:110`, `dubTtsAlign.js:422`, `summaryTranscribe.js:82`): failover per-key đã có sẵn và đúng (`listProvidersForCapability` trả candidates theo priority + `withProviderFailover` thử lần lượt, `reportProviderFailure` cooldown per-key) — thêm call mới là thừa/rủi ro.
-- **BE-06 — Test mới `quotaRoundRobin.test.mjs`:** 9 asserts (priority nhỏ chọn trước qua cả `getProvider` lẫn `selectBestApiKey`; key 429 → key còn lại; hết cooldown → lại key 0; failover thật qua candidates từ DB đúng thứ tự lo→hi; key `is_active=0` bị bỏ qua). Provider `mock`, không tốn quota thật.
-- **BE-07 — QuotaGuard pre-check (warn-only):** mới `precheckStage(userId, provider, est)` — warn khi `percentUsed ≥ threshold` **và** `usedToday + est > limitToday`; `limitToday == null` → không warn; luôn `allowed: true` (không chặn job, đúng `11 §4.1`). Gọi tại **1 điểm duy nhất** `executeStage` cho stage AI (`asr/vision/llm/tts`, bỏ qua `mock`/`ffmpeg`/`core`, fail-open try/catch); estimate = COUNT `transcript_segments` cho `dub.translate`/`dub.ttsAlign`, else 10. Warning merge vào `generation_jobs.result.warnings[]` lúc success, không ghi đè result gốc.
-- **BE-08 — `Retry-After`:** call-site đã ưu tiên `parseRetryAfter` (`runner.js:734-737`) → giữ `getNextRetryAt` (now+60s) nguyên; chỉ mở rộng `parseRetryAfter` đọc thêm `err.retryAfter` / `headers['retry-after']` trước khi parse message + export cho test.
-- **BE-09 — SKIP (đúng plan):** Flow Producer không làm — Redis DOWN ở env này, sequential chạy đúng, thêm phụ thuộc Redis + idempotency mirror là rủi ro cao/lợi ích thấp. Tách plan riêng khi Redis sẵn.
-- **BE-10 — Không migration:** warnings nằm trong `result` JSON có sẵn; `git diff` không chạm `db/schema.js`.
+- **`backend/src/lib/callProvider.js`** (BE-C01→C05): comment contract mới (shared computation vs project artifact); single-flight key gồm `projectId` → waiter khác project không nhận `audioPath` lạ (đánh đổi có chủ ý: trùng input đồng thời synth 2 lần — an toàn hơn dedupe sai; bytes-based sharing là future work); helpers `localArtifactPath` / `isUnsafeCachedArtifact`; đọc cache: stale (file mất) → DELETE entry + MISS, cross-project (path ngoài owner dir) → MISS nhưng KHÔNG delete (giữ entry owner gốc), `projectId=null` (tests/legacy) giữ hành vi cũ; propagate `cacheHit` (DB-hit `true`, execution `false`, không persist flag).
+- **`backend/src/pipeline/stages/dubTtsAlign.js`** (+8, BE-C01/C04): comment contract — filesystem resume (`clip_<hash>.mp3` + `probe > 0.05`) là project-local, giữ nguyên logic; DB `provider_cache` chỉ là computation cache; ownership = `audios` + `transcript_segments.tts_clip_key`.
+- **Test mới `backend/tests/providerCacheIsolation.test.mjs`** (BE-C06): concurrent A+B, legacy unsafe, cacheHit — báo cáo ALL PASS (11 asserts).
 
-### 2.3. Baseline môi trường (từ BACKEND_REPORT, đã đối chiếu TEST_REPORT cũ — khớp nhau)
+### 2.3. Nhóm ZEROTTS — Python service + Node client (P1)
 
-- Node v24.14.1 / npm 11.11.0. Redis `npm run check:redis`: **FAIL** — ECONNREFUSED 127.0.0.1:6379 (expected, dev local không bật container; backend fallback in-process).
-- FFmpeg **có sẵn** `9.0.1-full_build-www.gyan.dev` (trái ghi chú "NOT installed" cũ trong AGENTS.md; hỗ trợ NVENC per TEST_REPORT).
+- **`backend/scripts/zerotts_service.py`** (+536, BE-Z01→Z05/Z07/Z08): admission semaphore (`MAX_INFLIGHT` default 8, non-blocking → vượt là `429 QUEUE_FULL`; inference `model_lock` timeout 120s → `503 SERVER_BUSY`); check `Content-Length` trước `read()` (thiếu → 400, vượt `MAX_BODY_BYTES=64KB` → 413; text vượt `MAX_TEXT_CHARS=2000` → 413); validate `THREADS 1..64 / CONCURRENCY 1..16 / MAX_INFLIGHT 1..64` fail-fast (exit 2); `OUTPUT_ROOT` jail (reject traversal/absolute ngoài root/symlink escape, `mkdir` chỉ trong root); MP3 fail-closed (FFmpeg missing/convert fail/ffprobe sai → `500 SYNTHESIS_ERROR` + xóa partial, bỏ `except: pass`); `/health` thêm `queueDepth/activeRequests/activeInference/started/completed/failed/abandoned/maxInflight/stopping`; `SIGTERM/SIGINT → STOPPING → reject new → drain bounded (SHUTDOWN_TIMEOUT_MS=15s)`; `finally` luôn release admission + inference slot.
+- **`backend/src/providers/tts/zeroTts.js`** (+77, BE-Z05/Z06): bỏ fallback copy WAV→`.mp3`; `assertRealMp3` (reject RIFF + ffprobe `format_name` chứa mp3) trước return, fail → throw `PROVIDER_UNAVAILABLE`/`PROVIDER_RESPONSE_MALFORMED`; map 429/QUEUE_FULL → `RATE_LIMITED`, 413 → `INVALID_REQUEST`; document speed contract (ZeroTTS native không hỗ trợ speed → FFmpeg tempo downstream; giữ `supportsNativeSpeedFor` Edge/OpenAI).
+- **`backend/src/config.js`** (+19, BE-D01): thêm `config.zerotts` tập trung env (document, không throw lúc boot).
+
+### 2.4. Nhóm FAILOVER (P1)
+
+- **`backend/src/lib/providerFailover.js`** (+50, BE-F01/F02): dedupe-trước-slice (`A:key1,A:key1,B:key2` maxAttempts=2 → thử `A:key1,B:key2`); `classifyAggregateFailover` (`ALL_TRANSIENT/ALL_QUOTA/ALL_AUTH/ALL_PERMISSION/ALL_CONFIGURATION/MIXED`); `retryable` aggregate (transient → true; quota/auth/permission/config → false; mixed → false + classification); per-attempt `{provider,apiKeyId,code,kind,retryable,attempt}`; giữ code `NO_PROVIDER_AVAILABLE` + message slice 300 (không leak secrets).
+- **Test mới `backend/tests/providerFailoverAggregate.test.mjs`** (BE-F03) — báo cáo ALL PASS (13 asserts).
+
+### 2.5. Nhóm DOCKER/CI/DOCS
+
+- **`docker-compose.yml`** (+32, BE-D02) + **mới `docker/zerotts.Dockerfile`** (python:3.11-slim + ffmpeg + locked `onnxruntime/numpy/soundfile` + healthcheck): service `zerotts` riêng, `api` dùng `ZEROTTS_URL=http://zerotts:5005`, không expose public port mặc định. `docker compose config --quiet` báo cáo **PASS**.
+- **`.github/workflows/ci.yml`** (+41, BE-D03): job `zerotts-e2e` riêng (Python + FFmpeg + locked deps + model cache + `npm run test:zerotts`); giữ `npm test` nhẹ; không coi SKIPPED là PASS.
 
 ---
 
 ## 3. Chi tiết các thay đổi Frontend
 
-> Nguồn: `.team/FRONTEND_REPORT.md` + `git diff --stat` (5 files sửa + 1 file mới — khớp báo cáo).
+> Nguồn: `.team/FRONTEND_REPORT.md` + `git diff --stat` (6 files — khớp).
 
-- **FE-01 — "Xem trước & Xác nhận" FR-J2 hết orphan (`ProjectDetail.jsx` +142 dòng):** khi `dub.translate` SUCCESS → banner xác nhận + trình phát video xem trước (video gốc + phụ đề dịch realtime) + nút "Xác nhận & Render bản cuối" gọi `projectsApi.confirmPreview(id)` (wrapper `api/projects.js:33` có sẵn, không sửa) → 202 rồi reload jobs/SSE. `enableDubbing=false` → enqueue thẳng `dub.render`; `true` → `dub.ttsAlign → dub.render`. Disable nút khi pipeline `running`.
-- **FE-02 — Auth 401 đúng:** khớp BE-01 — `api/client.js` single-flight refresh + retry 1 lần; hết hạn → redirect `/login` an toàn + toast lỗi rõ ràng. Không thêm lib mới.
-- **FE-03 — `QuotaBanner.jsx` (mới) + gắn `Layout.jsx` (+4 dòng):** poll `GET /providers/:provider/quota` mỗi 60s; `percentUsed ≥ 80%` → banner vàng toàn hệ thống (mọi trang protected, dưới header trên main), dark theme `#0F1117`, framer-motion, nút tạm ẩn (X) + link nhanh tới trang API Keys.
-- **FE-04 — Trạng thái chờ quota (`PipelineStatus.jsx` +78 dòng):** job `status === 'retry'` + `next_retry_at` → pill amber "Đang chờ quota provider hồi phục lúc HH:mm" + icon `<Clock>` pulse + dòng tổng hợp dưới stepper; đọc thêm `quota_risk` từ `job.result.warnings` (do BE-07 ghi). Phân biệt rõ với lỗi đỏ.
-- **FE-05 — `ApiKeys.jsx` (+29 dòng):** `QuotaBar` hiện `usedToday/limitToday req/ngày (xx%)` + thanh tiến trình + badge "Sắp chạm hạn mức" khi ≥ 80%; giữ nguyên edit label/priority (phục vụ round-robin BE-04). Không đổi flow tạo/xóa key.
-- **FE-06 — Contract PASS:** `confirm-preview` (202, AUTH+OWNER sau fix), `GET /providers/:provider/quota`, `GET /projects/:id/jobs`, `POST /:id/regenerate` — method/path khớp `backend/src/routes/v1/*`. `api/extra.js` (+1 dòng): thêm `providersApi.quota(provider)`.
+- **FE-01 — `frontend/src/lib/providerErrorMessage.js`** (+79): `friendlyJobError` mở rộng — `SERVER_BUSY/QUEUE_FULL` (429/503) → "Máy chủ TTS đang bận, thử lại sau"; 413/`BODY_TOO_LARGE`/`TEXT_TOO_LONG` → "Văn bản quá dài"; giữ nguyên voice error (`Voice 'xyz' không tồn tại`) và `INVALID_TEXT`; phân loại aggregate (`ALL_TRANSIENT` → bận/tạm thời; `ALL_AUTH` → kiểm tra API Key; `ALL_PERMISSION` → quyền model; `ALL_CONFIGURATION`/`MODEL_NOT_FOUND` → cấu hình; `ALL_QUOTA` → hết quota; generic `NO_PROVIDER_AVAILABLE`/`MIXED` → tất cả không khả dụng). Nhận cả string và structured object.
+- **FE-02 — `frontend/src/pages/ProviderSettings.jsx`** (+22) + **`frontend/src/api/extra.js`** (+1): `KEYLESS_PROVIDERS = {zerotts, edge_tts}`; badge "Local / Keyless" (ZeroTTS) và "Miễn phí" (Edge); helper `providersApi.zerottsHealth()` + hiển thị telemetry (model, `queueDepth`) khi có.
+- **FE-03 — `frontend/src/components/project/PipelineStatus.jsx`** (+55) + **`frontend/src/pages/ProjectDetail.jsx`** (+96): badge `⚡ <n>` cacheHitCount trên stepper (đọc từ `job.result` stage `dub.ttsAlign`/`summary.tts`); banner lỗi stage thân thiện (root-cause qua `friendlyJobError`, nhãn retryable, nút retry); tab Thông số (DUB) thêm thẻ "Lồng tiếng & Tối ưu Cache" (`voiceProvider`, `cacheHitCount/dubbedCount`); giữ DB-authoritative (không suy diễn completed từ SSE closed).
+- **FE-04 — `frontend/src/lib/constants.jsx`** (+3): thêm `STATUS_LABELS` `busy` / `server_busy` / `rate_limited`; giữ enum canonical `pending/queued/running/completed/failed/cancelled`.
+- Giữ dark theme `#0F1117`, không thêm SDK/BaaS, chỉ gọi REST qua `src/api/client.js`. Không đụng `components/timeline/` CapCut.
 
 ---
 
 ## 4. Báo cáo kiểm thử & độ tin cậy
 
-### 4.1. Xác thực độc lập của tôi (2026-10-05, sau khi đọc reports)
+### 4.1. Chu kỳ hiện tại (nguồn: BACKEND_REPORT + FRONTEND_REPORT, 2026-10-05)
 
-| Check | Lệnh | Kết quả |
+| Gate | Kết quả (nguồn) | Ghi chú |
 |---|---|---|
-| Diff BE-01/BE-04 | `git diff -- confirmPreview.js registry.js` | **KHỚP** báo cáo (thêm `authMiddleware`; `ORDER BY priority ASC, created_date ASC`) |
-| Test round-robin | `node tests/quotaRoundRobin.test.mjs` | **ALL PASS** (đuôi log: priority lo→hi, failover đúng key, skip inactive) |
-| Test precheck | `node tests/quotaPrecheck.test.mjs` | **ALL PASS** (`headers['retry-after']=30`, null khi không tín hiệu, fallback now+60s) |
-| Untracked files | `Test-Path` × 3 | **True** — 2 test mới + `QuotaBanner.jsx` tồn tại |
+| Backend regression `cd backend; npm test` | **ALL TEST FILES PASS — 132 files** (130 cũ + 2 mới), gồm SKIP có chủ ý `zeroTtsIntegration` (decoupled, cần model ~900MB) — `BACK.../dev/null` | Chạy bởi Backend agent |
+| `providerFailoverAggregate.test.mjs` | **ALL PASS** (13 asserts: dedupe, ALL_TRANSIENT/QUOTA/MIXED, helper) | Mới |
+| `providerCacheIsolation.test.mjs` | **ALL PASS** (11 asserts: execution cacheHit:false, cross-project MISS, concurrent file riêng, same-project DB-hit true) | Mới |
+| `providerFailover`, `providerQuotaClassification`, `providerErrors`, `ttsCacheResume`, `callProvider.cacheArtifacts`, `zeroTtsProvider` | **ALL PASS** (backward-compat giữ: stale→MISS, remote URL HIT) | Regression liên quan |
+| Backend `npm run lint` (files đã chạm) | **0 error** (+1 eslint-disable cho legacy helper) | Full lint còn **3 pre-existing ngoài phạm vi** — không sửa theo surgical |
+| `docker compose config --quiet` | **PASS** | BE-D02 |
+| Python `py_compile zerotts_service.py` | **PASS** | Live model E2E NOT_VERIFIED (chưa pull model local; chờ CI) |
+| Frontend `npm run lint` | **PASS** (0 warnings/errors) | `FRONTEND_REPORT §4` |
+| Frontend `npm run typecheck` | **PASS** (0 errors) | `tsc -p ./jsconfig.json` |
+| Frontend `npm run build` | **PASS** (2201 modules, ~4.36s) | Vite production bundle OK |
+| Error-mapping assertions (SERVER_BUSY/QUEUE_FULL/413/VOICE/aggregates) | **PASS 100%** | Unit assertions trong FRONTEND_REPORT |
+| Contract FE↔BE | **Không đổi** method/path/payload; health chỉ thêm fields additive | Không vỡ UI cũ |
 
-### 4.2. Gates từ team (tổng hợp 2 reports mới)
+### 4.2. Baseline môi trường (2 reports khớp nhau)
 
-| Gate | Kết quả | Ghi chú |
-|---|---|---|
-| Backend regression `cd backend; npm test` | **PASS 130/130 files** (128 cũ + 2 mới) | BACKEND_REPORT §3; TEST_REPORT cũ ghi 127 PASS + 1 SKIP (`zeroTtsIntegration`, tách chủ ý vì weights ~900MB) — chênh lệch do khác chu kỳ, lần chạy mới nhất (130 files) là chuẩn |
-| Backend lint `npm run lint` | **4 errors có sẵn, ngoài phạm vi** (`transcriptTiming.js:222`, `tts/zeroTts.js:218`, `glossaryService.js:5` unused vars; `zeroTtsIntegration.test.mjs:79` `AbortSignal` undef) — không sửa theo surgical changes | Cả 2 reports khớp nhau |
-| Frontend `lint` / `build` / `typecheck` | **PASS cả 3** (0 errors; Vite 6.4.3 build 2201 modules / TEST_REPORT cũ ghi 2199 — chênh do code mới) | FRONTEND_REPORT §3; không có `frontend npm test` (đúng rule) |
-| Contract FE↔BE + Vite proxy | **PASS** — không đổi method/path/payload nào (chỉ +middleware auth, +trường `warnings[]` mà FE đã đọc) | Cả 2 reports |
+Node **v24.14.1** / npm **11.11.0**; Python **3.12.0** + `import zerotts` OK; FFmpeg **9.0.1-full_build-www.gyan.dev** (trái ghi chú "NOT installed" cũ trong AGENTS.md); Redis `npm run check:redis` **FAIL expected** (ECONNREFUSED 127.0.0.1:6379, fallback in-process); `GET /health` live không probe trong turn này.
 
-### 4.3. Độ tin cậy & tồn đọng
+### 4.3. `TEST_REPORT.md` stale — đối chiếu để tránh lẫn số liệu
 
-- **Tin cậy cao:** mọi thay đổi BE/FE đều có test hoặc gate tương ứng; 2 file test mới tự chạy lại pass; diff đã đối chiếu tay.
-- **Tồn đọng (không chặn):** 4 lỗi backend lint có sẵn → task refactor/lint-fix riêng; Redis local DOWN → BE-09 + mọi tính năng queue chỉ verify ở chế độ in-process; `TEST_REPORT.md` cần refresh cho chu kỳ này (hiện vẫn là bản chu kỳ docs-sync cũ).
+- Đợt 1 trong file đó: suite **128 files** (127 PASS + 1 SKIP), backend lint **4 errors** — thuộc chu kỳ docs-sync cũ.
+- "Đợt 2" trong file đó: suite **130 files** (quota tests), defect **orphan handler FE-01** (`handleConfirmPreview` không render trong JSX) — thuộc chu kỳ quota/preview đã commit (`b3f0750`); turn này tôi không verify lại điểm này trên code mới (`ProjectDetail.jsx` working tree +96 dòng TTS telemetry có thể đã khác) → **cần QA xác nhận lại**, không tự kết luận đã fix hay còn lỗi.
+- Số lint "4 errors" (TEST_REPORT) vs "3 pre-existing" (BACKEND_REPORT) lệch nhau do khác thời điểm/scope đếm — cả hai đều thống nhất: lỗi có sẵn, ngoài phạm vi, cần task lint-fix riêng.
+
+### 4.4. Tồn đọng & rủi ro thực sự còn lại
+
+1. **ZeroTTS live E2E NOT_VERIFIED local** (QA-BP/LIMIT/FS/MP3/TO/OBS với model thật) — chờ CI job `zerotts-e2e`. Không tuyên bố hoàn thành tuyệt đối trước khi job này xanh.
+2. **Last-writer-wins** provider_cache: 2 project trùng input ghi cùng row → project ghi sau thắng, project kia MISS lần sau (an toàn, tốn 1 synth dư). Fix triệt để = bytes-based cache (future work).
+3. Strip path khi store chưa triệt để (giữ backward-compat + filesystem resume) — đã bù bằng ownership check khi đọc.
+4. Redis DOWN → mọi path queue/cleanup chỉ verified qua mock/unit.
+5. `Video_AI_docs/task.txt` untracked có sẵn + 3–4 lint pre-existing — ngoài phạm vi, để owner quyết.
 
 ---
 
@@ -98,32 +116,39 @@
 ### 5.1. Chạy local
 
 ```powershell
-# Terminal 1 — backend (trước)
-cd backend; npm run dev        # API tại http://localhost:3001 (/api/v1)
-# Terminal 2 — frontend (sau)
+# Terminal 1 — backend trước
+cd backend; npm run dev        # API http://localhost:3001 (/api/v1)
+# Terminal 2 — frontend sau
 cd frontend; npm run dev       # UI (Vite proxy /api + /storage → localhost:3001)
+# ZeroTTS service (riêng, khi cần giọng local)
+cd backend; npm run zerotts:start
+# Queue đầy đủ (tùy chọn): docker compose up redis
 ```
 
-Muốn queue đầy đủ (BullMQ) thì bật Redis trước: `docker compose up redis` (hoặc xem `docker-compose.redis-host.yml`); không bật vẫn chạy được ở chế độ in-process.
+### 5.2. Trải nghiệm thay đổi mới (khuyên dùng provider `mock` cho pipeline, ZeroTTS local khi test giọng)
 
-### 5.2. Trải nghiệm tính năng mới (khuyên dùng provider `mock` — không tốn quota)
-
-1. **Xem trước & Xác nhận (FR-J2):** tạo project TRANSLATE_DUB (`/projects/new`, bật/tắt lồng tiếng tùy ý) → chờ `dub.translate` SUCCESS → section preview hiện dưới pipeline (video gốc + phụ đề dịch) → bấm **"Xác nhận & Render bản cuối"** → render chạy (`dub.ttsAlign → dub.render` nếu bật dubbing, thẳng `dub.render` nếu tắt). Thử không đăng nhập gọi API confirm → `401 AUTH_001` (BE-01).
-2. **Banner quota:** dùng gần chạm RPD (hoặc hạ seed `provider_rate_limits` test) → banner vàng hiện mọi trang protected + stepper hiện "Đang chờ quota provider hồi phục lúc HH:mm" thay vì đỏ (BE-07/FE-03/FE-04).
-3. **Round-robin đa key:** `Settings → API Keys` thêm 2 key cùng provider, đặt `priority` 0/1 → pipeline dùng key 0 trước; revoke/active toggle để xem failover (mức dùng per-key hiện ngay trên mỗi row, FE-05).
+1. **Cache isolation:** tạo 2 project TRANSLATE_DUB cùng câu text/voice → mỗi project có `clip_*.mp3` riêng dưới `audio_segments/` của mình; badge `⚡ <n>` hiện trên stepper khi có cache hit (tab Thông số → thẻ TTS).
+2. **Backpressure:** set `ZEROTTS_CONCURRENCY=1`, bắn N request song song → request vượt trả `429 QUEUE_FULL` / `503 SERVER_BUSY`, UI hiện "Máy chủ TTS đang bận, thử lại sau" thay vì treo.
+3. **Limits:** text > `ZEROTTS_MAX_TEXT_CHARS` (2000) → 413 + UI "Văn bản quá dài".
+4. **Failover aggregate:** tắt ZeroTTS service → pipeline tự failover sang Edge/provider khác; hết quota mọi key → UI báo hết quota + gợi ý cấu hình provider khác (thay vì timeout trần).
+5. **ZeroTTS keyless:** Settings → Providers → ZeroTTS badge "Local / Keyless" (không đòi API key), kèm model/queue depth khi service chạy.
 
 ### 5.3. Chạy lại kiểm thử
 
 ```powershell
-cd backend; npm test                                   # full regression (~130 files)
-node tests/quotaRoundRobin.test.mjs                    # 9 asserts round-robin/failover
-node tests/quotaPrecheck.test.mjs                      # 12 asserts quota warn + Retry-After
+cd backend; npm test                                  # full regression (~132 files)
+node tests/providerCacheIsolation.test.mjs            # isolation + cacheHit
+node tests/providerFailoverAggregate.test.mjs         # dedupe + aggregate
+node tests/zeroTtsProvider.test.mjs                   # mock health/400/503/timeout/failover
+npm run test:zerotts                                  # E2E nặng (cần Python + zerotts pkg + FFmpeg + model ~900MB)
 cd ..\frontend; npm run lint; npm run typecheck; npm run build
+docker compose config --quiet                         # PASS bắt buộc sau đổi compose
 ```
 
 ### 5.4. Việc tiếp theo đề xuất
 
-1. Refresh `.team/TEST_REPORT.md` cho chu kỳ này (bản hiện tại là của chu kỳ docs-sync cũ).
-2. Task lint-fix riêng cho 4 lỗi backend lint có sẵn.
-3. Plan riêng cho BE-09 (BullMQ Flow `dub.merge`) khi Redis sẵn — kèm test barrier sống sót restart.
-4. Cập nhật `Video_AI_docs/docs/10_TASKS.md` (PARTIAL → DONE từng mục), `06_API.md` (auth confirm-preview), `11` (bỏ nhãn PARTIAL đã xong), `04` (xóa dòng orphan).
+1. Chờ/chạy CI job `zerotts-e2e` xanh rồi mới tuyên bố E2E hoàn tất (hiện NOT_VERIFIED local).
+2. Refresh `.team/TEST_REPORT.md` cho chu kỳ này (bản hiện tại là 2 chu kỳ cũ) + xác nhận lại defect orphan handler FE-01 cũ còn/tắt.
+3. Task lint-fix riêng cho 3–4 lỗi backend lint có sẵn.
+4. Future work (đã ghi trong BACKEND_REPORT): bytes-based shared computation cache (hết last-writer-wins), bỏ `out_path` arbitrary khỏi public API ZeroTTS.
+5. Cập nhật `Video_AI_docs/docs/03,05,08,11` + `README.md` (env ZeroTTS mới, cache-vs-artifact, admission, speed semantics) nếu Backend chưa làm trong turn docs.

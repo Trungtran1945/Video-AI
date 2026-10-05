@@ -111,6 +111,25 @@ export const config = {
   providerCacheEnabled: process.env.PROVIDER_CACHE_ENABLED !== 'false',
   providerCacheTtlDays: Number(process.env.PROVIDER_CACHE_TTL_DAYS || 90),
   defaultProviderMode: process.env.DEFAULT_PROVIDER_MODE || 'live', // 'live' | 'mock'
+  // BE-D01: ZeroTTS provider + service hardening env (docs/03,05,08,11).
+  // Node client đọc trực tiếp process.env (zeroTts.js); fines này là source document
+  // + validate tập trung cho Docker/CI. Invalid → fallback default, không throw lúc
+  // boot (service có thể chưa chạy; fail-fast thực sự nằm ở zerotts_service.py).
+  zerotts: {
+    url: process.env.ZEROTTS_URL || '',
+    host: process.env.ZEROTTS_HOST || '127.0.0.1',
+    port: Number(process.env.ZEROTTS_PORT || 5005),
+    model: process.env.ZEROTTS_MODEL || process.env.ZEROTTS_MODEL_DIR || process.env.ZEROTTS_MODEL_ID || 'zerotts',
+    voice: process.env.ZEROTTS_VOICE || 'maichi',
+    threads: Number(process.env.ZEROTTS_THREADS || 4),
+    concurrency: Number(process.env.ZEROTTS_CONCURRENCY || 1),
+    maxInflightRequests: Number(process.env.ZEROTTS_MAX_INFLIGHT_REQUESTS || 8),
+    maxBodyBytes: Number(process.env.ZEROTTS_MAX_BODY_BYTES || 65536),
+    maxTextChars: Number(process.env.ZEROTTS_MAX_TEXT_CHARS || 2000),
+    outputRoot: process.env.ZEROTTS_OUTPUT_ROOT || '',
+    timeoutMs: Number(process.env.ZEROTTS_TIMEOUT_MS || 60000),
+    shutdownTimeoutMs: Number(process.env.ZEROTTS_SHUTDOWN_TIMEOUT_MS || 15000),
+  },
   // CORS allowlist: production reads CORS_ORIGINS (comma-separated, fail-closed
   // when empty). Development allows local Vite/dev origins by default.
   corsOrigins: nodeEnv === 'production'

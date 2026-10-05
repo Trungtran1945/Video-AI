@@ -25,6 +25,29 @@ export function isFailoverError(err) {
   }
 }
 
+export function classifyAggregateFailover(attempted) {
+  const codes = (attempted || []).map((a) => a?.code).filter(Boolean)
+  if (!codes.length) return 'MIXED'
+  const kinds = new Set()
+  for (const a of attempted) {
+    if (a?.code === 'PROVIDER_QUOTA_EXCEEDED') kinds.add('QUOTA')
+    else if (a?.code === 'PROVIDER_AUTH_FAILED') kinds.add('AUTH')
+    else if (a?.code === 'PROVIDER_PERMISSION_DENIED') kinds.add('PERMISSION')
+    else if (a?.code === 'PROVIDER_MODEL_NOT_FOUND' || a?.code === 'PROVIDER_INVALID_REQUEST' || a?.code === 'PROVIDER_RESPONSE_MALFORMED') kinds.add('CONFIGURATION')
+    else if (a?.retryable === true) kinds.add('TRANSIENT')
+    else kinds.add('MIXED')
+  }
+  if (kinds.size === 1) {
+    const only = [...kinds][0]
+    if (only === 'TRANSIENT') return 'ALL_TRANSIENT'
+    if (only === 'QUOTA') return 'ALL_QUOTA'
+    if (only === 'AUTH') return 'ALL_AUTH'
+    if (only === 'PERMISSION') return 'ALL_PERMISSION'
+    if (only === 'CONFIGURATION') return 'ALL_CONFIGURATION'
+  }
+  return 'MIXED'
+}
+
 export async function withProviderFailover({ capability = '', candidates = [], maxAttempts = 4, onAttempt }, fn) {
   const list = Array.isArray(candidates) ? candidates.filter(Boolean) : []
   if (!list.length) {
@@ -34,7 +57,6 @@ export async function withProviderFailover({ capability = '', candidates = [], m
     throw e
   }
   const errors = []
-  const tried = new Set()
   let attempt = 0
   // Prefer available first, but still try stale keys if nothing available
   // (a stale health flag must never block every job — TransFlow behavior).
@@ -42,10 +64,19 @@ export async function withProviderFailover({ capability = '', candidates = [], m
     ...list.filter((c) => isProviderAvailable(c) && !isExcludedInScope(providerKeyOf(c))),
     ...list.filter((c) => !(isProviderAvailable(c) && !isExcludedInScope(providerKeyOf(c)))),
   ]
-  for (const cand of ordered.slice(0, Math.max(1, maxAttempts))) {
+  // BE-F01: dedupe trước slice — normalize → providerKey → dedupe → health
+  // ordering → maxAttempts. Slice-trước-dedupe có thể bỏ sót candidate duy nhất
+  // còn khả dụng (vd A:key1,A:key1,B:key2 + maxAttempts=2 → phải thử A,B).
+  const seen = new Set()
+  const deduped = []
+  for (const cand of ordered) {
     const key = providerKeyOf(cand)
-    if (tried.has(key)) continue
-    tried.add(key)
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(cand)
+  }
+  for (const cand of deduped.slice(0, Math.max(1, maxAttempts))) {
+    const key = providerKeyOf(cand)
     attempt++
     recordProviderResolution(capability, key)
     if (typeof onAttempt === 'function') {
@@ -56,7 +87,7 @@ export async function withProviderFailover({ capability = '', candidates = [], m
       return { result, provider: cand, attempt }
     } catch (err) {
       const cls = classifyProviderError(err)
-      errors.push({ provider: cand.id, code: cls.code, message: String(err?.message || '').slice(0, 300) })
+      errors.push({ provider: cand.id, apiKeyId: cand.apiKeyId || null, code: cls.code, kind: cls.kind, retryable: cls.retryable === true, attempt, message: String(err?.message || '').slice(0, 300) })
       if (!isFailoverError(err)) throw err
       reportProviderFailure(
         { provider: cand.id, apiKeyId: cand.apiKeyId, errorCode: cls.code },
@@ -76,8 +107,13 @@ export async function withProviderFailover({ capability = '', candidates = [], m
   e.code = 'NO_PROVIDER_AVAILABLE'
   e.capability = capability
   e.errorCode = first?.code || null
-  e.details = { attempted: errors, totalCandidates: list.length }
-  e.retryable = false
+  // BE-F02: aggregate classification — retryable phản ánh tổng, không mù false.
+  // all-transient → true (caller được retry/backoff); all-quota/auth/permission/
+  // configuration → false; mixed → false + classification chi tiết cho UI.
+  const aggregate = classifyAggregateFailover(errors)
+  e.details = { attempted: errors, totalCandidates: list.length, aggregate }
+  e.aggregate = aggregate
+  e.retryable = aggregate === 'ALL_TRANSIENT'
   throw e
 }
 

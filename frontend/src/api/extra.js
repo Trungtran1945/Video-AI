@@ -15,6 +15,7 @@ export const analyticsApi = {
 export const providersApi = {
   list: () => api.get('/providers').then((r) => r.data),
   quota: (provider) => api.get(`/providers/${provider}/quota`).then((r) => r.data),
+  zerottsHealth: () => api.get('/providers/zerotts/health').then((r) => r.data).catch(() => null),
 }
 
 export const settingsApi = {

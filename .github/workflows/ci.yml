@@ -72,6 +72,47 @@ jobs:
           MASTER_KEY: test-master-key-0123456789abcdef
           CORS_ORIGINS: https://app.example.com
 
+  zerotts-e2e:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg && ffmpeg -version
+
+      - name: Install backend dependencies
+        run: cd backend && npm ci
+
+      - name: Install ZeroTTS locked deps
+        run: pip install "onnxruntime>=1.17" "numpy>=1.26" "soundfile>=0.12"
+
+      - name: Cache ZeroTTS model (~900MB)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache
+          key: zerotts-model-v1-${{ runner.os }}
+
+      - name: ZeroTTS E2E (service startup + readiness + test + cleanup)
+        run: cd backend && npm run test:zerotts
+        env:
+          NODE_ENV: test
+          JWT_ACCESS_SECRET: test-access-secret-0123456789abcdef
+          JWT_REFRESH_SECRET: test-refresh-secret-0123456789abcdef
+          MASTER_KEY: test-master-key-0123456789abcdef
+          RUN_ZEROTTS_INTEGRATION: '1'
+
   docker-build:
     runs-on: ubuntu-latest
     needs: lint-and-test
