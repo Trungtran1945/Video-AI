@@ -1,22 +1,29 @@
 <#
 .SYNOPSIS
-    Herdr Multi-Agent Team Runner
+    Herdr Multi-Agent Team Runner (4 Roles: PLANNER, CODER, TESTER, REVIEWER)
 .DESCRIPTION
-    Khởi động và điều phối đội ngũ 4 AI Agents (OpenCode Leader, OpenCode Backend, Antigravity Frontend, Antigravity Tester)
-    trên Herdr một cách hoàn toàn tự động.
+    Khởi động và điều phối đội ngũ 4 AI Agents:
+    1. PLANNER (OpenCode): Biến yêu cầu sơ sài thành đặc tả kỹ thuật chi tiết
+    2. CODER (OpenCode hoặc Antigravity): Đọc kế hoạch, viết code, sửa bug
+    3. TESTER (Antigravity): Tự đọc code, viết test cases cho edge cases, verify
+    4. REVIEWER (Antigravity - Read-Only): Soi git diff, kiểm tra chất lượng, chốt hạ hoặc yêu cầu sửa
 .EXAMPLE
     .\team.ps1 -InitOnly
-    Khởi tạo 4 ô Terminal và mở sẵn 4 AI Agent trên Herdr ở chế độ chờ.
+    Hiện menu phím mũi tên [↑ / ↓] để chọn model cho CODER (OpenCode hoặc Antigravity).
 .EXAMPLE
-    .\team.ps1 "Sửa bug login và cập nhật style dashboard"
-    Giao việc cho đội ngũ tự động chuyển giao tuần tự từ Plan -> Backend -> Frontend -> QA -> Report.
+    .\team.ps1 "Nhiệm vụ cần làm"
+.EXAMPLE
+    .\team.ps1 "Nhiệm vụ cần làm" -Coder antigravity
 #>
 
 param(
     [Parameter(Position=0, ValueFromRemainingArguments=$true)]
     [string[]]$Task,
 
-    [switch]$InitOnly
+    [switch]$InitOnly,
+
+    [ValidateSet("opencode", "antigravity", "agy")]
+    [string]$Coder
 )
 
 $scriptPath = Join-Path $PSScriptRoot "scripts\team-orchestrator.mjs"
@@ -27,6 +34,10 @@ if (-not (Test-Path $scriptPath)) {
 $nodeArgs = @($scriptPath)
 if ($InitOnly) {
     $nodeArgs += "--init-only"
+}
+if ($Coder) {
+    $nodeArgs += "--coder"
+    $nodeArgs += $Coder
 }
 if ($Task -and $Task.Count -gt 0) {
     $nodeArgs += ($Task -join " ")

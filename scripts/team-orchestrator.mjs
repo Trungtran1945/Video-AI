@@ -1,35 +1,115 @@
 #!/usr/bin/env node
 /**
- * Herdr Multi-Agent Team Orchestrator (Universal / Global Edition)
- * Automatically sets up and coordinates OpenCode and Antigravity into a 4-agent development team
- * in ANY project directory on your machine.
+ * Herdr Multi-Agent Team Orchestrator (Universal / Spec-Driven Edition)
  *
- * Roles:
- * 1. Leader (OpenCode): Codebase exploration, PLAN.md, and final executive REPORT.md
- * 2. Backend (OpenCode): Backend logic, API endpoints, bug fixes
- * 3. Frontend (Antigravity): UI, Components, styling, client-side API integration
- * 4. Tester (Antigravity): Regression testing, build & lint verification, QA report
+ * 4 Specialised Roles:
+ * 1. PLANNER (OpenCode): Biến yêu cầu sơ sài thành đặc tả kỹ thuật chi tiết (.team/PLAN.md)
+ * 2. CODER (Tự chọn: OpenCode hoặc Antigravity): Đọc PLAN.md, viết code, sửa bug (.team/CODE_CHANGES.md)
+ * 3. TESTER (Antigravity): Tự đọc code, viết test cases, bắt lỗi góc khuất, verify (.team/TEST_RESULTS.md)
+ * 4. REVIEWER (Antigravity - Read-Only): Soi git diff, kiểm tra chất lượng, chốt hạ hoặc yêu cầu sửa
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import readline from 'node:readline';
 
 const execFileAsync = promisify(execFile);
 
 const ROOT_DIR = process.cwd();
 const TEAM_DIR = path.join(ROOT_DIR, '.team');
+const CODER_CONFIG_FILE = path.join(TEAM_DIR, 'coder_config.json');
 
 function normalizePath(p) {
   if (!p) return '';
   return path.resolve(p).toLowerCase().replace(/\\/g, '/');
 }
 
-// Generate project-safe prefix for unique agent names (max 12 alphanumeric chars)
 function getProjectPrefix() {
   const base = path.basename(ROOT_DIR).toLowerCase().replace(/[^a-z0-9]/g, '_');
-  return base.slice(0, 12).replace(/_+$/, '') || 'team';
+  return base.slice(0, 10).replace(/_+$/, '') || 'team';
+}
+
+// --- Interactive Selection for CODER (Arrow Keys + Enter) ---
+
+async function selectCoderModelInteractive(defaultChoice = 'opencode') {
+  if (!process.stdin.isTTY) {
+    return defaultChoice;
+  }
+
+  const options = [
+    {
+      id: 'opencode',
+      name: 'OpenCode',
+      desc: 'Mạnh về bao quát toàn cục dự án, kiến trúc hệ thống, terminal commands'
+    },
+    {
+      id: 'agy',
+      name: 'Antigravity',
+      desc: 'Mạnh về suy luận logic sâu, phân tích cú pháp chi tiết, xử lý ca khó'
+    }
+  ];
+
+  let selectedIndex = options.findIndex((o) => o.id === defaultChoice);
+  if (selectedIndex === -1) selectedIndex = 0;
+
+  return new Promise((resolve) => {
+    readline.emitKeypressEvents(process.stdin);
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
+    }
+    process.stdin.resume();
+
+    const render = (firstTime = false) => {
+      if (!firstTime) {
+        readline.moveCursor(process.stdout, 0, -(options.length + 3));
+      }
+      console.log('\n┌────────────────────────────────────────────────────────────┐');
+      console.log('│ 🤖 CHỌN MODEL CHO VAI TRÒ CODER (Dùng phím ↑ / ↓, bấm Enter) │');
+      console.log('└────────────────────────────────────────────────────────────┘');
+
+      options.forEach((opt, idx) => {
+        const isSelected = idx === selectedIndex;
+        const pointer = isSelected ? '\x1b[36m❯ [•]\x1b[0m' : '   [ ]';
+        const title = isSelected ? `\x1b[1m\x1b[36m${opt.name}\x1b[0m` : opt.name;
+        console.log(`${pointer} ${title.padEnd(16)} - ${opt.desc}`);
+      });
+    };
+
+    render(true);
+
+    const onKeypress = (str, key) => {
+      if (!key) return;
+      if (key.ctrl && key.name === 'c') {
+        cleanup();
+        process.exit(0);
+      }
+
+      if (key.name === 'up') {
+        selectedIndex = (selectedIndex - 1 + options.length) % options.length;
+        render(false);
+      } else if (key.name === 'down') {
+        selectedIndex = (selectedIndex + 1) % options.length;
+        render(false);
+      } else if (key.name === 'return' || key.name === 'enter') {
+        cleanup();
+        const chosen = options[selectedIndex];
+        console.log(`\n🎯 Đã chọn CODER: \x1b[32m\x1b[1m${chosen.name}\x1b[0m\n`);
+        resolve(chosen.id);
+      }
+    };
+
+    function cleanup() {
+      process.stdin.removeListener('keypress', onKeypress);
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(false);
+      }
+      process.stdin.pause();
+    }
+
+    process.stdin.on('keypress', onKeypress);
+  });
 }
 
 // --- Herdr CLI Helpers ---
@@ -75,16 +155,14 @@ async function ensureHerdrServer() {
 
   console.log('⚡ Herdr server chưa chạy. Đang tự động khởi động server ngầm...');
   try {
-    const { spawn } = await import('node:child_process');
-    const child = spawn('herdr', ['server'], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
-    });
-    child.unref();
+    await execFileAsync('powershell', [
+      '-NoProfile',
+      '-Command',
+      'Start-Process herdr -ArgumentList "server" -WindowStyle Hidden'
+    ]);
 
     for (let i = 0; i < 10; i++) {
-      await delay(500);
+      await delay(600);
       if (await checkHerdrServer()) {
         console.log('✅ Herdr server đã sẵn sàng.');
         return true;
@@ -140,9 +218,9 @@ async function waitForAgentIdle(agentName, timeoutMs = 60000) {
   return false;
 }
 
-// --- Dynamic Role Identification & Setup ---
+// --- Team Setup (PLANNER, CODER, TESTER, REVIEWER) ---
 
-async function ensureWorkspaceAndAgents() {
+async function ensureWorkspaceAndAgents(chosenCoderKind) {
   console.log(`🔍 Đang kiểm tra không gian làm việc Herdr cho: "${ROOT_DIR}"...`);
 
   const currentNorm = normalizePath(ROOT_DIR);
@@ -153,10 +231,18 @@ async function ensureWorkspaceAndAgents() {
   });
 
   const prefix = getProjectPrefix();
-  let roleLeader = 'opencode_leader';
-  let roleBackend = 'opencode_backend';
-  let roleFrontend = 'antigravity_frontend';
-  let roleTester = 'antigravity_tester';
+  const rolePlanner = `${prefix}_planner`;
+  const roleCoder = `${prefix}_coder`;
+  const roleTester = `${prefix}_tester`;
+  const roleReviewer = `${prefix}_reviewer`;
+
+  const activeRoles = {
+    PLANNER: rolePlanner,
+    CODER: roleCoder,
+    TESTER: roleTester,
+    REVIEWER: roleReviewer,
+    CODER_KIND: chosenCoderKind
+  };
 
   const liveAgents = await getLiveAgents();
   const agentByName = {};
@@ -164,42 +250,25 @@ async function ensureWorkspaceAndAgents() {
     if (a.name) agentByName[a.name] = a;
   }
 
-  // If generic names are already taken by another directory, use project-prefixed names
-  if (agentByName[roleLeader] && normalizePath(agentByName[roleLeader].cwd) !== currentNorm) {
-    roleLeader = `${prefix}_leader`;
-  }
-  if (agentByName[roleBackend] && normalizePath(agentByName[roleBackend].cwd) !== currentNorm) {
-    roleBackend = `${prefix}_backend`;
-  }
-  if (agentByName[roleFrontend] && normalizePath(agentByName[roleFrontend].cwd) !== currentNorm) {
-    roleFrontend = `${prefix}_frontend`;
-  }
-  if (agentByName[roleTester] && normalizePath(agentByName[roleTester].cwd) !== currentNorm) {
-    roleTester = `${prefix}_tester`;
-  }
+  // Check if all 4 agents are already running with matching roles and CWD
+  const plannerReady = agentByName[rolePlanner] && normalizePath(agentByName[rolePlanner].cwd) === currentNorm;
+  const coderReady =
+    agentByName[roleCoder] &&
+    normalizePath(agentByName[roleCoder].cwd) === currentNorm &&
+    agentByName[roleCoder].agent === chosenCoderKind;
+  const testerReady = agentByName[roleTester] && normalizePath(agentByName[roleTester].cwd) === currentNorm;
+  const reviewerReady = agentByName[roleReviewer] && normalizePath(agentByName[roleReviewer].cwd) === currentNorm;
 
-  const activeRoles = {
-    LEADER: roleLeader,
-    BACKEND: roleBackend,
-    FRONTEND: roleFrontend,
-    TESTER: roleTester
-  };
-
-  // Check if all 4 agents are already running in this project
-  const allReady = Object.values(activeRoles).every((r) => {
-    const a = agentByName[r];
-    return a && normalizePath(a.cwd) === currentNorm;
-  });
-
-  if (allReady) {
+  if (plannerReady && coderReady && testerReady && reviewerReady) {
     console.log('✅ Đã tìm thấy đầy đủ 4 AI Agent sẵn sàng trong project:');
-    for (const [key, name] of Object.entries(activeRoles)) {
-      console.log(`   - [${key}] ${name} (Status: ${agentByName[name]?.agent_status || 'idle'})`);
-    }
+    console.log(`   - [PLANNER]  ${rolePlanner} (OpenCode)`);
+    console.log(`   - [CODER]    ${roleCoder} (${chosenCoderKind === 'agy' ? 'Antigravity' : 'OpenCode'})`);
+    console.log(`   - [TESTER]   ${roleTester} (Antigravity)`);
+    console.log(`   - [REVIEWER] ${roleReviewer} (Antigravity - Read-Only)`);
     return activeRoles;
   }
 
-  // If no workspace exists for this project, create a new one
+  // If no workspace exists for this project, create a new 2x2 workspace
   if (!targetWs) {
     const projectName = path.basename(ROOT_DIR);
     console.log(`📁 Tạo workspace mới trên Herdr: "${projectName}"...`);
@@ -221,7 +290,7 @@ async function ensureWorkspaceAndAgents() {
 
     console.log('📐 Đang chia bố cục 2x2 cho 4 AI Agents...');
 
-    // Split 1: Root split right -> pBackend
+    // Split 1: Root (Top-Left) split right -> pCoder (Top-Right)
     const splitRightRes = await runHerdrJson([
       'pane',
       'split',
@@ -233,9 +302,9 @@ async function ensureWorkspaceAndAgents() {
       ROOT_DIR,
       '--no-focus'
     ]);
-    const pBackendId = splitRightRes?.result?.pane?.pane_id;
+    const pCoderId = splitRightRes?.result?.pane?.pane_id;
 
-    // Split 2: Root split down -> pFrontend
+    // Split 2: Root (Top-Left) split down -> pTester (Bottom-Left)
     const splitDown1 = await runHerdrJson([
       'pane',
       'split',
@@ -247,90 +316,142 @@ async function ensureWorkspaceAndAgents() {
       ROOT_DIR,
       '--no-focus'
     ]);
-    const pFrontendId = splitDown1?.result?.pane?.pane_id;
+    const pTesterId = splitDown1?.result?.pane?.pane_id;
 
-    // Split 3: pBackend split down -> pTester
+    // Split 3: pCoder (Top-Right) split down -> pReviewer (Bottom-Right)
     const splitDown2 = await runHerdrJson([
       'pane',
       'split',
       '--pane',
-      pBackendId,
+      pCoderId,
       '--direction',
       'down',
       '--cwd',
       ROOT_DIR,
       '--no-focus'
     ]);
-    const pTesterId = splitDown2?.result?.pane?.pane_id;
+    const pReviewerId = splitDown2?.result?.pane?.pane_id;
 
-    // Start all 4 agents
-    console.log(`🚀 [1/4] Khởi động ${roleLeader} (OpenCode --auto)...`);
-    await runHerdr(['agent', 'start', roleLeader, '--kind', 'opencode', '--pane', rootPaneId, '--', '--auto']);
+    // 1. PLANNER: OpenCode (--auto)
+    console.log(`🚀 [1/4] Khởi động PLANNER: ${rolePlanner} (OpenCode --auto)...`);
+    await runHerdr(['agent', 'start', rolePlanner, '--kind', 'opencode', '--pane', rootPaneId, '--', '--auto']);
 
-    console.log(`🚀 [2/4] Khởi động ${roleBackend} (OpenCode --auto)...`);
-    await runHerdr(['agent', 'start', roleBackend, '--kind', 'opencode', '--pane', pBackendId, '--', '--auto']);
+    // 2. CODER: OpenCode OR Antigravity
+    const coderLabel = chosenCoderKind === 'agy' ? 'Antigravity' : 'OpenCode';
+    const coderArgs = chosenCoderKind === 'agy' ? ['--', '--dangerously-skip-permissions'] : ['--', '--auto'];
+    console.log(`🚀 [2/4] Khởi động CODER: ${roleCoder} (${coderLabel})...`);
+    await runHerdr([
+      'agent',
+      'start',
+      roleCoder,
+      '--kind',
+      chosenCoderKind,
+      '--pane',
+      pCoderId,
+      ...coderArgs
+    ]);
 
-    console.log(`🚀 [3/4] Khởi động ${roleFrontend} (Antigravity --dangerously-skip-permissions)...`);
-    await runHerdr(['agent', 'start', roleFrontend, '--kind', 'agy', '--pane', pFrontendId, '--', '--dangerously-skip-permissions']);
+    // 3. TESTER: Antigravity (--dangerously-skip-permissions)
+    console.log(`🚀 [3/4] Khởi động TESTER: ${roleTester} (Antigravity)...`);
+    await runHerdr([
+      'agent',
+      'start',
+      roleTester,
+      '--kind',
+      'agy',
+      '--pane',
+      pTesterId,
+      '--',
+      '--dangerously-skip-permissions'
+    ]);
 
-    console.log(`🚀 [4/4] Khởi động ${roleTester} (Antigravity --dangerously-skip-permissions)...`);
-    await runHerdr(['agent', 'start', roleTester, '--kind', 'agy', '--pane', pTesterId, '--', '--dangerously-skip-permissions']);
+    // 4. REVIEWER: Antigravity (--dangerously-skip-permissions - Read-Only prompt)
+    console.log(`🚀 [4/4] Khởi động REVIEWER: ${roleReviewer} (Antigravity - Read-Only)...`);
+    await runHerdr([
+      'agent',
+      'start',
+      roleReviewer,
+      '--kind',
+      'agy',
+      '--pane',
+      pReviewerId,
+      '--',
+      '--dangerously-skip-permissions'
+    ]);
 
     console.log('⏳ Đợi các AI hoàn tất khởi động...');
     await Promise.all([
-      waitForAgentIdle(roleLeader, 45000),
-      waitForAgentIdle(roleBackend, 45000),
-      waitForAgentIdle(roleFrontend, 45000),
-      waitForAgentIdle(roleTester, 45000)
+      waitForAgentIdle(rolePlanner, 45000),
+      waitForAgentIdle(roleCoder, 45000),
+      waitForAgentIdle(roleTester, 45000),
+      waitForAgentIdle(roleReviewer, 45000)
     ]);
   } else {
-    // Workspace exists: rename or launch missing agents
-    const wsPanes = await getPanes(targetWs.workspace_id);
+    // Existing workspace: ensure roles mapped or replaced
     const callersPane = process.env.HERDR_PANE_ID;
-
-    // Filter agents in this workspace
     const currentAgents = await getLiveAgents();
     const wsAgents = currentAgents.filter((a) => a.workspace_id === targetWs.workspace_id);
 
-    const unnamedOpencode = wsAgents.filter((a) => a.agent === 'opencode' && !a.name);
-    const unnamedAgy = wsAgents.filter((a) => a.agent === 'agy' && !a.name && a.pane_id !== callersPane);
+    // Map PLANNER
+    if (!plannerReady) {
+      const pCandidate = wsAgents.find((a) => a.agent === 'opencode' && (!a.name || a.name.includes('leader') || a.name.includes('planner')));
+      if (pCandidate) {
+        console.log(`🏷️  Gán pane ${pCandidate.pane_id} thành PLANNER (${rolePlanner})...`);
+        await runHerdr(['agent', 'rename', pCandidate.pane_id, rolePlanner]);
+      }
+    }
 
-    if (!agentByName[roleLeader] && unnamedOpencode.length > 0) {
-      const a = unnamedOpencode.shift();
-      console.log(`🏷️  Gán pane ${a.pane_id} thành ${roleLeader}...`);
-      await runHerdr(['agent', 'rename', a.pane_id, roleLeader]);
-      activeRoles.LEADER = roleLeader;
+    // Map or replace CODER
+    if (!coderReady) {
+      const cCandidate = wsAgents.find((a) => a.name && (a.name.includes('backend') || a.name.includes('coder')));
+      if (cCandidate && cCandidate.agent === chosenCoderKind) {
+        console.log(`🏷️  Gán pane ${cCandidate.pane_id} thành CODER (${roleCoder})...`);
+        await runHerdr(['agent', 'rename', cCandidate.pane_id, roleCoder]);
+      } else {
+        // If candidate has different model, restart it in that pane
+        const targetPane = cCandidate?.pane_id || wsAgents[1]?.pane_id;
+        if (targetPane) {
+          console.log(`🔄 Chuyển đổi CODER tại pane ${targetPane} sang ${chosenCoderKind === 'agy' ? 'Antigravity' : 'OpenCode'}...`);
+          try {
+            await runHerdr(['agent', 'send-keys', targetPane, 'ctrl+c']);
+            await delay(1000);
+          } catch {}
+          const coderArgs = chosenCoderKind === 'agy' ? ['--', '--dangerously-skip-permissions'] : ['--', '--auto'];
+          await runHerdr(['agent', 'start', roleCoder, '--kind', chosenCoderKind, '--pane', targetPane, ...coderArgs]);
+          await waitForAgentIdle(roleCoder, 45000);
+        }
+      }
     }
-    if (!agentByName[roleBackend] && unnamedOpencode.length > 0) {
-      const a = unnamedOpencode.shift();
-      console.log(`🏷️  Gán pane ${a.pane_id} thành ${roleBackend}...`);
-      await runHerdr(['agent', 'rename', a.pane_id, roleBackend]);
-      activeRoles.BACKEND = roleBackend;
+
+    // Map TESTER
+    if (!testerReady) {
+      const tCandidate = wsAgents.find((a) => a.agent === 'agy' && a.pane_id !== callersPane && (!a.name || a.name.includes('tester')));
+      if (tCandidate) {
+        console.log(`🏷️  Gán pane ${tCandidate.pane_id} thành TESTER (${roleTester})...`);
+        await runHerdr(['agent', 'rename', tCandidate.pane_id, roleTester]);
+      }
     }
-    if (!agentByName[roleFrontend] && unnamedAgy.length > 0) {
-      const a = unnamedAgy.shift();
-      console.log(`🏷️  Gán pane ${a.pane_id} thành ${roleFrontend}...`);
-      await runHerdr(['agent', 'rename', a.pane_id, roleFrontend]);
-      activeRoles.FRONTEND = roleFrontend;
-    }
-    if (!agentByName[roleTester] && unnamedAgy.length > 0) {
-      const a = unnamedAgy.shift();
-      console.log(`🏷️  Gán pane ${a.pane_id} thành ${roleTester}...`);
-      await runHerdr(['agent', 'rename', a.pane_id, roleTester]);
-      activeRoles.TESTER = roleTester;
+
+    // Map REVIEWER
+    if (!reviewerReady) {
+      const rCandidate = wsAgents.find((a) => a.agent === 'agy' && a.pane_id !== callersPane && a.name !== roleTester);
+      if (rCandidate) {
+        console.log(`🏷️  Gán pane ${rCandidate.pane_id} thành REVIEWER (${roleReviewer})...`);
+        await runHerdr(['agent', 'rename', rCandidate.pane_id, roleReviewer]);
+      }
     }
   }
 
   console.log('\n🎉 Đội ngũ 4 AI Agents đã sẵn sàng:');
-  console.log(`   1. ${activeRoles.LEADER} (OpenCode - Leader/Planner)`);
-  console.log(`   2. ${activeRoles.BACKEND} (OpenCode - Backend Engineer)`);
-  console.log(`   3. ${activeRoles.FRONTEND} (Antigravity - Frontend Engineer)`);
-  console.log(`   4. ${activeRoles.TESTER} (Antigravity - QA/Tester)\n`);
+  console.log(`   1. [PLANNER]  ${activeRoles.PLANNER} (OpenCode)`);
+  console.log(`   2. [CODER]    ${activeRoles.CODER} (${chosenCoderKind === 'agy' ? 'Antigravity' : 'OpenCode'})`);
+  console.log(`   3. [TESTER]   ${activeRoles.TESTER} (Antigravity)`);
+  console.log(`   4. [REVIEWER] ${activeRoles.REVIEWER} (Antigravity - Read-Only)\n`);
 
   return activeRoles;
 }
 
-// --- Prompt Pipeline ---
+// --- Prompt & Execute ---
 
 async function promptAgent(target, promptText, timeoutMs = 600000) {
   console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
@@ -362,100 +483,126 @@ async function promptAgent(target, promptText, timeoutMs = 600000) {
   }
 }
 
-// --- Main Task Execution Pipeline ---
+// --- Main 4-Role Task Execution Pipeline ---
 
 async function runTaskPipeline(taskDescription, roles) {
   console.log('\n============================================================');
-  console.log('🤖 BẮT ĐẦU QUY TRÌNH PHỐI HỢP ĐỘI NGŨ AI TỰ ĐỘNG');
+  console.log('🤖 BẮT ĐẦU QUY TRÌNH 4 BƯỚC ĐỘI NGŨ AI TỰ ĐỘNG');
   console.log(`📁 Thư mục dự án: ${ROOT_DIR}`);
   console.log(`📋 Nhiệm vụ: "${taskDescription}"`);
+  console.log(`⚙️  CODER sử dụng: ${roles.CODER_KIND === 'agy' ? 'Antigravity' : 'OpenCode'}`);
   console.log('============================================================');
 
   await fs.mkdir(TEAM_DIR, { recursive: true });
 
   const totalStart = Date.now();
 
-  // STAGE 1: LEADER PLANNING
-  const leaderPrompt = `
-[NHIỆM VỤ DỰ ÁN]:
+  // STAGE 1: PLANNER
+  const plannerPrompt = `
+[YÊU CẦU TỪ NGƯỜI DÙNG]:
 ${taskDescription}
 
-Bạn là Lead Architect kiêm Project Manager.
-Hãy khảo sát codebase hiện tại và lập kế hoạch thực hiện chi tiết cho các thành viên trong đội ngũ:
-1. Phân tích yêu cầu và xác định phạm vi cần thay đổi.
-2. Phần việc Backend: Liệt kê cụ thể file API, service, database, hoặc logic cần sửa/thêm.
-3. Phần việc Frontend: Liệt kê cụ thể component, trang giao diện, style, và API endpoints cần tích hợp.
-4. Phần việc QA / Tester: Các kịch bản test (backend tests, frontend build & lint).
-5. Ghi toàn bộ kế hoạch vào file '.team/PLAN.md' (định dạng Markdown rõ ràng, có checkbox từng việc).
-Khi hoàn thành, hãy trả lời: 'Kế hoạch đã sẵn sàng tại .team/PLAN.md'.
+Bạn là Lead Architect kiêm Product Planner (PLANNER).
+Nhiệm vụ tối quan trọng: Biến yêu cầu trên (có thể còn sơ sài) thành một BẢN ĐẶC TẢ KỸ THUẬT VÀ KẾ HOẠCH CHI TIẾT CHUẨN CHỈ. Kế hoạch càng chuẩn xác thì các bước sau mới thực hiện tốt.
+
+Hãy khảo sát codebase hiện tại và ghi toàn bộ vào file '.team/PLAN.md' bao gồm:
+1. Phân tích chi tiết yêu cầu & mục tiêu cốt lõi (User Intent & Scope).
+2. Danh sách các file cần tác động (tạo mới, sửa, xóa) và đường dẫn chính xác.
+3. Đặc tả chi tiết giải pháp kỹ thuật (functions, types, logic xử lý, API payload/response nếu có).
+4. Danh sách các trường hợp ngoại lệ, rủi ro và ca biên (Edge cases & Boundary conditions) cần lưu ý.
+5. Checklist công việc từng bước (Step-by-step tasks với checkbox) cho CODER thực hiện.
+6. Yêu cầu kiểm thử cho TESTER.
+
+Khi hoàn thành, trả lời: 'Kế hoạch kỹ thuật đã sẵn sàng tại .team/PLAN.md'.
 `.trim();
 
-  await promptAgent(roles.LEADER, leaderPrompt, 600000);
+  await promptAgent(roles.PLANNER, plannerPrompt, 600000);
 
-  // STAGE 2: BACKEND IMPLEMENTATION
-  const backendPrompt = `
-Bạn là Backend Engineer.
-Nhiệm vụ: Đọc kỹ file '.team/PLAN.md' do Leader vừa lập.
-1. Nghiên cứu các hạng mục Backend trong PLAN.md.
-2. Tiến hành code, sửa bug hoặc bổ sung các endpoint API/logic backend tương ứng.
-3. Tuân thủ nghiêm ngặt Karpathy Guidelines: code đơn giản nhất, thay đổi có mục tiêu (surgical changes), không sửa code ngoài phạm vi.
-4. Sau khi hoàn thành, hãy ghi báo cáo tóm tắt các file đã sửa và logic backend vào file '.team/BACKEND_REPORT.md'.
-Khi hoàn tất, trả lời: 'Backend hoàn tất. Chi tiết tại .team/BACKEND_REPORT.md'.
+  // STAGE 2: CODER
+  const coderPrompt = `
+Bạn là Senior Software Engineer (CODER). Model: ${roles.CODER_KIND === 'agy' ? 'Antigravity' : 'OpenCode'}.
+Nhiệm vụ: Đọc kỹ bản đặc tả kỹ thuật và kế hoạch tại '.team/PLAN.md' do PLANNER lập ra.
+1. Tiến hành viết code, chỉnh sửa, thêm, xóa các file theo đúng checklist trong PLAN.md.
+2. Tuân thủ Karpathy Guidelines: Không suy đoán, code tối giản, thay đổi chính xác có mục tiêu (surgical changes), không sửa code ngoài phạm vi.
+3. Xử lý triệt để các trường hợp biên và ngoại lệ mà PLANNER đã cảnh báo.
+4. Ghi chép tóm tắt toàn bộ thay đổi mã nguồn vào file '.team/CODE_CHANGES.md' (file nào đã sửa, logic gì đã thêm, lý do).
+
+Khi hoàn tất, trả lời: 'Code đã hoàn thành. Chi tiết tại .team/CODE_CHANGES.md'.
 `.trim();
 
-  await promptAgent(roles.BACKEND, backendPrompt, 900000);
+  await promptAgent(roles.CODER, coderPrompt, 900000);
 
-  // STAGE 3: FRONTEND IMPLEMENTATION
-  const frontendPrompt = `
-Bạn là Frontend Engineer.
-Nhiệm vụ: Đọc kỹ file '.team/PLAN.md' và '.team/BACKEND_REPORT.md' vừa hoàn thành.
-1. Cập nhật và điều chỉnh giao diện, component, state, form hoặc logic gọi API ở frontend cho phù hợp với backend.
-2. Đảm bảo giao diện trực quan, thẩm mỹ cao, không phá vỡ layout hiện có.
-3. Sau khi hoàn thành, hãy ghi báo cáo tóm tắt các file frontend đã sửa vào file '.team/FRONTEND_REPORT.md'.
-Khi hoàn tất, trả lời: 'Frontend hoàn tất. Chi tiết tại .team/FRONTEND_REPORT.md'.
-`.trim();
-
-  await promptAgent(roles.FRONTEND, frontendPrompt, 900000);
-
-  // STAGE 4: QA / TESTING
+  // STAGE 3: TESTER
   const testerPrompt = `
-Bạn là QA / Tester.
-Nhiệm vụ: Đọc '.team/PLAN.md', '.team/BACKEND_REPORT.md' và '.team/FRONTEND_REPORT.md'.
-1. Chạy regression test backend nếu có (ví dụ: npm test).
-2. Chạy kiểm tra frontend nếu có (ví dụ: npm run lint, npm run build).
-3. Ghi lại toàn bộ kết quả kiểm thử (PASS/FAIL/SKIP) và log chi tiết vào file '.team/TEST_REPORT.md'. Nếu phát hiện lỗi, hãy nêu rõ nguyên nhân.
-Khi hoàn tất, trả lời: 'Kiểm thử hoàn tất. Chi tiết tại .team/TEST_REPORT.md'.
+Bạn là QA & Testing Engineer (TESTER).
+Nhiệm vụ: Đọc '.team/PLAN.md' và các thay đổi code tại '.team/CODE_CHANGES.md'.
+1. Tự phân tích logic code mới viết, suy luận các kịch bản kiểm thử:
+   - Happy path (tính năng chạy bình thường).
+   - Edge cases & Corner cases (dữ liệu rỗng, dữ liệu sai định dạng, timeout, ranh giới mốc số liệu,...).
+2. Tự viết test cases hoặc bổ sung unit/integration tests nếu dự án có test framework.
+3. Chạy kiểm thử thực tế trong terminal (ví dụ: npm test, npm run build, npm run lint,... nếu có).
+4. Ghi toàn bộ kết quả kiểm thử, các test case đã chạy và các lỗi phát hiện (nếu có) vào '.team/TEST_RESULTS.md'.
+
+Khi hoàn tất, trả lời: 'Kiểm thử hoàn tất. Kết quả tại .team/TEST_RESULTS.md'.
 `.trim();
 
   await promptAgent(roles.TESTER, testerPrompt, 600000);
 
-  // STAGE 5: FINAL REPORT
-  const reportPrompt = `
-Bạn là Lead Architect kiêm Project Manager.
-Toàn bộ đội ngũ đã hoàn thành các giai đoạn:
-- Kế hoạch: .team/PLAN.md
-- Backend: .team/BACKEND_REPORT.md
-- Frontend: .team/FRONTEND_REPORT.md
-- Kiểm thử: .team/TEST_REPORT.md
+  // STAGE 4: REVIEWER (READ-ONLY)
+  const reviewerPrompt = `
+Bạn là Principal Code Reviewer (REVIEWER).
+QUY TẮC BẮT BUỘC: Bạn ở CHẾ ĐỘ READ-ONLY. TUYỆT ĐỐI KHÔNG ĐƯỢC CHỈNH SỬA, TẠO MỚI HAY XOÁ BẤT KỲ FILE CODE NÀO CỦA DỰ ÁN (Chỉ được ghi file đánh giá .team/REVIEW.md và REPORT.md).
 
-Hãy đọc toàn bộ các tài liệu trên và kiểm tra git status/git diff.
-Sau đó, hãy viết một bản BÁO CÁO TỔNG HỢP HOÀN CHỈNH lưu tại file 'REPORT.md' ở thư mục gốc bao gồm:
-1. Tóm tắt kết quả nhiệm vụ.
-2. Chi tiết các thay đổi Backend.
-3. Chi tiết các thay đổi Frontend.
-4. Báo cáo kiểm thử & độ tin cậy.
-5. Hướng dẫn trải nghiệm / kiểm tra lại cho người dùng.
-Khi hoàn tất, trả lời: 'Báo cáo tổng kết đã sẵn sàng tại REPORT.md'.
+Nhiệm vụ:
+1. Soi toàn bộ các thay đổi qua 'git status' và 'git diff'.
+2. Đối chiếu với '.team/PLAN.md', '.team/CODE_CHANGES.md' và '.team/TEST_RESULTS.md'.
+3. Đánh giá chất lượng code:
+   - Đúng yêu cầu và đúng checklist trong PLAN.md chưa?
+   - Có code thừa, code phức tạp quá mức (over-engineering) không?
+   - TESTER đã test đủ các trường hợp biên chưa?
+4. Đưa ra PHÁN QUYẾT rõ ràng trong '.team/REVIEW.md':
+   - Nếu ĐẠT: Ghi 'DECISION: APPROVED'.
+   - Nếu CÒN LỖI/CHƯA ĐẠT: Ghi 'DECISION: CHANGES_REQUESTED' kèm danh sách chính xác các điểm cần CODER sửa lại.
+5. Nếu APPROVED: Tổng kết thành file 'REPORT.md' hoàn chỉnh cho User (bao gồm: Kế hoạch, Thay đổi code, Kết quả test, Đánh giá review).
+
+Khi hoàn tất, trả lời: 'Đã hoàn thành review. Phán quyết tại .team/REVIEW.md'.
 `.trim();
 
-  await promptAgent(roles.LEADER, reportPrompt, 600000);
+  await promptAgent(roles.REVIEWER, reviewerPrompt, 600000);
+
+  // Check if REVIEWER requested changes
+  try {
+    const reviewContent = await fs.readFile(path.join(TEAM_DIR, 'REVIEW.md'), 'utf8');
+    if (reviewContent.includes('DECISION: CHANGES_REQUESTED')) {
+      console.log('\n⚠️ REVIEWER YÊU CẦU CHỈNH SỬA LỖI! Đang chuyển phản hồi cho CODER...');
+
+      const fixPrompt = `
+REVIEWER đã kiểm tra mã nguồn và yêu cầu sửa lại một số vấn đề.
+Hãy đọc kỹ file '.team/REVIEW.md' để biết các lỗi cụ thể cần khắc phục.
+Tiến hành sửa code theo đúng yêu cầu review, sau đó cập nhật lại '.team/CODE_CHANGES.md'.
+Khi hoàn tất, trả lời: 'Đã sửa xong các lỗi theo yêu cầu của Reviewer'.
+`.trim();
+
+      await promptAgent(roles.CODER, fixPrompt, 600000);
+
+      // Re-test and Re-review
+      console.log('🔄 TESTER chạy lại kiểm thử...');
+      await promptAgent(roles.TESTER, testerPrompt, 400000);
+
+      console.log('🔍 REVIEWER chốt hạ bản review cuối...');
+      await promptAgent(roles.REVIEWER, reviewerPrompt, 400000);
+    }
+  } catch {}
 
   const totalSec = ((Date.now() - totalStart) / 1000).toFixed(1);
 
   console.log('\n============================================================');
   console.log(`🎉 QUY TRÌNH ĐỘI NGŨ HOÀN THÀNH XUẤT SẮC TRONG ${totalSec}s!`);
-  console.log('📄 Báo cáo tổng kết: REPORT.md');
-  console.log('📁 Chi tiết từng giai đoạn: .team/');
+  console.log('📄 Kế hoạch kỹ thuật:   .team/PLAN.md');
+  console.log('💻 Mã nguồn thay đổi:   .team/CODE_CHANGES.md');
+  console.log('🧪 Kết quả kiểm thử:    .team/TEST_RESULTS.md');
+  console.log('🔍 Đánh giá Review:     .team/REVIEW.md');
+  console.log('📋 Báo cáo tổng kết:    REPORT.md');
   console.log('============================================================\n');
 }
 
@@ -470,10 +617,44 @@ async function main() {
 
   const args = process.argv.slice(2);
   const isInitOnly = args.includes('--init-only') || args.includes('-i');
-  const taskArgs = args.filter((a) => a !== '--init-only' && a !== '-i');
+
+  // Check if coder was passed as CLI argument
+  let coderArg = null;
+  const coderIndex = args.findIndex((a) => a === '--coder' || a === '-coder');
+  if (coderIndex !== -1 && args[coderIndex + 1]) {
+    coderArg = args[coderIndex + 1].toLowerCase();
+    if (coderArg === 'antigravity') coderArg = 'agy';
+  }
+
+  const taskArgs = args.filter((a, idx) => {
+    if (a === '--init-only' || a === '-i') return false;
+    if (a === '--coder' || a === '-coder') return false;
+    if (idx > 0 && (args[idx - 1] === '--coder' || args[idx - 1] === '-coder')) return false;
+    return true;
+  });
   const task = taskArgs.join(' ').trim();
 
-  const roles = await ensureWorkspaceAndAgents();
+  // Load saved coder choice if exists
+  let savedCoder = 'opencode';
+  try {
+    const raw = await fs.readFile(CODER_CONFIG_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed.coder) savedCoder = parsed.coder;
+  } catch {}
+
+  let chosenCoder = coderArg;
+
+  // Prompt arrow-key menu if running with -InitOnly OR if no coder choice was passed
+  if (!chosenCoder && (isInitOnly || !savedCoder)) {
+    chosenCoder = await selectCoderModelInteractive(savedCoder);
+    await fs.mkdir(TEAM_DIR, { recursive: true });
+    await fs.writeFile(CODER_CONFIG_FILE, JSON.stringify({ coder: chosenCoder }, null, 2));
+  } else if (!chosenCoder) {
+    chosenCoder = savedCoder;
+  }
+
+  // Setup workspace & 4 agents on Herdr
+  const roles = await ensureWorkspaceAndAgents(chosenCoder);
 
   if (isInitOnly || !task) {
     if (!task && !isInitOnly) {
