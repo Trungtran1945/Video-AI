@@ -5,6 +5,11 @@ import { runPipeline } from '../../pipeline/runner.js'
 import { recoverStaleProjects, RECOVERY_REASON_STALE } from '../../pipeline/recovery.js'
 import { claimQueuedProject } from '../claim.js'
 import { config } from '../../config.js'
+import { PROJECT_ACTIVE_STATUSES, PROJECT_STATUS } from '../../lib/projectStatus.js'
+
+// Active execution slots (pending + running) - queued is waiting, not consuming slot
+const EXECUTION_STATUSES = PROJECT_ACTIVE_STATUSES.filter((s) => s !== PROJECT_STATUS.QUEUED)
+const EXECUTION_IN_LIST = EXECUTION_STATUSES.map((s) => `'${s}'`).join(', ')
 
 // Throttled: a dead Redis stream emits errors continuously — log without spam.
 const logWorkerError = createThrottledLogger(30000)
@@ -30,8 +35,9 @@ async function processDrainQueued(job) {
   }
 
   // ── 2. Drain queued projects ──
+  // Review-parked script projects are waiting for the user, not for a slot.
   const usersWithQueued = await queryOne(
-    `SELECT DISTINCT user_id FROM projects WHERE status = 'queued'`
+    `SELECT DISTINCT user_id FROM projects WHERE status = 'queued' AND COALESCE(script_review_required, 0) = 0`
   )
 
   if (!usersWithQueued) return { drained: 0, recovered }
@@ -40,7 +46,9 @@ async function processDrainQueued(job) {
 
   // Get all unique user_ids with queued projects
   const rows = await query(
-    `SELECT user_id, COUNT(*) as cnt FROM projects WHERE status = 'queued' GROUP BY user_id`
+    `SELECT user_id, COUNT(*) as cnt FROM projects
+     WHERE status = 'queued' AND COALESCE(script_review_required, 0) = 0
+     GROUP BY user_id`
   )
 
   // For each user, check if they have a slot available
@@ -49,9 +57,9 @@ async function processDrainQueued(job) {
   for (const userRow of userIds) {
     const userId = userRow.user_id
 
-    // Count running projects for this user
+    // Count active projects for this user (pending/queued/running — shared vocab).
     const running = await queryOne(
-      `SELECT COUNT(*) as cnt FROM projects WHERE user_id = ? AND status IN ('pending', 'running')`,
+      `SELECT COUNT(*) as cnt FROM projects WHERE user_id = ? AND status IN (${EXECUTION_IN_LIST})`,
       [userId]
     )
     const runningCount = running?.cnt || 0
@@ -59,7 +67,9 @@ async function processDrainQueued(job) {
     if (runningCount < maxConcurrent) {
       // Get oldest queued project for this user
       const oldest = await queryOne(
-        `SELECT id FROM projects WHERE user_id = ? AND status = 'queued' ORDER BY created_date ASC LIMIT 1`,
+        `SELECT id, mode FROM projects
+         WHERE user_id = ? AND status = 'queued' AND COALESCE(script_review_required, 0) = 0
+         ORDER BY created_date ASC LIMIT 1`,
         [userId]
       )
 
@@ -68,7 +78,8 @@ async function processDrainQueued(job) {
         // Losers get claimed:false and must NOT call runPipeline().
         const claim = await claimQueuedProject(oldest.id)
         if (!claim.claimed) continue
-        runPipeline(oldest.id, null, claim.runToken).catch((e) => console.error('[DrainQueued] start failed', e))
+        const isScript = String(oldest.mode || '').toUpperCase().replace('-', '_') === 'SCRIPT_TO_VIDEO'
+        runPipeline(oldest.id, null, claim.runToken, isScript ? { parkAfterAnalysis: true } : {}).catch((e) => console.error('[DrainQueued] start failed', e))
         drained++
       }
     }

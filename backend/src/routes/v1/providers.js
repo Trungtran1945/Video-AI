@@ -67,6 +67,10 @@ router.get('/', async (req, res) => {
         decorate('gemini'),
         decorate('clip', false),
       ],
+      image: [
+        decorate('slide'),
+        decorate('mock'),
+      ],
       video: [
         decorate('kling', false),
         decorate('hailuo', false),

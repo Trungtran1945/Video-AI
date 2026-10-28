@@ -43,12 +43,31 @@ async function getOrCreateSettings(userId) {
   return s
 }
 
+const MAX_STRING_LEN = 1024
+const ASPECT_RATIOS = new Set(['16:9', '9:16', '1:1', '4:3'])
 function normalize(patch) {
   const out = {}
   for (const f of ALLOWED) {
     if (patch[f] === undefined) continue
-    if (INT_FIELDS.has(f)) out[f] = patch[f] === true ? 1 : patch[f] === false || patch[f] === null ? 0 : Number(patch[f]) || 0
-    else out[f] = String(patch[f])
+    if (INT_FIELDS.has(f)) {
+      out[f] = patch[f] === true ? 1 : patch[f] === false || patch[f] === null ? 0 : Number(patch[f]) || 0
+      continue
+    }
+    const s = String(patch[f])
+    // Không phình data.db bằng string MBs: mỗi field ≤1KB, quá → 400.
+    if (s.length > MAX_STRING_LEN) {
+      const err = new Error(`Field '${f}' exceeds ${MAX_STRING_LEN} characters`)
+      err.code = 'FIELD_TOO_LONG'
+      err.field = f
+      throw err
+    }
+    if (f === 'aspect_ratio' && s && !ASPECT_RATIOS.has(s)) {
+      const err = new Error(`aspect_ratio must be one of ${[...ASPECT_RATIOS].join(', ')}`)
+      err.code = 'INVALID_ASPECT_RATIO'
+      err.field = f
+      throw err
+    }
+    out[f] = s
   }
   return out
 }
@@ -64,10 +83,18 @@ router.get('/', async (req, res) => {
 })
 
 // PUT /api/v1/settings
+// NOTE: auto_upload_youtube/notify_on_complete được lưu nhưng chưa có consumer
+// (gỡ khỏi UI Settings.jsx) — giữ cột để tương thích, không mở rộng thêm flag
+// không-consumer mới.
 router.put('/', async (req, res) => {
   try {
     await getOrCreateSettings(req.user.id)
-    const patch = normalize(req.body || {})
+    let patch
+    try {
+      patch = normalize(req.body || {})
+    } catch (validationErr) {
+      return sendError(res, 400, 'VALIDATION', validationErr.message, { field: validationErr.field })
+    }
     const cols = Object.keys(patch)
     if (!cols.length) return res.json(await getOrCreateSettings(req.user.id))
     const sql = `UPDATE settings SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE user_id = ?`

@@ -60,8 +60,9 @@ const AuthenticatedApp = () => {
       <Route path="/register" element={<Register />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
-      <Route path="/timeline" element={<TimelineDemo />} />
       <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} />}>
+        {/* F8: /timeline là demo mock (0 API, MOCK_DEMO_CLIPS) — guard login, không public. */}
+        <Route path="/timeline" element={<TimelineDemo />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/projects" element={<Projects />} />
         <Route path="/projects/new" element={<CreateProject />} />
@@ -75,6 +76,8 @@ const AuthenticatedApp = () => {
         <Route path="/providers" element={<Navigate to="/settings/providers" replace />} />
         <Route path="/api-keys" element={<Navigate to="/settings/api-keys" replace />} />
         <Route path="/logs" element={<Logs />} />
+      </Route>
+      <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} requireRole="admin" />}>
         <Route path="/admin" element={<Admin />} />
       </Route>
       <Route path="*" element={<PageNotFound />} />

@@ -53,10 +53,11 @@ await run(
 // ── Test 1: STT is always selected in pipeline graph ──
 const stages = stagesForProject({ mode: 'TRANSLATE_DUB', params: '{}' })
 assert(
-  JSON.stringify(stages) === JSON.stringify(['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.ttsAlign', 'dub.render']),
+  JSON.stringify(stages) === JSON.stringify(['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.mask', 'dub.ttsAlign', 'dub.render']),
   'stagesForProject returns STT-only pipeline'
 )
 assert(!stages.includes('dub.ocr'), 'stages does not include dub.ocr')
+assert(stages.indexOf('dub.mask') === stages.indexOf('dub.translate') + 1, 'dub.mask ngay sau dub.translate')
 
 // ── Test 2: ASR provider abstraction ──
 const asrProvider = await getProvider(userId, 'asr')

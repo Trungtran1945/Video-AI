@@ -1,11 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { apiKeysApi } from '@/api/extra';
+import { providersApi } from '@/api/extra';
 import { AlertTriangle, X, ChevronRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const POLL_INTERVAL_MS = 60000;
-const PROBE_PROVIDERS = ['gemini', 'openai', 'elevenlabs'];
+
+function normalizeSummary(data) {
+  // Backend: { providers: {name: snapshot} } — chấp nhận cả dạng array [{provider,...}].
+  const raw = data?.providers ?? data;
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === 'object') {
+    return Object.entries(raw).map(([provider, q]) => ({ provider, ...(q || {}) }));
+  }
+  return [];
+}
 
 export default function QuotaBanner() {
   const [atRiskProviders, setAtRiskProviders] = useState([]);
@@ -14,41 +23,18 @@ export default function QuotaBanner() {
 
   const checkQuotas = useCallback(async () => {
     try {
-      // 1. Fetch user's keys to know their configured providers
-      let userProviders = [];
-      try {
-        const keys = await apiKeysApi.list();
-        if (Array.isArray(keys)) {
-          userProviders = keys.map((k) => k.provider).filter(Boolean);
-        }
-      } catch {
-        // Fallback to default providers if list fails
-      }
-
-      const allProviders = Array.from(new Set([...PROBE_PROVIDERS, ...userProviders]));
-      const risks = [];
-
-      await Promise.all(
-        allProviders.map(async (provider) => {
-          try {
-            const q = await apiKeysApi.quota(provider);
-            const percent = Number(q?.percentUsed || 0);
-            if (percent >= 80) {
-              risks.push({
-                provider,
-                percentUsed: percent,
-                usedToday: q.usedToday,
-                limitToday: q.limitToday,
-                usedThisMinute: q.usedThisMinute,
-                limitThisMinute: q.limitThisMinute,
-              });
-            }
-          } catch {
-            // Ignore individual provider quota fetch errors
-          }
-        })
-      );
-
+      // 1 request / 60s: GET /providers/quota-summary (thay cho fan-out N request).
+      const data = await providersApi.quotaSummary();
+      const risks = normalizeSummary(data)
+        .filter((q) => Number(q?.percentUsed || 0) >= 80)
+        .map((q) => ({
+          provider: q.provider,
+          percentUsed: Number(q.percentUsed),
+          usedToday: q.usedToday,
+          limitToday: q.limitToday,
+          usedThisMinute: q.usedThisMinute,
+          limitThisMinute: q.limitThisMinute,
+        }));
       if (mountedRef.current) {
         setAtRiskProviders(risks);
       }

@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { UserPlus, Mail, Lock, Loader2, Eye, EyeOff } from "lucide-react";
+import { UserPlus, Mail, Lock, Loader2, Eye, EyeOff, User } from "lucide-react";
 import AuthLayout from "@/components/AuthLayout";
 import { useAuth } from "@/lib/AuthContext";
 
@@ -11,6 +11,8 @@ export default function Register() {
   const navigate = useNavigate();
   const { register } = useAuth();
   const [email, setEmail] = useState("");
+  // F4: BE POST /auth/register nhận name optional (name || '') — thêm input để không lưu ''.
+  const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -27,7 +29,7 @@ export default function Register() {
     }
     setLoading(true);
     try {
-      await register(email, password);
+      await register(email, password, name.trim() || undefined);
       navigate("/dashboard");
     } catch (err) {
       setError(err?.response?.data?.message || err.message || "Đăng ký không thành công");
@@ -58,6 +60,23 @@ export default function Register() {
       )}
 
       <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="name" className="text-foreground font-semibold text-xs sm:text-sm">
+            Tên hiển thị <span className="font-normal text-muted-foreground">(tùy chọn)</span>
+          </Label>
+          <div className="relative">
+            <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
+            <Input
+              id="name"
+              type="text"
+              autoComplete="name"
+              placeholder="Tên của bạn"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="pl-10 h-11 sm:h-12 bg-background/70 border-border/80 text-foreground placeholder:text-muted-foreground/70 focus:border-primary text-sm"
+            />
+          </div>
+        </div>
         <div className="space-y-2">
           <Label htmlFor="email" className="text-foreground font-semibold text-xs sm:text-sm">
             Email

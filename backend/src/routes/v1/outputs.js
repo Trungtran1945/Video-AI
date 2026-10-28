@@ -1,20 +1,43 @@
 import { Router } from 'express'
-import { query, queryOne, insert } from '../../db/query.js'
+import { query, queryOne } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireOutputOwner } from '../../middleware/projectAccess.js'
 import { sendError, ERR } from '../../lib/httpError.js'
 import { outputIsStale } from '../../services/outputService.js'
+import {
+  YoutubePublishError,
+  startPublish,
+  getPublishStatus,
+  cancelPublish,
+} from '../../services/youtubePublishService.js'
 
 const router = Router()
 router.use(authMiddleware)
+
+function staleFor(row) {
+  const mode = String(row.mode || '').toUpperCase().replace('-', '_')
+  const version = mode === 'SCRIPT_TO_VIDEO' ? row.project_script_version : row.project_transcript_version
+  return outputIsStale(row.mode, version, row)
+}
+
+const OUTPUT_SELECT = `SELECT o.*, p.user_id, p.title as project_title, p.mode,
+                      p.transcript_version AS project_transcript_version,
+                      p.script_version AS project_script_version
+               FROM outputs o JOIN projects p ON o.project_id = p.id`
+
+function sendPublishError(res, err) {
+  if (err instanceof YoutubePublishError) {
+    return sendError(res, err.statusCode, err.code, err.message)
+  }
+  console.error('YouTube publish error:', err?.message || err)
+  return sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+}
 
 // GET /api/v1/outputs?projectId=
 router.get('/', async (req, res) => {
   try {
     const isAdmin = req.user.role === 'admin'
-    let sql = `SELECT o.*, p.user_id, p.title as project_title, p.mode,
-                      p.transcript_version AS project_transcript_version
-               FROM outputs o JOIN projects p ON o.project_id = p.id`
+    let sql = OUTPUT_SELECT
     const params = []
     if (!isAdmin) { sql += ' WHERE p.user_id = ?'; params.push(req.user.id) }
     if (req.query.projectId) { sql += (params.length ? ' AND' : ' WHERE') + ' o.project_id = ?'; params.push(req.query.projectId) }
@@ -22,7 +45,7 @@ router.get('/', async (req, res) => {
     const rows = await query(sql, params)
     res.json(rows.map((r) => ({
       ...r,
-      outputStale: outputIsStale(r.mode, r.project_transcript_version, r),
+      outputStale: staleFor(r),
       url: r.storage_key ? `/storage/${r.storage_key}` : null,
     })))
   } catch (err) {
@@ -33,48 +56,42 @@ router.get('/', async (req, res) => {
 
 // GET /api/v1/outputs/:id
 router.get('/:id', async (req, res) => {
-  const o = await queryOne(`SELECT o.*, p.user_id, p.mode, p.transcript_version AS project_transcript_version FROM outputs o JOIN projects p ON o.project_id = p.id WHERE o.id = ?`, [req.params.id])
+  const o = await queryOne(`${OUTPUT_SELECT} WHERE o.id = ?`, [req.params.id])
   if (!o) return sendError(res, 404, 'NOT_FOUND', 'Output not found')
   if (o.user_id !== req.user.id && req.user.role !== 'admin') return sendError(res, 403, ERR.AUTH_FORBIDDEN, 'Forbidden')
   res.json({
     ...o,
-    outputStale: outputIsStale(o.mode, o.project_transcript_version, o),
+    outputStale: staleFor(o),
     url: o.storage_key ? `/storage/${o.storage_key}` : null,
   })
 })
 
-const YOUTUBE_PRIVACY = ['private', 'unlisted', 'public']
-
-// POST /api/v1/outputs/:id/youtube (docs/06 §4)
-// Stub: hàng đợi youtube_uploads status='pending' — upload thật (Google OAuth) chưa gắn.
-// Idempotent: không tạo row mới nếu đã có job pending/uploading cho output này.
+// POST /api/v1/outputs/:id/youtube — 202 outbox row, worker does the upload.
 router.post('/:id/youtube', requireOutputOwner, async (req, res) => {
-  const privacy = req.body?.privacy || 'private'
-  if (!YOUTUBE_PRIVACY.includes(privacy)) {
-    return sendError(res, 400, ERR.VALIDATION, `privacy must be one of ${YOUTUBE_PRIVACY.join(', ')}`, { field: 'privacy' })
+  try {
+    const result = await startPublish({ outputId: req.output.id, payload: req.body })
+    res.status(202).json(result)
+  } catch (err) {
+    sendPublishError(res, err)
   }
-  const existing = await queryOne(
-    `SELECT * FROM youtube_uploads WHERE output_id = ? AND status IN ('pending','uploading','processing') ORDER BY rowid DESC LIMIT 1`,
-    [req.output.id]
-  )
-  if (existing) {
-    return res.json({ message: 'YouTube upload already queued', upload: existing, queued: false })
-  }
-  const upload = await insert('youtube_uploads', {
-    id: crypto.randomUUID(),
-    output_id: req.output.id,
-    status: 'pending',
-    privacy,
-    error_message: null,
-  })
-  // Real upload would be triggered here; stubbed as pending.
-  res.json({ message: 'YouTube upload queued (stub)', upload, queued: true })
 })
 
 // GET /api/v1/outputs/:id/youtube
 router.get('/:id/youtube', requireOutputOwner, async (req, res) => {
-  const row = await queryOne('SELECT * FROM youtube_uploads WHERE output_id = ? ORDER BY rowid DESC LIMIT 1', [req.output.id])
-  res.json(row || { status: 'none' })
+  try {
+    res.json(await getPublishStatus(req.output.id))
+  } catch (err) {
+    sendPublishError(res, err)
+  }
+})
+
+// POST /api/v1/outputs/:id/youtube/cancel
+router.post('/:id/youtube/cancel', requireOutputOwner, async (req, res) => {
+  try {
+    res.json(await cancelPublish({ outputId: req.output.id }))
+  } catch (err) {
+    sendPublishError(res, err)
+  }
 })
 
 export default router

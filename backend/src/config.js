@@ -41,6 +41,16 @@ export function assertProductionSecrets({ nodeEnv, jwtAccessSecret, jwtRefreshSe
     }
   }
   if (bad.length) {
+    // Preflight thân thiện (tiếng Việt): chỉ in TÊN biến thiếu/yếu, KHÔNG BAO
+    // GIỜ in giá trị secret. Giữ nguyên message throw bên dưới để unit tests
+    // hiện tại (deploymentSmoke/productionRuntimeSmoke/dockerIntegration) không vỡ.
+    console.error(
+      `[Config] LỖI: Thiếu secret production an toàn: ${bad.join(', ')}.\n` +
+      `- Copy file mẫu: copy .env.production.example .env (Windows) / cp .env.production.example .env (Linux)\n` +
+      `- Sinh secret ≥${MIN_SECRET_LENGTH} ký tự (chạy 3 lần, mỗi biến 1 giá trị): node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"\n` +
+      `- Điền 3 biến JWT_ACCESS_SECRET / JWT_REFRESH_SECRET / MASTER_KEY rồi chạy lại docker compose up -d --build\n` +
+      `- Không commit file .env. Chi tiết xem README §6.3.`
+    )
     throw new Error(
       `[Config] FATAL: missing or unsafe secrets in production: ${bad.join(', ')}. ` +
       `Set JWT_ACCESS_SECRET (>=${MIN_SECRET_LENGTH} chars), JWT_REFRESH_SECRET, MASTER_KEY via environment.`
@@ -80,6 +90,12 @@ export const config = {
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID || '',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
+  },
+  youtube: {
+    clientId: process.env.YOUTUBE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || '',
+    clientSecret: process.env.YOUTUBE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '',
+    redirectUri: process.env.YOUTUBE_REDIRECT_URI || '',
+    frontendUrl: (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, ''),
   },
   googleTranslateScriptUrl: process.env.GOOGLE_TRANSLATE_SCRIPT_URL || '',
   storageDir,
@@ -129,6 +145,15 @@ export const config = {
     outputRoot: process.env.ZEROTTS_OUTPUT_ROOT || '',
     timeoutMs: Number(process.env.ZEROTTS_TIMEOUT_MS || 60000),
     shutdownTimeoutMs: Number(process.env.ZEROTTS_SHUTDOWN_TIMEOUT_MS || 15000),
+    // Dev orchestrator (scripts/dev.mjs) — prod ép tắt auto-start dù user set
+    // true (api container không bao giờ spawn python; zerotts là container riêng).
+    autoStart: process.env.ZEROTTS_AUTO_START !== 'false',
+    waitForReady: String(process.env.ZEROTTS_WAIT_FOR_READY || '').toLowerCase() === 'true',
+    enabled: (process.env.NODE_ENV || 'development') === 'production'
+      ? false
+      : String(process.env.ZEROTTS_ENABLED ?? 'true').toLowerCase() !== 'false',
+    startupTimeoutMs: Number(process.env.ZEROTTS_STARTUP_TIMEOUT_MS || 90000),
+    pythonBin: process.env.ZEROTTS_PYTHON_BIN || '',
   },
   // CORS allowlist: production reads CORS_ORIGINS (comma-separated, fail-closed
   // when empty). Development allows local Vite/dev origins by default.
@@ -147,6 +172,17 @@ export const config = {
     process.env.COOKIE_SECURE !== undefined && process.env.COOKIE_SECURE !== ''
       ? String(process.env.COOKIE_SECURE).toLowerCase() === 'true'
       : nodeEnv === 'production',
+}
+
+// Boot-time observability (1 lần, không spam mỗi request; không log secret):
+// - Prod CORS rỗng → fail-closed, browser cross-origin bị reject (same-origin
+//   qua nginx :80 không cần CORS).
+// - Prod COOKIE_SECURE=true trên HTTP LAN → browser drop cookie refresh_token.
+if (nodeEnv === 'production' && config.corsOrigins.length === 0) {
+  console.warn('[Config] CORS_ORIGINS rỗng ở production — mọi browser cross-origin sẽ bị "CORS: origin not allowed". Same-origin qua nginx :80 không cần CORS; gọi trực tiếp :3001/domain khác phải set CORS_ORIGINS (comma-separated).')
+}
+if (nodeEnv === 'production' && config.cookieSecure) {
+  console.debug?.('[Config] COOKIE_SECURE=true ở production — HTTP LAN (http://<LAN-IP>) sẽ mất cookie refresh_token; dùng COOKIE_SECURE=false cho HTTP LAN nội bộ hoặc terminate TLS.')
 }
 
 // Pure CORS check (unit-testable). Non-production allows localhost defaults;

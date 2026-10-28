@@ -17,7 +17,7 @@ assert(runnerSrc.includes('activeRuns.has(projectId)'), 'runner keeps in-process
 assert(runnerSrc.includes('startingRuns.has(projectId)'), 'runner serializes concurrent starts')
 assert(runnerSrc.includes('markProjectRunning'), 'runner requires a conditional running transition')
 assert(runnerSrc.includes('run_token'), 'runner fences lifecycle writes by run token')
-assert(admissionSrc.includes("status IN ('pending', 'running')"), 'admission counts reserved and running slots')
+assert(admissionSrc.includes('PROJECT_ACTIVE_STATUSES'), 'admission counts active slots via shared PROJECT_ACTIVE_STATUSES (pending/queued/running)')
 
 // 2. Per-user cap is enforced by the shared admission service.
 assert(admissionSrc.includes('maxConcurrentProjectsPerUser'), 'admission enforces per-user cap')
@@ -26,7 +26,7 @@ assert(admissionSrc.includes('run_token'), 'admission creates a run ownership to
 
 // 3. Drain scopes by user and does not bypass the shared claim.
 assert(drainSrc.includes('GROUP BY user_id'), 'drain lists all queued users')
-assert(drainSrc.includes("status IN ('pending', 'running')"), 'drain counts active reservations')
+assert(drainSrc.includes('PROJECT_ACTIVE_STATUSES'), 'drain counts active reservations via shared PROJECT_ACTIVE_STATUSES')
 assert(drainSrc.includes('claimQueuedProject'), 'drain uses shared atomic claim')
 
 // 4. No caller bypasses the guards with an unconditional status flip.

@@ -39,6 +39,9 @@ export default function VideoTimeline({
   className = '',
   minimized: propMinimized,
   onToggleMinimize: propOnToggleMinimize,
+  // F2 Option B (view-only): timeline drag/trim chỉ xem thử, không persist.
+  // Sửa timing thật ở TranscriptEditor → Lưu (PUT /projects/:id/transcript).
+  readOnly = false,
 }) {
   const {
     currentTime: storeCurrentTime,
@@ -253,14 +256,14 @@ export default function VideoTimeline({
     <div
       className={`flex flex-col bg-card text-foreground rounded-xl border border-border shadow-2xl overflow-hidden select-none font-sans ${className}`}
     >
-      {/* Timeline Header & Controls */}
+      {/* Timeline Header & Controls — R2: wrap + scroll ngang trên mobile */}
       <div
-        className={`px-4 bg-muted/40 dark:bg-card flex items-center justify-between z-30 transition-all ${
-          isMinimized ? 'h-10' : 'h-12 border-b border-border'
+        className={`px-4 bg-muted/40 dark:bg-card flex items-center justify-between flex-wrap gap-y-2 z-30 transition-all ${
+          isMinimized ? 'h-10' : 'min-h-12 py-1 border-b border-border'
         }`}
       >
         {/* Left: Timecode + Play Controls */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 max-w-full">
           <div className="flex items-center gap-1.5 bg-background border border-border px-2.5 py-1 rounded-lg shadow-inner">
             <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
             <span className="font-mono text-xs font-semibold tracking-wider text-foreground">
@@ -277,7 +280,7 @@ export default function VideoTimeline({
             onClick={() => handleSeek(0)}
             title="Jump to Start"
             aria-label="Về đầu video"
-            className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="p-2.5 sm:p-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <RotateCcw size={13} />
           </button>
@@ -287,7 +290,7 @@ export default function VideoTimeline({
             onClick={() => handleSeek(Math.max(0, activeCurrentTime - 5))}
             title="Seek Backward 5s"
             aria-label="Lùi lại 5 giây"
-            className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="p-2.5 sm:p-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <SkipBack size={13} />
           </button>
@@ -297,7 +300,7 @@ export default function VideoTimeline({
             onClick={handleTogglePlay}
             title={activeIsPlaying ? 'Pause (Space)' : 'Play (Space)'}
             aria-label={activeIsPlaying ? 'Tạm dừng video' : 'Phát video'}
-            className={`px-3 py-1 rounded-lg flex items-center gap-1 font-semibold text-xs transition-all shadow-xs active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+            className={`px-3 py-2 sm:py-1 min-h-[36px] rounded-lg flex items-center gap-1 font-semibold text-xs transition-all shadow-xs active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
               activeIsPlaying
                 ? 'bg-amber-500 hover:bg-amber-400 text-black'
                 : 'bg-primary hover:bg-primary/90 text-primary-foreground'
@@ -312,34 +315,71 @@ export default function VideoTimeline({
             onClick={() => handleSeek(Math.min(activeCurrentTime + 5, propDuration || totalDuration))}
             title="Seek Forward 5s"
             aria-label="Tiến tới 5 giây"
-            className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="p-2.5 sm:p-1.5 min-w-[36px] min-h-[36px] flex items-center justify-center rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <SkipForward size={13} />
           </button>
         </div>
 
-        {/* Center: Snapping Toggle (only shown when expanded) */}
+        {/* Center: Playback controls + Snapping Toggle (only shown when expanded) */}
         {!isMinimized && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 overflow-x-auto sm:overflow-visible max-w-full">
+            {typeof onSpeedChange === 'function' && (
+              <select
+                value={String(propPlaybackSpeed ?? 1)}
+                onChange={(e) => onSpeedChange(Number(e.target.value))}
+                title="Tốc độ phát"
+                aria-label="Tốc độ phát video"
+                className="px-1.5 py-2 sm:py-1 min-h-[36px] rounded-lg bg-background border border-border/60 text-xs font-mono text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                {[0.5, 1, 1.5, 2].map((s) => (
+                  <option key={s} value={s}>{s}x</option>
+                ))}
+              </select>
+            )}
+            {typeof onVolumeChange === 'function' && (
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={Number(propVolume ?? 1)}
+                onChange={(e) => onVolumeChange(Number(e.target.value))}
+                title={propMuted ? 'Đang tắt tiếng' : 'Âm lượng'}
+                aria-label="Âm lượng video"
+                className="w-24 sm:w-16 h-2.5 sm:h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
+              />
+            )}
+            {typeof onMuteToggle === 'function' && (
+              <button
+                type="button"
+                onClick={onMuteToggle}
+                title={propMuted ? 'Bật tiếng' : 'Tắt tiếng'}
+                aria-label={propMuted ? 'Bật tiếng video' : 'Tắt tiếng video'}
+                className="px-1.5 py-2 sm:py-1 min-h-[36px] rounded-lg bg-background border border-border/60 text-xs text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                {propMuted ? 'Tắt tiếng' : 'Tiếng'}
+              </button>
+            )}
             <button
               type="button"
               onClick={toggleSnapping}
               title="Toggle snapping to time anchors"
               aria-label="Bật tắt tính năng hít dính mốc thời gian"
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+              className={`flex items-center gap-1.5 px-2.5 py-2 sm:py-1 min-h-[36px] rounded-lg text-xs font-semibold border transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
                 snappingEnabled
                   ? 'bg-primary/10 border-primary/40 text-primary shadow-xs'
                   : 'bg-background hover:bg-muted border-border/60 text-muted-foreground hover:text-foreground'
               }`}
             >
               <Magnet size={12} className={snappingEnabled ? 'text-primary' : ''} />
-              <span>Snapping: {snappingEnabled ? 'ON' : 'OFF'}</span>
+              <span className="hidden sm:inline">Snapping: {snappingEnabled ? 'ON' : 'OFF'}</span>
             </button>
           </div>
         )}
 
         {/* Right: Zoom + Minimize Button (expanded) OR Expand Button (minimized) */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto sm:overflow-visible max-w-full">
           {!isMinimized ? (
             <>
               <button
@@ -347,7 +387,7 @@ export default function VideoTimeline({
                 onClick={() => setZoomLevel(zoomLevel - 10)}
                 title="Zoom Out"
                 aria-label="Thu nhỏ timeline"
-                className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="text-muted-foreground hover:text-foreground transition-colors p-2 sm:p-1 min-w-[36px] min-h-[36px] flex items-center justify-center rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <ZoomOut size={14} />
               </button>
@@ -359,7 +399,7 @@ export default function VideoTimeline({
                 value={zoomLevel}
                 onChange={(e) => setZoomLevel(Number(e.target.value))}
                 aria-label="Mức độ thu phóng timeline"
-                className="w-20 h-1.5 bg-muted dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-primary"
+                className="w-28 sm:w-20 h-2.5 sm:h-1.5 bg-muted dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-primary"
                 title={`Zoom: ${zoomLevel}px/sec`}
               />
 
@@ -368,7 +408,7 @@ export default function VideoTimeline({
                 onClick={() => setZoomLevel(zoomLevel + 10)}
                 title="Zoom In"
                 aria-label="Phóng to timeline"
-                className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="text-muted-foreground hover:text-foreground transition-colors p-2 sm:p-1 min-w-[36px] min-h-[36px] flex items-center justify-center rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <ZoomIn size={14} />
               </button>
@@ -384,7 +424,7 @@ export default function VideoTimeline({
                 onClick={toggleMinimize}
                 title="Thu gọn Timeline (ẩn track dựng)"
                 aria-label="Thu gọn timeline"
-                className="p-1.5 rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors flex items-center gap-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="p-2 sm:p-1.5 min-h-[36px] rounded-lg bg-background hover:bg-muted text-muted-foreground hover:text-foreground border border-border/60 transition-colors flex items-center gap-1 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <ChevronDown size={14} />
                 <span className="text-[11px] font-medium hidden sm:inline">Thu gọn</span>
@@ -449,7 +489,7 @@ export default function VideoTimeline({
                           <TimelineClip
                             key={clip.id}
                             clip={clip}
-                            isTrackLocked={track.isLocked}
+                            isTrackLocked={track.isLocked || readOnly}
                             onSegmentClick={onSegmentClick}
                             isActive={clip.segmentId === activeSegmentId || clip.id === activeSegmentId}
                           />
@@ -475,8 +515,8 @@ export default function VideoTimeline({
             }`} />
           </div>
 
-          {/* Footer */}
-          <div className="h-7 px-4 bg-muted/40 dark:bg-card/90 border-t border-border flex items-center justify-between text-[10px] text-muted-foreground">
+          {/* Footer — R2: ẩn gợi ý phím desktop trên mobile */}
+          <div className="h-7 px-4 bg-muted/40 dark:bg-card/90 border-t border-border hidden sm:flex items-center justify-between text-[10px] text-muted-foreground">
             <div className="flex items-center gap-3">
               <span className="flex items-center gap-1">
                 <kbd className="px-1 py-0.2 bg-background border border-border rounded text-[9px] font-mono text-foreground">
@@ -494,7 +534,7 @@ export default function VideoTimeline({
             </div>
 
             <div className="flex items-center gap-1.5 text-muted-foreground">
-              <span>Subtitle Sync</span>
+              <span>{readOnly ? 'Xem thử — sửa timing ở TranscriptEditor → Lưu' : 'Subtitle Sync'}</span>
             </div>
           </div>
         </>

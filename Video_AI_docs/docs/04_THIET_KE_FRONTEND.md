@@ -145,6 +145,8 @@ RHF mỗi bước + validate Zod trước khi next.
   - `APPROVED`: Mask đã được duyệt đưa vào render. **Bất biến (Immutable)**: Khi đã APPROVED, canvas khoá thao tác kéo thả và không cho sửa toạ độ/thời gian để tránh lỗi vô ý. Muốn sửa phải chuyển về `DRAFT`.
   - `DISABLED`: Tạm tắt mask mà không cần xoá record khỏi DB.
 - **Render an toàn**: `dubRender` chỉ đọc các mask có `status = 'APPROVED'` và `enabled = 1`.
+- **Mask tự động `dub.mask`**: sau khi pipeline chạy, editor hiển thị thêm 1 badge `AUTO`
+  (vùng tĩnh `0→duration`, read-only, có nút "Nhân bản tay" để chỉnh bản sao thủ công).
 - **Cảnh báo Output Stale**: Mọi thao tác tạo mới, chuyển trạng thái mask giữa APPROVED và DRAFT/DISABLED đều tự động tăng `transcript_version`, kích hoạt cờ `outputStale: true` và hiển thị alert banner nhắc người dùng render lại video.
 
 ## 4.2. Tiến trình real-time (SSE) & Điều khiển dự án [CURRENT — `useJobEvents` + `ProjectHeader`]
@@ -155,13 +157,15 @@ RHF mỗi bước + validate Zod trước khi next.
   progress bar không cần F5. Nếu SSE lỗi (backend chưa hỗ trợ/không parse được) → `sseAvailable=false`
   và caller **fallback polling** `GET /projects/:id` mỗi 3s (`POLL_INTERVAL_MS`).
 - Stages [CURRENT]: SUMMARY 8 stage (`summary.transcribe → … → summary.render`); TRANSLATE_DUB
-  6 stage (`dub.ingest → dub.stt → dub.merge → dub.translate → dub.ttsAlign? → dub.render`, `ttsAlign` chỉ khi bật dubbing).
+  7 stage (`dub.ingest → dub.stt → dub.merge → dub.translate → dub.mask → dub.ttsAlign? → dub.render`, `ttsAlign` chỉ khi bật dubbing; `dub.mask` che chữ gốc tự động, luôn chạy sau khi dịch xong).
 - Nút **"Huỷ"** ở header (`canCancel` khi status `running`/`queued`/`pending`) gọi
   `POST /projects/:id/cancel` (FR-J1); sau huỷ reload project, status `cancelled` (không `failed`).
 - Nút **"Chạy lại"** kèm dropdown menu **"Chạy lại theo giai đoạn"** (`ProjectHeader.jsx`):
+  - **Ma trận hiển thị (`canRegenerate`)**: Hiển thị cho các dự án ở trạng thái `completed`, `failed`, và `queued` (Đang chờ). Ẩn hoàn toàn khi pipeline đang chạy (`running`, `pending`, `generating`) hoặc khi dự án kịch bản đang tạm dừng duyệt (`queued` kèm `scriptReviewRequired: true`).
+  - **Dự án Đang chờ (`queued`)**: Chỉ hiển thị nút bấm đơn "Chạy lại" (ẩn mũi tên chevron và menu dropdown vì server luôn tự động tiếp tục từ bước chưa xong đầu tiên `firstRunnableStage`). Khi bấm nếu hệ thống đang đầy slot (`429 LIMIT_001`), hiển thị toast thân thiện "Chưa có slot chạy" và giữ nguyên trạng thái `queued` (không hiện banner đỏ). Khi thành công hiển thị toast "Đang tiếp tục pipeline".
   - **Tự động**: Tiếp tục theo tiến độ từ earliest failed/runnable stage (`POST /projects/:id/regenerate`).
   - **Chạy lại từ bước chỉ định** (`POST /projects/:id/regenerate` với body `{ fromStage }`):
-    - TRANSLATE_DUB: Dịch thuật (`dub.translate`), Lồng tiếng (`dub.ttsAlign`), Render video (`dub.render`).
+    - TRANSLATE_DUB: Dịch thuật (`dub.translate`), Che chữ gốc tự động (`dub.mask`), Lồng tiếng (`dub.ttsAlign`), Render video (`dub.render`).
     - SUMMARY: Kịch bản (`summary.script`), Tạo giọng (`summary.tts`), Render video (`summary.render`).
   **"Lồng tiếng lại"** gọi `POST /projects/:id/translate-dub/redub` (dùng bản dịch đã sửa tay).
 - Sửa transcript (`PUT /projects/:id/transcript`, chỉ gửi segment đã đổi) trả `outputStale=true`

@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { apiKeysApi } from '@/api/extra';
 import Layout from '@/components/Layout';
 import PageHeader from '@/components/PageHeader';
 import Loading from '@/components/Loading';
 import EmptyState from '@/components/EmptyState';
+import ErrorState from '@/components/ErrorState';
 import { motion } from 'framer-motion';
 import { KeyRound, Plus, Trash2, Eye, EyeOff, Zap, BarChart3, ShieldCheck } from 'lucide-react';
+import { useToast } from '@/components/ui/use-toast';
 
 const providerLabels = {
   gemini: 'Gemini', openai: 'OpenAI', anthropic: 'Anthropic', huggingface: 'HuggingFace',
@@ -26,21 +28,30 @@ const TIER_OPTIONS = [
 export default function ApiKeys() {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [visibleKeys, setVisibleKeys] = useState({});
+  // NOTE: `category` chỉ dùng cục bộ để gợi ý label — backend /api-keys không có
+  // cột category nên không gửi lên (tránh persist-nhưng-không-ai-đọc).
   const [form, setForm] = useState({ provider: 'gemini', label: '', category: 'llm', api_key_encrypted: '', tier: 'free', priority: 0 });
   const [quotas, setQuotas] = useState({});
+  const priorityTimers = useRef({});
+  const { toast } = useToast();
 
   useEffect(() => {
     (async () => {
       try {
         setKeys(await apiKeysApi.list() || []);
       } catch (e) {
-        console.error(e);
+        setLoadError(e);
       } finally {
         setLoading(false);
       }
     })();
+  }, []);
+
+  useEffect(() => () => {
+    Object.values(priorityTimers.current).forEach(clearTimeout);
   }, []);
 
   const loadQuota = async (provider) => {
@@ -66,9 +77,13 @@ export default function ApiKeys() {
       setKeys([created, ...keys]);
       setShowAdd(false);
       setForm({ provider: 'gemini', label: '', category: 'llm', api_key_encrypted: '', tier: 'free', priority: 0 });
+      toast({ title: 'Đã lưu khóa API', description: `Khóa ${providerLabels[form.provider] || form.provider} đã được mã hóa và lưu.` });
     } catch (e) {
-      console.error(e);
-      alert('Không thể thêm khóa: ' + (e.message || ''));
+      toast({
+        variant: 'destructive',
+        title: 'Không thể thêm khóa',
+        description: e?.response?.data?.message || e.message,
+      });
     }
   };
 
@@ -99,13 +114,22 @@ export default function ApiKeys() {
     }
   };
 
-  const updatePriority = async (key, priority) => {
-    try {
-      const updated = await apiKeysApi.update(key.id, { priority: Number(priority) });
-      setKeys(keys.map(k => k.id === key.id ? { ...k, ...updated } : k));
-    } catch (e) {
-      console.error(e);
-    }
+  // Debounce 400ms + abort request cũ: mỗi keystroke không PUT ngay (tránh last-write-wins lạc hậu đè mới).
+  const updatePriority = (key, priority) => {
+    setKeys((prev) => prev.map(k => k.id === key.id ? { ...k, priority: Number(priority) } : k));
+    clearTimeout(priorityTimers.current[key.id]);
+    priorityTimers.current[key.id] = setTimeout(async () => {
+      try {
+        const updated = await apiKeysApi.update(key.id, { priority: Number(priority) });
+        setKeys((prev) => prev.map(k => k.id === key.id ? { ...k, ...updated } : k));
+      } catch (e) {
+        toast({
+          variant: 'destructive',
+          title: 'Không lưu được mức ưu tiên',
+          description: e?.response?.data?.message || e.message,
+        });
+      }
+    }, 400);
   };
 
   const maskKey = (k) => k ? k.slice(0, 4) + '••••••••' + k.slice(-4) : '—';
@@ -257,6 +281,8 @@ export default function ApiKeys() {
 
         {loading ? (
           <Loading />
+        ) : loadError ? (
+          <ErrorState status={loadError?.response?.status ?? 0} onRetry={() => window.location.reload()} />
         ) : keys.length === 0 ? (
           <EmptyState
             icon={KeyRound}
@@ -303,7 +329,7 @@ export default function ApiKeys() {
                       type="button"
                       onClick={() => setVisibleKeys(v => ({ ...v, [k.id]: !v[k.id] }))}
                       className="text-muted-foreground hover:text-foreground p-1 rounded-md transition-colors"
-                      title={visibleKeys[k.id] ? "Ẩn khóa" : "Hiện khóa"}
+                      title={visibleKeys[k.id] ? 'Ẩn preview đã che' : 'Chỉ xem preview đã che (không hiện khóa đầy đủ)'}
                     >
                       {visibleKeys[k.id] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                     </button>

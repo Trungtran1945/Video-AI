@@ -44,10 +44,10 @@ When designing and developing frontend interfaces:
 - **Frontend:** React 18 + Vite 6 (`frontend/`). Scripts: `dev`, `build` (`vite build`), `lint` (`eslint . --quiet`), `typecheck`, `preview`. No `npm test`. Dark theme (#0F1117), Vite proxy `/api` → `http://localhost:3001`. Key: `src/api/client.js`, `src/pages/CreateProject.jsx`, `src/pages/ProjectDetail.jsx`, `src/components/timeline/`.
 - **Backend:** Node >=18 ESM Express (`backend/server.js`, `backend/src/`). Scripts: `dev`/`start` (`node server.js`), `check:redis`, `test` (`node scripts/run-tests.mjs` → all `backend/tests/*.test.mjs`). Routes under `src/routes/v1/`, liveness `GET /health` (incl. `database.persistenceState` HEALTHY/DEGRADED/WRITE_BLOCKED) + readiness `GET /ready` (503 when WRITE_BLOCKED). Project statuses canonical: `pending/queued/running/completed/failed/cancelled` (`src/lib/projectStatus.js`; legacy `success`→`completed`).
 - **Modes:** SUMMARY vs TRANSLATE_DUB (target spec in `Video_AI_docs/docs/`, legacy STYLE_EDIT code being removed). 13 translation style presets via `GET /style-presets`. Resumable TUS-like upload (`POST /uploads/init`, `PUT /uploads/:id/chunk`, `POST /uploads/:id/complete`), SSE `GET /projects/:id/events`, storage served at `/storage/<key>`.
-- **Pipeline stages** (`backend/src/pipeline/stages/`): `dubIngest → dubStt → dubMerge → dubTranslate → dubTtsAlign → dubRender`; `summaryTranscribe → summaryAnalyze → summaryScript → summarySceneDetect → summaryAlign → summarySubtitle → summaryTts → summaryRender`.
+- **Pipeline stages** (`backend/src/pipeline/stages/`): `dubIngest → dubStt → dubMerge → dubTranslate → dubMask → dubTtsAlign → dubRender`; `summaryTranscribe → summaryAnalyze → summaryScript → summarySceneDetect → summaryAlign → summarySubtitle → summaryTts → summaryRender`.
 - **Workers/queue:** BullMQ + Redis (`src/queue/`). `docker-compose.yml` services: `redis` (6379), `api` (3001), `worker` (profile `scale`), `web` (80). Redis NOT guaranteed running locally — probe via `npm run check:redis` or `/health`, never assume.
 - **Database:** SQLite via `sql.js` (`src/db/`), `DATABASE_URL=file:./data.db`. Seeds in `src/db/seed.js`.
-- **FFmpeg:** via `src/media/ffmpeg.js` (+ `FFMPEG_PATH` in `backend/.env`). NOT installed on this machine (2026-09-17) — mark FFmpeg checks SKIP/BLOCKED with reason, never PASS by assumption.
+- **FFmpeg:** via `src/media/ffmpeg.js` (+ `FFMPEG_PATH` in `backend/.env`). Probe `ffmpeg -version` / `ffprobe -version` (9.0.1-full_build confirmed 2026-10-28) — never assume; mark checks SKIP/BLOCKED if missing.
 - **AI services:** keys via env (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`); SMTP/quota vars in `docker-compose.yml`. Secrets: UNKNOWN values, never log.
 - **Docker:** `docker/api.Dockerfile`, `docker/web.Dockerfile`, `docker-compose.yml` as above.
 - **Existing agent/config (do not break):** `.opencode/plans/`, `.agents/plugins/` (playwright), `.agents/skills/` (10), `.cursor/agents/` (4 impeccable) + `hooks.json` + `mcp.json`, `.mcp.json` (playwright). Merge safely, never delete.
@@ -55,6 +55,7 @@ When designing and developing frontend interfaces:
 ## Environment Rules
 
 - Backend first (`cd backend; npm run dev`), then frontend (`cd frontend; npm run dev`).
+- `npm run dev` auto-starts the local ZeroTTS Python sidecar (dev only); `npm start` / `node server.js` must never spawn Python. ZeroTTS returns WAV bytes and the backend converts to MP3 locally, so FFmpeg/ffprobe must be probed (`ffmpeg -version`, `ffprobe -version`) — never assume conversion works.
 - Never commit `.env` (root `.gitignore` covers `.env`, `node_modules/`, `dist/`, `backend/data.db`, `backend/storage/`, `*.log`).
 - Never log secrets, API keys, tokens. Pipeline logs are redacted.
 - FFmpeg/Redis/DB availability: probe, don't assume. Record actual versions in test reports.

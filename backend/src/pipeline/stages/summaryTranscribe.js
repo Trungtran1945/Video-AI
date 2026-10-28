@@ -21,11 +21,27 @@ import { buildAsrCacheInput } from '../../lib/asrCacheKey.js'
 import { getWhisperEffectiveConfig } from '../../providers/asr/openaiWhisper.js'
 
 export async function summaryTranscribe(ctx) {
-  const { project, job, setProgress, signal } = ctx
+  const { project, job, setProgress, signal, forceTranscript } = ctx
   const src = requireSourceFile(project.source_video_key, 'Video nguồn (phim)')
   const dir = projectDir(project.id)
   const tmp = ensureDir(tmpDirOf(project.id))
   setProgress(2)
+
+  // Skip-cache đối xứng DUB: transcript.json đã có segments + !forceTranscript →
+  // bỏ qua STT (tránh transcribe lại tốn quota). Version-guard: chỉ skip khi
+  // transcript_version DB khớp version ghi trong file (stale → chạy lại).
+  try {
+    const { queryOne: qOne } = await import('../../db/query.js')
+    const row = await qOne('SELECT transcript_version FROM projects WHERE id = ?', [project.id])
+    const dbVersion = Number(row?.transcript_version ?? 0)
+    const cachedPath = path.join(dir, 'transcript.json')
+    if (!forceTranscript && fs.existsSync(cachedPath)) {
+      const cached = JSON.parse(fs.readFileSync(cachedPath, 'utf8'))
+      if (Array.isArray(cached?.segments) && cached.segments.length > 0 && Number(cached.transcriptVersion ?? 0) === dbVersion) {
+        return { transcriptKey: toStorageKey(cachedPath), language: cached.language || null, segmentCount: cached.segments.length, durationSec: cached.durationSec, skipped: true, reason: 'cached' }
+      }
+    }
+  } catch (_) {}
 
   // Check abort signal
   if (signal?.aborted) throw new Error('Cancelled')
@@ -120,10 +136,21 @@ export async function summaryTranscribe(ctx) {
   })
   const segments = dedupeOverlapSegments(rawSegments, { windowSec: 1.0, overlapSec: STT_OVERLAP_SEC })
 
+  // Provenance: bump projects.transcript_version + ghi version vào file để
+  // skip-cache và stale-check đối xứng với DUB (transcriptVersionSnapshot).
+  let transcriptVersion = 0
+  try {
+    const { queryOne: qOne2, run: run2 } = await import('../../db/query.js')
+    const cur = await qOne2('SELECT transcript_version FROM projects WHERE id = ?', [project.id])
+    transcriptVersion = Number(cur?.transcript_version ?? 0) + 1
+    await run2('UPDATE projects SET transcript_version = ? WHERE id = ?', [transcriptVersion, project.id])
+  } catch (_) {}
+
   const transcriptPath = writeJson(path.join(dir, 'transcript.json'), {
     language: language || initialHint || 'unknown',
     durationSec: info.durationSec,
     segments,
+    transcriptVersion,
   })
 
   try { fs.unlinkSync(fullWav) } catch (_) {}
@@ -138,6 +165,7 @@ export async function summaryTranscribe(ctx) {
     language: language || null,
     segmentCount: segments.length,
     durationSec: round2(info.durationSec),
+    transcriptVersion,
   }
 }
 

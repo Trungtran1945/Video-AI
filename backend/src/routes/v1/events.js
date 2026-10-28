@@ -113,11 +113,12 @@ router.get('/projects/:id/events', sseAuthMiddleware, requireProjectOwner, async
     try {
       res.write(`event: progress\ndata: ${JSON.stringify(payload)}\n\n`)
       // Terminal statuses: 'completed' (chuẩn mới, khớp projects.status) +
-      // 'success' (tương thích event cũ) + 'failed'.
+      // 'failed' + 'cancelled'. Legacy 'success' event map về 'completed'.
       // done = stream closed, không phải completion — client phải dùng payload
       // progress terminal / fetch DB làm truth.
-      if (payload.stage === '__project__' && ['completed', 'success', 'failed'].includes(payload.status)) {
-        sendTerminal(payload)
+      const terminalStatus = payload.status === 'success' ? 'completed' : payload.status
+      if (payload.stage === '__project__' && ['completed', 'failed', 'cancelled'].includes(terminalStatus)) {
+        sendTerminal({ ...payload, status: terminalStatus })
       }
     } catch (_) {
       cleanup()
@@ -130,7 +131,7 @@ router.get('/projects/:id/events', sseAuthMiddleware, requireProjectOwner, async
   // phát event error + đóng để frontend fallback polling/retry (không suy diễn terminal).
   try {
     const current = await queryOne(`SELECT status, progress FROM projects WHERE id = ?`, [req.project.id])
-    if (current && ['completed', 'failed'].includes(String(current.status))) {
+    if (current && ['completed', 'failed', 'cancelled'].includes(String(current.status))) {
       const terminal = { stage: '__project__', status: String(current.status), percent: Number(current.progress ?? 100) }
       sendTerminal(terminal)
       return

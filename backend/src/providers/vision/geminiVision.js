@@ -37,6 +37,8 @@ export class GeminiVision {
   // OCR hardsub (docs/05 §B.3): phát hiện vùng phụ đề cứng trong frame.
   // Trả về [{x, y, width, height, text, confidence}] theo pixel khung hình.
   // sourceLanguage (nếu explicit, khác 'auto') được dùng làm language hint (§5).
+  // JSON hỏng hẳn → throw (kèm endpoint cho classifyProviderError);
+  // caller (dub.mask) fail-soft từng frame nên không BLOCK pipeline.
   async detectSubtitle({ imagePath, width, height, sourceLanguage }) {
     const data = fs.readFileSync(imagePath).toString('base64')
     const w = Number(width) || 1280
@@ -73,6 +75,11 @@ export class GeminiVision {
     } catch (_) {
       const m = raw.match(/\{[\s\S]*\}/)
       try { parsed = JSON.parse(m ? m[0] : '') } catch (_) { parsed = null }
+    }
+    if (!parsed) {
+      const err = new Error(`OCR (Gemini) trả về JSON không hợp lệ (malformed response, ${raw.length} ký tự)`)
+      err.endpoint = `gemini:generateContent:${this.model}`
+      throw err
     }
     const boxes = Array.isArray(parsed?.boxes)
       ? parsed.boxes

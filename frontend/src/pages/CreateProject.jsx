@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, Languages, AlertCircle, AudioLines, AlertTriangle, Search } from 'lucide-react';
+import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, FileText, Languages, AlertCircle, AudioLines, AlertTriangle, Search } from 'lucide-react';
 import {
   LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS,
   MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
@@ -9,7 +9,7 @@ import {
 } from '@/lib/constants';
 import { projectsApi } from '@/api/projects';
 import { uploadApi } from '@/api/upload';
-import { VIDEO_ACCEPT } from '@/lib/videoFiles';
+import { VIDEO_ACCEPT, canonicalVideoMimeType, videoExtension } from '@/lib/videoFiles';
 import Layout from '@/components/Layout';
 
 function FreeTierWarning({ mode, estimatedDuration }) {
@@ -66,11 +66,18 @@ export default function CreateProject() {
   const [creating, setCreating] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadPercent, setUploadPercent] = useState(0);
+  // R1: resume-session khi rớt mạng — giữ File + controller + sessionId để Hủy/Thử lại.
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [uploadController, setUploadController] = useState(null);
+  const [uploadSession, setUploadSession] = useState(null); // { uploadId, fingerprint }
   const [error, setError] = useState('');
   const [presets, setPresets] = useState(STYLE_PRESETS_FALLBACK);
   const [presetCategory, setPresetCategory] = useState('all');
   const [presetSearch, setPresetSearch] = useState('');
   const [copyrightAck, setCopyrightAck] = useState(false);
+  // F6: duration video thật cho nhánh dub (probe sau upload). null → FreeTierWarning ẩn.
+  const [videoDurationSec, setVideoDurationSec] = useState(null);
+  const [scriptUploading, setScriptUploading] = useState(false);
   const [form, setForm] = useState({
     mode: null,
     title: '',
@@ -90,6 +97,13 @@ export default function CreateProject() {
     voiceProvider: 'elevenlabs',
     voiceName: '',
     subPosition: 'bottom',
+    scriptUploadId: null,
+    scriptFileName: '',
+    scriptCharCount: 0,
+    scriptByteSize: 0,
+    scriptPreview: '',
+    aspectRatio: '16:9',
+    burnSubtitles: true,
   });
 
   const update = (key, val) => setForm((f) => ({ ...f, [key]: val }));
@@ -109,7 +123,12 @@ export default function CreateProject() {
     { key: 'dubbing', label: 'Lồng tiếng AI', icon: Mic },
     { key: 'generate', label: 'Tạo video', icon: Wand2 },
   ];
-  const steps = form.mode === 'SUMMARY' ? summarySteps : dubSteps;
+  const scriptSteps = [
+    { key: 'script', label: 'Kịch bản', icon: FileText },
+    { key: 'config', label: 'Cấu hình video', icon: Palette },
+    { key: 'generate', label: 'Tạo video', icon: Wand2 },
+  ];
+  const steps = form.mode === 'SUMMARY' ? summarySteps : (form.mode === 'SCRIPT_TO_VIDEO' || form.mode === 'AI_VIDEO') ? scriptSteps : dubSteps;
 
   useEffect(() => {
     if (form.mode !== 'TRANSLATE_DUB') return;
@@ -124,29 +143,160 @@ export default function CreateProject() {
     return () => { alive = false; };
   }, [form.mode]);
 
-  const handleMovie = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // R1: fingerprint session = name+size+mime — reload trang chọn lại cùng file
+  // thì resume đúng session cũ; file khác thì init mới (không resume nhầm).
+  const uploadSessionKey = (file) => {
+    if (!file) return null;
+    try {
+      return `upload-session:${file.name}|${file.size}|${canonicalVideoMimeType(videoExtension(file.name))}`;
+    } catch {
+      return null;
+    }
+  };
+
+  const clearStaleVideo = () => {
+    // Clear stale key — key cũ không dùng được nữa, tránh tạo project với file lỗi.
+    update('sourceVideoKey', null);
+    update('sourceFileName', null);
+    update('videoHash', null);
+    setVideoDurationSec(null);
+  };
+
+  const startUpload = async (file, { initialUploadId } = {}) => {
+    if (!file || uploading) return;
     setError('');
     setUploading(true);
     setUploadPercent(0);
+    setVideoDurationSec(null);
+    // Probe duration thật từ File (best-effort, không chặn upload nếu lỗi).
     try {
-      const res = await uploadApi.upload(file, { onProgress: setUploadPercent });
-      update('sourceVideoKey', res.key);
+      const objectUrl = URL.createObjectURL(file);
+      const probe = document.createElement('video');
+      probe.preload = 'metadata';
+      probe.src = objectUrl;
+      probe.onloadedmetadata = () => {
+        if (Number.isFinite(probe.duration) && probe.duration > 0) {
+          setVideoDurationSec(Math.round(probe.duration));
+        }
+        URL.revokeObjectURL(objectUrl);
+      };
+      probe.onerror = () => URL.revokeObjectURL(objectUrl);
+    } catch {
+      /* best-effort — giữ null → warning ẩn */
+    }
+    // Controller mới cho lần upload này; controller cũ đã settle nên không abort
+    // (abort sẽ kích hoạt DELETE session đang muốn resume).
+    const controller = new AbortController();
+    setUploadController(controller);
+    const key = uploadSessionKey(file);
+    let storedId = initialUploadId || null;
+    if (!storedId && key) {
+      try {
+        const raw = sessionStorage.getItem(key);
+        storedId = raw ? JSON.parse(raw)?.uploadId || null : null;
+      } catch {
+        storedId = null;
+      }
+    }
+    try {
+      const res = await uploadApi.upload(file, {
+        onProgress: setUploadPercent,
+        signal: controller.signal,
+        initialUploadId: storedId || undefined,
+        onUploadId: (id) => {
+          setUploadSession({ uploadId: id, fingerprint: key });
+          if (key) {
+            try { sessionStorage.setItem(key, JSON.stringify({ uploadId: id })); } catch { /* private mode */ }
+          }
+        },
+      });
+      update('sourceVideoKey', res.key ?? res.storageKey ?? null);
       update('sourceFileName', file.name);
       update('videoHash', res.videoHash || null);
+      if (key) {
+        try { sessionStorage.removeItem(key); } catch { /* ignore */ }
+      }
+      setUploadSession(null);
     } catch (err) {
-      setError('Tải phim thất bại: ' + (err?.response?.data?.message || err?.response?.data?.error?.message || err.message));
+      const aborted = err?.name === 'AbortError' || err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError';
+      if (aborted) {
+        // DELETE session best-effort đã bắn — giữ file + session để Thử lại resume.
+        setError('Đã hủy tải lên — bấm Thử lại để tiếp tục từ chỗ đã dừng.');
+      } else if (err?.fatalUpload) {
+        if (key) {
+          try { sessionStorage.removeItem(key); } catch { /* ignore */ }
+        }
+        setUploadSession(null);
+        clearStaleVideo();
+        setUploadPercent(0);
+        setError('Phiên tải đã hết hạn — bấm Thử lại để tải mới từ đầu.');
+      } else {
+        clearStaleVideo();
+        setError('Tải phim thất bại: ' + (err?.response?.data?.message || err?.response?.data?.error?.message || err.message));
+        setUploadPercent(0);
+        // Giữ uploadSession (nếu có) để nút Thử lại resume cùng session.
+      }
     } finally {
       setUploading(false);
-      setUploadPercent(0);
+      setUploadController(null);
     }
+  };
+
+  const handleMovie = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSelectedFile(file);
+    setUploadSession(null);
+    await startUpload(file);
+  };
+
+  const handleCancelUpload = () => {
+    uploadController?.abort?.();
+  };
+
+  const handleScriptFile = async (e) => {
+    const file = e.target?.files?.[0];
+    if (!file) return;
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    if (!['.txt', '.md'].includes(ext)) {
+      setError('Chỉ hỗ trợ file kịch bản định dạng .txt hoặc .md');
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setError('File kịch bản không được vượt quá 2MB');
+      return;
+    }
+    setScriptUploading(true);
+    setError('');
+    try {
+      const res = await projectsApi.uploadScript(file);
+      update('scriptUploadId', res.id);
+      update('scriptFileName', res.filename);
+      update('scriptCharCount', res.charCount);
+      update('scriptByteSize', res.byteSize);
+      update('scriptPreview', res.preview);
+      if (!form.title) {
+        update('title', res.filename.replace(/\.[^/.]+$/, ''));
+      }
+    } catch (err) {
+      setError(err?.response?.data?.message || err.message || 'Lỗi tải lên kịch bản');
+    } finally {
+      setScriptUploading(false);
+    }
+  };
+
+  const handleRetryUpload = () => {
+    if (!selectedFile || uploading) return;
+    setError('');
+    startUpload(selectedFile, { initialUploadId: uploadSession?.uploadId || undefined });
   };
 
   const canNext = () => {
     if (form.mode === 'SUMMARY') {
       if (step === 0) return !!form.sourceVideoKey;
-      if (step === 1) return !!form.language;
+      // B3 Option A: gate bước ngôn ngữ = đã có video (BE bắt buộc sourceVideoKey,
+      // projects.js:49). Check cũ !!language luôn true (default 'vi') là gate giả.
+      if (step === 1) return !!form.sourceVideoKey;
       if (step === 2) return !!form.targetDurationSec;
       if (step === 3) return !!form.style;
       if (step === 4) return !!form.voiceProvider;
@@ -239,7 +389,18 @@ export default function CreateProject() {
             <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Tạo Dự Án Mới</h1>
             <p className="text-sm text-muted-foreground mt-1.5">Chọn chế độ sản xuất video tự động bằng trí tuệ nhân tạo</p>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <ModeCard
+              onClick={() => {
+                update('mode', 'SCRIPT_TO_VIDEO');
+                update('aspectRatio', '16:9');
+                update('voiceProvider', 'edge_tts');
+                update('burnSubtitles', true);
+              }}
+              icon={FileText}
+              title="Tạo Video Từ Kịch Bản"
+              desc="Tải kịch bản TXT/MD, AI tự động phân đoạn ngữ nghĩa, sinh giọng đọc và tạo slide video hoàn chỉnh."
+            />
             <ModeCard
               onClick={() => update('mode', 'SUMMARY')}
               icon={Clapperboard}
@@ -259,6 +420,7 @@ export default function CreateProject() {
   }
 
   const isDub = form.mode === 'TRANSLATE_DUB';
+  const isScript = form.mode === 'SCRIPT_TO_VIDEO' || form.mode === 'AI_VIDEO';
   const selectedPreset = presets.find((p) => p.slug === form.stylePreset);
 
   return (
@@ -282,15 +444,155 @@ export default function CreateProject() {
               exit={{ opacity: 0, x: -16 }}
               transition={{ duration: 0.18 }}
             >
+              {isScript && step === 0 && (
+                <div className="space-y-4">
+                  <div className="rounded-xl border-2 border-dashed border-border/80 hover:border-primary/50 transition p-6 text-center">
+                    <input
+                      type="file"
+                      id="script-file-input"
+                      accept=".txt,.md"
+                      onChange={handleScriptFile}
+                      className="hidden"
+                    />
+                    <label htmlFor="script-file-input" className="cursor-pointer block">
+                      <FileText className="w-10 h-10 text-primary mx-auto mb-2" />
+                      <span className="text-sm font-semibold text-foreground block">
+                        {form.scriptFileName || 'Chọn file kịch bản (.txt, .md)'}
+                      </span>
+                      <span className="text-xs text-muted-foreground mt-1 block">
+                        Tối đa 2MB và 60.000 ký tự UTF-8
+                      </span>
+                    </label>
+                  </div>
+                  {scriptUploading && (
+                    <div className="flex items-center justify-center gap-2 text-sm text-primary py-2">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Đang đọc và kiểm tra kịch bản...</span>
+                    </div>
+                  )}
+                  {form.scriptUploadId && (
+                    <div className="rounded-xl bg-muted/40 border border-border p-4 space-y-2 text-left">
+                      <div className="flex items-center justify-between text-xs text-muted-foreground font-medium">
+                        <span>Tệp: <strong className="text-foreground">{form.scriptFileName}</strong></span>
+                        <span>{form.scriptCharCount?.toLocaleString()} ký tự ({Math.round((form.scriptByteSize || 0) / 1024)} KB)</span>
+                      </div>
+                      {form.scriptPreview && (
+                        <div className="p-3 bg-background rounded-lg border border-border text-xs text-muted-foreground font-mono max-h-36 overflow-y-auto whitespace-pre-wrap">
+                          {form.scriptPreview}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {isScript && step === 1 && (
+                <div className="space-y-5 text-left">
+                  <div>
+                    <label className="text-sm font-semibold text-foreground mb-2 block">
+                      1. Tỉ lệ khung hình video
+                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <OptionCard
+                        selected={form.aspectRatio === '16:9'}
+                        onClick={() => update('aspectRatio', '16:9')}
+                        title="16:9 (Ngang)"
+                        desc="Phù hợp YouTube, Facebook, Web"
+                      />
+                      <OptionCard
+                        selected={form.aspectRatio === '9:16'}
+                        onClick={() => update('aspectRatio', '9:16')}
+                        title="9:16 (Dọc)"
+                        desc="Phù hợp TikTok, Reels, Shorts"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-foreground mb-2 block">
+                      2. Nhà cung cấp giọng đọc (TTS)
+                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <OptionCard
+                        selected={form.voiceProvider === 'edge_tts'}
+                        onClick={() => update('voiceProvider', 'edge_tts')}
+                        title="Edge-TTS"
+                        desc="Miễn phí, giọng đọc mượt mà tự nhiên"
+                      />
+                      <OptionCard
+                        selected={form.voiceProvider === 'elevenlabs'}
+                        onClick={() => update('voiceProvider', 'elevenlabs')}
+                        title="ElevenLabs"
+                        desc="Giọng đọc AI cao cấp biểu cảm"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-muted/40 border border-border">
+                    <div>
+                      <span className="text-sm font-medium text-foreground block">Đóng dấu phụ đề vào video (Burn-in Subtitles)</span>
+                      <span className="text-xs text-muted-foreground">Ghép phụ đề trực tiếp vào MP4 bằng định dạng ASS</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={form.burnSubtitles !== false}
+                      onChange={(e) => update('burnSubtitles', e.target.checked)}
+                      className="w-4 h-4 rounded text-primary focus:ring-primary"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {isScript && step === 2 && (
+                <div className="space-y-4 text-left">
+                  <div>
+                    <label className="text-sm font-semibold text-foreground mb-1 block">Tiêu đề video</label>
+                    <input
+                      type="text"
+                      value={form.title}
+                      onChange={(e) => update('title', e.target.value)}
+                      placeholder="Nhập tên dự án..."
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
+                    />
+                  </div>
+                  <div className="rounded-xl bg-muted/40 border border-border p-4 space-y-2 text-xs text-muted-foreground">
+                    <div className="flex justify-between"><span>Kịch bản:</span><strong className="text-foreground">{form.scriptFileName}</strong></div>
+                    <div className="flex justify-between"><span>Độ dài:</span><strong className="text-foreground">{form.scriptCharCount?.toLocaleString()} ký tự</strong></div>
+                    <div className="flex justify-between"><span>Tỉ lệ:</span><strong className="text-foreground">{form.aspectRatio}</strong></div>
+                    <div className="flex justify-between"><span>Giọng đọc:</span><strong className="text-foreground">{form.voiceProvider}</strong></div>
+                    <div className="flex justify-between"><span>Phụ đề:</span><strong className="text-foreground">{form.burnSubtitles !== false ? 'Có (Burn-in ASS)' : 'Không'}</strong></div>
+                  </div>
+                  <div className="flex items-start gap-2 pt-2">
+                    <input
+                      type="checkbox"
+                      id="script-copyright-ack"
+                      checked={copyrightAck}
+                      onChange={(e) => setCopyrightAck(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 rounded text-primary focus:ring-primary"
+                    />
+                    <label htmlFor="script-copyright-ack" className="text-xs text-muted-foreground cursor-pointer">
+                      Tôi xác nhận nội dung kịch bản tuân thủ quyền sở hữu trí tuệ và điều khoản dịch vụ.
+                    </label>
+                  </div>
+                </div>
+              )}
+
               {form.mode === 'SUMMARY' && step === 0 && (
-                <UploadBlock
-                  label="Tải phim cần review (2–3 tiếng)"
-                  fileName={form.sourceFileName}
-                  onChange={handleMovie}
-                  accept={VIDEO_ACCEPT}
-                  uploading={uploading}
-                  hint="Định dạng MP4, MOV, M4V, MKV, WebM"
-                />
+                <div className="space-y-4">
+                  <UploadBlock
+                    label="Tải phim cần review (2–3 tiếng)"
+                    fileName={form.sourceFileName}
+                    onChange={handleMovie}
+                    accept={VIDEO_ACCEPT}
+                    uploading={uploading}
+                    hint="Định dạng MP4, MOV, M4V, MKV, WebM · tự tiếp tục khi mất mạng"
+                  />
+                  <UploadStatus
+                    uploading={uploading}
+                    uploadPercent={uploadPercent}
+                    canRetry={!uploading && !!selectedFile && !form.sourceVideoKey}
+                    onCancel={handleCancelUpload}
+                    onRetry={handleRetryUpload}
+                  />
+                </div>
               )}
 
               {isDub && step === 0 && (
@@ -301,19 +603,15 @@ export default function CreateProject() {
                     onChange={handleMovie}
                     accept={VIDEO_ACCEPT}
                     uploading={uploading}
-                    hint="MP4, MOV, M4V, MKV, WebM · tự khôi phục khi mất mạng"
+                    hint="MP4, MOV, M4V, MKV, WebM · tự tiếp tục khi mất mạng"
                   />
-                  {uploading && (
-                    <div className="space-y-1.5">
-                      <div className="h-2 rounded-full bg-muted overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all"
-                          style={{ width: `${uploadPercent}%` }}
-                        />
-                      </div>
-                      <p className="text-xs text-muted-foreground text-right">{uploadPercent}%</p>
-                    </div>
-                  )}
+                  <UploadStatus
+                    uploading={uploading}
+                    uploadPercent={uploadPercent}
+                    canRetry={!uploading && !!selectedFile && !form.sourceVideoKey}
+                    onCancel={handleCancelUpload}
+                    onRetry={handleRetryUpload}
+                  />
                 </div>
               )}
 
@@ -622,7 +920,8 @@ export default function CreateProject() {
                     </label>
                   </div>
 
-                  <FreeTierWarning mode={form.mode} estimatedDuration={isDub ? form.targetDurationSec : form.targetDurationSec} />
+                  {/* F6: nhánh dub dùng duration video thật (null → ẩn), tránh warning oan từ default 1500 của SUMMARY. */}
+                  <FreeTierWarning mode={form.mode} estimatedDuration={isDub ? videoDurationSec : form.targetDurationSec} />
 
                   <div className="space-y-3">
                     <input
@@ -685,6 +984,7 @@ export default function CreateProject() {
               type="button"
               onClick={() => canNext() && setStep(step + 1)}
               disabled={!canNext() || uploading}
+              title={uploading ? 'Đang tải video lên — chờ hoàn tất' : !canNext() ? 'Hoàn tất bước hiện tại (tải video / chọn ngôn ngữ / preset) để tiếp tục' : 'Tiếp tục'}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-semibold transition-colors disabled:opacity-40 shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <span>Tiếp tục</span>
@@ -694,6 +994,7 @@ export default function CreateProject() {
             <button
               type="button"
               onClick={handleCreate}
+              title={!copyrightAck ? 'Xác nhận quyền sử dụng nội dung nguồn để tiếp tục' : uploading ? 'Đang tải video lên — chờ hoàn tất' : 'Bắt đầu tạo dự án'}
               disabled={creating || uploading || !copyrightAck}
               className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-semibold transition-colors shadow-xs disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
@@ -717,6 +1018,46 @@ export default function CreateProject() {
 }
 
 // ── Shared Subcomponents ──
+// R1: tiến trình upload + nút Hủy (giữa chừng) / Thử lại (resume cùng session).
+function UploadStatus({ uploading, uploadPercent, canRetry, onCancel, onRetry }) {
+  if (!uploading && !canRetry) return null;
+  return (
+    <div className="space-y-1.5">
+      {uploading && (
+        <>
+          <div className="h-2 rounded-full bg-muted overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all"
+              style={{ width: `${uploadPercent}%` }}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">{uploadPercent}% — rớt mạng sẽ tự tiếp tục</p>
+            <button
+              type="button"
+              onClick={onCancel}
+              className="text-xs font-semibold text-destructive hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded px-1"
+            >
+              Hủy tải lên
+            </button>
+          </div>
+        </>
+      )}
+      {!uploading && canRetry && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onRetry}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span>Thử lại (tiếp tục từ chỗ đã dừng)</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StepIndicator({ steps, step }) {
   return (
     <div className="flex items-center justify-center gap-1 mb-6 sm:mb-8 overflow-x-auto pb-2">

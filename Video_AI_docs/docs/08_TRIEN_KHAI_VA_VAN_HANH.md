@@ -115,6 +115,25 @@ volumes:
 > [TARGET/FUTURE] Production Postgres (`db: postgres:16-alpine`, `DATABASE_URL=postgresql://…`)
 > và `STORAGE_DRIVER=s3` — code hiện tại chỉ lưu local + SQLite file.
 
+### Dev local vs Prod — ZeroTTS [CURRENT]
+
+- **Dev local** (`cd backend; npm run dev`): orchestrator `scripts/dev.mjs` tự spawn
+  Python `scripts/zerotts_service.py` kèm API trong 1 terminal (fail-open: lỗi phía
+  Python chỉ warn, API vẫn lên). Service đã chạy sẵn được dùng chung, kể cả khi đang
+  tải model (`503 MODEL_NOT_READY`: chờ trong `ZEROTTS_STARTUP_TIMEOUT_MS` rồi reuse,
+  không spawn trùng, không kill khi thoát dev). `npm run dev:api-only` chỉ chạy API;
+  `npm run zerotts:start` chạy TTS riêng.
+- **Transport**: backend POST `/synthesize` **không gửi `out_path`**; service trả
+  `audio/wav` bytes, backend ghi file local rồi convert MP3 bằng FFmpeg và ffprobe
+  validate (fail-closed). Vì vậy dev local và Docker không cần volume chia sẻ
+  `OUTPUT_ROOT`; `ZEROTTS_OUTPUT_ROOT` chỉ còn cho client legacy gửi `out_path`
+  (jail vẫn giữ trong service).
+- **Prod/Docker** (`npm start` = `node server.js`): không bao giờ spawn Python
+  (`NODE_ENV=production` ép `zerotts.enabled=false`); ZeroTTS là container
+  `zerotts` riêng, api gọi qua `http://zerotts:5005`.
+- **FFmpeg/ffprobe bắt buộc** ở backend để convert/validate MP3; probe
+  `ffmpeg -version` + `ffprobe -version` (hoặc `FFMPEG_PATH`).
+
 ---
 
 ## 3. Biến môi trường (.env)
@@ -151,6 +170,12 @@ QUOTA_WARNING_THRESHOLD=0.8
 DEFAULT_PROVIDER_MODE=live              # 'live' | 'mock' — dùng 'mock' cho CI/dev, không tốn quota
 CORS_ORIGINS=http://localhost:5173      # allowlist Origin cho cookieCsrf + CORS (comma-separated, production fail-closed khi thiếu)
 COOKIE_SECURE=false                     # dev (localhost được browser miễn trừ); production mặc định true
+ZEROTTS_ENABLED=true                    # dev auto-start kèm `npm run dev`; production luôn coi như false
+ZEROTTS_AUTO_START=true                 # false = chỉ API (như `npm run dev:api-only`)
+ZEROTTS_STARTUP_TIMEOUT_MS=90000        # trần đợi /health (lần đầu tải ~900MB model)
+ZEROTTS_READY_WAIT_MS=60000             # trần chờ model ready ở dub.ttsAlign (503 MODEL_NOT_READY)
+ZEROTTS_PYTHON_BIN=                     # trống = tự dò python→py→python3
+# ZEROTTS_OUTPUT_ROOT=...               # chỉ cho client legacy gửi out_path; backend dùng binary response
 ```
 
 > Frontend axios bật `withCredentials: true` để trình duyệt gửi/nhận HttpOnly cookie

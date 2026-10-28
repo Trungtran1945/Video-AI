@@ -114,6 +114,7 @@ export default function Layout({ children }) {
           </div>
         </div>
 
+        {user?.role === 'admin' && (
         <div>
           <div className="px-3 mb-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
             Hệ Thống
@@ -122,6 +123,7 @@ export default function Layout({ children }) {
             {adminItems.map(item => <NavLink key={item.path} item={item} />)}
           </div>
         </div>
+        )}
       </div>
 
       {/* User profile & Logout */}

@@ -1,30 +1,38 @@
-import { useState, useEffect } from 'react';
-import { settingsApi } from '@/api/extra';
+import { useState, useEffect, useCallback } from 'react';
+import { settingsApi, youtubeApi } from '@/api/extra';
 import Layout from '@/components/Layout';
 import PageHeader from '@/components/PageHeader';
+import ErrorState from '@/components/ErrorState';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { motion } from 'framer-motion';
-import { Save, Loader2, Sliders, Moon, Check, Bell, Youtube } from 'lucide-react';
+import { Save, Loader2, Sliders, Moon, Check, Youtube } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 
 export default function Settings() {
   const [settings, setSettings] = useState(null);
+  const [loadError, setLoadError] = useState(null);
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [form, setForm] = useState({});
+  const [ytAccount, setYtAccount] = useState(null);
+  const [ytLoading, setYtLoading] = useState(false);
   const { toast } = useToast();
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const s = await settingsApi.get();
-        setSettings(s);
-        setForm(s || {});
-      } catch (e) {
-        console.error(e);
-      }
-    })();
+  const load = useCallback(async () => {
+    try {
+      setLoadError(null);
+      const s = await settingsApi.get();
+      setSettings(s);
+      setForm(s || {});
+      youtubeApi.getAccount().then(setYtAccount).catch(() => setYtAccount(null));
+    } catch (e) {
+      setLoadError(e);
+    }
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const update = (key, val) => setForm(f => ({ ...f, [key]: val }));
 
@@ -51,36 +59,15 @@ export default function Settings() {
     }
   };
 
-  const Toggle = ({ value, onChange, label, description, icon: Icon }) => (
-    <div className="flex items-center justify-between py-4 border-b border-border/60 last:border-0">
-      <div className="flex items-center gap-3">
-        {Icon && (
-          <div className="w-9 h-9 rounded-xl bg-muted flex items-center justify-center text-muted-foreground shrink-0">
-            <Icon className="w-4 h-4" />
-          </div>
-        )}
-        <div>
-          <div className="text-sm font-medium text-foreground">{label}</div>
-          {description && <div className="text-xs text-muted-foreground mt-0.5">{description}</div>}
+  if (loadError) {
+    return (
+      <Layout>
+        <div className="p-6 lg:p-8 max-w-4xl mx-auto">
+          <ErrorState status={loadError?.response?.status ?? 0} onRetry={load} />
         </div>
-      </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={Boolean(value)}
-        onClick={() => onChange(!value)}
-        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-          value ? 'bg-primary' : 'bg-muted'
-        }`}
-      >
-        <span
-          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
-            value ? 'translate-x-5' : 'translate-x-0'
-          }`}
-        />
-      </button>
-    </div>
-  );
+      </Layout>
+    );
+  }
 
   if (!settings) {
     return (
@@ -214,31 +201,79 @@ export default function Settings() {
           </div>
         </motion.div>
 
-        {/* General Options */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="rounded-xl bg-card border border-border p-6 shadow-xs"
-        >
-          <h3 className="text-sm font-semibold text-foreground mb-2">Tùy Chọn Mở Rộng</h3>
-          <div className="divide-y divide-border/60">
-            <Toggle
-              icon={Youtube}
-              label="Tự động tải lên YouTube"
-              description="Tự động đồng bộ video đầu ra lên kênh YouTube khi xuất xong"
-              value={form.auto_upload_youtube || false}
-              onChange={v => update('auto_upload_youtube', v)}
-            />
-            <Toggle
-              icon={Bell}
-              label="Thông báo khi hoàn thành"
-              description="Hiển thị thông báo trình duyệt và cập nhật thời gian thực khi pipeline hoàn tất"
-              value={form.notify_on_complete !== false}
-              onChange={v => update('notify_on_complete', v)}
-            />
+        {/* NOTE: auto_upload_youtube / notify_on_complete đã gỡ khỏi UI — backend
+            lưu trữ nhưng chưa có consumer (YouTube upload trả 501, notify luôn bắn
+            qua pipeline bất kể flag). Giữ cột DB để tương thích, không persist-nhưng-không-ai-đọc. */}
+              {/* YouTube OAuth Connection Section */}
+        <div className="rounded-2xl bg-card border border-border p-6 shadow-sm space-y-4 text-left">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
+                <Youtube className="w-5 h-5 text-red-500" />
+                Tài khoản YouTube
+              </h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Kết nối kênh YouTube để xuất bản video trực tiếp từ hệ thống
+              </p>
+            </div>
+            {ytAccount?.connected ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                <Check className="w-3.5 h-3.5" />
+                Đã kết nối: {ytAccount.channelTitle}
+              </span>
+            ) : (
+              <span className="text-xs text-muted-foreground">Chưa kết nối</span>
+            )}
           </div>
-        </motion.div>
+          {ytAccount?.connected ? (
+            <div className="flex items-center justify-between pt-2">
+              <span className="text-xs text-muted-foreground">Kênh ID: {ytAccount.channelId}</span>
+              <button
+                type="button"
+                onClick={async () => {
+                  setYtLoading(true);
+                  try {
+                    await youtubeApi.disconnectAccount();
+                    setYtAccount({ connected: false });
+                    toast({ title: 'Đã ngắt kết nối YouTube' });
+                  } catch (err) {
+                    toast({ variant: 'destructive', title: 'Lỗi ngắt kết nối', description: err?.response?.data?.message || err.message });
+                  } finally {
+                    setYtLoading(false);
+                  }
+                }}
+                disabled={ytLoading}
+                className="px-3 py-1.5 rounded-lg border border-border hover:bg-destructive/10 hover:text-destructive text-xs font-medium transition"
+              >
+                {ytLoading ? 'Đang xử lý...' : 'Ngắt kết nối'}
+              </button>
+            </div>
+          ) : (
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  setYtLoading(true);
+                  try {
+                    const res = await youtubeApi.startOAuth();
+                    if (res?.authorizationUrl) {
+                      window.location.href = res.authorizationUrl;
+                    }
+                  } catch (err) {
+                    toast({ variant: 'destructive', title: 'Lỗi kết nối YouTube', description: err?.response?.data?.message || err.message });
+                  } finally {
+                    setYtLoading(false);
+                  }
+                }}
+                disabled={ytLoading}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold transition"
+              >
+                <Youtube className="w-4 h-4" />
+                <span>{ytLoading ? 'Đang chuẩn bị...' : 'Kết nối kênh YouTube'}</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </Layout>
   );

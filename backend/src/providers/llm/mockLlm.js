@@ -46,6 +46,32 @@ export class MockLlm {
       timestampMs: kf.timestampMs || i * 5000,
     }))
   }
+
+  /**
+   * SCRIPT_TO_VIDEO: verbatim segmentation stub. Splits the text enclosed by
+   * SCRIPT_CHUNK_BEGIN/END markers so coverage tests can assert 100% retention.
+   * @param {{system?: string, prompt?: string, json?: boolean}} input
+   */
+  async complete({ prompt } = {}) {
+    const match = String(prompt || '').match(/SCRIPT_CHUNK_BEGIN\s*([\s\S]*?)\s*SCRIPT_CHUNK_END/)
+    const source = match ? match[1].trim() : ''
+    const segments = []
+    if (source) {
+      for (const line of source.split(/\n+/)) {
+        const text = line.trim()
+        if (!text) continue
+        const parts = text.split(/(?<=[.!?…。])\s+/).map((s) => s.trim()).filter(Boolean)
+        for (const part of parts) {
+          segments.push({ narrationText: part, visualPrompt: part.slice(0, 160) })
+        }
+      }
+    }
+    return {
+      text: JSON.stringify({ segments }),
+      model: 'mock',
+      usage: { tokensIn: 0, tokensOut: 0 },
+    }
+  }
 }
 
 export default MockLlm

@@ -27,7 +27,9 @@ router.get('/', async (req, res) => {
     let sql = `SELECT pl.*, p.title as project_title FROM provider_logs pl
                LEFT JOIN projects p ON pl.project_id = p.id`
     const params = []
-    if (!isAdmin) { sql += ' WHERE p.user_id = ? OR pl.project_id IS NULL'; params.push(req.user.id) }
+    // Detached rows (project_id NULL after DELETE) are admin-only. Users see
+    // only logs attached to their own live projects (pl.project_id IS NOT NULL).
+    if (!isAdmin) { sql += ' WHERE p.user_id = ? AND pl.project_id IS NOT NULL'; params.push(req.user.id) }
     sql += ' ORDER BY pl.created_date DESC LIMIT ?'
     params.push(Number(req.query.limit) || 100)
     const rows = await query(sql, params)

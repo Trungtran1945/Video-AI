@@ -11,11 +11,11 @@ Provides a persistent, lightweight HTTP service for ZeroTTS inference:
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import os
 import signal
 import sys
+import tempfile
 import threading
 import time
 from http import HTTPStatus
@@ -181,6 +181,9 @@ class ZeroTTSRequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, {
                 "status": "ok",
                 "model_loaded": True,
+                # Marker cho dev orchestrator: service hỗ trợ trả WAV bytes (không
+                # cần out_path). Process chạy code cũ thiếu marker → dev cảnh báo.
+                "binary_transport": True,
                 "model": model_meta["model"],
                 "voices": model_meta["voices"],
                 "default_voice": model_meta["default_voice"],
@@ -461,10 +464,21 @@ class ZeroTTSRequestHandler(BaseHTTPRequestHandler):
                         service_stats["completed"] += 1
                     return
 
-                # Otherwise return WAV stream
-                buf = io.BytesIO()
-                model_instance.save_audio(audio, buf)
-                wav_bytes = buf.getvalue()
+                # Otherwise return WAV stream.
+                # zerotts.save_audio() chỉ nhận đường dẫn file (soundfile), không
+                # nhận BytesIO. Ghi file tạm bên trong OUTPUT_ROOT rồi đọc bytes;
+                # không lộ path cho client và vẫn giữ jail.
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir=str(OUTPUT_ROOT))
+                os.close(tmp_fd)
+                try:
+                    model_instance.save_audio(audio, tmp_path)
+                    with open(tmp_path, "rb") as fh:
+                        wav_bytes = fh.read()
+                finally:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
 
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "audio/wav")

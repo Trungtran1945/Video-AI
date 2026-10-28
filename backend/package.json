@@ -6,7 +6,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "dev": "node server.js",
+    "dev": "node scripts/dev.mjs",
+    "dev:api-only": "node scripts/dev.mjs --api-only",
     "start": "node server.js",
     "check:redis": "node scripts/check-redis.mjs",
     "test": "node scripts/run-tests.mjs",

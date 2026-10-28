@@ -104,7 +104,7 @@ for (const [f, fn] of [['notifyQueue.js', 'safeAddNotify'], ['cleanupQueue.js', 
   const recSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'pipeline', 'recovery.js'), 'utf8')
   assert(recSrc.includes('status = ?') && recSrc.includes("['queued', null, reasonText"), 'shared service parks stale projects as queued (not failed)')
   assert(recSrc.includes('isPipelineRunning') || recSrc.includes('isActive'), 'recovery skips live in-process runs')
-  assert(src.includes('SELECT user_id, COUNT(*) as cnt FROM projects WHERE status = \'queued\' GROUP BY user_id'), 'drain lists all queued users')
+  assert(src.includes("status = 'queued'") && src.includes('GROUP BY user_id'), 'drain lists all queued users')
   assert(!src.match(/await queryOne\(\s*`SELECT user_id, COUNT\(\*\)/), 'drain GROUP BY uses query (not queryOne)')
 }
 

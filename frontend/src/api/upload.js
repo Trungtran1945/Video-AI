@@ -21,9 +21,26 @@ function uploadMultipart(file, { onProgress, signal } = {}) {
 }
 
 function uploadResumable(file, options = {}) {
+  // User abort → DELETE session best-effort (server 204; sau đó HEAD/PUT/complete → 410).
+  // R1: giữ uploadId của cả session resume (initialUploadId) để abort vẫn dọn được.
+  let uploadIdRef = options.initialUploadId || null;
+  const callerOnUploadId = options.onUploadId;
+  if (options.signal) {
+    options.signal.addEventListener('abort', () => {
+      if (uploadIdRef) api.delete(`/uploads/${uploadIdRef}`).catch(() => {});
+    }, { once: true });
+  }
   return uploadResumableFile(file, {
     ...options,
-    initSession: (metadata) => api.post('/uploads/init', metadata, { signal: options.signal, timeout: UPLOAD_REQUEST_TIMEOUT_MS }).then((response) => response.data),
+    onUploadId: (id) => {
+      uploadIdRef = id || uploadIdRef;
+      callerOnUploadId?.(id);
+    },
+    initSession: async (metadata) => {
+      const data = await api.post('/uploads/init', metadata, { signal: options.signal, timeout: UPLOAD_REQUEST_TIMEOUT_MS }).then((response) => response.data);
+      uploadIdRef = data?.uploadId || data?.upload_id || null;
+      return data;
+    },
     getOffset: async (uploadId, { required } = {}) => {
       const response = await api.head(`/uploads/${uploadId}`, { signal: options.signal, timeout: UPLOAD_REQUEST_TIMEOUT_MS })
       const offset = parseUploadOffsetHeader(response.headers['upload-offset'] ?? response.headers['x-upload-offset'])
@@ -43,6 +60,10 @@ function uploadResumable(file, options = {}) {
   })
 }
 
+// F13 contract multipart-vs-resumable (BE upload.js):
+// - Multipart POST /upload (resumable===false): limit 50MB, trả {key,url,filename,size,mimetype} — KHÔNG có videoHash.
+// - Resumable POST /uploads/init → PUT chunk (8MB) → POST complete: limit 2GB, trả {key,url,filename,size,videoHash,mime}.
+// File >50MB với resumable===false → 413 hướng sang resumable. Path chính luôn là resumable.
 export const uploadApi = {
   upload(file, options = {}) {
     try {

@@ -11,9 +11,11 @@ import { ListOrdered, RefreshCw, Clock, AlertCircle, Loader2, ExternalLink } fro
 import { StatusBadge, STAGE_LABELS, formatDate, formatDuration } from '@/lib/constants';
 import { friendlyJobError } from '@/lib/providerErrorMessage';
 import { useToast } from '@/components/ui/use-toast';
+import ErrorState from '@/components/ErrorState';
 
 export default function Queue() {
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [retryingId, setRetryingId] = useState(null);
   const [jobs, setJobs] = useState([]);
@@ -23,8 +25,9 @@ export default function Queue() {
     try {
       const data = await queueApi.list();
       setJobs(data || []);
+      setLoadError(null);
     } catch (e) {
-      console.error('Lỗi tải hàng đợi:', e);
+      setLoadError(e);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -45,17 +48,21 @@ export default function Queue() {
     setRetryingId(job.id);
     try {
       await projectsApi.retryJob(job.project_id, job.type);
-      setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: 'running' } : j));
+      // Refetch authoritative list instead of optimistic set (avoids stale 'running').
+      await loadJobs();
       toast({
         title: 'Đã gửi lại tác vụ',
         description: `Tác vụ ${job.type} đang được chạy lại.`,
       });
     } catch (e) {
+      const code = e?.response?.data?.error?.code || e?.response?.data?.code;
+      const waiting = e?.response?.status === 429 || code === 'RETRY_WAITING';
       toast({
         variant: 'destructive',
-        title: 'Lỗi chạy lại tác vụ',
+        title: waiting ? 'Đang chờ quota hồi phục' : 'Lỗi chạy lại tác vụ',
         description: e?.response?.data?.message || e.message,
       });
+      await loadJobs();
     } finally {
       setRetryingId(null);
     }
@@ -81,6 +88,8 @@ export default function Queue() {
 
         {loading ? (
           <Loading />
+        ) : loadError ? (
+          <ErrorState status={loadError?.response?.status ?? 0} onRetry={loadJobs} />
         ) : jobs.length === 0 ? (
           <EmptyState
             icon={ListOrdered}

@@ -152,6 +152,7 @@ Rate limit chỉ là lớp phòng thủ cuối; cách hiệu quả nhất với 
 | `translate` (LLM, TRANSLATE_DUB) | Đã gộp theo context window ~10 câu | Áp dụng chiến lược 3 vòng (TransFlow): parallel batch → re-batch 5 câu → fallback từng câu; kết hợp `TRANSLATION_VERSION = 4` để cache chính xác |
 | `stt` (ASR, TRANSLATE_DUB & SUMMARY) | Chunk 300s gối đầu 15s | Gom chunk dài thay vì gọi lắt nhắt; gối đầu 15s khử lặp qua `dedupeOverlapSegments`; cache ASR theo streaming hash file và Whisper config |
 | `ocr` (TRANSLATE_DUB) | [REMOVED] | Đã gỡ bỏ khỏi pipeline hoạt động; chuyển hoàn toàn sang STT-only |
+| `dub.mask` (vision, TRANSLATE_DUB) | ≤8 request / generation (1 frame 960px + JSON ~800 tokens) | Sample ≤8 frame đều khắp video (`planMaskFrames`, bỏ 1s đầu/cuối); frame lỗi bỏ qua không retry toàn stage; free tier Gemini 10 RPM vẫn qua trong ~1 phút |
 
 ### 3.2. Cache theo nội dung (Content-hash Cache) [PARTIAL]
 

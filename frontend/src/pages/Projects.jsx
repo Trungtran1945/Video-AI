@@ -4,10 +4,14 @@ import Layout from '@/components/Layout';
 import PageHeader from '@/components/PageHeader';
 import Loading from '@/components/Loading';
 import EmptyState from '@/components/EmptyState';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Film, Languages, Plus, Search, Trash2 } from 'lucide-react';
-import { StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, MODE_LABELS } from '@/lib/constants';
+import { StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, MODE_LABELS, STYLE_PRESETS_FALLBACK } from '@/lib/constants';
+
+const STYLE_PRESET_NAMES = new Map((STYLE_PRESETS_FALLBACK || []).map((p) => [p.slug, p.name]));
+const stylePresetName = (slug) => STYLE_PRESET_NAMES.get(slug) || slug || '—';
+const dubTargetLanguage = (p) => p?.language || p?.params?.targetLanguage || p?.params?.target_language || 'vi';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,15 +23,18 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { useToast } from '@/components/ui/use-toast';
+import ErrorState from '@/components/ErrorState';
 
 export default function Projects() {
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [projects, setProjects] = useState([]);
   const [search, setSearch] = useState('');
   const [modeFilter, setModeFilter] = useState('ALL'); // 'ALL' | 'SUMMARY' | 'TRANSLATE_DUB'
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const { toast } = useToast();
+  const navigate = useNavigate();
 
   useEffect(() => {
     (async () => {
@@ -35,7 +42,7 @@ export default function Projects() {
         const data = await projectsApi.list();
         setProjects(data || []);
       } catch (e) {
-        console.error(e);
+        setLoadError(e);
       } finally {
         setLoading(false);
       }
@@ -124,6 +131,8 @@ export default function Projects() {
         {/* List / Cards */}
         {loading ? (
           <Loading />
+        ) : loadError ? (
+          <ErrorState status={loadError?.response?.status ?? 0} onRetry={() => window.location.reload()} />
         ) : filtered.length === 0 ? (
           <EmptyState
             icon={Film}
@@ -152,25 +161,30 @@ export default function Projects() {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: i * 0.03, duration: 0.2 }}
               >
-                <div className="relative rounded-xl bg-card border border-border hover:border-border/90 p-5 transition-colors hover:shadow-xs group flex flex-col justify-between h-full">
-                  <Link
-                    to={`/projects/${p.id}`}
-                    className="absolute inset-0 z-10 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                    aria-label={`Mở dự án ${p.title}`}
-                  >
-                    <span className="sr-only">{p.title}</span>
-                  </Link>
-
+                {/* U4: 1 vùng click/card (không nested Link) + keyboard access */}
+                <div
+                  role="link"
+                  tabIndex={0}
+                  aria-label={`Mở dự án ${p.title}`}
+                  onClick={() => navigate(`/projects/${p.id}`)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      navigate(`/projects/${p.id}`);
+                    }
+                  }}
+                  className="relative rounded-xl bg-card border border-border hover:border-border/90 p-5 transition-colors hover:shadow-xs group flex flex-col justify-between h-full cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                >
                   <div>
                     <div className="flex items-start justify-between mb-3.5">
                       <div className="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center">
                         {isDubMode(p.mode) ? <Languages className="w-4 h-4" /> : <Film className="w-4 h-4" />}
                       </div>
-                      <div className="relative z-20 flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5">
                         <StatusBadge status={p.status} />
                         <button
                           type="button"
-                          onClick={() => setDeleteTarget(p)}
+                          onClick={(e) => { e.stopPropagation(); setDeleteTarget(p); }}
                           aria-label={`Xoá dự án ${p.title}`}
                           title="Xoá dự án"
                           className="p-1.5 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors focus-visible:ring-2 focus-visible:ring-destructive"
@@ -181,9 +195,7 @@ export default function Projects() {
                     </div>
 
                     <h3 className="font-semibold text-foreground text-sm sm:text-base truncate group-hover:text-primary transition-colors">
-                      <Link to={`/projects/${p.id}`} className="relative z-20 hover:underline">
-                        {p.title}
-                      </Link>
+                      {p.title}
                     </h3>
 
                     <div className="flex flex-wrap gap-1.5 mt-2.5">
@@ -191,11 +203,11 @@ export default function Projects() {
                         {MODE_LABELS[p.mode] || p.mode}
                       </span>
                       <span className="px-2 py-0.5 rounded-md bg-muted text-[11px] font-medium text-muted-foreground">
-                        {LANGUAGE_LABELS[p.language] || p.language}
+                        {LANGUAGE_LABELS[isDubMode(p.mode) ? dubTargetLanguage(p) : p.language] || (isDubMode(p.mode) ? dubTargetLanguage(p) : p.language)}
                       </span>
                       {isDubMode(p.mode) ? (
                         <span className="px-2 py-0.5 rounded-md bg-muted text-[11px] font-medium text-muted-foreground">
-                          {p.params?.stylePreset || p.params?.style_preset || '—'}
+                          {stylePresetName(p.params?.stylePreset || p.params?.style_preset)}
                         </span>
                       ) : (
                         <>

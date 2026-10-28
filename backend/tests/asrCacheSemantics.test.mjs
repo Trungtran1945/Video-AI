@@ -44,8 +44,8 @@ const fn = async (tag) => { calls++; return { language: 'vi', segments: [{ start
 {
   calls = 0
   const input = canonical()
-  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input, fn: () => fn('v1'), userId: 'u-sem' })
-  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: canonical(), fn: () => fn('v2'), userId: 'u-sem' })
+  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input, fn: () => fn('v1'), userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
+  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: canonical(), fn: () => fn('v2'), userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
   assert(calls === 1, `same audio+config hits cache (calls=${calls})`)
 }
 
@@ -54,8 +54,8 @@ const fn = async (tag) => { calls++; return { language: 'vi', segments: [{ start
   calls = 0
   const base = canonical({ audioContentHash: 'c'.repeat(64) })
   const diff = canonical({ audioContentHash: 'c'.repeat(64), initialPrompt: 'different prompt xyz' })
-  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: base, fn: () => fn('p1'), userId: 'u-sem' })
-  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: diff, fn: () => fn('p2'), userId: 'u-sem' })
+  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: base, fn: () => fn('p1'), userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
+  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: diff, fn: () => fn('p2'), userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
   assert(calls === 2, `different prompt misses (calls=${calls})`)
 }
 
@@ -64,8 +64,8 @@ const fn = async (tag) => { calls++; return { language: 'vi', segments: [{ start
   calls = 0
   const base = canonical({ audioContentHash: 'd'.repeat(64), temperature: 0 })
   const diff = canonical({ audioContentHash: 'd'.repeat(64), temperature: 0.7 })
-  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: base, fn: () => fn('t1'), userId: 'u-sem' })
-  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: diff, fn: () => fn('t2'), userId: 'u-sem' })
+  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: base, fn: () => fn('t1'), userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
+  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: diff, fn: () => fn('t2'), userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
   assert(calls === 2, `different temperature misses (calls=${calls})`)
 }
 
@@ -74,8 +74,8 @@ const fn = async (tag) => { calls++; return { language: 'vi', segments: [{ start
   calls = 0
   const base = canonical({ audioContentHash: 'e'.repeat(64), effectiveModel: 'whisper-1' })
   const diff = canonical({ audioContentHash: 'e'.repeat(64), effectiveModel: 'whisper-large-v3-turbo' })
-  await callProvider({ provider: 'whisper', type: 'asr', model: 'whisper-1', input: base, fn: () => fn('m1'), userId: 'u-sem' })
-  await callProvider({ provider: 'whisper', type: 'asr', model: 'whisper-large-v3-turbo', input: diff, fn: () => fn('m2'), userId: 'u-sem' })
+  await callProvider({ provider: 'whisper', type: 'asr', model: 'whisper-1', input: base, fn: () => fn('m1'), userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
+  await callProvider({ provider: 'whisper', type: 'asr', model: 'whisper-large-v3-turbo', input: diff, fn: () => fn('m2'), userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
   assert(calls === 2, `different model misses (calls=${calls})`)
 }
 
@@ -84,8 +84,8 @@ const fn = async (tag) => { calls++; return { language: 'vi', segments: [{ start
   calls = 0
   const base = canonical({ audioContentHash: 'f'.repeat(64), endpoint: 'https://api.openai.com/v1' })
   const diff = canonical({ audioContentHash: 'f'.repeat(64), endpoint: 'https://api.groq.com/openai/v1' })
-  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: base, fn: () => fn('e1'), userId: 'u-sem' })
-  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: diff, fn: () => fn('e2'), userId: 'u-sem' })
+  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: base, fn: () => fn('e1'), userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
+  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: diff, fn: () => fn('e2'), userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
   assert(calls === 2, `different endpoint misses (calls=${calls})`)
 }
 
@@ -96,8 +96,8 @@ const fn = async (tag) => { calls++; return { language: 'vi', segments: [{ start
   const hashB = '2'.repeat(64)
   const a = canonical({ audioContentHash: hashA })
   const b = canonical({ audioContentHash: hashB })
-  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: a, fn: () => fn('a1'), userId: 'u-sem' })
-  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: b, fn: () => fn('b1'), userId: 'u-sem' })
+  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: a, fn: () => fn('a1'), userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
+  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: b, fn: () => fn('b1'), userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
   assert(calls === 2, `different audio misses (calls=${calls})`)
 }
 
@@ -115,9 +115,9 @@ const fn = async (tag) => { calls++; return { language: 'vi', segments: [{ start
   calls = 0
   const freshHash = '3'.repeat(64)
   const legacyInput = { fileHash: freshHash, language: 'vi' }
-  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: legacyInput, fn: async () => { calls++; return { language: 'vi', segments: [] } }, userId: 'u-sem' })
+  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: legacyInput, fn: async () => { calls++; return { language: 'vi', segments: [] } }, userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
   const canon = canonical({ audioContentHash: freshHash })
-  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: canon, fn: async () => { calls++; return { language: 'vi', segments: [] } }, userId: 'u-sem' })
+  await callProvider({ provider: 'whisper', type: 'asr', model: eff.model, input: canon, fn: async () => { calls++; return { language: 'vi', segments: [] } }, userId: 'u-sem', rateLimitOpts: { requestsPerMinute: 1000 } })
   assert(calls === 2, `legacy shape does not hit canonical (calls=${calls})`)
 }
 

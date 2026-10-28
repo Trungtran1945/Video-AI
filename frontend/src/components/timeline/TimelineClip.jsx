@@ -245,7 +245,8 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
           : `border ${borderColor} hover:border-primary/50 z-10`
       }`}
     >
-      {isSelected && isEditable && !isDraggingClip && !isTrimming && (
+      {/* B2: track locked (detail readOnly) → ẩn toolbar xóa local-only */}
+      {isSelected && isEditable && !isTrackLocked && !isDraggingClip && !isTrimming && (
         <div className="floating-toolbar">
           <FloatingToolbar clip={clip} />
         </div>
@@ -265,20 +266,20 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
         </span>
       </div>
 
-      {isSelected && isEditable && (
+      {isSelected && isEditable && !isTrackLocked && (
         <div
           onPointerDown={handleLeftTrimPointerDown}
-          className="trim-handle absolute left-0 top-0 bottom-0 w-2.5 bg-card hover:bg-accent border border-border dark:bg-zinc-200 dark:hover:bg-white dark:border-zinc-400 cursor-ew-resize rounded-l flex items-center justify-center shadow-md transition-colors z-30"
+          className="trim-handle absolute left-0 top-0 bottom-0 w-4 sm:w-2.5 bg-card hover:bg-accent border border-border dark:bg-zinc-200 dark:hover:bg-white dark:border-zinc-400 cursor-ew-resize rounded-l flex items-center justify-center shadow-md transition-colors z-30"
           title="Drag to trim start"
         >
           <GripVertical size={10} className="text-foreground dark:text-zinc-800" />
         </div>
       )}
 
-      {isSelected && isEditable && (
+      {isSelected && isEditable && !isTrackLocked && (
         <div
           onPointerDown={handleRightTrimPointerDown}
-          className="trim-handle absolute right-0 top-0 bottom-0 w-2.5 bg-card hover:bg-accent border border-border dark:bg-zinc-200 dark:hover:bg-white dark:border-zinc-400 cursor-ew-resize rounded-r flex items-center justify-center shadow-md transition-colors z-30"
+          className="trim-handle absolute right-0 top-0 bottom-0 w-4 sm:w-2.5 bg-card hover:bg-accent border border-border dark:bg-zinc-200 dark:hover:bg-white dark:border-zinc-400 cursor-ew-resize rounded-r flex items-center justify-center shadow-md transition-colors z-30"
           title="Drag to trim end"
         >
           <GripVertical size={10} className="text-foreground dark:text-zinc-800" />

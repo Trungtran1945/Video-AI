@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { projectsApi } from '@/api/projects';
-import { adminApi, logsApi, systemApi } from '@/api/extra';
+import { adminApi, logsApi, systemApi, queueApi } from '@/api/extra';
 import Layout from '@/components/Layout';
 import PageHeader from '@/components/PageHeader';
 import StatCard from '@/components/StatCard';
@@ -8,9 +9,9 @@ import Loading from '@/components/Loading';
 import { motion } from 'framer-motion';
 import {
   Users, Server, Activity, Database, ShieldCheck, RefreshCw,
-  Loader2, RotateCcw, HardDrive, Cpu, Trash2,
+  Loader2, RotateCcw, HardDrive, Cpu, Trash2, Clock, ListOrdered,
 } from 'lucide-react';
-import { formatDate } from '@/lib/constants';
+import { formatDate, isCompletedStatus } from '@/lib/constants';
 import { useToast } from '@/components/ui/use-toast';
 
 export default function Admin() {
@@ -24,22 +25,29 @@ export default function Admin() {
   const [taskFilter, setTaskFilter] = useState('all');
   const [retryingId, setRetryingId] = useState(null);
   const [roleUpdatingId, setRoleUpdatingId] = useState(null);
+  // R3 Chu kỳ 2: depth BullMQ (admin-only) + job-history /queue (degraded khi Redis down).
+  const [queueMetrics, setQueueMetrics] = useState(null);
+  const [queueJobs, setQueueJobs] = useState([]);
   const { toast } = useToast();
 
   const loadAll = useCallback(async () => {
     try {
-      const [u, p, l, h, ct] = await Promise.all([
+      const [u, p, l, h, ct, qm, qj] = await Promise.all([
         adminApi.users().catch(() => []),
         projectsApi.list().catch(() => []),
         logsApi.list(20).catch(() => []),
         systemApi.health().catch(() => null),
         adminApi.cleanupTasks({ limit: 30 }).catch(() => []),
+        adminApi.queueMetrics().catch(() => null),
+        queueApi.list().catch(() => []),
       ]);
       setUsers(u || []);
       setProjects(p || []);
       setLogs(l || []);
       setHealth(h);
       setCleanupTasks(ct || []);
+      setQueueMetrics(qm);
+      setQueueJobs(Array.isArray(qj) ? qj : []);
     } catch (e) {
       console.error('Lỗi tải dữ liệu quản trị:', e);
     } finally {
@@ -105,7 +113,9 @@ export default function Admin() {
     ? cleanupTasks
     : cleanupTasks.filter(t => t.status === taskFilter);
 
-  const persistenceState = health?.database?.persistenceState || 'HEALTHY';
+  // health=null = fetch failed (unknown), distinct from real DEGRADED.
+  const healthUnknown = health === null || health === undefined;
+  const persistenceState = healthUnknown ? 'UNKNOWN' : (health?.database?.persistenceState || 'HEALTHY');
   const isPersistenceHealthy = persistenceState === 'HEALTHY';
   const isPersistenceDegraded = persistenceState === 'DEGRADED';
 
@@ -135,9 +145,32 @@ export default function Admin() {
           <StatCard
             icon={Database}
             label="Hoàn thành"
-            value={projects.filter(p => p.status === 'completed').length}
+            value={projects.filter(p => isCompletedStatus(p.status)).length}
             color="green"
             delay={0.15}
+          />
+        </div>
+
+        {/* R3 Chu kỳ 2: tồn đọng hàng đợi (đếm client-side từ projects đã fetch) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <StatCard
+            icon={Clock}
+            label="Chờ xử lý"
+            value={projects.filter(p => p.status === 'queued').length}
+            sublabel={(() => {
+              const oldest = queueMetrics?.dbFallback?.oldestQueuedAt;
+              return oldest ? `Chờ lâu nhất từ ${formatDate(oldest)}` : 'Không có dự án chờ';
+            })()}
+            color="orange"
+            delay={0.15}
+          />
+          <StatCard
+            icon={Cpu}
+            label="Đang chạy"
+            value={projects.filter(p => ['running', 'pending'].includes(p.status)).length}
+            sublabel="pending + running"
+            color="cyan"
+            delay={0.2}
           />
         </div>
 
@@ -229,12 +262,12 @@ export default function Admin() {
                     ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/25'
                     : health?.status === 'degraded'
                     ? 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/25'
-                    : 'bg-rose-500/10 text-rose-700 dark:text-rose-300 border-rose-500/25'
+                    : 'bg-muted text-muted-foreground border-border/80'
                 }`}>
                   <span className={`w-1.5 h-1.5 rounded-full ${
-                    health?.status === 'ok' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+                    health?.status === 'ok' ? 'bg-emerald-500 animate-pulse' : 'bg-muted-foreground/60'
                   }`} />
-                  <span>{health?.status ? health.status.toUpperCase() : 'DEGRADED'}</span>
+                  <span>{healthUnknown ? 'UNKNOWN (chưa tải được /health)' : (health?.status ? health.status.toUpperCase() : 'DEGRADED')}</span>
                 </span>
               </div>
 
@@ -263,7 +296,7 @@ export default function Admin() {
                   </div>
                 </div>
 
-                {/* Queue & Workers */}
+                {/* Queue & Workers — R3 Chu kỳ 2: depth BullMQ có số + banner Redis-down */}
                 <div className="p-3 rounded-lg bg-muted/30 border border-border/50">
                   <div className="flex items-center justify-between text-xs sm:text-sm mb-1">
                     <span className="font-semibold text-foreground flex items-center gap-1.5">
@@ -277,17 +310,47 @@ export default function Admin() {
                   <div className="text-[11px] text-muted-foreground">
                     BullMQ: {health?.bullmq === 'available' ? 'Sẵn sàng điều phối worker' : 'In-process workers sau waitForRedis (3000ms)'}
                   </div>
+                  {health?.redis !== 'connected' && (
+                    <div className="flex items-start gap-2 text-[11px] text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-2.5 py-1.5 mt-2">
+                      <span>Redis down — workers tạm dừng, dự án mới giữ queued; số liệu BullMQ không khả dụng, đang hiển thị tồn đọng DB.</span>
+                    </div>
+                  )}
+                  {queueMetrics ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+                      {Object.entries(queueMetrics.queues || {}).map(([name, q]) => (
+                        <div key={name} className="rounded-lg bg-background/60 border border-border/50 px-2 py-1.5">
+                          <div className="text-[10px] font-mono font-semibold text-foreground truncate" title={name}>{name}</div>
+                          {q?.error ? (
+                            <div className="text-[10px] font-mono text-amber-600 dark:text-amber-400">REDIS_UNAVAILABLE</div>
+                          ) : (
+                            <div className="text-[10px] font-mono text-muted-foreground">
+                              ⏳{q.waiting} • ▶{q.active} • ⏱{q.delayed}{q.paused ? ' • paused' : ''}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-muted-foreground mt-1.5">Chưa tải được số liệu hàng đợi.</div>
+                  )}
+                  <div className="flex items-center justify-between mt-2">
+                    <span className="text-[11px] text-muted-foreground font-mono">{queueJobs.length} job gần nhất</span>
+                    <Link
+                      to="/queue"
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
+                    >
+                      <ListOrdered className="w-3 h-3" /> Xem chi tiết →
+                    </Link>
+                  </div>
                 </div>
 
-                {/* Safe Media Storage */}
+                {/* Safe Media Storage — D5: /health không expose storage status
+                    nên gỡ claim cứng "OK", chỉ giữ mô tả cơ chế */}
                 <div className="p-3 rounded-lg bg-muted/30 border border-border/50">
                   <div className="flex items-center justify-between text-xs sm:text-sm mb-1">
                     <span className="font-semibold text-foreground flex items-center gap-1.5">
                       <HardDrive className="w-3.5 h-3.5 text-primary" />
                       <span>Lưu trữ video (Local /storage)</span>
-                    </span>
-                    <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
-                      SafeMediaStatic OK
                     </span>
                   </div>
                   <div className="text-[11px] text-muted-foreground">
@@ -381,7 +444,7 @@ export default function Admin() {
                     return (
                       <tr key={t.id} className="hover:bg-muted/30 transition-colors">
                         <td className="py-2.5 pl-2 font-mono text-[11px] text-foreground">
-                          {t.id.slice(0, 8)}...
+                          {String(t.id ?? '').slice(0, 8)}...
                         </td>
                         <td className="py-2.5 font-medium text-foreground">
                           {t.operation || 'Dọn dẹp'}

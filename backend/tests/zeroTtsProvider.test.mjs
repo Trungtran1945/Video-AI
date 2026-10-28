@@ -27,6 +27,7 @@ const assert = (c, m) => {
   assert(typeof p.voice === 'string' && p.voice.length > 0, 'ZeroTts has default voice')
   assert(typeof p.baseUrl === 'string' && p.baseUrl.startsWith('http'), 'ZeroTts has valid baseUrl')
   assert(Number.isFinite(p.timeoutMs) && p.timeoutMs > 0, 'ZeroTts has valid timeoutMs')
+  assert(Number.isFinite(p.readyWaitMs) && p.readyWaitMs > 0, 'ZeroTts has valid readyWaitMs')
 }
 
 // 2. Registry integration
@@ -147,6 +148,11 @@ const assert = (c, m) => {
           res.end(JSON.stringify({ error: 'Model not ready', code: 'MODEL_NOT_READY' }))
           return
         }
+        if (lastRequestBody.text === 'TRIGGER_403') {
+          res.writeHead(403, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'out_path outside OUTPUT_ROOT', code: 'FORBIDDEN_PATH' }))
+          return
+        }
 
         // Return a valid dummy WAV buffer
         // Simple 44-byte RIFF WAV header + 100 zero samples
@@ -169,6 +175,14 @@ const assert = (c, m) => {
         buf.writeUInt32LE(dataSize, 40)
 
         // If client passes out_path, write it directly and return JSON
+        if (lastRequestBody.text === 'TRIGGER_JSON') {
+          const legacyPath = path.resolve('storage/tmp/test_zerotts_legacy_json.wav')
+          fs.mkdirSync(path.dirname(legacyPath), { recursive: true })
+          fs.writeFileSync(legacyPath, buf)
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, audioPath: legacyPath, durationSec: 0.1 }))
+          return
+        }
         if (lastRequestBody.out_path) {
           fs.mkdirSync(path.dirname(lastRequestBody.out_path), { recursive: true })
           fs.writeFileSync(lastRequestBody.out_path, buf)
@@ -210,13 +224,14 @@ const assert = (c, m) => {
   assert(health.status === 'ok', 'health status is ok')
   assert(Array.isArray(health.voices) && health.voices.includes('maichi'), 'health returns voices')
 
-  // 7b. Synthesize with outPath JSON response
+  // 7b. Synthesize via binary WAV response (service decides output; no out_path sent)
   const testOut = path.resolve('storage/tmp/test_zerotts_unit.wav')
   const synthRes = await p.synthesize({ text: 'Xin chào', outPath: testOut, voice: 'maichi' })
   assert(synthRes.provider === 'zerotts', 'Synthesize returns provider="zerotts"')
   assert(synthRes.audioPath === testOut, 'Synthesize returns correct audioPath')
   assert(synthRes.durationSec > 0, 'Synthesize returns durationSec > 0')
   assert(fs.existsSync(testOut), 'Audio file was written to disk')
+  assert(lastRequestBody && !('out_path' in lastRequestBody), 'client không gửi out_path — service tự quyết OUTPUT_ROOT')
   try { fs.unlinkSync(testOut) } catch (_) {}
 
   // 7c. Invalid voice error
@@ -239,12 +254,84 @@ const assert = (c, m) => {
   }
   assert(threw503, '503 triggers PROVIDER_UNAVAILABLE')
 
+  // 7e. 403 FORBIDDEN_PATH is a request/config error, not an auth/key error
+  let threw403 = false
+  try {
+    await p.synthesize({ text: 'TRIGGER_403', outPath: testOut })
+  } catch (err) {
+    threw403 = true
+    assert(err.code === ERROR_CODES.PROVIDER_INVALID_REQUEST, '403 FORBIDDEN_PATH throws PROVIDER_INVALID_REQUEST')
+    assert(/out_path/i.test(err.message), '403 message explains out_path/OUTPUT_ROOT')
+    assert(classifyProviderError(err).code === ERROR_CODES.PROVIDER_INVALID_REQUEST,
+      'classifyProviderError maps FORBIDDEN_PATH to PROVIDER_INVALID_REQUEST (not PROVIDER_PERMISSION_DENIED)')
+  }
+  assert(threw403, '403 FORBIDDEN_PATH throws error')
+
+  // 7f. Legacy JSON response (audioPath) still works when the file is visible locally
+  const legacyTarget = path.resolve('storage/tmp/test_zerotts_legacy_target.wav')
+  const legacyRes = await p.synthesize({ text: 'TRIGGER_JSON', outPath: legacyTarget })
+  assert(legacyRes.audioPath === legacyTarget, 'JSON legacy: audioPath được move về outPath')
+  assert(fs.existsSync(legacyTarget) && legacyRes.durationSec > 0, 'JSON legacy: file tồn tại + probe hợp lệ')
+  try { fs.unlinkSync(legacyTarget) } catch (_) {}
+
   await new Promise((resolve) => mockServer.close(resolve))
+}
+
+// 7f. waitForReady: bounded polling of /health
+{
+  let healthCalls = 0
+  const server = http.createServer((req, res) => {
+    if (req.url === '/health') {
+      healthCalls++
+      if (healthCalls <= 2) {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ status: 'error', code: 'MODEL_NOT_READY' }))
+        return
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ status: 'ok', model_loaded: true }))
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  const p = new ZeroTts()
+  p.baseUrl = `http://127.0.0.1:${port}`
+
+  const ready = await p.waitForReady(3000)
+  assert(ready === true, 'waitForReady=true khi 503 MODEL_NOT_READY rồi 200')
+
+  await new Promise((resolve) => server.close(resolve))
+}
+
+// 7g. waitForReady: luôn 503 → false sau deadline; port đóng → false nhanh
+{
+  const server = http.createServer((req, res) => {
+    res.writeHead(503, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ status: 'error', code: 'MODEL_NOT_READY' }))
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  const p = new ZeroTts()
+  p.baseUrl = `http://127.0.0.1:${port}`
+
+  const timedOut = await p.waitForReady(300)
+  assert(timedOut === false, 'waitForReady=false khi hết deadline mà model vẫn loading')
+
+  await new Promise((resolve) => server.close(resolve))
+
+  const offline = new ZeroTts()
+  offline.baseUrl = 'http://127.0.0.1:59999'
+  const started = Date.now()
+  const closed = await offline.waitForReady(3000)
+  assert(closed === false, 'waitForReady=false khi service đóng (ECONNREFUSED)')
+  assert(Date.now() - started < 2000, 'waitForReady fail-fast khi service đóng')
 }
 
 // 8. Failover behavior when ZeroTTS is unavailable
 {
-  clearProviderHealthForTests()
   await runWithProviderScope('test:zerotts-failover', async () => {
     const candidates = [
       { id: 'zerotts', apiKeyId: null, provider: { id: 'zerotts' } },

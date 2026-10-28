@@ -1,51 +1,62 @@
 import { useState, useEffect } from 'react';
 import { projectsApi } from '@/api/projects';
-import { queueApi, logsApi } from '@/api/extra';
+import { queueApi, logsApi, providersApi } from '@/api/extra';
 import Layout from '@/components/Layout';
 import PageHeader from '@/components/PageHeader';
 import StatCard from '@/components/StatCard';
 import Loading from '@/components/Loading';
+import ErrorState from '@/components/ErrorState';
 import { Link } from 'react-router-dom';
 import { Video, Layers, ListOrdered, HardDrive, Cpu, Clock, ArrowRight, Plus, CheckCircle2, Film } from 'lucide-react';
-import { STAGE_LABELS, formatDate } from '@/lib/constants';
+import { STAGE_LABELS, formatDate, isCompletedStatus } from '@/lib/constants';
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
-  const [projects, setProjects] = useState([]);
+  const [loadError, setLoadError] = useState(null);
+  const [projects, setProjects] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [logs, setLogs] = useState([]);
+  const [providers, setProviders] = useState(null);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
-        const [p, j, l] = await Promise.all([
+        const [p, j, l, pv] = await Promise.all([
           projectsApi.list(),
-          queueApi.list(),
-          logsApi.list(5),
+          queueApi.list().catch(() => []),
+          logsApi.list(5).catch(() => []),
+          providersApi.list().catch(() => null),
         ]);
+        if (cancelled) return;
         setProjects(p || []);
         setJobs(j || []);
         setLogs(l || []);
+        setProviders(pv);
       } catch (e) {
-        console.error(e);
+        if (!cancelled) setLoadError(e);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => { cancelled = true; };
   }, []);
 
   if (loading) return <Layout><Loading /></Layout>;
+  if (loadError) return <Layout><ErrorState status={loadError?.response?.status ?? 0} onRetry={() => window.location.reload()} /></Layout>;
+  if (projects === null) return <Layout><Loading /></Layout>;
 
   const todayProjects = (projects || []).filter(p => {
     const d = new Date(p.created_date);
     const now = new Date();
     return d.toDateString() === now.toDateString();
   });
-  const completed = (projects || []).filter(p => p.status === 'completed');
+  const completed = (projects || []).filter(p => isCompletedStatus(p.status));
   const runningJobs = (jobs || []).filter(j => j.status === 'running' || j.status === 'pending');
 
   const summaryStages = ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'].map(s => STAGE_LABELS[s]);
-  const dubStages = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.ttsAlign', 'dub.render'].map(s => STAGE_LABELS[s]);
+  // D4: đủ 7 bước TRANSLATE_DUB (gồm dub.mask), khớp DUB_STAGES_ALL ở ProjectDetail.
+  const dubStages = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.mask', 'dub.ttsAlign', 'dub.render'].map(s => STAGE_LABELS[s]);
 
   return (
     <Layout>
@@ -189,15 +200,24 @@ export default function Dashboard() {
                 </div>
               </div>
               <div className="space-y-2">
-                {['LLM / Biên kịch', 'Tạo hình ảnh', 'Tạo video', 'Giọng nói AI', 'Phụ đề & STT'].map(cat => (
-                  <div key={cat} className="flex items-center justify-between py-1.5 border-b border-border/40 last:border-0 text-xs">
-                    <span className="text-muted-foreground font-medium">{cat}</span>
-                    <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400 font-semibold">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      <span>Sẵn sàng</span>
-                    </span>
-                  </div>
-                ))}
+                {providers === null ? (
+                  <div className="text-xs text-muted-foreground py-2">Chưa tải được trạng thái nhà cung cấp.</div>
+                ) : (Array.isArray(providers?.providers ?? providers) ? (providers?.providers ?? providers) : []).slice(0, 5).map((pv, i) => {
+                  const name = pv?.provider || pv?.name || `Nhóm ${i + 1}`;
+                  const healthy = pv?.healthy !== false && pv?.status !== 'down';
+                  return (
+                    <div key={name} className="flex items-center justify-between py-1.5 border-b border-border/40 last:border-0 text-xs">
+                      <span className="text-muted-foreground font-medium">{name}</span>
+                      <span className={`inline-flex items-center gap-1.5 font-semibold ${healthy ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-300'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${healthy ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                        <span>{healthy ? 'Sẵn sàng' : 'Gián đoạn'}</span>
+                      </span>
+                    </div>
+                  );
+                })}
+                {(Array.isArray(providers?.providers ?? providers) ? (providers?.providers ?? providers) : []).length === 0 && (
+                  <div className="text-xs text-muted-foreground py-2">Chưa có nhà cung cấp nào được cấu hình.</div>
+                )}
               </div>
             </div>
 

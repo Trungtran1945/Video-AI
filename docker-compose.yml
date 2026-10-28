@@ -34,6 +34,10 @@ services:
       - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:-}
       - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-}
       - MASTER_KEY=${MASTER_KEY:-}
+      # Admin bootstrap production (khớp resolveAdminSeed trong backend/src/db/seed.js):
+      # rỗng = skip + warn (vẫn boot), <12 ký tự = fail-fast throw.
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - MAX_CONCURRENT_PROJECTS_PER_USER=${MAX_CONCURRENT_PROJECTS_PER_USER:-2}
       - PROJECT_RETENTION_DAYS=${PROJECT_RETENTION_DAYS:-30}
       - SMTP_HOST=${SMTP_HOST:-}
@@ -50,7 +54,12 @@ services:
       - WHISPER_MODEL=${WHISPER_MODEL:-whisper-1}
       - WHISPER_TEMPERATURE=${WHISPER_TEMPERATURE:-0}
       - WHISPER_INITIAL_PROMPT=${WHISPER_INITIAL_PROMPT:-}
+      # Prod CORS fail-closed khi rỗng: same-origin qua nginx :80 không cần set;
+      # gọi trực tiếp :3001/domain khác phải set (xem README §6.3).
       - CORS_ORIGINS=${CORS_ORIGINS:-}
+      # HTTP LAN nội bộ (http://<LAN-IP>): giữ true chỉ khi đã terminate TLS,
+      # ngược lại browser drop cookie refresh_token → COOKIE_SECURE=false.
+      - COOKIE_SECURE=${COOKIE_SECURE:-true}
       - ZEROTTS_URL=${ZEROTTS_URL:-http://zerotts:5005}
       - ZEROTTS_TIMEOUT_MS=${ZEROTTS_TIMEOUT_MS:-60000}
     volumes:
@@ -105,8 +114,16 @@ services:
       dockerfile: docker/web.Dockerfile
     ports:
       - "80:80"
+    # Chờ api healthy (healthcheck ~30s x 3 retries) để hết 502 lúc boot.
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
 volumes:
   redis_data:

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { ZeroTts } from '../src/providers/tts/zeroTts.js'
 import { run } from '../src/db/query.js'
-import '../src/db/schema.js'
+import { initSchema } from '../src/db/schema.js'
 import { callProvider } from '../src/lib/callProvider.js'
 import { buildTtsCacheInput, ttsClipKey } from '../src/lib/ttsCacheKey.js'
 import { withProviderFailover } from '../src/lib/providerFailover.js'
@@ -49,6 +49,7 @@ const TEST_PORT = 5007
 const BASE_URL = `http://127.0.0.1:${TEST_PORT}`
 const tmpDir = path.resolve('storage/tmp/zerotts_e2e')
 fs.mkdirSync(tmpDir, { recursive: true })
+await initSchema()
 
 console.log('=== Starting ZeroTTS Local Integration Test ===')
 
@@ -92,6 +93,7 @@ try {
   healthData = await waitForHealth(60)
   assert(healthData.status === 'ok', 'ZeroTTS service started and reported status="ok"')
   assert(healthData.model_loaded === true, 'Model is loaded in memory')
+  assert(healthData.binary_transport === true, 'Health quảng bá binary_transport=true (dev không cảnh báo code cũ)')
   assert(Array.isArray(healthData.voices) && healthData.voices.includes('maichi'), 'Available voices include "maichi"')
   assert(healthData.concurrency === 1, 'Concurrency limit is set to 1')
   console.log(`[2] ZeroTTS ready in ${healthData.load_time_sec}s with voices: ${healthData.voices.join(', ')}`)
@@ -146,6 +148,8 @@ try {
   assert(res1.durationSec > 0.5, `Duration is > 0.5s (got ${res1.durationSec}s)`)
   const probe1 = await probe(out1)
   assert(probe1.durationSec > 0.5, `ffprobe duration matches synthesized duration (probe=${probe1.durationSec}s)`)
+  const wavHeader1 = fs.readFileSync(out1).subarray(0, 4).toString('ascii')
+  assert(wavHeader1 === 'RIFF', 'Binary transport: WAV bytes từ service được ghi local (RIFF)')
   console.log(`[3] Generated sentence 1: ${res1.durationSec}s`)
 
   // Check server state
@@ -222,6 +226,8 @@ try {
   assert(resMp3.audioPath === outMp3, 'Returned audioPath is MP3')
   const mp3Probe = await probe(outMp3)
   assert(mp3Probe.durationSec > 0, `MP3 audio probe valid: ${mp3Probe.durationSec}s, format=${mp3Probe.formatName}`)
+  const mp3Header = fs.readFileSync(outMp3).subarray(0, 4).toString('ascii')
+  assert(!mp3Header.startsWith('RIFF'), 'MP3 output là MP3 thật, không phải WAV đổi tên (fail-closed)')
 
   // 8. Test redub/resume semantics: existing clip is reused without synthesis
   console.log('[8] Testing redub/resume clip reuse...')

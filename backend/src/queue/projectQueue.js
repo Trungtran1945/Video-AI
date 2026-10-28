@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq'
-import { createRedisConnection, isRedisReady, isConnectionReady, isStreamNotWritableError, attachDedicatedLogging } from './connection.js'
+import { createRedisConnection, isRedisReady, isConnectionReady, isStreamNotWritableError, attachDedicatedLogging, getRedisEndpoint } from './connection.js'
 
 const queueConnection = createRedisConnection()
 attachDedicatedLogging(queueConnection, 'ProjectQueue')
@@ -18,15 +18,15 @@ export function isProjectQueueReady() {
 
 export async function safeAddProject(name, data, opts) {
   if (!isRedisReady() || !isConnectionReady(queueConnection)) {
-    console.warn('[ProjectQueue] Redis unavailable — job scheduling skipped')
-    return { skipped: true }
+    console.warn(`[ProjectQueue] Redis unavailable at ${getRedisEndpoint()} — job "${name}" scheduling skipped (project stays queued; draining resumes when Redis ready)`)
+    return { skipped: true, reason: 'REDIS_UNAVAILABLE' }
   }
   try {
     return await projectQueue.add(name, data, opts)
   } catch (err) {
     if (isStreamNotWritableError(err)) {
-      console.warn(`[ProjectQueue] Skipped add (stream not writable): ${err.message}`)
-      return { skipped: true }
+      console.warn(`[ProjectQueue] Skipped add (stream not writable) at ${getRedisEndpoint()}: ${err.message}`)
+      return { skipped: true, reason: 'REDIS_UNAVAILABLE' }
     }
     throw err
   }

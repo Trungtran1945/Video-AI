@@ -29,8 +29,8 @@ Không dùng bất kỳ dịch vụ/BaaS bên ngoài nào — mọi dữ liệu 
   - TRANSLATE_DUB: `{sourceLanguage?, targetLanguage, stylePreset, enableDubbing, voiceId?, subPosition?, sourceVideoKey}` — backend tự chạy pipeline sau khi tạo (chạy sequential dub.ingest → dub.stt → dub.merge → dub.translate → dub.ttsAlign → dub.render).
 - Upload file lớn (video ≤2GB): resumable kiểu TUS — `POST /uploads/init` → `PUT /uploads/:id/chunk?offset=N` (chunk 5–10MB, resume bằng `HEAD`) → `POST /uploads/:id/complete` → `{storageKey}`. Endpoint multipart cũ `POST /upload` vẫn dùng cho file nhỏ.
 - Danh mục phong cách dịch: `GET /style-presets` → 13 preset (slug, name, description).
-- Vùng che hardsub: `GET|PUT /projects/:id/mask-regions` (region user khoanh trên Canvas có `source='MANUAL'`).
-- Tiến trình: SSE `GET /projects/:id/events` (`{stage, status, percent}` từng job); fallback poll `GET /projects/:id/jobs`. TRANSLATE_DUB trả thêm `transcript[]`, `ocrRegions[]`; SUMMARY trả `timeline[]`, `scenes[]`.
+- Vùng che hardsub: `GET|POST /projects/:id/masks` + `PATCH|DELETE /projects/:id/masks/:maskId` (region user khoanh trên Canvas có `source='MANUAL'`; `mask-regions` cũ đã bỏ).
+- Tiến trình: SSE `GET /projects/:id/events` (`{stage, status, percent}` từng job); fallback poll `GET /projects/:id/jobs`. SUMMARY trả `timeline[]`, `scenes[]` kèm `GET /projects/:id`; TRANSLATE_DUB lấy riêng `GET /projects/:id/transcript` (`{revision, segments}`) + `GET /projects/:id/masks` (BE `projects.js` không trả inline `transcript[]`/`ocrRegions[]`).
 - Regenerate: `POST /api/v1/projects/:id/regenerate`.
 - File output/storage: URL dạng `/storage/<storage_key>`.
 

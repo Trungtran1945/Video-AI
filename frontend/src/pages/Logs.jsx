@@ -6,6 +6,7 @@ import Loading from '@/components/Loading';
 import EmptyState from '@/components/EmptyState';
 import { motion } from 'framer-motion';
 import { ScrollText, AlertCircle } from 'lucide-react';
+import ErrorState from '@/components/ErrorState';
 import { StatusBadge, formatDate, formatDuration } from '@/lib/constants';
 
 const categoryLabels = { llm: 'LLM', image: 'Hình ảnh', video: 'Video', voice: 'Giọng nói', subtitle: 'Phụ đề' };
@@ -13,6 +14,7 @@ const categoryLabels = { llm: 'LLM', image: 'Hình ảnh', video: 'Video', voice
 export default function Logs() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [filter, setFilter] = useState('all');
 
   useEffect(() => {
@@ -20,14 +22,24 @@ export default function Logs() {
       try {
         setLogs(await logsApi.list(100) || []);
       } catch (e) {
-        console.error(e);
+        setLoadError(e);
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
-  const filtered = filter === 'all' ? logs : logs.filter(l => l.status === filter);
+  // Backend enum: success/failed/error/timeout/retry/running (+ legacy 'ok' normalized to 'success' server-side).
+  // Pill "Có lỗi" gộp cả failed + error (failed trước đây chỉ thấy ở tab Tất cả).
+  const normalizeLogStatus = (s) => (s === 'ok' ? 'success' : s);
+  const isErrorStatus = (s) => ['error', 'failed'].includes(normalizeLogStatus(s));
+  const filtered = filter === 'all'
+    ? logs
+    : filter === 'success'
+      ? logs.filter(l => normalizeLogStatus(l.status) === 'success')
+      : filter === 'error'
+        ? logs.filter(l => isErrorStatus(l.status))
+        : logs.filter(l => normalizeLogStatus(l.status) === filter);
 
   return (
     <Layout>
@@ -37,12 +49,14 @@ export default function Logs() {
           subtitle={`${logs.length} bản ghi chi tiết các yêu cầu tới nhà cung cấp AI`}
         />
 
-        <div className="flex gap-2">
+        {/* U1: wrap pills trên mobile hẹp */}
+        <div className="flex gap-2 flex-wrap">
           {[
             { id: 'all', label: 'Tất cả' },
             { id: 'success', label: 'Thành công' },
             { id: 'error', label: 'Có lỗi' },
             { id: 'timeout', label: 'Quá hạn' },
+            { id: 'retry', label: 'Chờ retry' },
           ].map(f => (
             <button
               key={f.id}
@@ -60,6 +74,8 @@ export default function Logs() {
 
         {loading ? (
           <Loading />
+        ) : loadError ? (
+          <ErrorState status={loadError?.response?.status ?? 0} onRetry={() => window.location.reload()} />
         ) : filtered.length === 0 ? (
           <EmptyState
             icon={ScrollText}

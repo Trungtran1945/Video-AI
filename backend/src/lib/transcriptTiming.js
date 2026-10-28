@@ -218,8 +218,9 @@ export function computeProposedState(allSegments, incoming, { gap = TIMING_GAP, 
 }
 
 // Validate a fully-resolved ordered state. Returns {ok, errors}.
-export function validateProposedState(ordered, { gap = TIMING_GAP, durationSec = null } = {}) {
-  const GAP = gap
+// NOTE: không nhận `gap` — validate chỉ reject cặp BLOCK_RENDER (overlap >
+// RENDER_OVERLAP_TOL), cặp khít nhau (gap 0) render được nên cho qua.
+export function validateProposedState(ordered, { durationSec = null } = {}) {
   const errors = []
   const list = [...(ordered || [])].slice().sort((a, b) => (a.index_num ?? 0) - (b.index_num ?? 0))
   for (let i = 0; i < list.length; i++) {

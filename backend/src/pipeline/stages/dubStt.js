@@ -39,13 +39,22 @@ export async function dubStt(ctx) {
   const current = await queryOne('SELECT transcript_version FROM projects WHERE id = ?', [project.id])
   const transcriptVersion = Number(current?.transcript_version ?? project.transcript_version ?? 0)
 
-  // Skip STT if segments already exist (video hash cache — copied from duplicate project)
+  // Skip STT đối xứng SUMMARY: chỉ skip khi COUNT>0 && transcript_version DB khớp
+  // output.transcript_version (không stale) && !forceTranscript.
   const existing = await query(
     'SELECT COUNT(*) as cnt FROM transcript_segments WHERE project_id = ?',
     [project.id]
   )
   if (existing[0]?.cnt > 0 && !ctx.forceTranscript) {
-    return { segmentCount: existing[0].cnt, skipped: true, reason: 'cached' }
+    const latestOut = await queryOne(
+      'SELECT transcript_version FROM outputs WHERE project_id = ? ORDER BY created_date DESC LIMIT 1',
+      [project.id]
+    ).catch(() => null)
+    if (latestOut && Number(latestOut.transcript_version) !== transcriptVersion) {
+      // Stale — transcribe lại, không skip.
+    } else {
+      return { segmentCount: existing[0].cnt, skipped: true, reason: 'cached' }
+    }
   }
 
   // Ưu tiên audio đã chuẩn hoá ở stage ingest; thiếu → tách lại từ nguồn
@@ -87,6 +96,20 @@ export async function dubStt(ctx) {
   }
   let language = languageHint || null
   let lockedLanguage = languageHint || null
+  // Confidence vote: không chốt từ chunk đầu (dễ dính silence/nhạc) — mỗi chunk
+  // detected bỏ phiếu theo số segment, lockedLanguage = argmax hiện tại.
+  // Explicit languageHint không bao giờ bị override.
+  const langVotes = new Map()
+  const voteLanguage = (detected, weight) => {
+    if (languageHint || !detected || !(weight > 0)) return
+    langVotes.set(detected, (langVotes.get(detected) || 0) + weight)
+    let best = null
+    let bestVotes = 0
+    for (const [lang, votes] of langVotes) {
+      if (votes > bestVotes) { best = lang; bestVotes = votes }
+    }
+    if (best) lockedLanguage = best
+  }
   const rawSegments = []
   await runWithProviderScope(`dub.stt:${project.id}`, async () => {
   for (let i = 0; i < chunks.length; i++) {
@@ -140,10 +163,8 @@ export async function dubStt(ctx) {
       console.warn(`[dubStt] chunk ${i} malformed (${sanity.reason} maxEnd=${sanity.maxEndMs}ms) — giữ transcript nhưng đánh dấu recovery`)
     }
     const detected = normalizeSttLanguage(res.language)
-    // Lock detected language from first non-empty chunk; explicit hint never overridden.
-    if (!lockedLanguage && detected && (res.segments || []).length > 0) {
-      lockedLanguage = detected
-    }
+    // Vote theo segment-count (bỏ qua chunk silence/rỗng); explicit hint giữ nguyên.
+    voteLanguage(detected, (res.segments || []).length)
     if (!language || language === 'unknown') language = detected || res.language || language
     const kept = filterHallucinatedSegments(res.segments || [])
     for (const s of kept) {

@@ -12,7 +12,9 @@ import { markLegacyUploadActive, releaseLegacyUpload } from '../../services/lega
 import { assertVideoFile, MediaValidationError, validateVideoMetadata } from '../../services/mediaValidation.js'
 import { CHUNK_SIZE, MAX_SIZE, resumableUploadService, UploadServiceError } from '../../services/resumableUploadService.js'
 
-const LEGACY_MAX_SIZE = 4 * 1024 * 1024 * 1024
+// Legacy multipart chỉ cho file nhỏ ≤50MB; file lớn dùng resumable TUS
+// (POST /uploads/init → PUT chunk 8MB → POST complete, limit 2GB duy nhất).
+const LEGACY_MAX_SIZE = 50 * 1024 * 1024
 
 function asyncHandler(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next)
@@ -34,10 +36,10 @@ function errorPayload(error) {
     }
   }
   if (error?.type === 'entity.too.large') {
-    return { status: 413, code: 'CHUNK_TOO_LARGE', message: 'Chunk exceeds the 16MB request limit', extra: {} }
+    return { status: 413, code: 'CHUNK_TOO_LARGE', message: 'Chunk exceeds the 8MB protocol limit (max 8MB)', extra: {} }
   }
   if (error?.code === 'LIMIT_FILE_SIZE') {
-    return { status: 413, code: 'PAYLOAD_TOO_LARGE', message: 'File exceeds the 4GB upload limit', extra: {} }
+    return { status: 413, code: 'PAYLOAD_TOO_LARGE', message: 'File exceeds the 50MB multipart limit — use resumable upload (POST /uploads/init)', extra: {} }
   }
   if (error?.code === 'LIMIT_UNEXPECTED_FILE') {
     return { status: 400, code: 'VALIDATION', message: 'Unexpected upload field', extra: { field: 'file' } }
@@ -148,7 +150,8 @@ export function createUploadRouter({
     res.status(200).end()
   }))
 
-  const rawBody = raw({ type: 'application/octet-stream', limit: '16mb' })
+  // HTTP layer fail-nhanh: limit 10MB (protocol chunk 8MB) → CHUNK_TOO_LARGE sớm.
+  const rawBody = raw({ type: 'application/octet-stream', limit: '10mb' })
   router.put('/:id/chunk', rawBody, asyncHandler(async (req, res) => {
     const offset = Number(req.query.offset)
     const result = await service.appendChunk({
@@ -164,6 +167,13 @@ export function createUploadRouter({
   router.post('/:id/complete', asyncHandler(async (req, res) => {
     const result = await service.complete({ id: req.params.id, userId: req.user.id })
     res.json(result)
+  }))
+
+  // DELETE /uploads/:id — abort resumable session (user huỷ upload).
+  // Sau abort: HEAD/PUT/POST-complete → 410 GONE, resume fail.
+  router.delete('/:id', asyncHandler(async (req, res) => {
+    await service.abortUpload({ id: req.params.id, userId: req.user.id })
+    res.status(204).end()
   }))
 
   router.use((error, req, res, next) => {

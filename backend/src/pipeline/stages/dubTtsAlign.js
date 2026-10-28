@@ -24,6 +24,23 @@ export function buildAudioFileMap(fitted) {
   return m
 }
 
+// Project-level voice (params.voiceProvider/voiceName) wins over user settings.
+// Chỉ đổi voice của đúng candidate được chọn; model giữ nguyên để cache identity
+// vẫn là provider/model. Provider không có khái niệm chọn giọng → bỏ qua.
+const NO_VOICE_SELECTION = new Set(['google_tts', 'azure_speech'])
+
+export function applyVoiceOverride(candidates, providerId, voiceName) {
+  const id = String(providerId || '').trim()
+  const name = String(voiceName || '').trim().slice(0, 64)
+  if (!id || !name) return candidates
+  if (NO_VOICE_SELECTION.has(id)) return candidates
+  const target = (candidates || []).find((c) => c?.id === id)
+  if (!target?.provider) return candidates
+  if (id === 'elevenlabs') target.provider.voiceId = name
+  else target.provider.voice = name
+  return candidates
+}
+
 // TransFlow prepare_voice: trim provider silence → normalize về mức speech
 // chung (−19 dBFS, peak −1 dBFS). Best-effort: thất bại giữ nguyên clip đầu vào.
 async function prepareVoiceClip(inPath, segDir, segKey) {
@@ -121,11 +138,28 @@ export async function dubTtsAlign(ctx) {
   )
   if (!segments.length) throw new Error('Không có câu dịch nào để lồng tiếng — dub.translate chưa chạy?')
 
-  const ttsCandidates = await listProvidersForCapability(project.user_id, 'tts')
+  const requestedProvider = String(params.voiceProvider || '').trim()
+  const requestedVoiceName = String(params.voiceName || params.voiceId || '').trim()
+  const ttsCandidates = await listProvidersForCapability(
+    project.user_id,
+    'tts',
+    requestedProvider ? { id: requestedProvider } : {}
+  )
+  applyVoiceOverride(ttsCandidates, requestedProvider, requestedVoiceName)
   if (!ttsCandidates.length) throw new Error('Chưa cấu hình TTS provider — kiểm tra trang API Keys / Cài đặt')
   const llmCandidates = await listProvidersForCapability(project.user_id, 'llm').catch(() => [])
   const llm = llmCandidates[0] || null
   const segDir = ensureDir(path.join(projectDir(project.id), 'audio_segments'))
+
+  // ZeroTTS đang tải model (503 MODEL_NOT_READY) → chờ bounded thay vì đánh fail
+  // ngay; hết trần thì để failover xử lý (edge_tts/mock).
+  const preferred = ttsCandidates[0]
+  if (preferred?.id === 'zerotts' && typeof preferred.provider.waitForReady === 'function') {
+    setProgress(2)
+    const ready = await preferred.provider.waitForReady(undefined, signal)
+    if (signal?.aborted) throw new Error('Cancelled')
+    if (!ready) console.warn('[dubTtsAlign] ZeroTTS chưa ready — tiếp tục với failover')
+  }
   setProgress(3)
 
   // Resume semantics (TransFlow tts_clip_key): KHÔNG xóa audio_segments.

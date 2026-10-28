@@ -38,7 +38,9 @@ app.use(cors({
 }))
 // Tight global JSON limit (1MB): API payloads are KB-scale (project create,
 // mask CRUD, translation patch). Large video uploads bypass this via
-// multer (multipart) and express.raw 16MB chunk endpoints in upload.js.
+// multer (multipart ≤50MB) and express.raw 10MB chunk endpoints in upload.js.
+// Transcript dài dùng chunked-edit: PUT /transcript theo revision từng phần hoặc
+// PATCH /segments/:id/translation từng câu (không PUT 1.2MB một lần).
 app.use(express.json({ limit: '1mb' }))
 app.use(express.urlencoded({ extended: true, limit: '1mb' }))
 
@@ -46,6 +48,20 @@ app.use(express.urlencoded({ extended: true, limit: '1mb' }))
 app.use('/storage', createSafeMediaStatic({ storageDir: config.storageDir }))
 
 app.use('/api/v1', v1Router)
+
+// Oversized JSON (vd PUT /transcript >1MB) → 413 JSON có hướng dẫn chunked-edit,
+// thay vì HTML mặc định của Express.
+app.use((err, req, res, next) => {
+  if (err?.type === 'entity.too.large') {
+    return res.status(413).json({
+      error: {
+        code: 'PAYLOAD_TOO_LARGE',
+        message: 'Payload vượt quá 1MB — chia nhỏ transcript theo revision (PUT từng phần) hoặc sửa từng câu qua PATCH /projects/:id/segments/:segmentId/translation.',
+      },
+    })
+  }
+  return next(err)
+})
 
 app.get('/health', async (req, res) => {
   let redisOk = false
@@ -196,6 +212,25 @@ async function start() {
   if (typeof cleanupSweepTimer.unref === 'function') cleanupSweepTimer.unref()
   if (typeof idemPruneTimer.unref === 'function') idemPruneTimer.unref()
 
+  // YouTube publish outbox: DB-backed, intentionally independent of Redis so
+  // publishing still works while BullMQ is down. One boot tick + 10s interval.
+  try {
+    const { startYoutubeUploadWorker } = await import('./src/queue/workers/youtubeUploadWorker.js')
+    startYoutubeUploadWorker()
+    console.log('[YouTube] Publish outbox worker started')
+  } catch (e) {
+    console.warn('[YouTube] Publish outbox worker failed to start:', e.message)
+  }
+
+  // Expired staged script uploads (private files outside /storage allowlist).
+  const sweepScriptUploads = () => import('./src/services/scriptUploadService.js')
+    .then((m) => m.cleanupExpiredUploads())
+    .then((r) => { if (r.removed > 0) console.log(`[ScriptUpload] Removed ${r.removed} expired file(s)`) })
+    .catch((e) => console.error('[ScriptUpload] cleanup failed:', e?.message || e))
+  sweepScriptUploads()
+  const scriptUploadCleanupTimer = setInterval(sweepScriptUploads, 60 * 60 * 1000)
+  if (typeof scriptUploadCleanupTimer.unref === 'function') scriptUploadCleanupTimer.unref()
+
   // Group 1: Start queue workers (graceful fallback if Redis unavailable).
   // Workers are only constructed once the Redis stream is writable — this
   // avoids "Stream isn't writeable" command spam. If Redis is down at boot,
@@ -250,7 +285,7 @@ async function start() {
       console.error(`[Queue] FATAL: Redis unavailable at ${getRedisEndpoint()} — workers (notifications, cleanup, job draining) require Redis. Start it (docker compose up redis) or set REDIS_HOST/REDIS_PORT in backend/.env`)
       process.exit(1)
     } else {
-      console.warn('[Queue] Redis unavailable — notifications, cleanup, and job draining are disabled (workers will start when Redis is ready)')
+      console.warn('[Queue] Redis unavailable — notifications, cleanup, and job draining are disabled; new projects stay "queued" until Redis is ready (docker compose up -d redis). API remains 200; check GET /health → redis:disconnected. (workers will start when Redis is ready)')
       connection.once('ready', () => {
         bootQueueWorkers().catch((e) => console.warn('[Queue] deferred worker boot failed:', e.message))
       })

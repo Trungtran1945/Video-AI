@@ -7,9 +7,14 @@ import StatCard from '@/components/StatCard';
 import Loading from '@/components/Loading';
 import { motion } from 'framer-motion';
 import { BarChart3, Video, CheckCircle, XCircle, TrendingUp, Layers, Clock, Clapperboard, Languages } from 'lucide-react';
+import ErrorState from '@/components/ErrorState';
+import { isCompletedStatus, normalizeStatus } from '@/lib/constants';
+
+const isOkLog = (s) => normalizeStatus(s) === 'completed' || s === 'success' || s === 'ok';
 
 export default function Analytics() {
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [analytics, setAnalytics] = useState(null);
   const [projects, setProjects] = useState([]);
   const [jobs, setJobs] = useState([]);
@@ -20,7 +25,7 @@ export default function Analytics() {
       try {
         const [a, p, j, l] = await Promise.all([
           analyticsApi.get().catch(() => null),
-          projectsApi.list().catch(() => []),
+          projectsApi.list(),
           queueApi.list().catch(() => []),
           logsApi.list(100).catch(() => []),
         ]);
@@ -29,7 +34,7 @@ export default function Analytics() {
         setJobs(j || []);
         setLogs(l || []);
       } catch (e) {
-        console.error(e);
+        setLoadError(e);
       } finally {
         setLoading(false);
       }
@@ -37,11 +42,14 @@ export default function Analytics() {
   }, []);
 
   if (loading) return <Layout><Loading /></Layout>;
+  if (loadError) return <Layout><div className="p-6 lg:p-8 max-w-6xl mx-auto"><ErrorState status={loadError?.response?.status ?? 0} onRetry={() => window.location.reload()} /></div></Layout>;
 
   const totalProjects = analytics?.totalProjects ?? projects.length;
-  const completed = analytics?.completed ?? projects.filter(p => p.status === 'completed').length;
+  // Normalize legacy 'success'→'completed' before counting; keep backend UPPER-case mode.
+  const completed = analytics?.completed ?? projects.filter(p => isCompletedStatus(p.status)).length;
   const successRate = totalProjects > 0 ? Math.round((completed / totalProjects) * 100) : 0;
-  const minutesTranslated = analytics?.minutesTranslated ?? 0;
+  // D6: BE không trả minutesTranslated → null (hiển thị '—'), tránh "0p" gây hiểu nhầm.
+  const minutesTranslated = analytics?.minutesTranslated ?? null;
   const totalTokens = logs.reduce((s, l) => s + ((l.tokens_in || 0) + (l.tokens_out || 0)), 0);
 
   // Provider usage: prefer backend analytics.byProvider
@@ -51,7 +59,7 @@ export default function Analytics() {
         logs.reduce((acc, l) => {
           if (!acc[l.provider]) acc[l.provider] = { calls: 0, costUsd: 0, successCalls: 0 };
           acc[l.provider].calls++;
-          if (l.status === 'success' || l.status === 'ok') acc[l.provider].successCalls++;
+          if (isOkLog(l.status)) acc[l.provider].successCalls++;
           acc[l.provider].costUsd += Number(l.cost_usd) || 0;
           return acc;
         }, {})
@@ -102,7 +110,7 @@ export default function Analytics() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           <StatCard icon={Video} label="Tổng dự án" value={totalProjects} color="blue" delay={0} />
           <StatCard icon={Layers} label="Đã hoàn thành" value={completed} color="purple" delay={0.04} />
-          <StatCard icon={Clock} label="Thời lượng dịch" value={`${minutesTranslated}p`} color="orange" delay={0.08} />
+          <StatCard icon={Clock} label="Thời lượng dịch" value={minutesTranslated == null ? '—' : `${minutesTranslated}p`} color="orange" delay={0.08} />
           <StatCard icon={CheckCircle} label="Tỷ lệ thành công" value={`${successRate}%`} color="green" delay={0.12} />
           <StatCard icon={TrendingUp} label="Tokens AI đã dùng" value={totalTokens.toLocaleString()} color="cyan" delay={0.16} />
         </div>
@@ -239,7 +247,8 @@ export default function Analytics() {
                 { label: 'Tổng tác vụ', value: jobs.length, icon: BarChart3, color: 'text-primary bg-primary/10' },
                 {
                   label: 'Thành công',
-                  value: jobs.filter(j => j.status === 'success' || j.status === 'completed').length,
+                  // isCompletedStatus đã cover 'success' qua normalizeStatus — không || thừa.
+                  value: jobs.filter(j => isCompletedStatus(j.status)).length,
                   icon: CheckCircle,
                   color: 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10',
                 },

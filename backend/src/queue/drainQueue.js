@@ -1,5 +1,5 @@
 import { Queue } from 'bullmq'
-import { createRedisConnection, isRedisReady, isConnectionReady, isStreamNotWritableError, attachDedicatedLogging } from './connection.js'
+import { createRedisConnection, isRedisReady, isConnectionReady, isStreamNotWritableError, attachDedicatedLogging, getRedisEndpoint } from './connection.js'
 
 const queueConnection = createRedisConnection()
 attachDedicatedLogging(queueConnection, 'DrainQueue')
@@ -13,7 +13,10 @@ export const drainQueue = new Queue('drain-queued', {
 })
 
 export async function safeAddDrainSweep() {
-  if (!isRedisReady() || !isConnectionReady(queueConnection)) return { skipped: true }
+  if (!isRedisReady() || !isConnectionReady(queueConnection)) {
+    console.warn(`[DrainQueue] Redis unavailable at ${getRedisEndpoint()} — drain sweep scheduling skipped (queued projects wait until Redis ready)`)
+    return { skipped: true, reason: 'REDIS_UNAVAILABLE' }
+  }
   try {
     return await drainQueue.add('sweep', {}, {
       repeat: { every: 5000 },
@@ -21,7 +24,10 @@ export async function safeAddDrainSweep() {
       removeOnFail: { count: 20 },
     })
   } catch (error) {
-    if (isStreamNotWritableError(error)) return { skipped: true }
+    if (isStreamNotWritableError(error)) {
+      console.warn(`[DrainQueue] Skipped sweep (stream not writable) at ${getRedisEndpoint()}: ${error.message}`)
+      return { skipped: true, reason: 'REDIS_UNAVAILABLE' }
+    }
     throw error
   }
 }

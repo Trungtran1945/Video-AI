@@ -126,6 +126,12 @@ export async function initSchema() {
   try { db.run(`ALTER TABLE projects ADD COLUMN lease_expires_at TEXT`) } catch (_) {}
   // Retention sweep backoff gate (cleanupWorker): NULL = due, ISO = next attempt.
   try { db.run(`ALTER TABLE projects ADD COLUMN next_cleanup_attempt_at TEXT`) } catch (_) {}
+  // SCRIPT_TO_VIDEO: upload provenance + review gate + revision for edits.
+  try { db.run(`ALTER TABLE projects ADD COLUMN script_upload_id TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN script_key TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN script_hash TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN script_version INTEGER DEFAULT 0`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN script_review_required INTEGER DEFAULT 0`) } catch (_) {}
   // Canonical status migration: 'success' was a job/output status leak, never a
   // valid project status — normalize legacy rows to 'completed' (no data loss).
   try {
@@ -190,6 +196,14 @@ export async function initSchema() {
     voice_audio_id TEXT,
     subtitle_id TEXT
   )`)
+  // SCRIPT_TO_VIDEO segment fields (additive — SUMMARY rows keep NULL/defaults).
+  try { db.run(`ALTER TABLE script_segments ADD COLUMN visual_prompt TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE script_segments ADD COLUMN image_asset_id TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE script_segments ADD COLUMN duration_sec REAL`) } catch (_) {}
+  try { db.run(`ALTER TABLE script_segments ADD COLUMN status TEXT DEFAULT 'pending'`) } catch (_) {}
+  try { db.run(`ALTER TABLE script_segments ADD COLUMN content_hash TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE script_segments ADD COLUMN tts_clip_key TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE script_segments ADD COLUMN updated_at TEXT`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS timeline_clips (
     id TEXT PRIMARY KEY,
@@ -234,6 +248,7 @@ export async function initSchema() {
     transcript_version INTEGER,
     created_date TEXT DEFAULT (datetime('now'))
   )`)
+  try { db.run(`ALTER TABLE outputs ADD COLUMN script_version INTEGER`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS youtube_uploads (
     id TEXT PRIMARY KEY,
@@ -243,6 +258,85 @@ export async function initSchema() {
     privacy TEXT DEFAULT 'private',
     error_message TEXT
   )`)
+  // YouTube publish outbox (DB-only; không phụ thuộc Redis).
+  for (const col of [
+    `ALTER TABLE youtube_uploads ADD COLUMN project_id TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN account_id TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN title TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN description TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN tags TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN category_id TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN progress INTEGER DEFAULT 0`,
+    `ALTER TABLE youtube_uploads ADD COLUMN youtube_url TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN processing_status TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN error_code TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN attempts INTEGER DEFAULT 0`,
+    `ALTER TABLE youtube_uploads ADD COLUMN next_retry_at TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN lease_expires_at TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN claimed_at TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN upload_session_uri TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN bytes_sent INTEGER DEFAULT 0`,
+    `ALTER TABLE youtube_uploads ADD COLUMN processing_attempts INTEGER DEFAULT 0`,
+    `ALTER TABLE youtube_uploads ADD COLUMN cancelled_at TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN created_date TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN updated_at TEXT`,
+    `ALTER TABLE youtube_uploads ADD COLUMN completed_at TEXT`,
+  ]) {
+    try { db.run(col) } catch (_) {}
+  }
+  try { db.run(`UPDATE youtube_uploads SET created_date = COALESCE(created_date, datetime('now')) WHERE created_date IS NULL`) } catch (_) {}
+  try {
+    db.run(`UPDATE youtube_uploads SET project_id = (SELECT o.project_id FROM outputs o WHERE o.id = youtube_uploads.output_id)
+            WHERE project_id IS NULL`)
+  } catch (_) {}
+
+  // SCRIPT_TO_VIDEO staged script uploads (owner-bound, private storage key).
+  db.run(`CREATE TABLE IF NOT EXISTS script_uploads (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT,
+    filename TEXT NOT NULL,
+    mime TEXT,
+    byte_size INTEGER NOT NULL,
+    char_count INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    storage_key TEXT NOT NULL,
+    status TEXT DEFAULT 'ready',
+    created_date TEXT,
+    consumed_at TEXT
+  )`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_script_uploads_user_status ON script_uploads(user_id, status)`)
+  try {
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_script_uploads_project ON script_uploads(project_id) WHERE project_id IS NOT NULL`)
+  } catch (_) {}
+
+  // YouTube OAuth accounts (1 channel/user) + single-use PKCE state store.
+  db.run(`CREATE TABLE IF NOT EXISTS youtube_accounts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    channel_id TEXT,
+    channel_title TEXT,
+    access_token_enc TEXT,
+    refresh_token_enc TEXT,
+    token_expires_at TEXT,
+    scopes TEXT,
+    status TEXT DEFAULT 'connected',
+    connected_at TEXT,
+    updated_at TEXT
+  )`)
+  try { db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_accounts_user ON youtube_accounts(user_id)`) } catch (_) {}
+
+  db.run(`CREATE TABLE IF NOT EXISTS youtube_oauth_states (
+    id TEXT PRIMARY KEY,
+    state_hash TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    code_verifier_enc TEXT NOT NULL,
+    redirect_to TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_date TEXT
+  )`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_youtube_oauth_states_expiry ON youtube_oauth_states(expires_at)`)
 
   db.run(`CREATE TABLE IF NOT EXISTS api_keys (
     id TEXT PRIMARY KEY,
@@ -474,6 +568,22 @@ export async function initSchema() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_projects_status_heartbeat ON projects(status, last_heartbeat_at)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_projects_expires_at ON projects(expires_at)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_projects_video_hash ON projects(video_hash)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_script_segments_project_order ON script_segments(project_id, index_num)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_outputs_script_version ON outputs(project_id, script_version)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_youtube_uploads_due ON youtube_uploads(status, next_retry_at)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_youtube_uploads_project ON youtube_uploads(project_id, created_date)`)
+  try {
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_youtube_uploads_output ON youtube_uploads(output_id)`)
+  } catch (err) {
+    console.warn('[DB] unique idx_youtube_uploads_output skipped (legacy duplicates):', err?.message || err)
+    try { db.run(`CREATE INDEX IF NOT EXISTS idx_youtube_uploads_output ON youtube_uploads(output_id)`) } catch (_) {}
+  }
+  try { db.run(`UPDATE projects SET script_version = 0 WHERE script_version IS NULL`) } catch (_) {}
+  try { db.run(`UPDATE projects SET script_review_required = 0 WHERE script_review_required IS NULL`) } catch (_) {}
+  // 'flux' was never a real provider in the registry — migrate the stale default.
+  try {
+    db.run(`UPDATE settings SET active_image_provider = 'slide' WHERE active_image_provider IS NULL OR active_image_provider = '' OR active_image_provider = 'flux'`)
+  } catch (_) {}
 
   // Group 5: Seed default provider rate limits (docs/11 §2.1)
   // Safety margin: ~20% below published limits

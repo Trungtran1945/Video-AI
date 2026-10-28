@@ -14,6 +14,7 @@ const expectedDubStages = [
   'dub.stt',
   'dub.merge',
   'dub.translate',
+  'dub.mask',
   'dub.ttsAlign',
   'dub.render',
 ]
@@ -24,6 +25,10 @@ assert(
   JSON.stringify(defaultDub) === JSON.stringify(expectedDubStages),
   `TRANSLATE_DUB with empty params produces STT-only pipeline (${defaultDub.join(' -> ')})`
 )
+// dub.mask chạy sau dub.translate (gate dịch xong), trước dub.ttsAlign/dub.render
+// để phụ đề dịch burn sau luôn visible trên lớp che.
+assert(defaultDub.indexOf('dub.mask') === defaultDub.indexOf('dub.translate') + 1, 'dub.mask ngay sau dub.translate')
+assert(defaultDub.indexOf('dub.mask') < defaultDub.indexOf('dub.render'), 'dub.mask trước dub.render')
 
 const ocrParamProject = stagesForProject({
   mode: 'TRANSLATE_DUB',

@@ -201,7 +201,7 @@ export default function Landing() {
                 <div className="text-3xl font-extrabold text-foreground tracking-tight font-mono">100%</div>
                 <div className="font-bold text-foreground text-sm mt-1">Bảo Mật Tuyệt Đối</div>
                 <p className="text-xs sm:text-sm text-muted-foreground dark:text-slate-300 mt-1 leading-relaxed">
-                  Bảo mật dữ liệu &amp; an toàn API Key với mã hóa AES-256 đầu cuối.
+                  Bảo mật dữ liệu &amp; an toàn API Key được mã hóa khi lưu trữ.
                 </p>
                 <div className="mt-4 inline-flex items-center gap-1.5 text-[11px] font-mono text-muted-foreground dark:text-slate-400">
                   <Lock className="w-3 h-3 text-emerald-500" />
@@ -261,7 +261,7 @@ export default function Landing() {
                 <div className="text-3xl font-extrabold text-foreground tracking-tight font-mono">Tự Động</div>
                 <div className="font-bold text-foreground text-sm mt-1">Phục Hồi Thông Minh</div>
                 <p className="text-xs sm:text-sm text-muted-foreground dark:text-slate-300 mt-1 leading-relaxed">
-                  Hàng đợi xử lý thông minh, tự động lưu checkpoint và retry khi ngắt mạng.
+                  Hàng đợi xử lý thông minh, tải lên tự tiếp tục khi rớt mạng (resume theo phiên).
                 </p>
                 <div className="mt-4 inline-flex items-center gap-1.5 text-[11px] font-mono text-muted-foreground dark:text-slate-400">
                   <Zap className="w-3 h-3 text-amber-500" />
@@ -328,7 +328,7 @@ export default function Landing() {
                 </span>
                 <span className="flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 text-primary" />
-                  Xuất video Full HD sắc nét
+                  Xuất video chất lượng cao
                 </span>
               </div>
             </div>

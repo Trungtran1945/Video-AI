@@ -99,12 +99,15 @@ export default function Playhead({ height, onSeek }) {
             </div>
           )}
 
-          {/* CapCut Style Inverted Pentagon / Marker Handle */}
-          <div className="w-3.5 h-4 bg-red-500 hover:bg-red-400 active:bg-red-600 rounded-t-sm shadow-md flex items-center justify-center transition-colors">
-            <div className="w-1 h-2 bg-white/70 rounded-full" />
+          {/* CapCut Style Inverted Pentagon / Marker Handle — R2: hit-area
+              24×32px trên mobile, visual giữ nguyên */}
+          <div className="w-6 h-8 sm:w-auto sm:h-auto bg-transparent flex flex-col items-center justify-start">
+            <div className="w-3.5 h-4 bg-red-500 hover:bg-red-400 active:bg-red-600 rounded-t-sm shadow-md flex items-center justify-center transition-colors">
+              <div className="w-1 h-2 bg-white/70 rounded-full" />
+            </div>
+            {/* Pointed bottom arrow */}
+            <div className="w-0 h-0 border-x-[7px] border-x-transparent border-t-[6px] border-t-red-500" />
           </div>
-          {/* Pointed bottom arrow */}
-          <div className="w-0 h-0 border-x-[7px] border-x-transparent border-t-[6px] border-t-red-500" />
         </div>
       </div>
     </>

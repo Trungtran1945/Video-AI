@@ -1,6 +1,15 @@
 import { motion } from 'framer-motion';
 
-export default function StatCard({ icon: Icon, label, value, sublabel, delay = 0 }) {
+const COLOR_STYLES = {
+  blue: 'bg-primary/10 text-primary',
+  purple: 'bg-purple-500/10 text-purple-600 dark:text-purple-300',
+  orange: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
+  green: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300',
+  cyan: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-300',
+};
+
+export default function StatCard({ icon: Icon, label, value, sublabel, delay = 0, color }) {
+  const iconTone = (color && COLOR_STYLES[color]) || 'bg-muted text-muted-foreground';
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
@@ -11,7 +20,7 @@ export default function StatCard({ icon: Icon, label, value, sublabel, delay = 0
       <div className="flex items-center justify-between gap-3 mb-3">
         <span className="text-xs sm:text-sm font-medium text-muted-foreground">{label}</span>
         {Icon && (
-          <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center text-muted-foreground shrink-0">
+          <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${iconTone}`}>
             <Icon className="w-4 h-4" />
           </div>
         )}

@@ -8,7 +8,7 @@ export default function TimelineDemo() {
   const {
     currentTime,
     clips,
-    setClips,
+    initTimeline,
     selectedClipId,
     updateClip,
     tracks,
@@ -16,9 +16,9 @@ export default function TimelineDemo() {
 
   useEffect(() => {
     if (clips.length === 0) {
-      setClips(MOCK_DEMO_CLIPS);
+      initTimeline({ clips: MOCK_DEMO_CLIPS, currentTime: 0 });
     }
-  }, [clips.length, setClips]);
+  }, [clips.length, initTimeline]);
 
   const selectedClip = clips.find((c) => c.id === selectedClipId);
 
@@ -73,8 +73,12 @@ export default function TimelineDemo() {
         </div>
       </header>
 
+      {/* Demo mock — dữ liệu MOCK_DEMO_CLIPS local, không gọi API, không persist. */}
       {/* Main Studio Work Area */}
       <main className="flex-1 p-4 sm:p-6 max-w-7xl w-full mx-auto flex flex-col gap-5">
+        <p className="text-[11px] text-zinc-500 border border-white/10 bg-white/5 rounded-lg px-3 py-2">
+          Bản demo giao diện timeline (dữ liệu mẫu local, không lưu server). Timeline trong chi tiết dự án ở chế độ xem thử — sửa timing ở TranscriptEditor → Lưu.
+        </p>
         {/* Top Preview Canvas & Inspector Panel */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           {/* Video Preview Canvas */}
@@ -172,14 +176,14 @@ export default function TimelineDemo() {
                       <label className="text-[11px] text-zinc-400 block mb-1">Speed</label>
                       <div className="bg-[#181820] border border-white/10 rounded-lg px-2 py-1.5 text-xs font-mono text-zinc-300 flex justify-between items-center">
                         <span>{selectedClip.speed || 1}x</span>
-                        <span className="text-[10px] text-zinc-500">Toolbar</span>
+                        <span className="text-[10px] text-zinc-500" title="Chỉnh ở thanh công cụ timeline">Xem thử</span>
                       </div>
                     </div>
                     <div>
                       <label className="text-[11px] text-zinc-400 block mb-1">Volume</label>
                       <div className="bg-[#181820] border border-white/10 rounded-lg px-2 py-1.5 text-xs font-mono text-zinc-300 flex justify-between items-center">
                         <span>{selectedClip.volume ?? 100}%</span>
-                        <span className="text-[10px] text-zinc-500">Toolbar</span>
+                        <span className="text-[10px] text-zinc-500" title="Chỉnh ở thanh công cụ timeline">Xem thử</span>
                       </div>
                     </div>
                   </div>
@@ -199,7 +203,7 @@ export default function TimelineDemo() {
 
         {/* The CapCut Video Editing Timeline Component */}
         <div className="w-full shadow-2xl">
-          <VideoTimeline />
+          <VideoTimeline duration={120} />
         </div>
       </main>
     </div>

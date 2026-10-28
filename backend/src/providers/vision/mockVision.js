@@ -25,6 +25,30 @@ export class MockVision {
   async analyze(image) {
     return { description: 'Mock image analysis: placeholder description' }
   }
+
+  /**
+   * Detect hardsub subtitle region (dub.mask test double).
+   * Returns one fixed bottom-frame box so CI covers union→insert→render
+   * without a real vision key. Ignores imagePath (no I/O).
+   * @param {{imagePath?: string, width?: number, height?: number}} opts
+   * @returns {Promise<{boxes: object[], model: string}>}
+   */
+  async detectSubtitle({ imagePath, width = 1280, height = 720 } = {}) {
+    void imagePath
+    const W = Number(width) || 1280
+    const H = Number(height) || 720
+    return {
+      boxes: [{
+        x: Math.round(W * 0.1),
+        y: Math.round(H * 0.72),
+        width: Math.round(W * 0.8),
+        height: Math.round(H * 0.16),
+        text: 'mock hardsub',
+        confidence: 0.9,
+      }],
+      model: 'mock',
+    }
+  }
 }
 
 export default MockVision

@@ -96,6 +96,11 @@ export function friendlyJobError(raw) {
     return 'Máy chủ TTS đang bận, thử lại sau'
   }
 
+  // 6b. ZeroTTS path jail (defense in depth — backend binary transport không gửi out_path)
+  if (/FORBIDDEN_PATH|out_path outside OUTPUT_ROOT/i.test(msg)) {
+    return 'ZeroTTS không ghi được tệp âm thanh (OUTPUT_ROOT). Cập nhật backend rồi khởi động lại `npm run dev`; nếu vẫn lỗi, kiểm tra quyền ghi thư mục storage.'
+  }
+
   // 7. Request body / text length limits (413 BODY_TOO_LARGE / TEXT_TOO_LONG)
   if (/413|BODY_TOO_LARGE|TEXT_TOO_LONG|body too large|text too long/i.test(msg)) {
     return 'Văn bản quá dài'

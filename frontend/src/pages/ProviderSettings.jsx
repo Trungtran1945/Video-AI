@@ -5,6 +5,8 @@ import PageHeader from '@/components/PageHeader';
 import Loading from '@/components/Loading';
 import { motion } from 'framer-motion';
 import { Cpu, Check, Loader2, KeyRound } from 'lucide-react';
+import ErrorState from '@/components/ErrorState';
+import { useToast } from '@/components/ui/use-toast';
 import { LLM_PROVIDERS, IMAGE_PROVIDERS, VIDEO_PROVIDERS, VOICE_PROVIDERS, SUBTITLE_PROVIDERS } from '@/lib/constants';
 
 const categories = [
@@ -28,23 +30,22 @@ const KEYLESS_PROVIDERS = new Set(['zerotts', 'edge_tts']);
 
 export default function ProviderSettings() {
   const [settings, setSettings] = useState(null);
+  const [loadError, setLoadError] = useState(null);
   const [providersData, setProvidersData] = useState(null);
-  const [zerottsHealth, setZerottsHealth] = useState(null);
   const [saving, setSaving] = useState(false);
+  const { toast } = useToast();
 
   useEffect(() => {
     (async () => {
       try {
-        const [s, p, zh] = await Promise.all([
+        const [s, p] = await Promise.all([
           settingsApi.get(),
           providersApi.list().catch(() => null),
-          providersApi.zerottsHealth().catch(() => null),
         ]);
         setSettings(s);
         setProvidersData(p);
-        if (zh) setZerottsHealth(zh);
       } catch (e) {
-        console.error(e);
+        setLoadError(e);
       }
     })();
   }, []);
@@ -55,12 +56,18 @@ export default function ProviderSettings() {
       const updated = await settingsApi.update({ [key]: provider });
       setSettings(updated);
     } catch (e) {
-      console.error(e);
+      // U2: báo lỗi ra UI thay vì im lặng trong console.
+      toast({
+        variant: 'destructive',
+        title: 'Không đổi được provider',
+        description: e?.response?.data?.message || e.message,
+      });
     } finally {
       setSaving(false);
     }
   };
 
+  if (loadError) return <Layout><div className="p-6 lg:p-8 max-w-4xl mx-auto"><ErrorState status={loadError?.response?.status ?? 0} onRetry={() => window.location.reload()} /></div></Layout>;
   if (!settings) return <Layout><Loading /></Layout>;
 
   return (
@@ -140,15 +147,6 @@ export default function ProviderSettings() {
                           </>
                         )}
                       </div>
-
-                      {p === 'zerotts' && zerottsHealth && (
-                        <div className="w-full mt-2 pt-1.5 border-t border-border/40 text-[10px] text-muted-foreground flex items-center justify-between font-mono">
-                          <span className="truncate">{zerottsHealth.model || 'ZeroTTS'}</span>
-                          {zerottsHealth.queueDepth != null && (
-                            <span className="shrink-0">Hàng đợi: {zerottsHealth.queueDepth}</span>
-                          )}
-                        </div>
-                      )}
                     </button>
                   );
                 })}

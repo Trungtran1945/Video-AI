@@ -186,10 +186,33 @@ router.get('/me', authMiddleware, async (req, res) => {
 // POST /api/v1/auth/forgot-password  (no real email in dev; raw token may be
 // echoed only when AUTH_DEV_RESET_TOKEN_IN_RESPONSE=true — never logged, never
 // stored: the DB keeps only sha256(token))
+// Rate-limit (single-process in-memory, matches eventBus design): >5 req/IP/10min
+// hoặc >3 req/email/1h → 429 RATE_LIMITED + retryAfterSec, không insert row mới.
+const forgotHitsByIp = new Map()
+const forgotHitsByEmail = new Map()
+function hitRateLimit(store, key, limit, windowMs, now = Date.now()) {
+  const hits = (store.get(key) || []).filter((t) => now - t < windowMs)
+  hits.push(now)
+  store.set(key, hits)
+  if (hits.length > limit) {
+    const oldest = hits[hits.length - 1 - limit]
+    return Math.max(1, Math.ceil(((oldest + windowMs) - now) / 1000))
+  }
+  return 0
+}
+export function __resetForgotRateLimitForTests() {
+  forgotHitsByIp.clear()
+  forgotHitsByEmail.clear()
+}
 router.post('/forgot-password', async (req, res) => {
   try {
     const { email } = req.body
     if (!email) return sendError(res, 400, ERR.VALIDATION, 'Email is required', { field: 'email' })
+    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown'
+    const ipWait = hitRateLimit(forgotHitsByIp, String(ip), 5, 10 * 60 * 1000)
+    if (ipWait) return sendError(res, 429, 'RATE_LIMITED', 'Quá nhiều yêu cầu đặt lại mật khẩu, thử lại sau.', { retryAfterSec: ipWait })
+    const emailWait = hitRateLimit(forgotHitsByEmail, String(email).toLowerCase(), 3, 60 * 60 * 1000)
+    if (emailWait) return sendError(res, 429, 'RATE_LIMITED', 'Quá nhiều yêu cầu đặt lại mật khẩu, thử lại sau.', { retryAfterSec: emailWait })
     const user = await queryOne(`SELECT id FROM users WHERE email = ?`, [email])
     const out = { message: 'Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.' }
     if (user) {

@@ -42,26 +42,39 @@ async function assertOutputProvenance(tx, projectId, version) {
   }
 }
 
-export function outputIsStale(mode, currentTranscriptVersion, output) {
-  if (!output || String(mode).toUpperCase() !== 'TRANSLATE_DUB') return false
-  const outputVersion = normalizeVersion(output.transcript_version)
-  return outputVersion === null || outputVersion !== Number(currentTranscriptVersion ?? 0)
+export function outputIsStale(mode, currentVersion, output) {
+  if (!output) return false
+  const normalized = String(mode).toUpperCase().replace('-', '_')
+  if (normalized === 'TRANSLATE_DUB') {
+    const outputVersion = normalizeVersion(output.transcript_version)
+    return outputVersion === null || outputVersion !== Number(currentVersion ?? 0)
+  }
+  if (normalized === 'SCRIPT_TO_VIDEO') {
+    const outputVersion = normalizeVersion(output.script_version)
+    return outputVersion === null || outputVersion !== Number(currentVersion ?? 0)
+  }
+  return false
 }
 
 async function insertOutput(tx, input) {
   const projectId = input.projectId
   const version = input.transcriptVersion === undefined ? null : normalizeVersion(input.transcriptVersion)
-  const project = await tx.queryOne('SELECT mode, transcript_version FROM projects WHERE id = ?', [projectId])
+  const scriptVersion = input.scriptVersion === undefined ? null : normalizeVersion(input.scriptVersion)
+  const project = await tx.queryOne('SELECT mode, transcript_version, script_version FROM projects WHERE id = ?', [projectId])
   if (!project) throw new Error('Project not found')
   if (input.runToken) {
     const run = await tx.queryOne('SELECT status, run_token FROM projects WHERE id = ?', [projectId])
     if (!run || run.status !== 'running' || run.run_token !== input.runToken) throw new OutputRunConflict()
   }
-  if (String(project.mode).toUpperCase() === 'TRANSLATE_DUB' && (input.transcriptVersion === undefined || version === null)) {
+  const mode = String(project.mode).toUpperCase().replace('-', '_')
+  if (mode === 'TRANSLATE_DUB' && (input.transcriptVersion === undefined || version === null)) {
     throw new Error('Dub output requires a valid transcript version snapshot')
   }
-  if (String(project.mode).toUpperCase() === 'TRANSLATE_DUB' && version !== null) {
+  if (mode === 'TRANSLATE_DUB' && version !== null) {
     await assertOutputProvenance(tx, projectId, version)
+  }
+  if (mode === 'SCRIPT_TO_VIDEO' && (input.scriptVersion === undefined || scriptVersion === null)) {
+    throw new Error('Script output requires a valid script version snapshot')
   }
   return tx.insert('outputs', {
     id: input.id,
@@ -71,6 +84,7 @@ async function insertOutput(tx, input) {
     duration_sec: input.durationSec ?? null,
     thumbnail_key: input.thumbnailKey ?? null,
     transcript_version: version,
+    script_version: scriptVersion,
   })
 }
 
@@ -83,10 +97,12 @@ export async function getOutputState(projectId) {
   const row = await queryOne(
     `SELECT p.id AS project_id, p.mode AS project_mode,
             p.transcript_version AS project_transcript_version,
+            p.script_version AS project_script_version,
             o.id AS output_id, o.project_id AS output_project_id,
             o.storage_key AS output_storage_key, o.status AS output_status,
             o.duration_sec AS output_duration_sec, o.thumbnail_key AS output_thumbnail_key,
             o.transcript_version AS output_transcript_version,
+            o.script_version AS output_script_version,
             o.created_date AS output_created_date
      FROM projects p
      LEFT JOIN outputs o ON o.rowid = (
@@ -102,6 +118,7 @@ export async function getOutputState(projectId) {
     id: row.project_id,
     mode: row.project_mode,
     transcript_version: row.project_transcript_version,
+    script_version: row.project_script_version,
   }
   const output = row.output_id ? {
     id: row.output_id,
@@ -111,13 +128,19 @@ export async function getOutputState(projectId) {
     duration_sec: row.output_duration_sec,
     thumbnail_key: row.output_thumbnail_key,
     transcript_version: row.output_transcript_version,
+    script_version: row.output_script_version,
     created_date: row.output_created_date,
   } : null
+  const mode = String(project.mode || '').toUpperCase().replace('-', '_')
+  const currentVersion = mode === 'SCRIPT_TO_VIDEO'
+    ? project.script_version
+    : project.transcript_version
   return {
     project,
     output,
     transcriptVersion: Number(project.transcript_version ?? 0),
-    outputStale: outputIsStale(project.mode, project.transcript_version, output),
+    scriptVersion: Number(project.script_version ?? 0),
+    outputStale: outputIsStale(project.mode, currentVersion, output),
   }
 }
 

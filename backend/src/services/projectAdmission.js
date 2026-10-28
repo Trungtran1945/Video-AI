@@ -1,8 +1,11 @@
 import { v4 as uuidv4 } from 'uuid'
 import { config } from '../config.js'
 import { withTransaction, queryOne, updateById, insert, run } from '../db/query.js'
+import { PROJECT_ACTIVE_STATUSES, PROJECT_STATUS } from '../lib/projectStatus.js'
 
-const ACTIVE_STATUSES = ['pending', 'running']
+// Active execution slots (pending + running); queued is waiting, not consuming capacity
+const EXECUTION_STATUSES = PROJECT_ACTIVE_STATUSES.filter((s) => s !== PROJECT_STATUS.QUEUED)
+const EXECUTION_IN_LIST = EXECUTION_STATUSES.map((s) => `'${s}'`).join(', ')
 const DEFAULT_LEASE_SECONDS = 1800
 
 function limitFrom(options) {
@@ -35,6 +38,11 @@ function projectValues(data, status, runToken) {
     copyright_ack_at: now,
     expires_at: expiresAt.toISOString(),
     video_hash: data.videoHash || data.video_hash || null,
+    script_upload_id: data.scriptUploadId || data.script_upload_id || null,
+    script_key: data.scriptKey || data.script_key || null,
+    script_hash: data.scriptHash || data.script_hash || null,
+    script_version: Number.isInteger(Number(data.scriptVersion ?? data.script_version)) ? Number(data.scriptVersion ?? data.script_version) : 0,
+    script_review_required: data.scriptReviewRequired ? 1 : 0,
     run_token: runToken,
     lease_expires_at: runToken ? leaseExpiry() : null,
     started_at: null,
@@ -103,7 +111,7 @@ export async function createProjectWithAdmission(data, options = {}) {
       }
     }
     const active = await tx.queryOne(
-      `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN ('pending', 'running')`,
+      `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN (${EXECUTION_IN_LIST})`,
       [data.userId || data.user_id]
     )
     const runToken = Number(active?.count || 0) < maxConcurrent ? uuidv4() : null
@@ -118,8 +126,9 @@ export async function claimQueuedProject(projectId, options = {}) {
   return withTransaction(async (tx) => {
     const project = await tx.queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
     if (!project || project.status !== 'queued') return { claimed: false, reason: 'not-queued' }
+    if (Number(project.script_review_required || 0) === 1) return { claimed: false, reason: 'review-required' }
     const active = await tx.queryOne(
-      `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN ('pending', 'running')`,
+      `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN (${EXECUTION_IN_LIST})`,
       [project.user_id]
     )
     if (Number(active?.count || 0) >= maxConcurrent) return { claimed: false, reason: 'concurrency' }
@@ -128,7 +137,7 @@ export async function claimQueuedProject(projectId, options = {}) {
     const changed = await tx.runAffected(
       `UPDATE projects SET status = 'pending', run_token = ?, lease_expires_at = ?,
        started_at = NULL, last_heartbeat_at = ?, recovery_reason = NULL
-       WHERE id = ? AND status = 'queued'`,
+       WHERE id = ? AND status = 'queued' AND COALESCE(script_review_required, 0) = 0`,
       [token, leaseExpiry(), now, projectId]
     )
     if (changed !== 1) return { claimed: false, reason: 'race-lost' }
@@ -179,7 +188,7 @@ export async function acquireProjectRun(projectId, options = {}) {
     }
 
     const active = await tx.queryOne(
-      `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN ('pending', 'running')`,
+      `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN (${EXECUTION_IN_LIST})`,
       [project.user_id]
     )
     if (Number(active?.count || 0) >= maxConcurrent) {
@@ -215,7 +224,7 @@ export async function markProjectRunning(projectId, runToken) {
 }
 
 export async function updateProjectOwned(projectId, runToken, fields) {
-  const allowed = new Set(['status', 'progress', 'last_heartbeat_at', 'lease_expires_at', 'recovery_reason', 'run_token', 'target_duration_sec'])
+  const allowed = new Set(['status', 'progress', 'last_heartbeat_at', 'lease_expires_at', 'recovery_reason', 'run_token', 'target_duration_sec', 'script_version', 'script_review_required', 'script_key', 'script_hash'])
   const entries = Object.entries(fields || {}).filter(([key]) => allowed.has(key))
   if (!entries.length) return false
   const assignments = entries.map(([key]) => `${key} = ?`).join(', ')
@@ -298,7 +307,7 @@ export async function pruneExpiredIdempotency({ limit = 1000 } = {}) {
   return { pruned: true }
 }
 
-export const PROJECT_ACTIVE_STATUSES = ACTIVE_STATUSES
+export { PROJECT_ACTIVE_STATUSES }
 
 export default {
   createProjectWithAdmission,

@@ -24,7 +24,7 @@ export async function recoverStaleProjects({
   const candidates = await query(
     `SELECT id, title, user_id, created_date, started_at, last_heartbeat_at, lease_expires_at,
             run_token, status
-     FROM projects WHERE status = 'running' OR status = 'pending'`
+     FROM projects WHERE status IN ('pending', 'queued', 'running')`
   )
   let recovered = 0
   let skippedActive = 0

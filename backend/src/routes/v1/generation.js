@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { query, queryOne } from '../../db/query.js'
+import { query, queryOne, run } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { runPipeline, flatStages, isPipelineRunning, stagesForProject } from '../../pipeline/runner.js'
@@ -9,6 +9,10 @@ import { sendError, ERR } from '../../lib/httpError.js'
 
 const router = Router()
 router.use(authMiddleware)
+
+function isScriptProject(project) {
+  return String(project?.mode || '').toUpperCase().replace('-', '_') === 'SCRIPT_TO_VIDEO'
+}
 
 // POST /api/v1/projects/:id/summary/start
 router.post('/:id/summary/start', requireProjectOwner, async (req, res) => {
@@ -70,6 +74,52 @@ router.post('/:id/translate-dub/redub', requireProjectOwner, async (req, res) =>
   res.json({ message: 'Re-dub started', status: admission.project.status, fromStage: 'dub.ttsAlign' })
 })
 
+// POST /api/v1/projects/:id/script/generate — clear the review gate and resume
+// from the earliest incomplete script stage (normally script.tts after review).
+router.post('/:id/script/generate', requireProjectOwner, async (req, res) => {
+  if (!isScriptProject(req.project)) {
+    return sendError(res, 400, ERR.VALIDATION, 'Not a SCRIPT_TO_VIDEO project', { field: 'mode' })
+  }
+  if (isPipelineRunning(req.project.id)) {
+    return sendError(res, 409, 'PIPELINE_RUNNING', 'Pipeline đang chạy, hãy đợi hoàn tất rồi mới chạy lại')
+  }
+  const segments = await queryOne('SELECT COUNT(*) AS c FROM script_segments WHERE project_id = ?', [req.project.id])
+  const analyzeJob = await queryOne(
+    `SELECT status FROM generation_jobs WHERE project_id = ? AND type = 'script.analyze'`,
+    [req.project.id]
+  )
+  if (!analyzeJob || analyzeJob.status !== 'success' || !Number(segments?.c || 0)) {
+    return sendError(res, 409, 'SCRIPT_NOT_ANALYZED', 'Kịch bản chưa được phân tích xong — hãy retry stage script.analyze trước')
+  }
+  const jobs = await query('SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?', [req.project.id])
+  const r = firstRunnableStage(stagesForProject(req.project), jobs)
+  if (r.waiting) {
+    return sendError(res, 429, 'RETRY_WAITING', `Stage ${r.type} đang chờ quota hồi phục, thử lại sau ${new Date(r.nextRetryAt).toLocaleTimeString('vi-VN')}`, {
+      stage: r.type,
+      nextRetryAt: r.nextRetryAt,
+    })
+  }
+  if (!r.type) {
+    return sendError(res, 409, 'ALREADY_COMPLETED', 'Không còn stage nào cần chạy — video đã hoàn tất')
+  }
+  const fromStage = r.type
+  const admission = await acquireProjectRun(req.project.id, { allowReserved: true, reclaimExpiredRunning: true })
+  if (!admission.admitted) {
+    const status = admission.reason === 'concurrency' ? 429 : 409
+    return sendError(res, status, status === 429 ? ERR.CONCURRENCY_LIMIT : 'PIPELINE_BUSY', admission.reason || 'Project is not available')
+  }
+  await run('UPDATE projects SET script_review_required = 0 WHERE id = ?', [req.project.id])
+  runPipeline(req.project.id, fromStage, admission.runToken, {
+    parkAfterAnalysis: ['script.ingest', 'script.analyze'].includes(fromStage),
+  }).catch(() => {})
+  res.status(202).json({
+    message: 'Script video generation started',
+    status: admission.project.status,
+    fromStage,
+    reviewRequired: false,
+  })
+})
+
 // GET /api/v1/projects/:id/jobs
 router.get('/:id/jobs', requireProjectOwner, async (req, res) => {
   const jobs = await query(
@@ -117,8 +167,11 @@ router.post('/:id/jobs/:type/retry', requireProjectOwner, async (req, res) => {
     const status = admission.reason === 'concurrency' ? 429 : 409
     return sendError(res, status, status === 429 ? ERR.CONCURRENCY_LIMIT : 'PIPELINE_BUSY', admission.reason || 'Project is not available')
   }
+  const scriptProject = isScriptProject(req.project)
+  if (scriptProject) await run('UPDATE projects SET script_review_required = 0 WHERE id = ?', [req.project.id])
   runPipeline(req.project.id, fromStage, admission.runToken, {
     forceTranscript: ['dub.ingest', 'dub.stt'].includes(fromStage),
+    parkAfterAnalysis: scriptProject && ['script.ingest', 'script.analyze'].includes(fromStage),
   }).catch(() => {})
   res.json({ message: 'Retrying', status: admission.project.status, fromStage })
 })

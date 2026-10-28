@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { outputsApi } from '@/api/outputs';
+import { youtubeApi } from '@/api/extra';
 import { projectsApi } from '@/api/projects';
 import Layout from '@/components/Layout';
 import PageHeader from '@/components/PageHeader';
@@ -8,7 +9,7 @@ import EmptyState from '@/components/EmptyState';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Film, Play, Youtube, Search, ArrowRight, AlertTriangle, Loader2 } from 'lucide-react';
-import { formatDate, MODE_LABELS } from '@/lib/constants';
+import { formatDate, MODE_LABELS, isCompletedStatus } from '@/lib/constants';
 import { useToast } from '@/components/ui/use-toast';
 
 export default function Outputs() {
@@ -16,6 +17,9 @@ export default function Outputs() {
   const [outputs, setOutputs] = useState([]);
   const [search, setSearch] = useState('');
   const [uploadingYoutubeId, setUploadingYoutubeId] = useState(null);
+  const [youtubeStatusById, setYoutubeStatusById] = useState({});
+  const [publishTarget, setPublishTarget] = useState(null);
+  const [publishing, setPublishing] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -25,12 +29,14 @@ export default function Outputs() {
         if (Array.isArray(outData) && outData.length > 0) {
           setOutputs(outData);
         } else {
-          // Fallback to completed projects if outputs table is empty
+          // Fallback to completed projects if outputs table is empty.
+          // :id của POST .../youtube PHẢI là outputs.id — row thiếu output.id
+          // (chỉ có project-id) bị loại để tránh 404 OUTPUT_NOT_FOUND khó hiểu.
           const pData = await projectsApi.list().catch(() => []);
           const completed = (pData || [])
-            .filter((p) => p.status === 'completed' && p.output?.storage_key)
+            .filter((p) => isCompletedStatus(p.status) && p.output?.storage_key && p.output?.id)
             .map((p) => ({
-              id: p.output?.id || p.id,
+              id: p.output.id,
               project_id: p.id,
               project_title: p.title,
               title: p.title,
@@ -52,15 +58,68 @@ export default function Outputs() {
   }, []);
 
   const handleUploadYoutube = async (output) => {
-    if (uploadingYoutubeId) return;
-    setUploadingYoutubeId(output.id);
+    setPublishTarget(output);
+  };
+
+  const handleExecutePublish = async ({ title, description, tags, privacy, confirmed }) => {
+    if (!publishTarget || publishing) return;
+    setPublishing(true);
+    const outputId = publishTarget.id;
+    try {
+      await youtubeApi.publishOutput(outputId, {
+        title,
+        description,
+        tags,
+        categoryId: '22',
+        privacy,
+        confirmed: true,
+      });
+      toast({ title: 'Đã gửi yêu cầu xuất bản', description: 'Video đã được xếp hàng tải lên YouTube.' });
+      setPublishTarget(null);
+      // Poll publish status
+      const deadline = Date.now() + 120000;
+      const poll = async () => {
+        try {
+          const st = await youtubeApi.getPublishStatus(outputId);
+          setYoutubeStatusById((prev) => ({ ...prev, [outputId]: st?.status || 'unknown' }));
+          const done = ['completed', 'failed', 'cancelled'].includes(st?.status);
+          if (!done && Date.now() < deadline) setTimeout(poll, 3000);
+        } catch {}
+      };
+      poll();
+    } catch (err) {
+      toast({ variant: 'destructive', title: 'Lỗi xuất bản YouTube', description: err?.response?.data?.message || err.message });
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const legacyUpload = async (output) => {
     try {
       const res = await outputsApi.youtube(output.id, 'private');
       toast({
         title: 'Đã xếp hàng tải lên YouTube',
         description: res?.message || 'Yêu cầu tải lên đang được xử lý ở chế độ Riêng tư (Private).',
       });
+      // Poll youtubeStatus 3s/timeout 60s — không để pending vô hạn.
+      // 'none' (chưa có row youtube_uploads) KHÔNG phải terminal — loại khỏi done.
+      const deadline = Date.now() + 60000;
+      const poll = async () => {
+        try {
+          const st = await outputsApi.youtubeStatus(output.id);
+          setYoutubeStatusById((prev) => ({ ...prev, [output.id]: st?.status || 'unknown' }));
+          const done = ['done', 'failed'].includes(st?.status);
+          if (!done && Date.now() < deadline) setTimeout(poll, 3000);
+        } catch {
+          setYoutubeStatusById((prev) => ({ ...prev, [output.id]: 'unknown' }));
+        }
+      };
+      poll();
     } catch (err) {
+      const code = err?.response?.data?.code || err?.response?.data?.error?.code;
+      if (err?.response?.status === 501 || code === 'YOUTUBE_NOT_IMPLEMENTED') {
+        setYoutubeStatusById((prev) => ({ ...prev, [output.id]: 'not_implemented' }));
+      }
       toast({
         variant: 'destructive',
         title: 'Lỗi tải lên YouTube',
@@ -113,6 +172,7 @@ export default function Outputs() {
               const title = o.project_title || o.title;
               const isUploading = uploadingYoutubeId === o.id;
               const isStale = Boolean(o.outputStale);
+              const ytNotImplemented = youtubeStatusById[o.id] === 'not_implemented';
 
               return (
                 <motion.div
@@ -174,8 +234,9 @@ export default function Outputs() {
                     </Link>
                     <button
                       type="button"
-                      disabled={isUploading}
+                      disabled={isUploading || ytNotImplemented}
                       onClick={() => handleUploadYoutube(o)}
+                      title={ytNotImplemented ? 'Tải lên YouTube tự động chưa triển khai — tải file rồi upload thủ công' : youtubeStatusById[o.id] ? `Trạng thái YouTube: ${youtubeStatusById[o.id]}` : 'Tải lên YouTube (riêng tư)'}
                       className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-red-500 transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded px-1.5 py-0.5 disabled:opacity-50"
                     >
                       {isUploading ? (
@@ -183,12 +244,108 @@ export default function Outputs() {
                       ) : (
                         <Youtube className="w-3.5 h-3.5 text-red-500" />
                       )}
-                      <span>{isUploading ? 'Đang gửi...' : 'Tải lên YouTube'}</span>
+                      <span>{isUploading ? 'Đang gửi...' : ytNotImplemented ? 'YouTube chưa hỗ trợ' : youtubeStatusById[o.id] ? `YouTube: ${youtubeStatusById[o.id]}` : 'Tải lên YouTube'}</span>
                     </button>
                   </div>
                 </motion.div>
               );
             })}
+          </div>
+        )}
+              {/* YouTube Publish Dialog */}
+        {publishTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+            <div className="bg-card border border-border rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-xl text-left">
+              <h3 className="text-lg font-bold text-foreground flex items-center gap-2">
+                <Youtube className="w-5 h-5 text-red-500" />
+                Xuất bản video lên YouTube
+              </h3>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const fd = new FormData(e.target);
+                  const title = fd.get('title');
+                  const description = fd.get('description');
+                  const tags = fd.get('tags')?.split(',').map((t) => t.trim()).filter(Boolean) || [];
+                  const privacy = fd.get('privacy') || 'private';
+                  const confirmed = fd.get('confirmed') === 'on';
+                  handleExecutePublish({ title, description, tags, privacy, confirmed });
+                }}
+                className="space-y-4"
+              >
+                <div>
+                  <label className="text-xs font-semibold text-foreground block mb-1">Tiêu đề video</label>
+                  <input
+                    type="text"
+                    name="title"
+                    required
+                    maxLength={100}
+                    defaultValue={publishTarget.project_title || publishTarget.title || 'Video AI'}
+                    className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-foreground block mb-1">Mô tả video</label>
+                  <textarea
+                    name="description"
+                    rows={3}
+                    maxLength={5000}
+                    placeholder="Mô tả nội dung video..."
+                    className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-foreground block mb-1">Tags (ngăn cách bằng dấu phẩy)</label>
+                  <input
+                    type="text"
+                    name="tags"
+                    placeholder="video ai, review, lồng tiếng"
+                    className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-foreground block mb-1">Quyền riêng tư</label>
+                  <select
+                    name="privacy"
+                    defaultValue="private"
+                    className="w-full px-3 py-2 rounded-lg bg-background border border-border text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    <option value="private">Riêng tư (Private)</option>
+                    <option value="unlisted">Không công khai (Unlisted)</option>
+                    <option value="public">Công khai (Public)</option>
+                  </select>
+                </div>
+                <div className="flex items-start gap-2 pt-1">
+                  <input
+                    type="checkbox"
+                    name="confirmed"
+                    id="yt-confirm"
+                    required
+                    className="mt-0.5 w-4 h-4 rounded text-primary focus:ring-primary"
+                  />
+                  <label htmlFor="yt-confirm" className="text-xs text-muted-foreground cursor-pointer">
+                    Tôi xác nhận video tuân thủ chính sách bản quyền và nguyên tắc cộng đồng của YouTube.
+                  </label>
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setPublishTarget(null)}
+                    className="px-4 py-2 rounded-lg border border-border text-xs font-medium hover:bg-muted transition"
+                  >
+                    Huỷ
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={publishing}
+                    className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold transition flex items-center gap-2"
+                  >
+                    {publishing && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    <span>{publishing ? 'Đang gửi...' : 'Xuất bản ngay'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         )}
       </div>

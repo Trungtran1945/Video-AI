@@ -197,6 +197,8 @@ npm install
 ```
 
 Tạo file `backend/.env` dựa theo mẫu `backend/.env.example`:
+
+> Lưu ý: `backend/.env.example` chỉ là mẫu rút gọn cho Whisper/ZeroTTS/rate-limit (không đủ để chạy production). Copy để chạy production dùng file mẫu đầy đủ ở root `.env.production.example` (xem §6.3).
 ```env
 PORT=3001
 NODE_ENV=development
@@ -242,8 +244,45 @@ Khởi chạy backend server:
 ```bash
 npm run dev
 ```
+> `npm run dev` chạy orchestrator `scripts/dev.mjs`: tự khởi động ZeroTTS Python
+> service kèm API trong **1 terminal** (log `[ZeroTTS] ...` + `[Server] Backend running
+> at http://localhost:3001`). Không cần terminal thứ ba cho ZeroTTS.
+>
+> - Nếu ZeroTTS đã chạy sẵn (healthy hoặc đang tải model với `503 MODEL_NOT_READY`),
+>   dev dùng chung và **không spawn trùng**; khi thoát dev cũng không kill service bên ngoài.
+> - `npm start` / `node server.js` **không** auto-start ZeroTTS (hành vi production/Docker).
+> - Backend nhận **WAV bytes** từ ZeroTTS rồi tự ghi file và convert MP3 bằng FFmpeg
+>   (probe fail-closed). Không cần cấu hình `ZEROTTS_OUTPUT_ROOT` hay volume chia sẻ
+>   giữa API và container `zerotts`; biến đó chỉ còn cho client legacy gửi `out_path`.
+> - FFmpeg/ffprobe bắt buộc cho bước convert MP3: kiểm tra `ffmpeg -version` và
+>   `ffprobe -version` (hoặc `FFMPEG_PATH` trong `backend/.env`).
+> - Lần đầu tải model ~900MB nên TTS có thể ready sau API vài phút — API vẫn phục vụ
+>   bình thường; `dub.ttsAlign` chờ model tối đa `ZEROTTS_READY_WAIT_MS` (mặc định
+>   60000ms) rồi failover sang `edge_tts`. Máy 8GB RAM: giữ
+>   `ZEROTTS_CONCURRENCY=1`, không nâng `THREADS`/`CONCURRENCY`.
+>
+> | Lệnh | Khi nào dùng |
+> |------|---------------|
+> | `npm run dev` | Mặc định: API + ZeroTTS tự kèm (khuyên dùng dev local) |
+> | `npm run dev:api-only` | Chỉ API (debug, hoặc đã chạy TTS riêng) |
+> | `npm run zerotts:start` | Chỉ TTS ở terminal riêng (dev sẽ dùng chung, không spawn mới) |
+>
+> Biến môi trường (`backend/.env.example`): `ZEROTTS_ENABLED` (production luôn
+> tắt), `ZEROTTS_AUTO_START=false` (tắt kèm), `ZEROTTS_WAIT_FOR_READY`,
+> `ZEROTTS_STARTUP_TIMEOUT_MS` (mặc định 90000), `ZEROTTS_READY_WAIT_MS`
+> (mặc định 60000), `ZEROTTS_PYTHON_BIN` (trỏ exe Python thật khi `python` mở
+> Store hoặc dùng venv/conda).
+>
+> Troubleshooting TTS:
+> - `no-python`: chưa có Python 3.11+ hoặc `ZEROTTS_PYTHON_BIN` sai.
+> - `ECONNREFUSED`: ZeroTTS chưa chạy — dùng `npm run dev` thay vì `npm start`.
+> - `model-not-ready-timeout`: model tải lâu hơn `ZEROTTS_STARTUP_TIMEOUT_MS`;
+>   tăng biến này hoặc chạy `npm run zerotts:start` trước.
+> - `FORBIDDEN_PATH` / `out_path outside OUTPUT_ROOT`: client cũ còn gửi `out_path`;
+>   backend hiện tại dùng binary response nên không gặp lỗi này.
+>
 > Server sẽ khởi chạy tại `http://localhost:3001`. Cơ sở dữ liệu SQLite sẽ tự động khởi tạo và nạp dữ liệu mẫu ban đầu:
-> - **Tài khoản Admin mặc định (CHỈ development/test)**: `admin@asf.local` / `admin1234` — production KHÔNG bao giờ seed credential này (thiếu `ADMIN_PASSWORD` → bỏ qua seed + warn, vẫn boot; `ADMIN_PASSWORD` yếu → fail-fast). Bootstrap admin production bằng `ADMIN_EMAIL`/`ADMIN_PASSWORD` (≥12 ký tự).
+> - **Tài khoản Admin mặc định (CHỈ development/test)**: `admin@asf.local` / `admin1234` — production KHÔNG bao giờ seed credential này (thiếu `ADMIN_PASSWORD` → bỏ qua seed + warn, vẫn boot; `ADMIN_PASSWORD` yếu → fail-fast). Bootstrap admin production bằng `ADMIN_EMAIL`/`ADMIN_PASSWORD` (≥12 ký tự) — `docker-compose.yml` đã pass-through 2 biến này từ `.env`, nên muốn login lần đầu ở prod phải set trong `.env` **trước** `docker compose up -d --build`.
 > - **Dữ liệu**: Khởi tạo 13 phong cách dịch thuật `StylePreset`
 
 #### Bước 3: Cấu hình và khởi chạy Frontend
@@ -261,6 +300,13 @@ npm run dev
 
 Dự án cung cấp sẵn cấu hình Docker Compose chuẩn hóa cho môi trường container:
 
+> **Bắt buộc trước lần up đầu tiên (production fail-fast):**
+> 1. `cp .env.production.example .env` (Windows: `copy .env.production.example .env`)
+> 2. Sinh 3 secrets ≥32 chars (chạy 3 lần, mỗi biến 1 giá trị): `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
+> 3. Điền vào `.env`: `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `MASTER_KEY`
+> 4. `docker compose up -d --build`
+> Thiếu/yếu → container `api` exit(1) kèm log tiếng Việt hướng dẫn (xem `assertProductionSecrets` trong `backend/src/config.js`). Không commit file `.env`.
+
 ```bash
 docker compose up -d --build
 ```
@@ -269,10 +315,17 @@ Dịch vụ bao gồm:
 - **`redis`**: internal Docker network only (không publish port công khai; API dùng `REDIS_HOST=redis`. Dev cần host access: `docker compose -f docker-compose.yml -f docker-compose.redis-host.yml up` — bind `127.0.0.1` only)
 - **`api`**: Cổng `3001:3001` (đã tích hợp sẵn FFmpeg trong container)
 - **`web`**: Cổng `80:80` (Nginx phục vụ Frontend SPA và đóng vai trò Reverse Proxy)
+- **`zerotts`**: local TTS inference (ONNX, keyless, không expose public port; api gọi `http://zerotts:5005`). HuggingFace model cache ở volume `zerotts_models`.
 
 Truy cập ứng dụng tại `http://localhost`.
 
 > Topology same-origin: browser chỉ gọi cùng origin (`/`); nginx `:80` proxy `/api` → `api:3001` (và Vite dev proxy `/api` → `localhost:3001`). Nhờ đó cookie `refresh_token` (`SameSite=Lax`) luôn là first-party — không cần cross-origin cookie hay fallback body/header ngoài giai đoạn chuyển đổi.
+>
+> **CORS & cookie theo topology (production):**
+> - **Same-origin (khuyên dùng)**: browser `http://localhost` (hoặc domain prod) → nginx `:80` proxy `/api` → `api:3001`. Không cần set `CORS_ORIGINS`.
+> - **Cross-origin** (gọi trực tiếp `:3001`, hoặc frontend/API khác domain): bắt buộc `CORS_ORIGINS=https://app.example.com` (comma-separated, khớp `Origin` header chính xác scheme+host+port). Để rỗng = fail-closed: mọi browser cross-origin bị `CORS: origin not allowed` (server log warn 1 lần lúc boot).
+> - **HTTP LAN** (`http://<LAN-IP>`): prod mặc định `COOKIE_SECURE=true` → browser drop cookie `Secure` trên HTTP → login loop (đăng nhập xong văng ra). Fix: `COOKIE_SECURE=false` trong `.env` khi còn HTTP nội bộ (`docker-compose.yml` đã pass-through biến này); prod public chỉ dùng HTTP là downgrade bảo mật — nên terminate TLS (https) rồi giữ `true`.
+> - Lỗi `403 CSRF_ORIGIN_MISMATCH` dùng chung allowlist `CORS_ORIGINS` (xem §8.1).
 
 ---
 

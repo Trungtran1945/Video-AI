@@ -80,6 +80,11 @@ router.get('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
   }
 })
 
+// NOTE: PUT /transcript không nhận field `language` — ngôn ngữ nguồn do STT
+// detect + params.sourceLanguage quyết định; selector ngôn ngữ ở FE chỉ là
+// display-preference cục bộ (không persist). Field `language` trong body bị bỏ qua.
+// Payload >1MB bị chặn ở HTTP layer (server.js → 413 PAYLOAD_TOO_LARGE) —
+// transcript dài dùng chunked-edit theo revision hoặc PATCH từng segment.
 router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => {
   try {
     if (!isDubMode(req.project.mode)) {
@@ -87,6 +92,10 @@ router.put('/projects/:id/transcript', requireProjectOwner, async (req, res) => 
     }
     const incoming = Array.isArray(req.body?.segments) ? req.body.segments : []
     if (!incoming.length) return sendError(res, 400, ERR.VALIDATION, 'segments rỗng', { field: 'segments' })
+    // Fail-nhanh trước khi chạm DB: batch quá lớn → 413 + hướng dẫn chunked-edit.
+    if (incoming.length > 2000) {
+      return sendError(res, 413, 'PAYLOAD_TOO_LARGE', 'Quá nhiều segments một lần (>2000) — chia nhỏ theo revision (PUT từng phần) hoặc sửa từng câu qua PATCH /projects/:id/segments/:segmentId/translation.', { field: 'segments' })
+    }
     const result = await applyTranscriptEdits(req.project.id, incoming, req.body?.revision, {
       durationSec: req.project.target_duration_sec,
     })

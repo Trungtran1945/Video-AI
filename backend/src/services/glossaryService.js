@@ -2,7 +2,7 @@
 // Table project_glossaries(source_term, target_term, case_sensitive, note).
 // No CSV import, no cross-project packs — prompt injection only.
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne, insert, runAffected } from '../db/query.js'
+import { query, insert, runAffected } from '../db/query.js'
 
 export async function listGlossary(projectId) {
   try {

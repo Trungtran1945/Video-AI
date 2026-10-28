@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs'
 import { v4 as uuidv4 } from 'uuid'
 import { queryOne, query, insert } from './query.js'
 
-// 12 phong cách dịch (docs/05 §B.4) — slug/name/description khớp
+// 13 phong cách dịch (docs/05 §B.4) — slug/name/description khớp
 // STYLE_PRESETS_FALLBACK ở frontend/src/lib/constants.jsx.
 export const STYLE_PRESETS = [
   { slug: 'co-trang', name: 'Cổ trang', description: 'Cổ phong, xưng hô "bổn tọa", "hiền muội"', system_prompt: 'Bạn là dịch giả chuyên lồng tiếng cho phim cổ trang Trung Hoa. Dùng văn phong cổ phong trang nhã, xưng hô kiểu cổ ("bổn tọa", "hiền muội", "huynh đài", "thảo dân"...), từ Hán Việt khi hợp lý. Giữ ý gốc nhưng đậm chất kiếm hiệp cung đình.' },
@@ -20,7 +20,7 @@ export const STYLE_PRESETS = [
   { slug: 'sat-nghia', name: 'Sát nghĩa (Nguyên gốc)', description: 'Dịch sát nguyên gốc, giữ nguyên cấu trúc', system_prompt: 'Bạn là dịch giả TRUNG THÀNH. Dịch SÁT NGHĨA bản gốc nhất có thể: giữ nguyên cấu trúc câu, thứ tự ý, sắc thái và mức độ trang trọng của người nói. KHÔNG thêm thắt, KHÔNG rút gọn, KHÔNG diễn giải, KHÔNG thay đổi ý. Chỉ chỉnh đủ cho đúng ngữ pháp tiếng Việt và tự nhiên khi lồng tiếng. TUYỆT ĐỐI không sáng tạo lại nội dung.' },
 ]
 
-// Seed per docs/02 §4: default admin user + default settings row + 12 StylePreset.
+// Seed per docs/02 §4: default admin user + default settings row + 13 StylePreset.
 // Production guard (decision 4.A): predictable dev credentials must never be
 // created in production. If ADMIN_PASSWORD is absent in production, skip admin
 // seeding with a loud warning and keep booting. If present but weak

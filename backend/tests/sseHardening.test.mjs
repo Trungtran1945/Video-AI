@@ -79,7 +79,9 @@ function assert(cond, msg) {
   assert(!hook.includes('?token='), 'không còn ?token= JWT dài hạn trong URL')
   assert(!hook.includes("status: 'completed' }\n") || hook.includes('streamClosed'), 'done không tự tạo completed (có streamClosed)')
   assert(hook.includes('streamClosed'), 'hook expose streamClosed')
-  assert(hook.includes('Authorization') || hook.includes('apiClient'), 'ticket fetch qua Bearer (axios)')
+  // D1: hook gọi qua helper projectsApi.sseTicket (dùng chung axios instance
+  // apiClient + Bearer interceptor) thay vì apiClient.post trực tiếp — vẫn Bearer.
+  assert(hook.includes('Authorization') || hook.includes('apiClient') || hook.includes('sseTicket'), 'ticket fetch qua Bearer (axios)')
 }
 
 // 5. ProjectDetail: streamClosed fetch DB + terminal reload authoritative

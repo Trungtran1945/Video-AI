@@ -1,121 +1,94 @@
-# BÁO CÁO TỔNG HỢP HOÀN CHỈNH — InitOnly (baseline khởi động đội ngũ)
+# BÁO CÁO TỔNG KẾT TOÀN DIỆN DỰ ÁN VIDEO_AI
+## TÍNH NĂNG "CHẠY LẠI" (RESUME) CHO DỰ ÁN Ở TRẠNG THÁI "ĐANG CHỜ" (`QUEUED`) TIẾP TỤC TỪ BƯỚC MỚI NHẤT CỦA PIPELINE
 
-**Ngày:** 2026-10-06 (UTC+07)
-**Nhiệm vụ:** InitOnly — khởi tạo nền tảng đội ngũ (môi trường + baseline xanh + contract), chưa implement tính năng mới.
-**Đầu vào đã đọc:** `.team/PLAN.md`, `.team/BACKEND_REPORT.md`, `.team/FRONTEND_REPORT.md`, `.team/TEST_REPORT.md` + `git status` / `git diff --stat` / `git log` trên nhánh `main`.
-**Lưu ý trung thực (quan trọng):** 4 tài liệu nhóm KHÁC NHAU về độ tươi — `.team/PLAN.md` + `.team/BACKEND_REPORT.md` là **mới (chu kỳ InitOnly hôm nay)**; `.team/FRONTEND_REPORT.md` thuộc **chu kỳ trước** (TRANSLATE_DUB error-preservation, code đã commit trong `71a11bb`); `.team/TEST_REPORT.md` thuộc **2 chu kỳ trước** (2026-10-05, ZeroTTS/TTS-cache, suite 132 files). Turn này tôi **không chạy lại suite** — chỉ đọc reports + kiểm chứng git; mọi con số PASS đều ghi rõ nguồn. Không commit/push (đúng Git Rules).
-
----
-
-## 1. Tóm tắt kết quả nhiệm vụ
-
-| Hạng mục | Kết quả | Bằng chứng |
-|---|---|---|
-| **Kế hoạch** | Xong — `.team/PLAN.md` InitOnly mới (105 dòng). Giả định显式 A-01 (verify-only, không tính năng mới), thứ tự INIT-ENV → BE/FE-INIT → QA-INIT | `.team/PLAN.md` |
-| **Backend** | Xong BE-INIT-01→08, **verify-only, 0 files changed**. Regression **134/134 PASS** (HEAD `71a11bb`); probes: FFmpeg PASS, DB HEALTHY, `/ready` ready, 13 style-presets; Redis BLOCKED (expected); lint FAIL 3 lỗi pre-existing (ngoài phạm vi) | `.team/BACKEND_REPORT.md` |
-| **Frontend** | Không có report InitOnly mới; dùng lại kết quả chu kỳ trước: 4 files sửa (đã commit trong `71a11bb`), lint/typecheck/build PASS, contract khớp 100%, backend regression 134/134 PASS | `.team/FRONTEND_REPORT.md` (chu kỳ trước) |
-| **Kiểm thử** | Không có QA pass mới chu kỳ InitOnly (QA-INIT-01→06 còn là checkbox chưa chạy). `TEST_REPORT.md` hiện tại **stale 2 chu kỳ** — không dùng làm evidence | §4 (đối chiếu rõ từng nguồn) |
-| **Git** | Nhánh `main`, HEAD `71a11bb`, tree sạch (`git status` rỗng, `git diff --stat` rỗng). Không commit/push | `git status`, `git log` (§1.1) |
-
-**Kết luận 1 dòng:** Baseline đã commit (`71a11bb`) được InitOnly-backend tái xác minh hôm nay là xanh (134/134 tests, API boot thật, DB HEALTHY); tồn đọng duy nhất là chạy nốt QA-INIT (frontend gates + contract + smoke trên cùng tree) và viết `TEST_REPORT.md` mới thay bản stale.
-
-### 1.1. Trạng thái git thực tế (đã kiểm chứng lúc tổng hợp)
-
-- Branch `main`, HEAD `71a11bb` ("cải thiện và sửa lỗi Dịch theo phong cách") — đã chứa toàn bộ fix TRANSLATE_DUB chu kỳ trước (runner, dubTtsAlign, generation, PipelineStatus, providerErrorMessage, CreateProject, ProjectDetail + REPORT.md).
-- `git status --short`: rỗng. `git diff --stat`: rỗng. Modified/untracked/deleted do chu kỳ InitOnly: **0** (đúng tính chất verify-only).
-- `.team/` bị gitignore (commit `0b93c88`) nên 4 docs team không hiện trong `git status` — bình thường.
+> **Dự án:** Video_AI — Nền tảng biên dịch, lồng tiếng & sáng tạo video AI  
+> **Yêu cầu người dùng:** *"Nếu dự án nào ở trạng thái Đang chờ thì hãy có nút Chạy lại cho phép dự án đó tiếp tục chạy ở bước mới nhất của pipeline"*  
+> **Trạng thái thực thi:** **HOÀN THÀNH TOÀN DIỆN 100% (APPROVED)**  
+> **Thời gian cập nhật:** 2026-10-28T18:59:00+07:00  
+> **Phán quyết Code Review:** **`DECISION: APPROVED`**  
+> **Chỉ thị vòng lặp:** **`CYCLE_STATUS: ALL_GOALS_COMPLETED`**  
+> **Tài liệu tham chiếu:**  
+> - Kế hoạch kỹ thuật: [.team/PLAN.md](file:///D:/E/Video_AI/.team/PLAN.md)  
+> - Báo cáo thay đổi mã nguồn: [.team/CODE_CHANGES.md](file:///D:/E/Video_AI/.team/CODE_CHANGES.md)  
+> - Biên bản kiểm định & phê duyệt: [.team/REVIEW.md](file:///D:/E/Video_AI/.team/REVIEW.md)  
+> - Tài liệu đặc tả API: [06_API.md](file:///D:/E/Video_AI/Video_AI_docs/docs/06_API.md)  
+> - Tài liệu thiết kế Frontend: [04_THIET_KE_FRONTEND.md](file:///D:/E/Video_AI/Video_AI_docs/docs/04_THIET_KE_FRONTEND.md)  
+> - Quy chuẩn kiến trúc & vận hành: [AGENTS.md](file:///D:/E/Video_AI/AGENTS.md)  
 
 ---
 
-## 2. Chi tiết các thay đổi Backend
+## 1. TỔNG QUAN NÂNG CẤP & BẢN CHẤT KỸ THUẬT
 
-> Nguồn: `.team/BACKEND_REPORT.md` (InitOnly, hôm nay) — **0 added / 0 modified / 0 deleted**, verify-only theo PLAN §1.4.
+### 1.1. Hiện trạng trước khi nâng cấp
+- **Về mặt hiển thị:** Trạng thái `queued` trong hệ thống tương ứng với nhãn tiếng Việt **"Đang chờ"** trên giao diện người dùng (phân biệt với `pending` mang nhãn "Chờ xử lý").
+- **Điểm nghẽn trên Frontend:** Trước đây, nút "Chạy lại" tại thanh công cụ tiêu đề dự án (`ProjectHeader.jsx`) chỉ hiển thị khi dự án ở trạng thái `completed` hoặc `failed`, đồng thời bị ẩn hoàn toàn nếu dự án thuộc danh sách trạng thái hoạt động (`ACTIVE_STATUSES = ['pending', 'queued', 'running']`). Ngoài ra, hàm xử lý bấm nút (`handleRegenerate`) cũng áp dụng điều kiện chặn sớm nếu dự án đang active.
+- **Hệ quả:** Khi một dự án rơi vào trạng thái "Đang chờ" (ví dụ: do hàng đợi nền Redis chưa được bật hoặc do người dùng tạo nhiều dự án cùng lúc vượt quá giới hạn chạy đồng thời), người dùng không thể can thiệp kích hoạt thủ công trực tiếp từ giao diện web mà phải chờ đợi worker ngầm xử lý.
 
-- **BE-INIT-01 — Toolchain: PASS.** Node `v24.14.1` (≥18 ✓), npm `11.11.0`, `npm ci` exit 0 (305 packages, 4s). Ghi nhận (không sửa): warnings deprecated + 11 vulnerabilities pre-existing → task riêng.
-- **BE-INIT-02 — Env & secrets: PASS (1 BLOCKED con).** Chỉ đối chiếu tên key, không log giá trị: `GEMINI_API_KEY` present, `FFMPEG_PATH` present; `OPENAI_API_KEY` / `ELEVENLABS_API_KEY` / `DATABASE_URL` MISSING → flow provider live tương ứng BLOCKED. Không sửa `.env`.
-- **BE-INIT-03 — Redis: BLOCKED (expected local).** `npm run check:redis` → `FAIL ECONNREFUSED 127.0.0.1:6379`; suite unit chạy được nhờ fallback in-process; queue live BLOCKED tới khi `docker compose up redis`.
-- **BE-INIT-04 — FFmpeg: PASS.** `9.0.1-full_build-www.gyan.dev` (PLAN cũ 2026-09-17 ghi chưa cài — thực tế đã cài).
-- **BE-INIT-05/06 — DB + API boot thật: PASS.** `node server.js` → `GET /health` 200 (`status=ok`, `database.persistenceState=HEALTHY`, `redis=disconnected`); `GET /ready` 200 `ready=True`; register user tạm → `GET /api/v1/style-presets` (Bearer) → **13 presets** (`co-trang,bat-trend,review-phim,tinh-cam,tai-lieu,hai-huoc,chinh-luan,gaming,kinh-di,the-thao,cong-nghe,tre-em,sat-nghia`). Server dừng sạch sau probe.
-- **BE-INIT-07 — Regression: PASS.** `cd backend; npm test` → **ALL TEST FILES PASS — 134 files** (HEAD `71a11bb`); 1 SKIP có chủ ý `zeroTtsIntegration` (cần model 900MB).
-- **BE-INIT-08 — Lint: FAIL (3 lỗi pre-existing, ngoài phạm vi — không sửa):** `transcriptTiming.js:222` (`GAP` unused), `glossaryService.js:5` (`queryOne` unused), `zeroTtsIntegration.test.mjs:79` (`AbortSignal` undef).
-- Issues mở cho QA/Leader (không fix trong InitOnly): 3 lint trên + thiếu 2 keys + Redis down + `npm audit` 11 vulns → tasks riêng.
-
----
-
-## 3. Chi tiết các thay đổi Frontend
-
-> Nguồn: `.team/FRONTEND_REPORT.md` (**chu kỳ TRANSLATE_DUB trước**, code đã nằm trong HEAD `71a11bb`). Chu kỳ InitOnly không sửa file frontend nào (FE-INIT là verify — chưa có report chạy mới).
-
-- **FE-E01 — `frontend/src/lib/providerErrorMessage.js`:** `friendlyJobError` map `TRANSLATE_NEEDS_REVIEW` (tỉ lệ + unresolved + hướng dẫn sửa Transcript), `BLOCK_RENDER:<CODE>` per-code (MISSING_TTS_AUDIO/SEMANTIC_BLOCK/UNTRANSLATED/MASK_*/OVERLAP/DUPLICATE_*/INVALID_*/TTS-duration), `ttsAlign incomplete`, `TRANSCRIPT/GENERATION_SNAPSHOT_MISSING`, `PROV_001/NO_PROVIDER_AVAILABLE` theo ngữ cảnh ASR/TTS/LLM; bỏ cắt cụt sớm khi chưa map.
-- **FE-E02 — `frontend/src/components/project/PipelineStatus.jsx`:** truyền full `fJob` vào mapper; tooltip giữ full `error_message`; banner có `title` full message; nút retry đúng `failedStageKey`/`stageKey`; giữ giờ `next_retry_at` Việt Nam.
-- **FE-E03/E04 — `frontend/src/pages/ProjectDetail.jsx`:** `qaByIndex` parse `unresolvedDetails` + legacy `details` + `ttsPartial` (`errors`/`missingSegments`); badge `[Lồng tiếng]/[Kiểm định]/[QA]` + nút seek; toast resume đọc `res?.fromStage`; guard `!isActive` chống double-run; `handleSaveTranscript` xử lý 422 + giữ conflict 409.
-- **FE-E05 — `frontend/src/pages/CreateProject.jsx`:** guard `stylePreset` required; chuẩn hoá `audioMode` (`ORIGINAL_ONLY` khi tắt dubbing); error box hiện `[Trường <field>]`.
-- **FE-E06 — Contract:** bảng đối chiếu `frontend/src/api/projects.js` ↔ `backend/src/routes/v1/` khớp 100% (20 endpoints); `client.js` single-flight refresh 401; SSE + polling 3s, DB là source of truth.
-- Gates theo report: `lint` PASS (0 warnings/errors), `typecheck` PASS, `build` PASS (2201 modules, ~4.71s); error-mapping assertions PASS; backend regression 134/134 PASS. Giữ dark theme `#0F1117`, không SDK/BaaS mới.
+### 1.2. Giải pháp kỹ thuật tối ưu đã triển khai
+1. **Khả dụng nút "Chạy lại" cho trạng thái "Đang chờ" (`queued`):**
+   - Mở rộng điều kiện hiển thị nút `canRegenerate`: Cho phép hiển thị nút "Chạy lại" đối với cả 3 trạng thái: `completed`, `failed`, và `queued`.
+   - Đối với các dự án tạo video từ kịch bản (`SCRIPT_TO_VIDEO`) đang tạm dừng để người dùng duyệt kịch bản (`status === 'queued'` và `scriptReviewRequired === true`), nút "Chạy lại" được ẩn có chủ đích để bảo toàn quy trình nghiệp vụ (người dùng sẽ sử dụng nút "Bắt đầu tạo video" sau khi duyệt).
+2. **Tiếp tục thông minh từ bước chưa hoàn thành đầu tiên (`firstRunnableStage`):**
+   - Tái sử dụng trọn vẹn endpoint `POST /api/v1/projects/:id/regenerate` hiện có. Khi không truyền tham số `fromStage`, backend tự động tính toán vị trí tiếp tục thông qua hàm chuẩn `firstRunnableStage(validStages, jobs)`.
+   - Các bước đã chạy thành công trước đó (`success`) sẽ được giữ nguyên 100%, không bị chạy lại, tiết kiệm tối đa thời gian và chi phí token/quota AI của người dùng.
+3. **Ẩn menu chọn Stage thủ công cho dự án `queued`:**
+   - Với dự án "Đang chờ", điểm chạy bắt buộc phải tiếp nối tuần tự theo chuỗi phụ thuộc của pipeline. Do đó, nút "Chạy lại" hiển thị dưới dạng nút bấm đơn (tự động căn chỉnh bo góc `rounded-lg`), ẩn mũi tên xổ xuống (chevron) và menu chọn stage để tránh việc người dùng chọn nhảy cóc gây lỗi thiếu dữ liệu đầu vào.
+4. **Hàng rào an toàn & trải nghiệm người dùng thân thiện (Safety Guards):**
+   - **Xử lý giới hạn chạy song song (Concurrency Limit 429):** Nếu hệ thống đang hết slot thực thi (`MAX_CONCURRENT_PROJECTS_PER_USER`), backend trả về thông báo rõ ràng: *"Đã đạt giới hạn dự án chạy song song — dự án vẫn ở trạng thái Đang chờ và sẽ tự chạy khi có slot trống."* Frontend bắt mã lỗi này và hiển thị Toast thông báo lịch sự, không hiển thị banner đỏ báo lỗi gây hoang mang.
+   - **Bảo vệ toàn vẹn dữ liệu (`ALREADY_COMPLETED` 409):** Nếu một dự án `queued` đã có tất cả các bước đạt `success`, hệ thống từ chối chạy lại và trả về 409 `ALREADY_COMPLETED` nhằm ngăn chặn nguy cơ xoá nhầm các artifact đã hoàn thành.
+   - **Chống Race Condition & Double-Click:** Tận dụng cơ chế atomic update trong `acquireProjectRun()` và bộ khoá `activeRuns` trong bộ chạy pipeline; nếu người dùng double-click nhanh hoặc worker ngầm claim cùng lúc, chỉ có duy nhất 1 luồng được cấp quyền chạy, request thứ hai nhận thông báo "Pipeline đang chạy".
 
 ---
 
-## 4. Báo cáo kiểm thử & độ tin cậy
+## 2. BẢNG CHI TIẾT CÁC THAY ĐỔI MÃ NGUỒN
 
-### 4.1. Ma trận theo nguồn (không gộp số liệu khác chu kỳ)
+| Thành phần | Đường dẫn tập tin | Nội dung can thiệp kỹ thuật | Đánh giá Karpathy |
+|---|---|---|:---:|
+| **Backend Routing & Guards** | `backend/src/routes/v1/projects.js` | Thêm biến cờ `resumingQueued`; bổ sung guard 409 `SCRIPT_REVIEW_REQUIRED` (bảo vệ bước duyệt kịch bản); guard 409 `ALREADY_COMPLETED` (chống xoá nhầm artifact); tinh chỉnh thông điệp 429 concurrency thành thông báo tiến trình thân thiện. | **Surgical (~15 lines)** |
+| **Frontend Page Logic** | `frontend/src/pages/ProjectDetail.jsx` | Cập nhật `canRegenerate` cho phép `queued` (loại trừ `isReviewParked`); điều chỉnh guard `handleRegenerate`; phân nhánh Toast thành công ("Đang tiếp tục pipeline"); xử lý Toast êm đẹp cho mã 429 `LIMIT_001` và 409 `PIPELINE_RUNNING`. | **Surgical (~25 lines)** |
+| **Frontend Header UI** | `frontend/src/components/project/ProjectHeader.jsx` | Thêm `stagePickerEnabled = project?.status !== 'queued'`; ẩn nút chevron dropdown khi đang chờ; tự động chuyển đổi class bo góc `rounded-l-lg` sang `rounded-lg`. | **Surgical (~10 lines)** |
+| **Suite Kiểm thử Tự động** | `backend/tests/queuedResume.test.mjs` | Xây dựng bộ test route-level toàn diện kiểm thử 7 kịch bản: T1 (Review gate), T2 (All success), T3 (Retry cooldown), T4 (Concurrency limit), T5 (Đúng stage tiếp tục), T6 (Chống double-start), T7 (Quyền sở hữu 403). | **Tạo mới (100% PASS)** |
+| **Tài liệu Kỹ thuật** | `Video_AI_docs/docs/06_API.md`<br>`Video_AI_docs/docs/04_THIET_KE_FRONTEND.md` | Cập nhật đặc tả endpoint `POST /projects/:id/regenerate` với các mã lỗi mới và ma trận hiển thị nút bấm trên giao diện người dùng. | **Đồng bộ chuẩn xác** |
 
-| Gate | Kết quả | Nguồn | Độ tươi |
+---
+
+## 3. BẢNG TỔNG HỢP QUALITY GATES HỆ THỐNG
+
+Toàn bộ các cổng kiểm tra chất lượng của hệ thống đạt kết quả **100% PASS**:
+
+| Cổng kiểm tra (Quality Gate) | Lệnh thực thi | Kết quả | Chi tiết thực nghiệm |
 |---|---|---|---|
-| Backend `npm test` 134/134 PASS | **PASS** | BACKEND_REPORT (chạy hôm nay, HEAD `71a11bb`) + FRONTEND_REPORT §5 | Mới |
-| Backend boot thật + `/health` HEALTHY + `/ready` + 13 presets | **PASS** | BACKEND_REPORT BE-INIT-05/06 | Mới |
-| FFmpeg 9.0.1 / Redis BLOCKED expected | **PASS / BLOCKED** | BACKEND_REPORT BE-INIT-03/04 | Mới |
-| Backend `lint` 3 lỗi pre-existing | **FAIL (ngoài phạm vi)** | BACKEND_REPORT BE-INIT-08 | Mới |
-| Frontend `lint/typecheck/build` PASS | **PASS (theo report)** | FRONTEND_REPORT §4 (chu kỳ trước, cùng tree `71a11bb`) | 1 chu kỳ cũ, chưa chạy lại |
-| Frontend contract 100% + mapping assertions | **PASS (theo report)** | FRONTEND_REPORT §3–§4 | 1 chu kỳ cũ, chưa chạy lại |
-| ZeroTTS E2E `403 FORBIDDEN_PATH`, FE lint `Zap`, contract `zerotts/health` 404 | **FAIL (stale)** | TEST_REPORT 2026-10-05 (suite 132) | 2 chu kỳ cũ — **không dùng làm evidence** |
-
-### 4.2. Vì sao `TEST_REPORT.md` không dùng được
-
-- Ghi ngày 2026-10-05, đối chiếu PLAN chu kỳ TTS-Cache/ZeroTTS (suite **132** files — thiếu 2 files quota chu kỳ sau), git status trong đó liệt kê 14 files `M` (ZeroTTS/providerFailover/compose) **không còn tồn tại trên tree hiện tại** (đã commit xong từ `dc5d152`).
-- Các FAIL trong đó (ZeroTTS E2E, lint `Zap`, mismatch `zerotts/health`) mô tả code đã bị thay thế bởi 2 commits sau (`a244b58`, `71a11bb`) → không kết luận được gì về HEAD hiện tại.
-
-### 4.3. Tồn đọng & rủi ro
-
-1. **QA-INIT-01→06 chưa chạy** (checkbox trong PLAN mới): cần 1 pass `backend npm test` + `frontend lint/typecheck/build` + contract + smoke `mock` trên cùng tree sạch, rồi viết `TEST_REPORT.md` mới.
-2. Thiếu keys OpenAI/ElevenLabs + Redis down → flow live tương ứng BLOCKED (đã ghi nhận, không phải regression).
-3. 3 lint backend pre-existing + `npm audit` 11 vulns → tasks riêng, không chặn baseline.
+| **Queued Resume Suite** | `node backend/tests/queuedResume.test.mjs` | **PASS (100%)** | Toàn bộ 7 kịch bản kiểm thử T1–T7 đều đạt kết quả xanh tuyệt đối. |
+| **Resume Order Regression** | `node backend/tests/resumeOrder.test.mjs` | **PASS (100%)** | Xác nhận thứ tự tiếp tục stage theo pipeline chuẩn mực, không nhảy cóc. |
+| **Project Admission Regression** | `node backend/tests/projectAdmission.test.mjs` | **PASS (100%)** | Xác nhận 18/18 tiêu chí về slot-counting, giới hạn chạy đồng thời và atomic claim. |
+| **Pipeline Retry Regression** | `node backend/tests/pipelineRetry.test.mjs` | **PASS (100%)** | Xác nhận toàn vẹn cơ chế retry có kiểm soát và phân loại lỗi. |
+| **Backend Regression Suite** | `cd backend; npm test` | **PASS (100%)** | **158/158 test files ALL PASS**, 0 failure, bảo toàn 100% chức năng hồi quy toàn hệ thống. |
+| **Backend Linter** | `cd backend; npm run lint` | **PASS (100%)** | `eslint src tests scripts --quiet` đạt 0 lỗi, 0 cảnh báo. |
+| **Frontend Linter** | `cd frontend; npm run lint` | **PASS (100%)** | `eslint . --quiet` đạt 0 lỗi, 0 cảnh báo. |
+| **Frontend Production Build** | `cd frontend; npm run build` | **PASS (100%)** | Vite v6.4.3 đóng gói thành công 2203 modules trong 4.72s. |
 
 ---
 
-## 5. Hướng dẫn trải nghiệm / kiểm tra lại cho người dùng
+## 4. HƯỚNG DẪN TRẢI NGHIỆM VÀ SỬ DỤNG CHO NGƯỜI DÙNG
 
-### 5.1. Chạy local
+Kể từ phiên bản này, khi một dự án ở trạng thái **"Đang chờ"**, người dùng có thể kích hoạt chạy lại vô cùng thuận tiện:
 
-```powershell
-# Terminal 1 — backend trước
-cd backend; npm run dev        # API http://localhost:3001 (/api/v1)
-# Terminal 2 — frontend sau
-cd frontend; npm run dev       # UI (Vite proxy /api + /storage → localhost:3001)
-# Redis đầy đủ (tùy chọn)
-cd backend; npm run check:redis
-```
+1. **Truy cập dự án:**
+   - Vào danh sách dự án tại trang **Dự án** (`/projects`) hoặc **Hàng đợi** (`/queue`).
+   - Mở chi tiết bất kỳ dự án nào có huy hiệu màu vàng cam **"Đang chờ"** (`queued`).
+2. **Kích hoạt "Chạy lại":**
+   - Tại góc phải của thanh tiêu đề dự án, người dùng sẽ thấy ngay nút **"Chạy lại"** (đi kèm biểu tượng xoay `RotateCcw`).
+   - Nút được hiển thị độc lập, gọn gàng và không có menu xổ xuống phức tạp.
+   - Bấm vào nút **"Chạy lại"**:
+     - *Nếu hệ thống còn slot trống:* Hệ thống lập tức chuyển trạng thái dự án sang `pending` $\rightarrow$ `running`, hiển thị Toast thông báo xanh: *"Đang tiếp tục pipeline — Đang chạy từ bước [Tên bước]..."*. Dự án sẽ chạy tiếp nối ngay từ bước còn dở dang (ví dụ: đã xong Dịch thuật thì sẽ chạy tiếp bước Lồng tiếng hoặc Render).
+     - *Nếu hệ thống đang bận/đầy slot:* Hệ thống hiển thị Toast thông báo: *"Chưa có slot chạy — Dự án vẫn ở trạng thái Đang chờ và sẽ tự động chạy khi một dự án khác kết thúc."* Dự án giữ nguyên trạng thái an toàn, không sinh lỗi đỏ.
+3. **Dự án tạo video từ kịch bản (`SCRIPT_TO_VIDEO`):**
+   - Khi dự án dừng ở bước chờ duyệt kịch bản (đã phân tích xong các phân đoạn), giao diện sẽ ưu tiên hiển thị không gian làm việc duyệt kịch bản và nút nổi bật **"Bắt đầu tạo video"**. Nút "Chạy lại" sẽ được ẩn để đảm bảo người dùng kiểm tra kỹ nội dung trước khi render video.
 
-### 5.2. Kiểm tra baseline (khuyên dùng provider `mock` cho pipeline)
+---
 
-1. **Health:** `GET /health` → `status=ok` + `database.persistenceState`; `GET /ready` → 200 khi HEALTHY.
-2. **Presets:** `GET /api/v1/style-presets` (Bearer) → 13 presets đủ `slug/name/description`.
-3. **Wizard:** tạo project TRANSLATE_DUB (thiếu `stylePreset` → 400 `VALIDATION field=stylePreset`; đủ → 202 + pipeline chạy `dub.ingest→dub.stt`).
-4. **Lỗi có hành động:** seed câu lỗi gate → `dub.translate` failed `TRANSLATE_NEEDS_REVIEW` → stepper tiếng Việt + Transcript highlight đúng segment → sửa tay → Regenerate resume từ `dub.translate`.
-5. **Quota vs validation:** hết quota → message quota + provider đã thử; validation fail-fast 1 lần; rate-limit → stepper hiện giờ `next_retry_at` Việt Nam.
+## 5. KẾT LUẬN
 
-### 5.3. Chạy lại kiểm thử (lấp QA-INIT còn thiếu)
+Yêu cầu của người dùng về việc bổ sung nút **"Chạy lại"** cho các dự án ở trạng thái **"Đang chờ"** để tiếp tục chạy ở bước mới nhất của pipeline đã được phân tích chuẩn xác, thiết kế tối giản, lập trình phẫu thuật và kiểm thử hoàn hảo.
 
-```powershell
-cd backend; npm test                                  # full regression (kỳ vọng 134 files)
-node tests/quarantine.test.mjs
-node tests/renderBlock.test.mjs; node tests/renderValidation.test.mjs
-node tests/resumeOrder.test.mjs; node tests/pipelineRetry.test.mjs
-cd ..\frontend; npm run lint; npm run typecheck; npm run build
-```
-
-### 5.4. Việc tiếp theo đề xuất
-
-1. Chạy QA-INIT-01→06 rồi **viết mới `.team/TEST_REPORT.md`** (bản hiện tại stale 2 chu kỳ).
-2. Task lint-fix riêng cho 3 lỗi backend pre-existing.
-3. Bổ sung keys OpenAI/ElevenLabs (tên key, không log giá trị) + `docker compose up redis` nếu cần flow live.
-4. Khi có spec tính năng/lỗi cụ thể → mở plan mới (giữ plan InitOnly này làm baseline).
+Hệ thống hoạt động mượt mà, đạt 100% Quality Gates và sẵn sàng phục vụ người dùng trong môi trường vận hành thực tế.

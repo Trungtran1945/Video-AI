@@ -29,6 +29,8 @@ export class ZeroTts {
     const rawUrl = process.env.ZEROTTS_URL || `http://${host}:${port}`
     this.baseUrl = rawUrl.replace(/\/+$/, '')
     this.timeoutMs = Number(process.env.ZEROTTS_TIMEOUT_MS) || 60000
+    const readyWait = Number(process.env.ZEROTTS_READY_WAIT_MS)
+    this.readyWaitMs = Number.isFinite(readyWait) && readyWait > 0 ? readyWait : 60000
   }
 
   /**
@@ -62,6 +64,30 @@ export class ZeroTts {
   }
 
   /**
+   * Bounded model-readiness wait: poll /health every 750ms.
+   * 503 = model đang tải (tiếp tục chờ); mọi trạng thái khác = không phải loading → false ngay.
+   * @param {number} [timeoutMs=this.readyWaitMs]
+   * @param {AbortSignal|null} [signal]
+   * @returns {Promise<boolean>}
+   */
+  async waitForReady(timeoutMs = this.readyWaitMs, signal = null) {
+    const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0)
+    let sawLoading = false
+    for (;;) {
+      if (signal?.aborted) return false
+      const health = await this.checkHealth()
+      if (health.ok) return true
+      if (health.status !== 503) return false
+      if (!sawLoading) {
+        sawLoading = true
+        console.log(`[ZeroTTS] model đang tải tại ${this.baseUrl} — chờ tối đa ${Math.max(0, Number(timeoutMs) || 0)}ms`)
+      }
+      if (Date.now() >= deadline) return false
+      await new Promise((resolve) => setTimeout(resolve, 750))
+    }
+  }
+
+  /**
    * Synthesize text to speech using local ZeroTTS service.
    *
    * @param {object} params
@@ -84,7 +110,6 @@ export class ZeroTts {
     fs.mkdirSync(path.dirname(targetPath), { recursive: true })
 
     const isMp3 = targetPath.toLowerCase().endsWith('.mp3')
-    const serviceOutPath = isMp3 ? targetPath + '.tmp.wav' : targetPath
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), this.timeoutMs)
@@ -101,7 +126,8 @@ export class ZeroTts {
           text: cleanText,
           voice: selectedVoice,
           speed: Number(speed) || 1,
-          out_path: serviceOutPath,
+          // Không gửi out_path: service trả WAV bytes, backend tự ghi/convert.
+          // Tránh OUTPUT_ROOT jail (403 FORBIDDEN_PATH) và coupling filesystem Docker.
         }),
         signal: controller.signal,
       })
@@ -121,7 +147,7 @@ export class ZeroTts {
       }
       if (causeCode === 'ECONNREFUSED' || /econnrefused/i.test(fullMsg)) {
         const connErr = new Error(
-          `ZeroTTS local service không phản hồi (ECONNREFUSED tại ${this.baseUrl}). Hãy khởi động service bằng 'npm run zerotts:start' hoặc kiểm tra biến ZEROTTS_URL.`
+          `ZeroTTS local service không phản hồi (ECONNREFUSED tại ${this.baseUrl}). Hãy chạy 'npm run dev' (tự kèm ZeroTTS) hoặc 'npm run zerotts:start' ở terminal riêng, hoặc kiểm tra biến ZEROTTS_URL.`
         )
         connErr.code = ERROR_CODES.PROVIDER_UNAVAILABLE
         connErr.status = 503
@@ -147,6 +173,13 @@ export class ZeroTts {
         err.code = serverCode === 'VOICE_NOT_FOUND'
           ? ERROR_CODES.PROVIDER_INVALID_REQUEST
           : ERROR_CODES.PROVIDER_MODEL_NOT_FOUND
+      } else if (res.status === 403) {
+        if (serverCode === 'FORBIDDEN_PATH') {
+          err.code = ERROR_CODES.PROVIDER_INVALID_REQUEST
+          err.message = 'ZeroTTS từ chối đường dẫn ghi (out_path ngoài OUTPUT_ROOT) — backend phải dùng binary response, không gửi out_path'
+        } else {
+          err.code = ERROR_CODES.PROVIDER_PERMISSION_DENIED
+        }
       } else if (res.status === 429 || serverCode === 'SERVER_BUSY' || serverCode === 'QUEUE_FULL') {
         // BE-Z01 backpressure: bounded admission vượt capacity → retryable ngắn.
         err.code = ERROR_CODES.PROVIDER_RATE_LIMITED
@@ -159,7 +192,7 @@ export class ZeroTts {
     const contentType = res.headers.get('content-type') || ''
     if (contentType.includes('application/json')) {
       const data = await res.json()
-      const actualSaved = data.audioPath || serviceOutPath
+      const actualSaved = data.audioPath || targetPath
       if (!fs.existsSync(actualSaved)) {
         const missingErr = new Error(`ZeroTTS: service báo thành công nhưng không tìm thấy file tại ${actualSaved}`)
         missingErr.code = ERROR_CODES.PROVIDER_UNAVAILABLE

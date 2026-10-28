@@ -26,9 +26,14 @@ router.get('/', async (req, res) => {
        JOIN projects p ON o.project_id = p.id${isAdmin ? '' : ' WHERE p.user_id = ?'}`,
       scopeParams
     )
+    // Detach semantics match byProvider below: admin LEFT JOIN (counts detached
+    // logs surviving project DELETE), users JOIN (own live projects only).
+    const dayJoin = isAdmin
+      ? 'LEFT JOIN projects p ON pl.project_id = p.id'
+      : 'JOIN projects p ON pl.project_id = p.id'
     const byDay = await query(
       `SELECT date(pl.created_date) as day, COUNT(*) as c
-       FROM provider_logs pl JOIN projects p ON pl.project_id = p.id
+       FROM provider_logs pl ${dayJoin}
        ${isAdmin ? '' : 'WHERE p.user_id = ?'}
        GROUP BY day ORDER BY day DESC LIMIT 30`,
       scopeParams

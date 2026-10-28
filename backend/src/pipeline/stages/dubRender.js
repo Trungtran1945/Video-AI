@@ -60,11 +60,12 @@ export async function dubRender(ctx) {
   let workingFile = src
   setProgress(30)
 
-  // ── 1. Mask/blur vùng hardsub gốc (AUTO từ transcript OCR + MANUAL từ API).
+  // ── 1. Mask/blur vùng hardsub gốc (AUTO_STATIC từ dub.mask + MANUAL từ API).
   // Chạy TRƯỚC burn ASS để subtitle dịch overlay sau luôn visible (render order:
   // source → mask → translated subtitle → audio mix → mux).
   const maskMethod = params.maskMethod === 'solid' ? 'solid' : 'blur'
-  // loadSubtitleRegions chỉ trả về mask APPROVED và enabled !== 0 (STT-only)
+  // loadSubtitleRegions chỉ trả về mask APPROVED và enabled !== 0 (STT-only +
+  // AUTO_STATIC tĩnh 0→duration do dub.mask ghi sau dub.translate).
   const activeMasks = await loadSubtitleRegions(project.id, { maskMethod })
   if (activeMasks.length) {
     await assertRunOwner(project.id, runToken)

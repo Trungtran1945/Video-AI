@@ -32,8 +32,17 @@ export const STATUS_LABELS = {
     'dub.stt': { label: 'Nhận dạng giọng nói', icon: 'Mic' },
     'dub.merge': { label: 'Gộp & làm sạch transcript', icon: 'Combine' },
     'dub.translate': { label: 'Dịch theo phong cách', icon: 'Languages' },
+    'dub.mask': { label: 'Che chữ gốc tự động', icon: 'ScanText' },
     'dub.ttsAlign': { label: 'Lồng tiếng & khớp thời gian', icon: 'AudioLines' },
     'dub.render': { label: 'Xuất video & phụ đề', icon: 'Video' },
+    // SCRIPT_TO_VIDEO pipeline
+    'script.ingest': { label: 'Nhập kịch bản', icon: 'FileText' },
+    'script.analyze': { label: 'Phân đoạn kịch bản', icon: 'Sparkles' },
+    'script.tts': { label: 'Lồng tiếng AI', icon: 'Mic' },
+    'script.image': { label: 'Tạo hình ảnh slide', icon: 'Image' },
+    'script.align': { label: 'Căn chỉnh thời gian', icon: 'Combine' },
+    'script.subtitle': { label: 'Tạo phụ đề SRT/ASS', icon: 'Captions' },
+    'script.render': { label: 'Kết xuất video MP4', icon: 'Video' },
   };
 
   export const AUDIO_MODE_LABELS = {
@@ -42,20 +51,35 @@ export const STATUS_LABELS = {
     DUB_REPLACE: 'Thay thế hoàn toàn',
   };
 
+  export const SCRIPT_STAGES = [
+    'script.ingest',
+    'script.analyze',
+    'script.tts',
+    'script.image',
+    'script.align',
+    'script.subtitle',
+    'script.render',
+  ];
+
   export const STAGE_ORDER = [
     ...['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'],
-    ...['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.ttsAlign', 'dub.render'],
+    ...['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.mask', 'dub.ttsAlign', 'dub.render'],
+    ...SCRIPT_STAGES,
   ];
 
   export const MODE_LABELS = {
     SUMMARY: 'Review phim',
     TRANSLATE_DUB: 'Dịch & Lồng tiếng',
+    SCRIPT_TO_VIDEO: 'Tạo Video từ kịch bản',
+    AI_VIDEO: 'Tạo Video từ kịch bản',
+    script_to_video: 'Tạo Video từ kịch bản',
+    ai_video: 'Tạo Video từ kịch bản',
     // bản lowercase do backend MVP lưu
     summary: 'Review phim',
     translate_dub: 'Dịch & Lồng tiếng',
   };
 
-  export const DUB_STAGES = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
+  export const DUB_STAGES = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.mask', 'dub.ttsAlign', 'dub.render'];
 
 
 
@@ -131,6 +155,15 @@ export const STATUS_LABELS = {
     if (status === 'success') return 'completed';
     return status;
   }
+
+  // Shared FE vocabulary helpers (backend lib/projectStatus.js parity).
+  // 'success'→'completed' (legacy job leak); 'generating' is FE-only display
+  // alias, never persisted — cancellable/active like 'running'.
+  export const COMPLETED_STATUSES = ['completed', 'success'];
+  export const ACTIVE_STATUSES = ['pending', 'queued', 'running', 'generating'];
+  export const normalizeStatus = (s) => (s === 'success' ? 'completed' : s);
+  export const isCompletedStatus = (s) => normalizeStatus(s) === 'completed';
+  export const isActiveStatus = (s) => ACTIVE_STATUSES.includes(s);
 
   export function StatusBadge({ status, className = '' }) {
     const key = normalizeProjectStatusForDisplay(status);

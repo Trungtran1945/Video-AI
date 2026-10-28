@@ -52,6 +52,9 @@ function assertPending(session) {
   if (session.status === 'expired') {
     throw new UploadServiceError(410, 'UPLOAD_EXPIRED', 'Upload session has expired')
   }
+  if (session.status === 'aborted') {
+    throw new UploadServiceError(410, 'UPLOAD_ABORTED', 'Upload session was aborted')
+  }
   if (session.status !== 'pending') {
     throw new UploadServiceError(409, 'UPLOAD_NOT_PENDING', 'Upload session is not pending')
   }
@@ -365,6 +368,9 @@ export function createResumableUploadService({
     try {
       return await withSessionLock(id, async () => {
         const session = assertOwnedSession(await loadOwnedSession({ id, userId }))
+        if (session.status === 'aborted') {
+          throw new UploadServiceError(410, 'UPLOAD_ABORTED', 'Upload session was aborted')
+        }
         if (session.status === 'pending' && isExpired(session, now)) {
           await expirePending(session)
           throw new UploadServiceError(410, 'UPLOAD_EXPIRED', 'Upload session has expired')
@@ -558,6 +564,21 @@ export function createResumableUploadService({
     return { seen: rows.length, cleaned, failed, recovered }
   }
 
+  // DELETE abort: user cancels → temp removed, status='aborted'.
+  // Sau đó HEAD/PUT/POST-complete → 410 GONE (không resume được nữa).
+  async function abortUpload({ id, userId }) {
+    return withSessionLock(id, async () => {
+      const session = assertOwnedSession(await loadOwnedSession({ id, userId }))
+      if (session.status === 'completed') {
+        throw new UploadServiceError(409, 'UPLOAD_COMPLETED', 'Upload is already completed')
+      }
+      if (session.status === 'aborted') return { aborted: true }
+      await removeCanonicalTemp(session.id)
+      await db.runAffected("UPDATE upload_sessions SET status = 'aborted', last_activity_at = ? WHERE id = ?", [nowIso(now), session.id], { op: 'abort.upload_session' })
+      return { aborted: true }
+    })
+  }
+
   return {
     CHUNK_SIZE,
     MAX_SIZE,
@@ -565,6 +586,7 @@ export function createResumableUploadService({
     getOwnedSession,
     appendChunk,
     complete,
+    abortUpload,
     recoverUploadSessions,
     cleanupExpiredUploadSessions,
     withSessionLock,

@@ -11,20 +11,50 @@ router.use(authMiddleware)
 function mask(key) {
   if (!key) return ''
   const s = String(key)
+  // Narrow preview: first 2 + last 2 only (was 4+4) — Eye-toggle label states
+  // this is a masked preview, never the full key.
   if (s.length <= 8) return '****'
-  return s.slice(0, 4) + '****' + s.slice(-4)
+  return s.slice(0, 2) + '****' + s.slice(-2)
 }
+
+function safePreview(encryptedKey) {
+  try {
+    return mask(decrypt(encryptedKey))
+  } catch (_) {
+    return null
+  }
+}
+
+// Allowlist registry (mirrors providers/registry.js ids) — reject unknown
+// provider sớm 400, không insert rồi fail ở stage xa (PROV_001).
+const KNOWN_PROVIDERS = new Set([
+  'gemini', 'openai', 'anthropic', 'huggingface', 'whisper', 'openai_whisper',
+  'faster_whisper', 'elevenlabs', 'openai_tts', 'zerotts', 'edge_tts',
+  'google_tts', 'azure_speech', 'clip', 'google_translate', 'mock',
+])
 
 // GET /api/v1/api-keys
 router.get('/', async (req, res) => {
   const rows = await query('SELECT id, user_id, provider, label, is_active, tier, priority, created_date, encrypted_key FROM api_keys WHERE user_id = ? ORDER BY created_date DESC', [req.user.id])
-  res.json(rows.map((r) => ({ ...r, keyPreview: mask(decrypt(r.encrypted_key)), encrypted_key: undefined })))
+  // Row hỏng decrypt → { error:'DECRYPT_FAILED', keyPreview:null }, không 500 cả list.
+  res.json(rows.map((r) => {
+    const preview = safePreview(r.encrypted_key)
+    return {
+      ...r,
+      keyPreview: preview,
+      ...(preview === null ? { error: 'DECRYPT_FAILED' } : {}),
+      encrypted_key: undefined,
+    }
+  }))
 })
 
 // POST /api/v1/api-keys
 router.post('/', async (req, res) => {
   const { provider, label, key, tier, priority } = req.body || {}
   if (!provider || !key) return sendError(res, 400, ERR.VALIDATION, 'provider and key are required', { field: 'provider,key' })
+  if (!KNOWN_PROVIDERS.has(String(provider))) {
+    return sendError(res, 400, 'INVALID_PROVIDER', `Unknown provider '${provider}'`, { field: 'provider' })
+  }
   const row = await insert('api_keys', {
     id: uuidv4(),
     user_id: req.user.id,

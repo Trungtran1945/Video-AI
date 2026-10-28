@@ -84,7 +84,7 @@ Chạy sau khi `dub.translate` xong, trước khi enqueue `dub.ttsAlign`/`dub.re
 `transcript_version` là revision của source-of-truth `transcript_segments`. User PUT/PATCH và generated translation/dedupe chỉ bump khi state thực sự đổi; initial STT/cache import giữ revision khởi tạo; TTS linkage là derived metadata và không bump. Dub render stamp snapshot revision, Summary output dùng `null`.
 ### DELETE `/projects/:id` — xoá project + file [CURRENT, EXTRA: `projects.js:329-362`; 409 nếu pipeline đang chạy]
 ### GET `/projects/:id/masks` — `{ masks: MaskItem[] }` (TRANSLATE_DUB) [CURRENT]
-Trả về danh sách mask đã lưu (`MANUAL`, `LEGACY_AUTO`) và các mask suy ra từ legacy OCR (`LEGACY_OCR` với `status: 'DRAFT'`, `enabled: false`, `isLegacy: true`).
+Trả về danh sách mask đã lưu (`MANUAL` tay + `AUTO` tĩnh từ `dub.mask`: `status='APPROVED'`, `startSec=0`, `endSec=duration`, read-only) và các mask suy ra từ legacy OCR (`LEGACY_OCR` với `status: 'DRAFT'`, `enabled: false`, `isLegacy: true`).
 ### POST `/projects/:id/masks` — tạo mask thủ công mới [CURRENT]
 Body: `{ startSec, endSec, ratioX, ratioY, ratioW, ratioH, type?, blurRadius?, opacity?, status? }`.
 Mặc định `status: 'DRAFT'`. Nếu tạo trực tiếp với `status: 'APPROVED'` và `enabled: 1`, hệ thống tự động bump `projects.transcript_version` để đánh dấu video output hiện tại bị cũ (`outputStale`).
@@ -106,7 +106,7 @@ Mỗi `MaskItem` (lưu **tỷ lệ** scale-invariant, xem `02` §2):
   "blurRadius": 8,       // 1–50
   "opacity": 1,          // 0–1
   "enabled": true,       // true/false
-  "source": "MANUAL",    // 'MANUAL' | 'LEGACY_AUTO' | 'LEGACY_OCR'
+  "source": "MANUAL",    // 'MANUAL' | 'AUTO' (tĩnh từ dub.mask) | 'LEGACY_AUTO' | 'LEGACY_OCR'
   "status": "APPROVED",  // 'DRAFT' | 'APPROVED' | 'DISABLED' (chỉ APPROVED mới được render)
   "isLegacy": false      // true đối với mask từ dữ liệu OCR cũ
 }
@@ -119,16 +119,23 @@ Body (JSON, tuỳ chọn):
   "fromStage": "dub.translate" // tuỳ chọn: stage muốn bắt đầu chạy lại
 }
 ```
-- Nếu không truyền `fromStage`: Hệ thống tự động tìm stage đầu tiên chưa hoàn thành hoặc bị lỗi để chạy tiếp (`firstRunnableStage`). Nếu stage đang chờ hồi phục quota, trả về `429 RETRY_WAITING` kèm `nextRetryAt`.
+- Nếu không truyền `fromStage`: Hệ thống tự động tìm stage đầu tiên chưa hoàn thành hoặc bị lỗi để chạy tiếp (`firstRunnableStage`).
+  - Hỗ trợ resume cho dự án ở trạng thái `queued` (Đang chờ) hoặc `pending` (Chờ xử lý).
+  - Nếu dự án kịch bản đang dừng duyệt (`script_review_required = 1`): Trả về `409 SCRIPT_REVIEW_REQUIRED` (bảo vệ bước duyệt kịch bản).
+  - Nếu stage đang chờ hồi phục quota: Trả về `429 RETRY_WAITING` kèm `stage` và `nextRetryAt`.
+  - Nếu tất cả các stage đã `success` (`!r.type`): Trả về `409 ALREADY_COMPLETED` (không xóa artifact hoặc chạy lại từ đầu).
+  - Nếu hết slot chạy song song: Trả về `429 LIMIT_001` với thông báo rõ ràng (`"Đã đạt giới hạn dự án chạy song song — dự án vẫn ở trạng thái Đang chờ và sẽ tự chạy khi có slot trống."`), giữ nguyên trạng thái `queued`.
+  - Nếu pipeline đang chạy: Trả về `409 PIPELINE_RUNNING`.
 - Nếu có truyền `fromStage`: Kiểm tra tính hợp lệ qua `stagesForProject(project)`.
-  - TRANSLATE_DUB hợp lệ: `dub.ingest`, `dub.stt`, `dub.merge`, `dub.translate`, `dub.ttsAlign`, `dub.render`.
+  - TRANSLATE_DUB hợp lệ: `dub.ingest`, `dub.stt`, `dub.merge`, `dub.translate`, `dub.mask`, `dub.ttsAlign`, `dub.render`.
   - SUMMARY hợp lệ: `summary.transcribe`, `summary.analyze`, `summary.script`, `summary.sceneDetect`, `summary.align`, `summary.subtitle`, `summary.tts`, `summary.render`.
+  - SCRIPT_TO_VIDEO hợp lệ: `script.ingest`, `script.analyze`, `script.image`, `script.tts`, `script.align`, `script.subtitle`, `script.render`.
   - Nếu `fromStage` không hợp lệ: Trả về `400 VALIDATION` kèm danh sách các stage hợp lệ.
 - Response (200):
 ```jsonc
 {
   "message": "Pipeline restarted",
-  "status": "running",
+  "status": "pending",
   "fromStage": "dub.translate"
 }
 ```
@@ -140,12 +147,17 @@ Body (JSON, tuỳ chọn):
 | Method | Path | Auth | Mô tả |
 | --- | --- | --- | --- |
 | POST | `/uploads/init` | AUTH | `{ filename, size, mime }`; `size` phải là positive safe integer ≤2GiB. Chỉ MP4/MOV/M4V/MKV/WebM. TTL idle mặc định 60 phút. → `{ uploadId, chunkSize }` (chunk 8MiB) |
-| PUT | `/uploads/:id/chunk?offset=N` | AUTH | body `application/octet-stream`; raw parser 16MiB, chunk protocol ≤8MiB và không vượt declared remaining size. Offset phải khớp DB; request trùng offset → 409 `OFFSET_MISMATCH` (+ `expectedOffset`); xong → 204 + `Upload-Offset` |
-| HEAD | `/uploads/:id` | AUTH | header `Upload-Offset`; session không tồn tại/foreign → 404, expired → 410 |
+| PUT | `/uploads/:id/chunk?offset=N` | AUTH | body `application/octet-stream`; raw parser HTTP 10MiB fail-nhanh, chunk protocol ≤8MiB và không vượt declared remaining size. Offset phải khớp DB; request trùng offset → 409 `OFFSET_MISMATCH` (+ `expectedOffset`); xong → 204 + `Upload-Offset` |
+| HEAD | `/uploads/:id` | AUTH | header `Upload-Offset`; session không tồn tại/foreign → 404, expired/aborted → 410 |
 | POST | `/uploads/:id/complete` | AUTH | claim `pending→completing` với `storageKey` + SHA-256 trước rename; concurrent/repeated complete trả cùng `{ storageKey, url, filename, size, videoHash }` |
-| POST | `/upload/` | AUTH | legacy multipart single file (limit 4GiB), stage trong `tmp`, kiểm tra extension/MIME/signature và FFprobe nếu có → `{ key, url, filename, size, mimetype }` |
+| DELETE | `/uploads/:id` | AUTH | abort session (user huỷ upload) → 204; sau đó HEAD/PUT/complete → 410 `UPLOAD_ABORTED`, resume fail |
+| POST | `/upload/` | AUTH | legacy multipart single file (limit 50MiB; lớn hơn → 413 + hướng sang resumable), stage trong `tmp`, kiểm tra extension/MIME/signature và FFprobe nếu có → `{ key, url, filename, size, mimetype }` |
 
-State machine: `pending → completing → completed`; pending/completing hết TTL được cleanup thành `expired`. `completing` được startup/periodic recovery hoàn tất idempotently. `/storage` chỉ phục vụ đúng các shape media canonical, có `nosniff`, không follow symlink và không expose temp/private artifacts.
+State machine: `pending → completing → completed`; `aborted` (user DELETE) là terminal, không resume; pending/completing hết TTL được cleanup thành `expired`. `completing` được startup/periodic recovery hoàn tất idempotently. `/storage` chỉ phục vụ đúng các shape media canonical, có `nosniff`, không follow symlink và không expose temp/private artifacts.
+
+> F13 — Vênh multipart-vs-resumable (chỉ ảnh hưởng `resumable===false`): multipart trả `{ key, url, filename, size, mimetype }` (KHÔNG có `videoHash`, limit 50MB → 413 hướng sang resumable); resumable complete trả `{ storageKey, url, filename, size, videoHash }` (limit 2GB). FE `uploadApi.upload(file)` mặc định resumable; chỉ dùng `resumable===false` cho file nhỏ.
+>
+> R1 (Chu kỳ 2) — Resume phía FE, BE giữ nguyên 100%: rớt mạng giữa chừng → FE backoff [1s,2s,5s,10s,15s] (tối đa 5 transient) + đợi `online` rồi `HEAD` resync `Upload-Offset` và `PUT` tiếp cùng session (không init mới); 404/410 → fatal "phiên hết hạn" (Thử lại = init mới); nút Hủy = `DELETE` best-effort; reload trang chọn lại cùng file (name+size+mime) thì resume qua `sessionStorage`.
 
 ---
 
@@ -154,7 +166,7 @@ State machine: `pending → completing → completed`; pending/completing hết 
 | Method | Path | Auth | Mô tả |
 | --- | --- | --- | --- |
 | POST | `/projects/:id/sse-ticket` | AUTH+OWNER | Sinh vé xác thực ngắn hạn một lần (TTL 30s) cho SSE EventSource: lưu `sha256(ticket)` trong bảng `sse_tickets` → `{ ticket, expiresIn }` |
-| GET | `/projects/:id/events` | `?ticket=<single-use>` (POST `/projects/:id/sse-ticket` bằng Bearer trước; `sseAuthMiddleware`) + OWNER; legacy `?token=<accessToken>` deprecated | stream `text/event-stream` qua `eventBus`: `retry: 3000`, heartbeat `: ping` mỗi 15s, event `progress` `{ stage, status, percent }` (stage `__project__` là tiến độ tổng), event `done` + đóng stream khi project `completed`/`failed`, event `error` `{ code: 'DB_UNAVAILABLE', retryable: true }` + đóng stream khi initial DB check fail (frontend fallback polling DB, không suy diễn terminal) |
+| GET | `/projects/:id/events` | `?ticket=<single-use>` (POST `/projects/:id/sse-ticket` bằng Bearer trước; `sseAuthMiddleware`) + OWNER; legacy `?token=<accessToken>` deprecated | stream `text/event-stream` qua `eventBus`: `retry: 3000`, heartbeat `: ping` mỗi 15s, event `progress` `{ stage, status, percent }` (stage `__project__` là tiến độ tổng), event `done` + đóng stream khi project `completed`/`failed`/`cancelled` (terminal đầy đủ; legacy event `success` map về `completed`), event `error` `{ code: 'DB_UNAVAILABLE', retryable: true }` + đóng stream khi initial DB check fail (frontend fallback polling DB, không suy diễn terminal) |
 
 ---
 
@@ -195,8 +207,11 @@ State machine: `pending → completing → completed`; pending/completing hết 
 | --- | --- | --- | --- |
 | GET | `/outputs` | AUTH | thư viện video (`?projectId=`; mỗi row kèm `url` và `outputStale`) [CURRENT] |
 | GET | `/outputs/:id` | AUTH (+owner/admin) | chi tiết + URL download + `outputStale` [CURRENT] |
-| POST | `/outputs/:id/youtube` | AUTH+OWNER | `{ privacy }` → stub hàng đợi `youtube_uploads` `pending` (upload thật chưa gắn; idempotent) [CURRENT] |
+| POST | `/outputs/:id/youtube` | AUTH+OWNER | `{ privacy }` → 501 `YOUTUBE_NOT_IMPLEMENTED` (chưa có worker Google OAuth; FE disable nút + tooltip). `:id` phải là outputs.id — project-id → 404 [CURRENT] |
 | GET | `/outputs/:id/youtube` | AUTH+OWNER | trạng thái upload (row mới nhất hoặc `{ status: 'none' }`) [CURRENT] |
+| GET | `/providers/quota-summary` | AUTH | aggregate quota 1-request cho QuotaBanner: `{ providers: { <name>: { percentUsed, usedToday, limitToday, ... } } }` (thay fan-out N `GET /providers/:p/quota`) [CURRENT] |
+| PUT | `/projects/:id/transcript` | AUTH+OWNER | `{ revision, segments[] }` — không nhận field `language` (bị bỏ qua); batch >2000 segments hoặc body >1MB → 413 `PAYLOAD_TOO_LARGE` + hướng dẫn chunked-edit theo revision / `PATCH .../segments/:id/translation` từng câu [CURRENT] |
+| POST | `/auth/forgot-password` | — | rate-limit IP (5 req/10ph) + email (3 req/1h) → 429 `RATE_LIMITED` + `retryAfterSec`; message đồng nhất để không lộ account existence [CURRENT] |
 
 ---
 
@@ -221,6 +236,7 @@ State machine: `pending → completing → completed`; pending/completing hết 
 | DELETE | `/api-keys/:id` | AUTH | thu hồi [CURRENT] |
 | GET | `/logs` | AUTH | `ProviderLog` (project của user / toàn hệ nếu ADMIN; array trực tiếp; `status 'ok'→'success'`, `type` map theo taxonomy frontend, gốc giữ ở `rawType`) [CURRENT] |
 | GET/PUT | `/admin/users` | AUTH+ADMIN | quản lý user [CURRENT] |
+| GET | `/admin/queue-metrics` | AUTH+ADMIN | R3 Chu kỳ 2: `{ generatedAt, redis: {status, endpoint}, bullmq: {available}, queues: {<name>: {waiting,active,delayed,paused} \| {error:'REDIS_UNAVAILABLE'}}, dbFallback: {byProjectStatus, oldestQueuedAt, oldestQueuedAgeMs, maxConcurrentPerUser}, cleanupOutbox: {pending, failed} }` — Redis down → degraded có số (không 500); non-admin → 403; không select `keys_json` [CURRENT] |
 | GET | `/admin/providers` | AUTH+ADMIN | stub `{ global: true, note }` — key per-user qua `/api-keys` [CURRENT] |
 | GET | `/admin/cleanup-tasks?status=&limit=` | AUTH+ADMIN | liệt kê outbox dọn file (`pending`/`failed`/`done`, tối đa 100, mặc định 20; không bao giờ trả `keys_json`) [CURRENT] |
 | POST | `/admin/cleanup-tasks/:id/retry` | AUTH+ADMIN | re-queue task `failed` → `pending` (`UPDATE ... WHERE status='failed'` — concurrent retry tối đa 1 thắng; task chưa `failed` → `409`) [CURRENT] |

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { projectsApi } from '@/api/projects';
+import { systemApi } from '@/api/extra';
 import Layout from '@/components/Layout';
 import Loading from '@/components/Loading';
 import { VideoTimeline } from '@/components/timeline';
@@ -8,11 +9,13 @@ import MaskEditor from '@/components/MaskEditor';
 import { useTimelineStore } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap } from 'lucide-react';
-import { STAGE_LABELS, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, AUDIO_MODE_LABELS } from '@/lib/constants';
+import { STAGE_LABELS, SCRIPT_STAGES, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, AUDIO_MODE_LABELS, ACTIVE_STATUSES as SHARED_ACTIVE_STATUSES, isCompletedStatus } from '@/lib/constants';
 import { friendlyJobError } from '@/lib/providerErrorMessage';
+import { resolveStorageUrl } from '@/lib/apiBase';
 import { useJobEvents } from '@/hooks/useJobEvents';
 import ProjectHeader from '@/components/project/ProjectHeader';
 import PipelineStatus from '@/components/project/PipelineStatus';
+import ErrorState from '@/components/ErrorState';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,15 +41,17 @@ const stageIcons = {
   'dub.stt': Mic,
   'dub.merge': Combine,
   'dub.translate': Languages,
+  'dub.mask': Scissors,
   'dub.ttsAlign': AudioLines,
   'dub.render': Video,
 };
 
 const SUMMARY_STAGES = ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'];
 
-const DUB_STAGES_ALL = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.ttsAlign', 'dub.render'];
+const DUB_STAGES_ALL = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.mask', 'dub.ttsAlign', 'dub.render'];
 
-const ACTIVE_STATUSES = ['pending', 'queued', 'generating', 'running'];
+// Shared FE vocabulary (lib/constants.jsx) — 'generating' is FE-only alias, cancellable like 'running'.
+const ACTIVE_STATUSES = SHARED_ACTIVE_STATUSES;
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -80,6 +85,7 @@ export default function ProjectDetail() {
   const [redubbing, setRedubbing] = useState(false);
   const [outputStale, setOutputStale] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [regenerating, setRegenerating] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -101,7 +107,11 @@ export default function ProjectDetail() {
   const [newTermNote, setNewTermNote] = useState('');
   const [newTermCaseSensitive, setNewTermCaseSensitive] = useState(false);
   const [addingTerm, setAddingTerm] = useState(false);
+  // F7: thay window.confirm native bằng AlertDialog (đồng nhất với handleDelete).
+  const [glossaryDeleteTarget, setGlossaryDeleteTarget] = useState(null);
+  const [deletingGlossary, setDeletingGlossary] = useState(false);
   const [confirmingPreview, setConfirmingPreview] = useState(false);
+  const [redisStatus, setRedisStatus] = useState(null); // 'connected' | 'disconnected' | null (từ GET /health)
   const videoRef = useRef(null);
   // Optimistic concurrency (§4.6): revision server cấp, seq chống stale response.
   const transcriptRevisionRef = useRef(null);
@@ -127,10 +137,10 @@ export default function ProjectDetail() {
     !outputStale &&
     project?.outputStale !== true &&
     (project?.output?.status === 'success' || !project?.output?.status);
-  const outputUrl = isOutputAvailable ? `/storage/${project.output.storage_key}?v=${project.output.id}` : null;
+  const outputUrl = isOutputAvailable ? `${resolveStorageUrl(project.output.storage_key)}?v=${project.output.id}` : null;
   const isVideoOutput = /\.(mp4|webm|mov|m4v|mkv)$/i.test(project?.output?.storage_key || '');
   // Preview che chữ dùng video NGUỒN để thấy hardsub gốc (output đã blur + sub dịch).
-  const sourceUrl = project?.source_video_key ? `/storage/${project.source_video_key}` : outputUrl;
+  const sourceUrl = project?.source_video_key ? resolveStorageUrl(project.source_video_key) : outputUrl;
 
   // Playback control functions
   const handlePlayPause = useCallback(() => {
@@ -268,6 +278,17 @@ export default function ProjectDetail() {
     return () => video.removeEventListener('loadedmetadata', restore);
   }, [outputUrl]);
 
+  // Trạng thái Redis cho banner PipelineStatus (best-effort, không storm:
+  // gọi bên trong load() nên chỉ chạy cùng nhịp poll SSE-fallback có sẵn).
+  const refreshRedisStatus = useCallback(async () => {
+    try {
+      const h = await systemApi.health().catch(() => null);
+      if (h?.redis === 'connected' || h?.redis === 'disconnected') setRedisStatus(h.redis);
+    } catch {
+      /* best-effort — giữ trạng thái cũ */
+    }
+  }, []);
+
   const load = useCallback(async () => {
     try {
       const p = await projectsApi.get(id);
@@ -275,12 +296,16 @@ export default function ProjectDetail() {
        setProject(p);
       setJobs(p.jobs || []);
       setScenes(p.mode === 'SUMMARY' ? (p.scenes || []) : []);
+      setLoadError(null);
+      // Best-effort cùng nhịp load (không vòng poll riêng — giữ single interval).
+      refreshRedisStatus();
       return p;
     } catch (e) {
-      console.error(e);
+      // Phân biệt 404/403/500 — render ErrorState + nút Tải lại, không gộp error=empty.
+      setLoadError(e);
       return null;
     }
-  }, [id]);
+  }, [id, refreshRedisStatus]);
 
   const loadDubData = useCallback(async ({ force = false } = {}) => {
     if (transcriptSaveInFlightRef.current && !force) return;
@@ -366,13 +391,19 @@ export default function ProjectDetail() {
     }
   };
 
-  const handleDeleteGlossaryTerm = async (termId) => {
+  const handleDeleteGlossaryTerm = async () => {
+    const target = glossaryDeleteTarget;
+    if (!target || deletingGlossary) return;
+    setDeletingGlossary(true);
     try {
-      await projectsApi.deleteGlossaryTerm(id, termId);
-      setGlossaryTerms((prev) => prev.filter((t) => t.id !== termId));
+      await projectsApi.deleteGlossaryTerm(id, target.id);
+      setGlossaryTerms((prev) => prev.filter((t) => t.id !== target.id));
       toast({ title: 'Đã xoá thuật ngữ' });
+      setGlossaryDeleteTarget(null);
     } catch (err) {
       toast({ variant: 'destructive', title: 'Lỗi xoá thuật ngữ', description: err?.response?.data?.message || err.message });
+    } finally {
+      setDeletingGlossary(false);
     }
   };
 
@@ -392,7 +423,7 @@ export default function ProjectDetail() {
   const prevStatus = useRef(project?.status);
   useEffect(() => {
     if (prevStatus.current && prevStatus.current !== project?.status) {
-      if (['completed', 'failed'].includes(project?.status)) load();
+      if (['completed', 'failed', 'cancelled'].includes(project?.status)) load();
     }
     prevStatus.current = project?.status;
   }, [project?.status, load]);
@@ -408,7 +439,7 @@ export default function ProjectDetail() {
   }, [project?.status]);
   useEffect(() => {
     if (!lastEvent || lastEvent.stage !== '__project__') return undefined;
-    if (!['completed', 'failed'].includes(lastEvent.status)) return undefined;
+    if (!['completed', 'failed', 'cancelled'].includes(lastEvent.status)) return undefined;
     if (terminalReloadRef.current >= 3) return undefined;
     terminalReloadRef.current += 1;
     let cancelled = false;
@@ -419,7 +450,7 @@ export default function ProjectDetail() {
       if (!cancelled && p && (p.mode === 'TRANSLATE_DUB' || p.mode === 'translate_dub')) {
         await loadDubData();
       }
-      const settled = p && ['completed', 'failed'].includes(p.status);
+      const settled = p && ['completed', 'failed', 'cancelled'].includes(p.status);
       if (!cancelled && !settled && attempts < 3) {
         setTimeout(() => { if (!cancelled) tryReload(); }, 800);
       }
@@ -444,11 +475,15 @@ export default function ProjectDetail() {
   }, [streamClosed, load, loadDubData]);
 
   const isActive = project && ACTIVE_STATUSES.includes(project.status);
-  const canRegenerate = project && ['completed', 'failed'].includes(project.status) && !isActive;
-  const canCancel = project && ['running', 'queued', 'pending'].includes(project.status); // Group 1: Cancel
+  const isReviewParked = project?.status === 'queued' && project?.scriptReviewRequired === true;
+  // "Chạy lại" cho cả dự án Đang chờ (queued) — tiếp tục từ bước còn thiếu.
+  // Dự án chờ duyệt kịch bản cũng là queued nhưng KHÔNG được chạy tiếp.
+  const canRegenerate =
+    project && ['completed', 'failed', 'queued'].includes(project.status) && !isReviewParked;
+  const canCancel = project && ['running', 'queued', 'pending', 'generating'].includes(project.status); // Group 1: Cancel (generating cancellable — FE-only alias of running)
 
   const handleRegenerate = async (stageArg) => {
-    if (regenerating || isActive) return;
+    if (regenerating || !canRegenerate) return;
     const fromStage = typeof stageArg === 'string' ? stageArg : undefined;
     setRegenerating(true);
     setError('');
@@ -456,12 +491,27 @@ export default function ProjectDetail() {
       const res = await projectsApi.regenerate(id, fromStage);
       const actualFrom = res?.fromStage || fromStage;
       const stageLabel = actualFrom ? (STAGE_LABELS[actualFrom]?.label || actualFrom) : '';
+      const wasQueued = project?.status === 'queued';
       toast({
-        title: 'Đang chạy lại pipeline',
-        description: stageLabel ? `Đang chạy lại từ bước ${stageLabel}...` : 'Pipeline đang được thực thi lại...',
+        title: wasQueued ? 'Đang tiếp tục pipeline' : 'Đang chạy lại pipeline',
+        description: stageLabel ? `Đang chạy từ bước ${stageLabel}...` : 'Pipeline đang được thực thi lại...',
       });
       await load();
     } catch (e) {
+      const httpStatus = e?.response?.status;
+      const code = e?.response?.data?.code || e?.response?.data?.error?.code;
+      if (httpStatus === 429 && code === 'LIMIT_001') {
+        toast({
+          title: 'Chưa có slot chạy',
+          description: 'Dự án vẫn ở trạng thái Đang chờ và sẽ tự động chạy khi một dự án khác kết thúc.',
+        });
+        return;
+      }
+      if (httpStatus === 409 && code === 'PIPELINE_RUNNING') {
+        toast({ title: 'Pipeline đang chạy', description: 'Đợi bước hiện tại kết thúc rồi thử lại.' });
+        await load();
+        return;
+      }
       setError('Không thể chạy lại pipeline: ' + (e?.response?.data?.message || e?.response?.data?.error?.message || e.message));
     } finally {
       setRegenerating(false);
@@ -709,7 +759,16 @@ export default function ProjectDetail() {
   }, [jobs]);
 
   if (loading) return <Layout><Loading /></Layout>;
-  if (!project) return <Layout><div className="p-8 text-center text-slate-400">Không tìm thấy dự án.</div></Layout>;
+  // Phân biệt 404/403/500 + nút Tải lại — không gộp error=empty.
+  if (!project) {
+    return (
+      <Layout>
+        <div className="p-6 lg:p-8 max-w-3xl mx-auto">
+          <ErrorState status={loadError?.response?.status ?? 404} onRetry={() => window.location.reload()} />
+        </div>
+      </Layout>
+    );
+  }
 
   // Gộp trạng thái job từ polling + SSE realtime
   const jobByStage = {};
@@ -724,12 +783,15 @@ export default function ProjectDetail() {
 
   const params = project.params || {};
   const enableDubbing = params.enableDubbing ?? params.enable_dubbing ?? false;
+  const isScript = project?.mode === 'SCRIPT_TO_VIDEO' || project?.mode === 'AI_VIDEO' || project?.mode === 'script_to_video';
   const stages = isDub
     ? DUB_STAGES_ALL.filter((s) => {
       if (s === 'dub.ttsAlign' && !enableDubbing) return false;
       return true;
     })
-    : SUMMARY_STAGES;
+    : isScript
+      ? SCRIPT_STAGES
+      : SUMMARY_STAGES;
   const timeline = project.timeline || [];
 
   const seekTo = (sec) => {
@@ -745,10 +807,98 @@ export default function ProjectDetail() {
   // Find active segment for timeline
   const activeSegmentId = transcript.find(s => currentTime >= s.startSec && currentTime < s.endSec)?.id || null;
   const activeSegment = transcript.find(s => currentTime >= s.startSec && currentTime < s.endSec) || null;
-  const isTranslateSuccess = jobByStage['dub.translate']?.status === 'success';
+  const isTranslateSuccess = ['success', 'completed'].includes(jobByStage['dub.translate']?.status);
   const isPreviewConfirmed = Boolean(params.previewConfirmed);
 
   // TRANSLATE_DUB: Subtitle sync editor layout
+  if (isScript && project.scriptReviewRequired) {
+    return (
+      <Layout>
+        <div className="p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
+          <ProjectHeader project={project} canCancel={canCancel} canRegenerate={canRegenerate} onCancel={handleCancel} onRegenerate={handleRegenerate} />
+          <PipelineStatus progress={project.progress} isActive={isActive} sseAvailable={sseAvailable} stages={stages} jobByStage={jobByStage} onRetry={handleRetryStage} redisStatus={redisStatus} />
+
+          <div className="rounded-2xl bg-amber-500/10 border border-amber-500/20 p-5 flex items-center justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+                Kịch bản đã phân tích thành công ({project.scriptSegments?.length || 0} đoạn đọc)
+              </h3>
+              <p className="text-xs text-amber-700/80 dark:text-amber-300/70 mt-1">
+                Hãy duyệt và chỉnh sửa lời thoại hoặc mô tả hình ảnh trước khi tạo video hoàn chỉnh.
+              </p>
+            </div>
+            <button
+              onClick={async () => {
+                try {
+                  await projectsApi.generateScriptVideo(project.id);
+                  toast({ title: 'Đang bắt đầu tạo video', description: 'Pipeline đang tiến hành lồng tiếng và kết xuất video...' });
+                  load();
+                } catch (err) {
+                  toast({ variant: 'destructive', title: 'Lỗi khởi chạy', description: err?.response?.data?.message || err.message });
+                }
+              }}
+              className="px-5 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition shrink-0 shadow-sm"
+            >
+              Bắt đầu tạo video
+            </button>
+          </div>
+
+          <div className="space-y-4">
+            <h2 className="text-base font-bold text-foreground">Danh sách đoạn đọc kịch bản</h2>
+            {(project.scriptSegments || []).map((seg, idx) => (
+              <div key={seg.id || idx} className="rounded-xl bg-card border border-border p-4 space-y-3">
+                <div className="flex items-center justify-between text-xs text-muted-foreground font-semibold">
+                  <span>Đoạn #{idx + 1}</span>
+                  <span>{seg.durationSec ? `${seg.durationSec}s` : 'Chờ lồng tiếng'}</span>
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground block mb-1">Lời thoại đọc (Narration)</label>
+                  <textarea
+                    defaultValue={seg.narrationText}
+                    id={`narration-${seg.id}`}
+                    rows={2}
+                    className="w-full px-3 py-2 rounded-lg bg-background border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground block mb-1">Mô tả hình ảnh slide (Visual Prompt)</label>
+                  <input
+                    type="text"
+                    defaultValue={seg.visualPrompt}
+                    id={`visual-${seg.id}`}
+                    className="w-full px-3 py-2 rounded-lg bg-background border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+                <div className="flex items-center justify-end">
+                  <button
+                    onClick={async () => {
+                      const narr = document.getElementById(`narration-${seg.id}`)?.value;
+                      const vis = document.getElementById(`visual-${seg.id}`)?.value;
+                      try {
+                        await projectsApi.updateScriptSegment(project.id, seg.id, {
+                          scriptVersion: project.scriptVersion,
+                          narrationText: narr,
+                          visualPrompt: vis,
+                        });
+                        toast({ title: 'Đã lưu đoạn kịch bản', description: `Đoạn #${idx + 1} đã được cập nhật.` });
+                        load();
+                      } catch (err) {
+                        toast({ variant: 'destructive', title: 'Lưu thất bại', description: err?.response?.data?.message || err.message });
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-xs font-medium transition"
+                  >
+                    Lưu đoạn
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Layout>
+    );
+  }
+
   if (isDub) {
     return (
       <Layout>
@@ -775,6 +925,7 @@ export default function ProjectDetail() {
             jobByStage={jobByStage}
             onRetry={handleRetryStage}
             retryingStage={retryingStage}
+            redisStatus={redisStatus}
           />
 
           {/* Section preview & Confirm preview (FR-J2) */}
@@ -1285,10 +1436,11 @@ export default function ProjectDetail() {
                                 </div>
                                 <button
                                   type="button"
-                                  onClick={() => handleDeleteGlossaryTerm(t.id)}
+                                  onClick={() => setGlossaryDeleteTarget({ id: t.id, label: t.source || t.source_term })}
                                   disabled={isActive}
                                   title="Xoá thuật ngữ"
-                                  className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all shrink-0 ml-2"
+                                  aria-label={`Xoá thuật ngữ ${t.source || t.source_term}`}
+                                  className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all shrink-0 ml-2"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
@@ -1304,7 +1456,9 @@ export default function ProjectDetail() {
             </div>
           </div>
 
-          {/* 4. Simplified Timeline */}
+          {/* 4. Simplified Timeline — F2 Option B (view-only, YAGNI):
+              kéo/thả trên timeline chỉ xem thử, không persist (store Zustand local).
+              Sửa timing thật ở TranscriptEditor → Lưu (PUT transcript). */}
           <div className="shrink-0">
             <VideoTimeline
               currentTime={currentTime}
@@ -1326,6 +1480,7 @@ export default function ProjectDetail() {
               className="rounded-none border-x-0 border-b-0 border-t border-border"
               minimized={timelineMinimized}
               onToggleMinimize={setTimelineMinimized}
+              readOnly
             />
           </div>
 
@@ -1347,6 +1502,29 @@ export default function ProjectDetail() {
                   className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold"
                 >
                   {deleting ? 'Đang xoá...' : 'Xoá vĩnh viễn'}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+
+          <AlertDialog open={!!glossaryDeleteTarget} onOpenChange={(open) => { if (!open) setGlossaryDeleteTarget(null); }}>
+            <AlertDialogContent className="bg-card border-border text-foreground">
+              <AlertDialogHeader>
+                <AlertDialogTitle className="text-foreground">Xoá thuật ngữ?</AlertDialogTitle>
+                <AlertDialogDescription className="text-muted-foreground">
+                  Xoá thuật ngữ "{glossaryDeleteTarget?.label || glossaryDeleteTarget?.id}" khỏi glossary của dự án? Hành động này không thể hoàn tác.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel className="border-border text-foreground hover:bg-muted">
+                  Huỷ
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={(e) => { e.preventDefault(); handleDeleteGlossaryTerm(); }}
+                  disabled={deletingGlossary}
+                  className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold"
+                >
+                  {deletingGlossary ? 'Đang xoá...' : 'Xoá'}
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
@@ -1454,7 +1632,9 @@ export default function ProjectDetail() {
               const Icon = stageIcons[stageKey] || Circle;
               const job = jobByStage[stageKey];
               const isCurrent = job?.status === 'running';
-              const isDone = job?.status === 'success';
+              // B1: normalize 'success' (legacy) + 'completed' (BE runner) đều lên xanh —
+              // khớp PipelineStatus (DUB) và projectStatus.js BE.
+              const isDone = isCompletedStatus(job?.status);
               const isError = ['failed', 'error', 'timeout'].includes(job?.status);
               const isRetry = job?.status === 'retry';
 
@@ -1827,13 +2007,18 @@ function TranscriptEditor({
             )}
           </div>
           <div className="flex items-center gap-1.5 flex-wrap">
-            {/* Language Selector */}
-            <div className="flex items-center gap-1 bg-background border border-input rounded-lg px-2 py-1">
+            {/* Language Selector — F9 display-only: chỉ đổi state hiển thị local,
+                KHÔNG persist (BE PUT transcript không nhận field `language`). */}
+            <div
+              className="flex items-center gap-1 bg-background border border-input rounded-lg px-2 py-1"
+              title="Hiển thị ngôn ngữ đích — không lưu server (display-only)"
+            >
               <Languages className="w-3.5 h-3.5 text-muted-foreground" />
               <select
                 value={targetLanguage}
                 onChange={(e) => onLanguageChange?.(e.target.value)}
                 disabled={disabled}
+                title="Hiển thị ngôn ngữ đích — không lưu server (display-only)"
                 className="bg-transparent text-xs text-foreground focus:outline-none disabled:opacity-60 font-medium"
               >
                 <option value="vi">Tiếng Việt</option>

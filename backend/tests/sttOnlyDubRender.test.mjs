@@ -127,6 +127,30 @@ await insert('ocr_regions', {
   assert(derived[0].status === 'DRAFT', 'derived region marked as DRAFT')
 }
 
+// Verification D: AUTO_STATIC từ dub.mask (source='AUTO', APPROVED) ĐƯỢC render.
+// Phân biệt với LEGACY_OCR/DRAFT ở trên (vẫn bị loại).
+{
+  const pid2 = `p-auto-static-${Date.now()}`
+  await insert('projects', { id: pid2, user_id: 'u-stt', mode: 'TRANSLATE_DUB', title: 'auto static' })
+  await insert('ocr_regions', {
+    id: 'm-auto-static',
+    project_id: pid2,
+    start_sec: 0,
+    end_sec: 87.5,
+    ratio_x: 0.08,
+    ratio_y: 0.70,
+    ratio_w: 0.84,
+    ratio_h: 0.18,
+    type: 'blur',
+    source: 'AUTO',
+    status: 'APPROVED',
+    enabled: 1,
+  })
+  const masks = await loadSubtitleRegions(pid2)
+  assert(masks.length === 1 && masks[0].id === 'm-auto-static', 'AUTO/APPROVED từ dub.mask được load vào render')
+  assert(masks[0].start_sec === 0 && masks[0].end_sec === 87.5, 'vùng AUTO tĩnh giữ nguyên 0→duration')
+}
+
 try { (await import('node:fs')).rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)

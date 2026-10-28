@@ -35,8 +35,35 @@ export const PROJECT_RETAINABLE_STATUSES = Object.freeze([
 
 export const PROJECT_ACTIVE_STATUSES = Object.freeze([
   PROJECT_STATUS.PENDING,
+  PROJECT_STATUS.QUEUED,
   PROJECT_STATUS.RUNNING,
 ])
+
+// Job/output vocabulary (generation_jobs.status, outputs.status).
+// Runner publishes 'completed' for project-done; job-done rows historically use
+// 'success'. Consumers must use normalizeJobStatus(), never literal compare.
+export const JOB_STATUS = Object.freeze({
+  SUCCESS: 'success',
+  FAILED: 'failed',
+  ERROR: 'error',
+  TIMEOUT: 'timeout',
+  RETRY: 'retry',
+  RUNNING: 'running',
+})
+
+// Transition alias: runner-emitted 'completed' on a job row means SUCCESS.
+export function normalizeJobStatus(s) {
+  if (s === 'completed') return JOB_STATUS.SUCCESS
+  return s
+}
+
+export function isCompletedProjectStatus(s) {
+  return normalizeProjectStatus(s) === PROJECT_STATUS.COMPLETED
+}
+
+export function isActiveProjectStatus(s) {
+  return PROJECT_ACTIVE_STATUSES.includes(normalizeProjectStatus(s))
+}
 
 export function isTerminalProjectStatus(status) {
   return PROJECT_TERMINAL_STATUSES.includes(String(status))
@@ -47,9 +74,11 @@ export function isRetainableProjectStatus(status) {
 }
 
 // Normalize legacy/alien values read from old DBs or callers.
-// 'success' (old job-status leak) → 'completed'. Unknown → as-is.
+// 'success' (old job-status leak) → 'completed'.
+// 'generating' (frontend-only display alias) → 'running' on read-path, never persisted.
 export function normalizeProjectStatus(status) {
   if (status === 'success') return PROJECT_STATUS.COMPLETED
+  if (status === 'generating') return PROJECT_STATUS.RUNNING
   return status
 }
 
@@ -58,7 +87,11 @@ export default {
   PROJECT_TERMINAL_STATUSES,
   PROJECT_RETAINABLE_STATUSES,
   PROJECT_ACTIVE_STATUSES,
+  JOB_STATUS,
   isTerminalProjectStatus,
   isRetainableProjectStatus,
   normalizeProjectStatus,
+  normalizeJobStatus,
+  isCompletedProjectStatus,
+  isActiveProjectStatus,
 }

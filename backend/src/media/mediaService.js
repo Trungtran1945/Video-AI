@@ -73,6 +73,32 @@ export async function makeThumbnail(src, atSec, out) {
   return out
 }
 
+// Trích K thumbnails jpg cho dub.mask (1 ffmpeg call mỗi timestamp, serialize
+// sẵn qua ffmpeg() queue). Bỏ qua timestamp lỗi, không throw khi 1 frame hỏng;
+// throw chỉ khi 0 frame nào trích được.
+export async function extractMaskFrames(src, projectDirPath, timestamps, { width = 960 } = {}) {
+  const dir = path.join(projectDirPath, 'mask_frames')
+  fs.mkdirSync(dir, { recursive: true })
+  const out = []
+  const w = Math.max(320, Math.min(1280, Math.round(Number(width) || 960)))
+  for (let i = 0; i < (timestamps || []).length; i++) {
+    const t = Number(timestamps[i])
+    if (!Number.isFinite(t) || t < 0) continue
+    const framePath = path.join(dir, `mask_${String(i).padStart(3, '0')}.jpg`)
+    try {
+      await ffmpeg(
+        ['-y', '-ss', String(t), '-i', src, '-frames:v', '1', '-vf', `scale=${w}:-1`, '-q:v', '3', framePath],
+        { timeout: 60_000 }
+      )
+      out.push({ path: framePath, atSec: t })
+    } catch (_) {
+      // frame lỗi → bỏ qua, không fail stage
+    }
+  }
+  if (!out.length) throw new Error('BLOCK_RENDER: MASK_FRAMES_EMPTY — không trích được frame nào cho dub.mask')
+  return out
+}
+
 export async function transcodeToMezzanine(src, out, { withAudio = false } = {}) {
   ensureDir(out)
   const args = [
@@ -727,6 +753,7 @@ export default {
   compressAudioForUpload,
   detectScenes,
   makeThumbnail,
+  extractMaskFrames,
   transcodeToMezzanine,
   clipSlice,
   concatClips,

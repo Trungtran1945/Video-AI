@@ -104,11 +104,24 @@ import dubStt from './stages/dubStt.js'
 import dubMerge from './stages/dubMerge.js'
 import { validateForRender, dedupeTranscriptSegments, sanitizeTranscriptOverlaps } from './stages/dubMerge.js'
 import dubTranslate from './stages/dubTranslate.js'
+import dubMask from './stages/dubMask.js'
 import dubTtsAlign from './stages/dubTtsAlign.js'
 import dubRender from './stages/dubRender.js'
 
+import scriptIngest from './stages/scriptIngest.js'
+import scriptAnalyze from './stages/scriptAnalyze.js'
+import scriptTts from './stages/scriptTts.js'
+import scriptImage from './stages/scriptImage.js'
+import scriptAlign from './stages/scriptAlign.js'
+import scriptSubtitle from './stages/scriptSubtitle.js'
+import scriptRender from './stages/scriptRender.js'
+
 function isDubProject(project) {
   return String(project?.mode || '').toUpperCase().replace('-', '_') === 'TRANSLATE_DUB'
+}
+
+function isScriptProject(project) {
+  return String(project?.mode || '').toUpperCase().replace('-', '_') === 'SCRIPT_TO_VIDEO'
 }
 
 // Stages that (re)produce the transcript. The generation snapshot follows their
@@ -244,8 +257,18 @@ export const STAGES = {
     'dub.stt',
     'dub.merge',
     'dub.translate',
+    'dub.mask',
     'dub.ttsAlign',
     'dub.render',
+  ],
+  SCRIPT_TO_VIDEO: [
+    'script.ingest',
+    'script.analyze',
+    'script.tts',
+    'script.image',
+    'script.align',
+    'script.subtitle',
+    'script.render',
   ],
 }
 
@@ -258,6 +281,7 @@ export function stagesForProject(projectOrMode) {
     'dub.stt',
     'dub.merge',
     'dub.translate',
+    'dub.mask',
     'dub.ttsAlign',
     'dub.render',
   ]
@@ -270,6 +294,7 @@ function groupedStagesForProject(project) {
     ['dub.ingest'],
     ['dub.stt', 'dub.merge'],
     ['dub.translate'],
+    ['dub.mask'],
     ['dub.ttsAlign'],
     ['dub.render'],
   ]
@@ -293,8 +318,16 @@ const STAGE_IMPL = {
 
   'dub.merge': dubMerge,
   'dub.translate': dubTranslate,
+  'dub.mask': dubMask,
   'dub.ttsAlign': dubTtsAlign,
   'dub.render': dubRender,
+  'script.ingest': scriptIngest,
+  'script.analyze': scriptAnalyze,
+  'script.tts': scriptTts,
+  'script.image': scriptImage,
+  'script.align': scriptAlign,
+  'script.subtitle': scriptSubtitle,
+  'script.render': scriptRender,
 }
 
 // Test seam: regression test thay stage impl bằng fake (không chạy provider/
@@ -317,12 +350,20 @@ const STAGE_PROVIDER = {
 
   'dub.merge': 'core',
   'dub.translate': 'llm',
+  'dub.mask': 'vision',
   'dub.ttsAlign': 'tts',
   'dub.render': 'ffmpeg',
+  'script.ingest': 'core',
+  'script.analyze': 'llm',
+  'script.tts': 'tts',
+  'script.image': 'core',
+  'script.align': 'core',
+  'script.subtitle': 'core',
+  'script.render': 'ffmpeg',
 }
 
 const RESETS = {
-  'summary.transcribe': ['transcript', 'scenes', 'segments', 'clips', 'audios', 'subtitles', 'outputs'],
+  'summary.transcribe': ['transcript', 'transcriptSegments', 'scenes', 'segments', 'clips', 'audios', 'subtitles', 'outputs'],
   'summary.sceneDetect': ['scenes', 'segments', 'clips', 'audios', 'subtitles', 'outputs'],
   'summary.analyze': ['segments', 'clips', 'audios', 'subtitles', 'outputs'],
   'summary.script': ['segments', 'clips', 'audios', 'subtitles', 'outputs'],
@@ -332,12 +373,22 @@ const RESETS = {
   'summary.render': ['outputs'],
   // TRANSLATE_DUB (docs/02: TranscriptSegment riêng cho từng mode)
   'dub.ingest': ['audios', 'subtitles', 'outputs'],
-  'dub.stt': ['audios', 'subtitles', 'outputs'],
+  'dub.stt': ['transcriptSegments', 'audios', 'subtitles', 'outputs'],
 
   'dub.merge': [], // dub.merge chỉ kiểm tra DB, không tạo artifacts
   'dub.translate': ['audios', 'subtitles', 'outputs'],
+  'dub.mask': [],
   'dub.ttsAlign': ['audios', 'outputs'],
   'dub.render': ['outputs'],
+  // SCRIPT_TO_VIDEO: ingest/analyze rebuild the whole script-derived graph.
+  // tts/image self-reconcile per segment (no blanket delete).
+  'script.ingest': ['segments', 'assets', 'clips', 'audios', 'subtitles', 'outputs'],
+  'script.analyze': ['segments', 'assets', 'clips', 'audios', 'subtitles', 'outputs'],
+  'script.tts': [],
+  'script.image': [],
+  'script.align': ['clips', 'subtitles', 'outputs'],
+  'script.subtitle': ['subtitles', 'outputs'],
+  'script.render': ['outputs'],
 }
 
 // Stages whose impl calls an AI provider (registry capability names).
@@ -389,6 +440,19 @@ async function clearArtifacts(projectId, kinds, runToken = null) {
       fs.rmSync(path.join(dir, 'thumbs'), { recursive: true, force: true })
     } else if (kind === 'segments') {
       await runOwnedSql(projectId, runToken, `DELETE FROM script_segments WHERE project_id = ?`, [projectId])
+    } else if (kind === 'assets') {
+      const rows = await query(`SELECT storage_key, meta FROM assets WHERE project_id = ?`, [projectId])
+      for (const r of rows) {
+        await assertRunOwner(projectId, runToken)
+        const meta = parseJsonSafe(r.meta, {}) || {}
+        for (const key of [r.storage_key, meta.previewKey]) {
+          const abs = resolveStorageKey(key)
+          if (abs && isPathInside(dir, abs)) {
+            try { fs.unlinkSync(abs) } catch (_) {}
+          }
+        }
+      }
+      await runOwnedSql(projectId, runToken, `DELETE FROM assets WHERE project_id = ?`, [projectId])
     } else if (kind === 'clips') {
       await runOwnedSql(projectId, runToken, `DELETE FROM timeline_clips WHERE project_id = ?`, [projectId])
     } else if (kind === 'audios') {
@@ -404,6 +468,14 @@ async function clearArtifacts(projectId, kinds, runToken = null) {
       }
       await runOwnedSql(projectId, runToken, `DELETE FROM audios WHERE project_id = ?`, [projectId])
       await clearTtsLinks(projectId, null, { runToken })
+      // Detach script segment audio links; the audio rows/files are gone, so a
+      // retry must synthesize again instead of skipping on a dangling id.
+      await runOwnedSql(
+        projectId,
+        runToken,
+        `UPDATE script_segments SET voice_audio_id = NULL, tts_clip_key = NULL, duration_sec = NULL, status = 'pending' WHERE project_id = ?`,
+        [projectId]
+      )
     } else if (kind === 'subtitles') {
       await runOwnedSql(projectId, runToken, `DELETE FROM subtitles WHERE project_id = ?`, [projectId])
       await assertRunOwner(projectId, runToken)
@@ -437,6 +509,14 @@ async function clearArtifacts(projectId, kinds, runToken = null) {
 }
 
 function checkInputs(project) {
+  // SCRIPT_TO_VIDEO has no source video — its input is the normalized script.
+  if (isScriptProject(project)) {
+    const scriptAbs = resolveStorageKey(project.script_key)
+    if (!scriptAbs || !fs.existsSync(scriptAbs)) {
+      throw new Error(`Tệp kịch bản không tồn tại trong kho lưu trữ: ${project.script_key || '(trống)'}. Hãy upload lại kịch bản rồi tạo project.`)
+    }
+    return
+  }
   // Cả hai mode đều dùng 1 video nguồn duy nhất (docs/01 §3).
   const keys = [project.source_video_key]
   for (const k of keys.filter(Boolean)) {
@@ -581,13 +661,18 @@ export const RETRY_POLICY = {
   'dub.render': { maxRetries: 2, backoffMs: [30_000, 120_000] },           // 30s, 120s
   'dub.stt': { maxRetries: 3, backoffMs: [10_000, 30_000, 60_000] },
   'dub.translate': { maxRetries: 3, backoffMs: [5_000, 15_000, 30_000] },
+  'dub.mask': { maxRetries: 2, backoffMs: [15_000, 60_000] },
 }
 
 const STAGE_TIMEOUTS = {
   'summary.render': 30 * 60 * 1000,
   'dub.render': 30 * 60 * 1000,
+  'script.render': 30 * 60 * 1000,
+  'script.tts': 30 * 60 * 1000,
+  'script.analyze': 20 * 60 * 1000,
   'summary.align': 15 * 60 * 1000,
   'dub.ttsAlign': 15 * 60 * 1000,
+  'dub.mask': 10 * 60 * 1000,
 }
 const DEFAULT_STAGE_TIMEOUT = 15 * 60 * 1000
 
@@ -692,7 +777,7 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       }, runToken)
     }
     const result = await withTimeout(
-      impl({ project, job, settings, setProgress, results, signal, runToken, transcriptVersionSnapshot: generation.transcriptVersionSnapshot, forceTranscript }),
+      impl({ project, job, settings, setProgress, results, signal, runToken, transcriptVersionSnapshot: generation.transcriptVersionSnapshot, scriptVersionSnapshot: generation.scriptVersionSnapshot, forceTranscript }),
       stageTimeout,
       job.type
     )
@@ -919,14 +1004,22 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
       } catch (_) {}
     }
 
-    // Generation boundary: ONE transcript revision snapshot per TRANSLATE_DUB
-    // generation. Captured here, refreshed only while transcript-producing
+    // Generation boundary: ONE transcript revision snapshot per generation.
+    // TRANSLATE_DUB: captured here, refreshed only while transcript-producing
     // stages run, frozen once dub.ttsAlign starts — shared by ttsAlign,
     // render and the published output (provenance).
+    // SUMMARY: snapshot current transcript_version read-only (parity; summary
+    // stages ignore it, render persists it on the output row).
+    // Project-done publishes 'completed' (projects.status vocab); job-done rows
+    // keep 'success' (generation_jobs.status vocab) — consumers map via
+    // normalizeJobStatus(), never literal-compare.
     const generation = {
       transcriptVersionSnapshot: isDubProject(project)
         ? await resolveGenerationSnapshot(projectId, effectiveFrom, project)
-        : null,
+        : Number(project.transcript_version ?? 0),
+      // SCRIPT_TO_VIDEO: the script revision this generation renders. Captured
+      // once at the run boundary so retries of render keep the same provenance.
+      scriptVersionSnapshot: isScriptProject(project) ? Number(project.script_version ?? 0) : null,
     }
 
     await updateProjectOwned(projectId, runToken, { progress: 0, last_heartbeat_at: nowIso() })
@@ -1012,6 +1105,22 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
       if (groupFailed) {
         const failedUpdated = await updateProjectOwned(projectId, runToken, { status: 'failed', run_token: null, lease_expires_at: null })
         if (failedUpdated) eventBus.publish(projectId, { stage: '__project__', status: 'failed', percent: done / total * 100 })
+        return
+      }
+
+      // Review gate: analysis succeeded, hand control back to the user instead
+      // of synthesizing/rendering. The project parks as queued with an explicit
+      // review flag; drainQueued skips review-parked rows and Generate clears it.
+      if (options.parkAfterAnalysis === true && types.includes('script.analyze')) {
+        const percent = Math.round(((done + 1) / total) * 100)
+        const parked = await updateProjectOwned(projectId, runToken, {
+          status: 'queued',
+          run_token: null,
+          lease_expires_at: null,
+          script_review_required: 1,
+          progress: percent,
+        })
+        if (parked) eventBus.publish(projectId, { stage: '__project__', status: 'queued', percent })
         return
       }
 

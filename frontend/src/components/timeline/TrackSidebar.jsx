@@ -12,7 +12,7 @@ export default function TrackSidebar() {
   const { tracks } = useTimelineStore();
 
   return (
-    <div className="w-[72px] flex-shrink-0 bg-card border-r border-border flex flex-col select-none z-20 shadow-xs">
+    <div className="w-12 sm:w-[72px] flex-shrink-0 bg-card border-r border-border flex flex-col select-none z-20 shadow-xs">
       <div className="h-9 px-2 flex items-center border-b border-border text-[10px] font-medium text-muted-foreground uppercase tracking-wider bg-muted/50">
         <span>Layers</span>
       </div>
@@ -36,7 +36,7 @@ export default function TrackSidebar() {
                 </span>
                 <Icon size={12} className="text-muted-foreground" />
               </div>
-              <div className="text-[8px] text-muted-foreground truncate">{track.name}</div>
+              <div className="text-[8px] text-muted-foreground truncate hidden sm:block">{track.name}</div>
             </div>
           );
         })}

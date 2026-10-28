@@ -1,0 +1,506 @@
+# MASTER TASK: TRANSFORM VIDEO-AI INTO AN AI SCRIPT-TO-VIDEO GENERATOR + YOUTUBE PUBLISHING SYSTEM
+
+## 1. TASK
+
+Repository: https://github.com/Trungtran1945/Video-AI
+
+Bạn là đội ngũ AI Software Engineering gồm:
+- PLANNER / ARCHITECT: phân tích yêu cầu, kiến trúc và lập kế hoạch.
+- CODER: triển khai backend, frontend, pipeline và tích hợp provider.
+- TESTER: kiểm thử chức năng, pipeline và regression.
+- DEBUGGER: điều tra lỗi và xử lý root cause.
+- REVIEWER: kiểm tra code, architecture, security và kết quả.
+
+Hãy trực tiếp kiểm tra repository hiện tại, lập kế hoạch và triển khai chuyển đổi dự án từ AI Review phim thành AI Video Generator.
+
+Không chỉ viết báo cáo hoặc prompt. Phải thực hiện thay đổi code thực tế trong repository nếu môi trường cho phép.
+
+## 2. BUG / PRODUCT CHANGE
+
+Sản phẩm hiện tại có mode SUMMARY và TRANSLATE_DUB.
+
+SUMMARY hiện được thiết kế để xử lý video nguồn, phân tích cảnh, viết kịch bản review và ghép giọng đọc vào cảnh phim.
+
+Yêu cầu mới:
+
+Người dùng upload một file kịch bản. Hệ thống tự động:
+
+1. Đọc và phân tích kịch bản.
+2. Chia kịch bản thành các đoạn đọc có ngữ nghĩa hoàn chỉnh.
+3. Sinh voice-over cho từng đoạn bằng TTS.
+4. Sinh hình ảnh hoặc slide tương ứng với từng đoạn.
+5. Tính thời lượng từng slide theo audio thực tế.
+6. Ghép hình ảnh, giọng đọc và phụ đề bằng FFmpeg.
+7. Xuất video MP4 hoàn chỉnh.
+8. Cho phép preview, tải video và tùy chọn đăng lên YouTube.
+
+Sản phẩm mới không còn lấy video phim dài làm đầu vào chính.
+
+Tên mode mới đề xuất: SCRIPT_TO_VIDEO hoặc AI_VIDEO.
+
+Không tự đổi tên mode hoặc xóa mode cũ nếu chưa kiểm tra ảnh hưởng của migration, API, frontend, queue, dữ liệu và compatibility.
+
+## 3. ROOT CAUSE / EVIDENCE
+
+Tài liệu repository đã được xác nhận:
+
+- README.md: kiến trúc Node.js + Express, React + Vite, BullMQ + Redis, SQLite sql.js, FFmpeg và Provider Pattern.
+- AGENTS.md: quy định Think Before Coding, Simplicity First, Surgical Changes và Goal-Driven Execution.
+- Video_AI_docs/docs/00_TAM_NHIN_VA_YEU_CAU.md: yêu cầu sản phẩm hiện tại, bao gồm SUMMARY, TRANSLATE_DUB và YouTube upload.
+- Video_AI_docs/docs/05_THIET_KE_PIPELINE_CHI_TIET.md: thiết kế pipeline và các stage hiện tại.
+
+Định hướng hiện tại là thay đổi product workflow. Chưa có bằng chứng xác nhận một runtime error cụ thể.
+
+Không được giả định rằng các module image generation, YouTube OAuth hoặc auto-publishing đã tồn tại chỉ vì tài liệu đề cập tới provider hoặc YouTube.
+
+## 4. REQUIRED PHASE 0: SOURCE CODE AUDIT
+
+Trước khi sửa bất kỳ file nào:
+
+1. Đọc AGENTS.md và các tài liệu architecture.
+2. Kiểm tra git status, branch hiện tại và các thay đổi chưa commit.
+3. Không reset hoặc ghi đè các thay đổi hiện có của người dùng.
+4. Đọc source code frontend và backend thực tế.
+5. Trace toàn bộ pipeline SUMMARY từ API tạo project đến stage runner, TTS, align, render và output.
+6. Kiểm tra TRANSLATE_DUB để xác định các module có thể tái sử dụng.
+7. Kiểm tra các API, DB schema, migrations, frontend forms, queue jobs và output services.
+8. Kiểm tra provider registry hiện tại: LLM, TTS, image generation, FFmpeg.
+9. Kiểm tra chức năng YouTube OAuth, upload, token storage, job queue và trạng thái publish hiện có.
+10. Kiểm tra tests, dependencies, Docker và cấu hình môi trường.
+
+Tìm chính xác file, function, component, API và schema liên quan. Không chỉ dựa vào README.
+
+Tạo báo cáo audit ngắn:
+- Existing functionality.
+- Reusable modules.
+- Missing modules.
+- Files sẽ sửa.
+- Files cần tạo.
+- Risks và migration requirements.
+
+Không được khẳng định implementation đã tồn tại nếu chưa đọc code.
+
+## 5. REQUIRED PHASE 1: PRODUCT AND ARCHITECTURE PLAN
+
+Lập kế hoạch triển khai theo các module:
+
+### A. Script ingestion
+
+- Upload file kịch bản.
+- Kiểm tra MIME type, extension, kích thước và encoding.
+- Hỗ trợ TXT và DOCX nếu architecture cho phép.
+- Không thực thi nội dung file.
+- Lưu kịch bản theo project và user.
+- Có thể retry hoặc resume pipeline an toàn.
+
+### B. Script analysis and segmentation
+
+LLM phân tích nội dung thành các segment.
+
+Mỗi segment cần có cấu trúc dữ liệu tương tự:
+
+{
+  "id": "stable-segment-id",
+  "order": 1,
+  "narrationText": "...",
+  "visualPrompt": "...",
+  "visualAssetId": null,
+  "audioAssetId": null,
+  "durationSec": null,
+  "status": "pending"
+}
+
+Schema thực tế phải theo coding style và architecture hiện tại.
+
+Yêu cầu:
+- Giữ thứ tự kịch bản.
+- Không làm mất nội dung.
+- Chia đoạn theo ngữ nghĩa.
+- Không chia giữa câu nếu không cần thiết.
+- Có giới hạn token và kích thước segment.
+- Có thể chỉnh sửa segment.
+- Nếu user sửa narrationText, chỉ invalidate những output phụ thuộc vào nội dung đó.
+
+Không để LLM tùy ý trả về schema không kiểm soát.
+
+### C. TTS
+
+- Tái sử dụng Provider Pattern hiện tại.
+- Sinh audio cho từng segment.
+- Lưu audio bằng storage abstraction hiện có.
+- Đo duration thực tế bằng FFprobe.
+- Có retry, timeout và provider quota handling.
+- Có thể retry segment thất bại.
+- Không hard-code API keys.
+- Không tạo duplicate TTS job khi retry.
+- Tách biệt text generation và audio generation.
+
+Nếu TTS provider không hỗ trợ tiếng Việt hoặc voice được chọn, phải báo lỗi rõ ràng.
+
+### D. Image generation
+
+Kiểm tra repository hiện tại có image generation provider hay không.
+
+Nếu chưa có:
+- Thiết kế adapter/provider theo architecture hiện tại.
+- Không giả định Vision provider có khả năng sinh ảnh.
+- Sử dụng provider phù hợp với cấu hình của user.
+- Có mock provider cho tests.
+- Lưu image assets qua storage abstraction.
+- Có thể retry từng segment.
+- Không hard-code API key.
+- Không bắt buộc thêm provider trả phí nếu chưa được user cấu hình.
+
+MVP sử dụng image tĩnh để dựng slide.
+
+Mỗi segment cần có:
+- Hình nền.
+- Visual prompt.
+- Image asset.
+- Thời lượng hiển thị.
+- Thứ tự trên timeline.
+
+Nếu image generation chưa thể triển khai do thiếu credentials, phải hoàn thành architecture/provider interface và mock tests, sau đó báo rõ những bước user phải tự thiết lập.
+
+Không được tuyên bố tạo ảnh thật thành công bằng mock data.
+
+### E. Timeline and rendering
+
+Tạo timeline từ audio duration thực tế.
+
+Ví dụ:
+
+Segment 1: 5.2 giây
+Segment 2: 7.4 giây
+Segment 3: 4.1 giây
+
+Mỗi segment phải ghép:
+- Image/slide.
+- Voice-over.
+- Subtitle.
+- Start/end timestamp.
+
+Sử dụng FFmpeg module hiện có nếu phù hợp.
+
+Yêu cầu:
+- Render MP4.
+- Đồng bộ audio và image.
+- Hỗ trợ subtitle SRT/ASS.
+- Tùy chọn burn-in subtitle.
+- Hỗ trợ aspect ratio 16:9; thiết kế không khóa cứng để mở rộng 9:16.
+- Có thể giữ slide tĩnh trong toàn bộ đoạn đọc.
+- Audio không bị mất hoặc chồng lấn.
+- Có FFprobe validation sau render.
+- Output không được báo completed nếu file chưa tồn tại hoặc invalid.
+
+Không xây dựng editor timeline hoàn chỉnh nếu MVP chỉ cần tự động render.
+
+## 6. REQUIRED PHASE 2: PIPELINE AND BACKEND
+
+Tạo mode mới theo conventions hiện tại.
+
+Pipeline đề xuất:
+
+script.ingest
+→ script.analyze
+→ script.segment
+→ script.tts
+→ script.image
+→ script.align
+→ script.subtitle
+→ script.render
+→ script.output
+
+Có thể điều chỉnh thứ tự stage nếu audit chứng minh cần thiết.
+
+Yêu cầu:
+- Dùng stage runner và queue architecture hiện tại.
+- Không tạo một pipeline engine thứ hai.
+- Mỗi stage có input/output contract rõ ràng.
+- Retry và cancellation.
+- Idempotency.
+- Stage dependency và invalidation.
+- Progress qua SSE hiện có.
+- Lưu project status và stage status đúng conventions.
+- Lỗi provider không được làm mất toàn bộ output đã hoàn thành.
+- Kiểm soát concurrency và quota.
+- Có cleanup cho temporary files.
+- Giữ nguyên auth, user isolation và ownership checks.
+
+Kiểm tra API:
+- Tạo project SCRIPT_TO_VIDEO.
+- Upload script.
+- Preview script segments.
+- Chỉnh sửa segment.
+- Chọn voice và image provider.
+- Start pipeline.
+- Retry failed stage/segment.
+- Preview output.
+- Download MP4.
+- YouTube publish.
+
+Thiết kế request/response theo API conventions hiện có.
+
+## 7. REQUIRED PHASE 3: FRONTEND
+
+Đọc frontend source code trước khi chỉnh sửa.
+
+Cập nhật giao diện để user có thể:
+
+1. Chọn AI Video Generator.
+2. Upload file kịch bản.
+3. Xem nội dung đã phân tích.
+4. Chỉnh sửa đoạn đọc và visual prompt.
+5. Chọn voice provider, voice và image provider.
+6. Start generation.
+7. Theo dõi tiến trình qua SSE.
+8. Preview video.
+9. Download MP4.
+10. Đăng YouTube.
+
+Yêu cầu:
+- Tái sử dụng component, API client, project detail và progress system hiện có.
+- Không tạo UI độc lập ngoài project architecture.
+- Không để SUMMARY UI cũ bị hỏng.
+- Có loading, empty, error, retry và cancellation states.
+- UI phải phản ánh trạng thái backend thực tế.
+- Không hiển thị thành công khi backend chưa xác nhận.
+- Có thông báo lỗi provider/quota rõ ràng.
+
+## 8. REQUIRED PHASE 4: YOUTUBE OAUTH AND AUTO-PUBLISH
+
+Kiểm tra implementation hiện tại trước.
+
+Nếu chưa có, tích hợp YouTube Data API v3 theo kiến trúc backend hiện có.
+
+### A. Google Cloud setup
+
+Xác định và hướng dẫn user:
+- Google Cloud project.
+- Enable YouTube Data API v3.
+- OAuth consent screen.
+- OAuth Client ID.
+- Authorized redirect URI cho development và production.
+- Required OAuth scopes.
+- Các yêu cầu verification hoặc quota hiện hành.
+
+Đọc documentation chính thức hiện hành của Google/YouTube trước khi triển khai. Không sử dụng API key thay thế OAuth để đăng video vào tài khoản user.
+
+Không tự tạo Google Cloud project hoặc OAuth credentials khi chưa được cấp quyền và chưa có thông tin cần thiết.
+
+### B. OAuth connection
+
+- User chủ động kết nối YouTube channel.
+- Dùng OAuth authorization code flow phù hợp với backend.
+- Validate state và callback.
+- Không yêu cầu mật khẩu YouTube.
+- Lưu access token và refresh token an toàn.
+- Encrypt token khi lưu DB.
+- Không log token hoặc secret.
+- Refresh token khi hết hạn nếu được cấp quyền.
+- Có disconnect/revoke workflow.
+- Kiểm tra ownership và user isolation.
+- Không chia sẻ credentials giữa các user.
+
+Không expose refresh token hoặc access token cho frontend.
+
+### C. Upload job
+
+Tạo queue job upload độc lập.
+
+Yêu cầu:
+- Chỉ upload output video đã được xác nhận.
+- Hỗ trợ resumable upload nếu API cho phép.
+- Metadata: title, description, tags, category.
+- Privacy: private, unlisted, public.
+- Thumbnail nếu API và channel hỗ trợ.
+- Theo dõi progress.
+- Lưu video ID, URL, upload status và processing status.
+- Retry lỗi mạng có thể phục hồi.
+- Idempotency chống upload duplicate.
+- Quota-aware retry.
+- User có thể cancel job nếu kiến trúc hỗ trợ an toàn.
+
+Không báo upload completed khi chỉ mới gửi request; kiểm tra phản hồi API và trạng thái processing phù hợp.
+
+### D. Auto-publish
+
+MVP:
+- User preview MP4.
+- User xác nhận metadata và privacy.
+- User bấm Publish.
+- Backend upload qua queue.
+
+Nâng cấp:
+- Tự upload khi render xong nếu user bật Auto Publish.
+- Hỗ trợ lịch đăng nếu API hiện hành cho phép.
+- Kiểm tra duplicate.
+- Không tự động publish video công khai nếu chưa có authorization và cấu hình rõ ràng của user.
+
+Không vượt qua OAuth consent, quota, privacy hoặc verification requirements.
+
+### E. Environment configuration
+
+Tạo hoặc cập nhật .env.example, config validation và setup documentation.
+
+Ví dụ biến cấu hình đề xuất:
+
+YOUTUBE_CLIENT_ID=
+YOUTUBE_CLIENT_SECRET=
+YOUTUBE_REDIRECT_URI=
+
+Tên biến phải tuân theo conventions hiện tại.
+
+Không ghi credentials thật vào repository.
+
+Nếu chưa có credentials:
+- Hoàn thiện code và mock tests.
+- Ghi rõ OAuth integration chưa được kiểm chứng end-to-end.
+- Cung cấp hướng dẫn thiết lập thủ công.
+- Không sử dụng token giả để tuyên bố publish thành công.
+
+## 9. IMPLEMENTATION REQUIREMENTS
+
+1. Đọc code trước khi sửa.
+2. Tuân thủ AGENTS.md.
+3. Think Before Coding.
+4. Simplicity First.
+5. Surgical Changes.
+6. Goal-Driven Execution.
+7. Giữ architecture hiện tại.
+8. Tái sử dụng Provider Pattern.
+9. Không thêm dependency nếu không cần.
+10. Không xóa chức năng cũ nếu chưa kiểm tra migration.
+11. Không tạo duplicate pipeline.
+12. Không hard-code secrets.
+13. Không vô hiệu hóa auth, validation hoặc security.
+14. Không sửa database/deployment production khi chưa được phê duyệt.
+15. Không ghi đè thay đổi chưa commit.
+16. Không commit, push hoặc merge.
+17. Không tuyên bố PASS nếu chưa có evidence.
+
+Nếu yêu cầu mơ hồ hoặc có quyết định ảnh hưởng architecture, nêu assumptions và hỏi user trước khi thực hiện thay đổi destructive.
+
+## 10. TESTING
+
+### Backend
+- Script upload validation.
+- Script segmentation schema validation.
+- TTS mock provider.
+- Image generation mock provider.
+- Stage dependency.
+- Pipeline retry.
+- Pipeline cancellation.
+- Idempotency.
+- Storage ownership.
+- Render input generation.
+- FFmpeg output validation.
+- YouTube OAuth callback validation.
+- Token encryption.
+- YouTube upload mock.
+- Retry không duplicate.
+- Privacy metadata.
+- User isolation.
+
+### Frontend
+- Upload script.
+- Edit segment.
+- Start generation.
+- SSE progress.
+- Retry failed stage.
+- Preview/download.
+- OAuth connect/disconnect.
+- Publish workflow.
+- Error handling.
+
+### Regression
+Chạy đầy đủ:
+- cd backend && npm test
+- cd backend && npm run lint
+- cd frontend && npm run lint
+- cd frontend && npm run build
+- cd frontend && npm run typecheck
+
+Chạy các test hiện có của SUMMARY và TRANSLATE_DUB.
+
+Không invent npm scripts nếu package.json không hỗ trợ.
+
+### Integration verification
+
+Nếu có FFmpeg, Redis và provider credentials:
+- Chạy một script ngắn từ đầu đến cuối.
+- Xác minh MP4 bằng FFprobe.
+- Kiểm tra audio stream, video stream, duration và subtitle.
+- Kiểm tra YouTube upload trên video test với privacy private/unlisted theo cấu hình user.
+
+Nếu môi trường thiếu dependency, credentials hoặc quota:
+- Ghi BLOCKED hoặc NOT VERIFIED.
+- Nêu chính xác điều kiện còn thiếu.
+- Không báo PASS.
+
+## 11. DO NOT
+
+- Không chỉ tạo markdown plan rồi dừng.
+- Không thay đổi code chỉ bằng cách đổi tên SUMMARY.
+- Không xóa SUMMARY/TRANSLATE_DUB một cách tùy tiện.
+- Không tạo một hệ thống pipeline mới bên ngoài kiến trúc hiện tại.
+- Không giả lập kết quả thành công của provider thật.
+- Không tự động đăng video công khai khi chưa được user xác nhận.
+- Không bypass OAuth.
+- Không commit.
+- Không push.
+- Không merge.
+- Không sửa deployment production.
+- Không thay đổi database destructive.
+
+## 12. FINAL REPORT
+
+Báo cáo bằng tiếng Việt, bao gồm:
+
+### A. AUDIT
+- Files/functions đã kiểm tra.
+- Architecture hiện tại.
+- Những module được tái sử dụng.
+
+### B. ROOT CAUSE / PRODUCT CHANGE
+- Khác biệt giữa SUMMARY và SCRIPT_TO_VIDEO.
+- Những thay đổi cần thiết để đáp ứng yêu cầu.
+
+### C. FILES CHANGED
+Liệt kê:
+- File path.
+- Function/component.
+- Nội dung thay đổi.
+- Lý do.
+
+### D. IMPLEMENTATION
+- Pipeline mới.
+- API contracts.
+- DB changes/migrations.
+- Frontend changes.
+- TTS/image generation.
+- FFmpeg rendering.
+- YouTube OAuth/upload.
+
+### E. TEST RESULTS
+- Test commands.
+- PASS / FAIL / BLOCKED.
+- Error logs quan trọng.
+- Các vấn đề chưa giải quyết.
+
+### F. YOUTUBE SETUP
+- Google Cloud configuration.
+- OAuth redirect URI.
+- Required environment variables.
+- Những bước user phải thực hiện.
+- Trạng thái upload/publish thực tế.
+
+### G. VERIFICATION
+Xác nhận:
+- Không commit/push/merge.
+- Không thay đổi deployment production.
+- Không hard-code secrets.
+- Các chức năng cũ còn hoạt động.
+- Các giới hạn hoặc rủi ro còn tồn tại.
+
+Bắt đầu bằng Phase 0: Source Code Audit. Sau audit, lập kế hoạch ngắn, xác định files cần sửa rồi mới triển khai. Không bỏ qua audit để code ngay.

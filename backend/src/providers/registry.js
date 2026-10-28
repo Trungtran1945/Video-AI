@@ -14,6 +14,7 @@ import ZeroTts from './tts/zeroTts.js'
 import GeminiVision from './vision/geminiVision.js'
 import MockVision from './vision/mockVision.js'
 import GoogleTranslate from './translate/googleTranslate.js'
+import SlideImage from './image/slideImage.js'
 
 export class ProviderError extends Error {
   constructor(message, code = 'PROV_001') {
@@ -44,6 +45,7 @@ export const PROVIDER_LABELS = {
   azure_speech: 'Azure Speech',
   clip: 'CLIP (local)',
   google_translate: 'Google Translate (Apps Script)',
+  slide: 'Slide nội bộ (MVP)',
 }
 
 // Mỗi provider có thể có nhiều biến môi trường fallback (thử theo thứ tự).
@@ -61,7 +63,7 @@ const ENV_KEYS = {
 }
 
 // Provider chạy không cần API key (ZeroTTS local, Edge-TTS của Microsoft, Google Translate via Apps Script, Mock providers).
-const KEYLESS = new Set(['zerotts', 'edge_tts', 'google_tts', 'google_translate', 'mock'])
+const KEYLESS = new Set(['zerotts', 'edge_tts', 'google_tts', 'google_translate', 'mock', 'slide'])
 
 const REGISTRY = {
   llm: {
@@ -94,9 +96,13 @@ const REGISTRY = {
   translate: {
     google_translate: (key) => new GoogleTranslate(key || process.env.GOOGLE_TRANSLATE_SCRIPT_URL),
   },
+  image: {
+    slide: () => new SlideImage(),
+    mock: () => new SlideImage({ mock: true }),
+  },
 }
 
-const DEFAULTS = { llm: 'gemini', asr: 'whisper', tts: 'edge_tts', vision: 'gemini', translate: 'google_translate' }
+const DEFAULTS = { llm: 'gemini', asr: 'whisper', tts: 'edge_tts', vision: 'gemini', translate: 'google_translate', image: 'slide' }
 
 const SETTINGS_COLUMN = {
   llm: ['active_llm_provider'],
@@ -104,6 +110,7 @@ const SETTINGS_COLUMN = {
   tts: ['active_voice_provider', 'voice_provider'],
   vision: [],
   translate: ['active_translate_provider'],
+  image: ['active_image_provider'],
 }
 
 async function resolveApiKey(userId, providerId) {

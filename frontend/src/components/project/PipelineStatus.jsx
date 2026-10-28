@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import {
   FileText, Scissors, Sparkles, Combine, Mic, Captions, Video, FileAudio,
-  Languages, AudioLines, Circle, Loader2, CheckCircle, AlertCircle, AlertTriangle, Clock, RotateCcw, Zap,
+  Languages, AudioLines, Image, Circle, Loader2, CheckCircle, AlertCircle, AlertTriangle, Clock, RotateCcw, Zap,
 } from 'lucide-react';
 import { STAGE_LABELS } from '@/lib/constants';
 import { friendlyJobError } from '@/lib/providerErrorMessage';
@@ -19,8 +19,16 @@ const stageIcons = {
   'dub.stt': Mic,
   'dub.merge': Combine,
   'dub.translate': Languages,
+  'dub.mask': Scissors,
   'dub.ttsAlign': AudioLines,
   'dub.render': Video,
+  'script.ingest': FileText,
+  'script.analyze': Sparkles,
+  'script.tts': Mic,
+  'script.image': Image,
+  'script.align': Combine,
+  'script.subtitle': Captions,
+  'script.render': Video,
 };
 
 // Pinned pipeline stepper (TransFlow-inspired): sticky, numbered, per-stage
@@ -33,6 +41,7 @@ export default function PipelineStatus({
   jobByStage = {},
   onRetry = null,
   retryingStage = null,
+  redisStatus = null, // 'connected' | 'disconnected' | null (từ GET /health)
 }) {
   // Find any stage that is in retry status awaiting quota recovery
   const activeRetryStageKey = stages.find((s) => jobByStage[s]?.status === 'retry');
@@ -99,7 +108,9 @@ export default function PipelineStatus({
             const Icon = stageIcons[stageKey] || Circle;
             const job = jobByStage[stageKey];
             const isCurrent = job?.status === 'running';
-            const isDone = job?.status === 'success';
+            // Transition vocab: runner emits 'success' for job-done; accept
+            // 'completed' too until the backend settles on one name.
+            const isDone = job?.status === 'success' || job?.status === 'completed';
             const isError = ['failed', 'error', 'timeout'].includes(job?.status);
             const isRetry = job?.status === 'retry';
             const nextRetry = job?.next_retry_at || job?.nextRetryAt;
@@ -206,6 +217,12 @@ export default function PipelineStatus({
           })}
         </div>
       </div>
+      {redisStatus === 'disconnected' && (
+        <div className="mt-2 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-xs text-amber-700 dark:text-amber-300 font-medium">
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+          <span>Redis disconnected — project có thể nằm ở trạng thái chờ cho tới khi Redis sẵn sàng. Kiểm tra <span className="font-mono">docker compose up -d redis</span> / GET /health.</span>
+        </div>
+      )}
       {activeRetryMessage && (
         <div className="mt-2 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-xs text-amber-700 dark:text-amber-300 font-medium">
           <Clock className="w-3.5 h-3.5 text-amber-500 shrink-0 animate-pulse" />

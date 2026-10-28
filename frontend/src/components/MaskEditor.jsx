@@ -64,6 +64,20 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
     return () => window.removeEventListener('resize', measure);
   }, [measure]);
 
+  // B4: surface đúng message BE — 409 MASK_APPROVED_IMMUTABLE / 400 mask AUTO
+  // chỉ đọc (masks.js:262,284,352); lỗi khác fallback message BE nguyên văn.
+  const maskActionError = (e, fallback) => {
+    const data = e?.response?.data || {};
+    const code = data.code || data.error?.code;
+    if (e?.response?.status === 409 && code === 'MASK_APPROVED_IMMUTABLE') {
+      return 'Mask đã duyệt (APPROVED) không sửa được hình dạng — Nhân bản tay để chỉnh.';
+    }
+    if (e?.response?.status === 400 && /tự động|chỉ đọc/i.test(data.message || '')) {
+      return 'Mask tự động chỉ đọc — Nhân bản tay để chỉnh.';
+    }
+    return `${fallback}: ` + (data.message || data.error?.message || e.message);
+  };
+
   const patchMask = useCallback(async (maskId, patch) => {
     setSaving(true);
     setError('');
@@ -73,7 +87,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
       onMaskChange?.();
       return updated;
     } catch (e) {
-      setError('Không lưu được mask: ' + (e?.response?.data?.message || e.message));
+      setError(maskActionError(e, 'Không lưu được mask'));
       return null;
     } finally {
       setSaving(false);
@@ -107,7 +121,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
   const approveHint = !selected
     ? 'Chọn một mask thủ công để approve'
     : isAuto(selected)
-      ? 'Mask tự động chỉ đọc — nhấn “Nhân bản tay” để chỉnh'
+      ? 'Mask tự động từ dub.mask — giữ nguyên suốt video (chỉ đọc). Nhấn “Nhân bản tay” để chỉnh'
       : selected.status === 'APPROVED'
         ? 'APPROVED: sẽ được render ở lần chạy lại'
         : 'Approve để đưa mask vào video ở lần Chạy lại tiếp theo';
@@ -152,7 +166,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
       if (String(selectedId) === String(m.id)) setSelectedId(null);
       onMaskChange?.();
     } catch (e) {
-      setError('Không xoá được mask: ' + (e?.response?.data?.message || e.message));
+      setError(maskActionError(e, 'Không xoá được mask'));
     } finally {
       setSaving(false);
     }
@@ -284,7 +298,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
         <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
         <span>Thêm mask chỉ tạo bản xem trước. Để đưa vào video cuối: <strong className="text-foreground">Approve</strong> mask rồi nhấn <strong className="text-foreground">Chạy lại</strong>.</span>
       </div>
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
           <Scissors className="w-3.5 h-3.5" /> Che chữ thủ công
           <span className="text-[10px] font-normal text-muted-foreground">{masks.length} vùng</span>
@@ -294,14 +308,14 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
             onClick={handleApprove}
             disabled={!canApprove}
             title={approveHint}
-            className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40"
+            className="inline-flex items-center gap-1 text-[11px] px-2 py-2 sm:py-1 min-h-[36px] rounded-md bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40"
           >
             {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />} Approve
           </button>
           <button
             onClick={handleAdd}
             disabled={disabled || saving}
-            className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            className="inline-flex items-center gap-1 text-[11px] px-2 py-2 sm:py-1 min-h-[36px] rounded-md bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />} Thêm mask
           </button>
@@ -346,27 +360,31 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
             style={boxStyle(m)}
             onPointerDown={(e) => onBoxPointerDown(e, m, 'move')}
             onClick={(e) => { e.stopPropagation(); setSelectedId(m.id); seek(m.startSec); }}
-            title={isAuto(m) ? 'Mask tự động (chỉ đọc)' : `Mask thủ công (${m.type})`}
+            title={isAuto(m) ? 'Mask tự động từ dub.mask — giữ nguyên suốt video (chỉ đọc)' : `Mask thủ công (${m.type})`}
           >
+            {/* R2: hit-area 28px cho touch (p-2 -m-2 + flex center giữ nguyên tâm visual 12px) */}
             {!isAuto(m) && String(selectedId) === String(m.id) && ['nw', 'ne', 'sw', 'se'].map((h) => (
               <span
                 key={h}
                 onPointerDown={(e) => onBoxPointerDown(e, m, h)}
                 style={{
                   position: 'absolute',
-                  width: 12, height: 12, borderRadius: 3, background: '#60a5fa',
                   cursor: `${h}-resize`,
                   top: h.includes('n') ? -7 : undefined,
                   bottom: h.includes('s') ? -7 : undefined,
                   left: h.includes('w') ? -7 : undefined,
                   right: h.includes('e') ? -7 : undefined,
                 }}
-              />
+                title="Kéo để chỉnh kích thước"
+                className="p-2 -m-2 flex items-center justify-center"
+              >
+                <span style={{ width: 12, height: 12, borderRadius: 3, background: '#60a5fa', display: 'block' }} />
+              </span>
             ))}
           </div>
         ))}
       </div>
-      <div className="text-[10px] text-muted-foreground px-1">Xem trước trên video nguồn — phụ đề dịch sẽ hiển thị phía trên vùng che ở video cuối.</div>
+      <div className="text-[10px] text-muted-foreground px-1">Xem trước trên video nguồn — phụ đề dịch sẽ hiển thị phía trên vùng che ở video cuối. Vùng AUTO giữ nguyên suốt video; muốn chỉnh tay hãy Nhân bản.</div>
 
       {/* Danh sách mask */}
       <div className="flex flex-col gap-1 max-h-32 overflow-y-auto">
@@ -400,7 +418,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
             {!isAuto(m) && (
               <button
                 onClick={(e) => { e.stopPropagation(); handleToggleEnabled(m); }}
-                className="shrink-0 text-muted-foreground hover:text-foreground"
+                className="shrink-0 text-muted-foreground hover:text-foreground p-2 -m-1 min-w-[32px] min-h-[32px] flex items-center justify-center"
                 title={m.status === 'DISABLED' ? 'Bật lại (APPROVED)' : 'Tắt mask (DISABLED)'}
               >
                 {m.status === 'DISABLED' ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -442,7 +460,7 @@ function NumField({ label, value, step = 0.5, min, max, onCommit, suffix, disabl
         disabled={disabled}
         onChange={(e) => setV(e.target.value)}
         onBlur={() => { const n = Number(v); if (Number.isFinite(n)) onCommit(n); else setV(String(value ?? '')); }}
-        className="w-full bg-background border border-border rounded-md px-1.5 py-1 text-[11px] text-foreground disabled:opacity-50"
+        className="w-full bg-background border border-border rounded-md px-1.5 py-2 sm:py-1 min-h-[36px] text-[11px] text-foreground disabled:opacity-50"
       />
     </label>
   );
@@ -455,7 +473,7 @@ function MaskForm({ mask, readOnly, disabled, onCommit, onDelete, onDuplicate, o
     <div className="border border-border rounded-xl p-2 flex flex-col gap-2 bg-card">
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-semibold">
-          {readOnly ? 'Mask tự động (chỉ đọc)' : `Chỉnh mask thủ công — ${mask.status || 'DRAFT'}`}
+          {readOnly ? 'Mask tự động từ dub.mask — giữ nguyên suốt video (chỉ đọc)' : `Chỉnh mask thủ công — ${mask.status || 'DRAFT'}`}
         </span>
         <div className="flex items-center gap-1">
           {readOnly ? (
@@ -500,7 +518,7 @@ function MaskForm({ mask, readOnly, disabled, onCommit, onDelete, onDuplicate, o
           DISABLED: không render. Bật lại (biểu tượng con mắt) để đưa vào video ở lần chạy lại.
         </div>
       )}
-      <div className="grid grid-cols-4 gap-1.5">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
         <NumField label="X" suffix="%" value={toPct(mask.ratioX)} min={0} max={100} disabled={locked} onCommit={(n) => onCommit({ ratioX: toRatio(n) })} />
         <NumField label="Y" suffix="%" value={toPct(mask.ratioY)} min={0} max={100} disabled={locked} onCommit={(n) => onCommit({ ratioY: toRatio(n) })} />
         <NumField label="Rộng" suffix="%" value={toPct(mask.ratioW)} min={1} max={100} disabled={locked} onCommit={(n) => onCommit({ ratioW: toRatio(n) })} />
@@ -513,7 +531,7 @@ function MaskForm({ mask, readOnly, disabled, onCommit, onDelete, onDuplicate, o
             value={mask.type === 'solid' ? 'solid' : 'blur'}
             disabled={locked}
             onChange={(e) => onCommit({ type: e.target.value })}
-            className="w-full bg-background border border-border rounded-md px-1.5 py-1 text-[11px] text-foreground disabled:opacity-50"
+            className="w-full bg-background border border-border rounded-md px-1.5 py-2 sm:py-1 min-h-[36px] text-[11px] text-foreground disabled:opacity-50"
           >
             <option value="blur">Làm mờ</option>
             <option value="solid">Che phủ</option>
@@ -539,7 +557,7 @@ function MaskForm({ mask, readOnly, disabled, onCommit, onDelete, onDuplicate, o
           value={Number(mask.blurRadius ?? 8)}
           disabled={locked || mask.type === 'solid'}
           onChange={(e) => onCommit({ blurRadius: Number(e.target.value) })}
-          className="w-full"
+          className="w-full h-8 accent-primary"
         />
       </label>
       <label className="flex flex-col gap-1 text-[10px] text-muted-foreground">
@@ -552,7 +570,7 @@ function MaskForm({ mask, readOnly, disabled, onCommit, onDelete, onDuplicate, o
           value={Math.round(Number(mask.opacity ?? 1) * 100)}
           disabled={locked}
           onChange={(e) => onCommit({ opacity: Number(e.target.value) / 100 })}
-          className="w-full"
+          className="w-full h-8 accent-primary"
         />
       </label>
     </div>

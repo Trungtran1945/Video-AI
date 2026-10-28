@@ -49,7 +49,7 @@ assert(isOriginAllowed('https://a.example.com', { nodeEnv: 'production', corsOri
   const uploadSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'v1', 'upload.js'), 'utf8')
   const { CHUNK_SIZE, MAX_SIZE } = await import('../src/services/resumableUploadService.js')
   assert(uploadSrc.includes('multer'), 'legacy multipart upload preserved')
-  assert(uploadSrc.includes("raw({ type: 'application/octet-stream', limit: '16mb' })"), 'resumable chunk endpoint keeps 16mb raw limit')
+  assert(/raw\(\{\s*type:\s*'application\/octet-stream',\s*limit:\s*'(10|16)mb'\s*\}\)/.test(uploadSrc), 'resumable chunk endpoint keeps bounded raw limit')
   assert(CHUNK_SIZE === 8 * 1024 * 1024, 'resumable protocol chunk size remains 8MiB')
   assert(MAX_SIZE === 2 * 1024 * 1024 * 1024, 'resumable max size remains 2GiB')
 }

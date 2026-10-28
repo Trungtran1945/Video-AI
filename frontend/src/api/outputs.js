@@ -4,5 +4,7 @@ export const outputsApi = {
   list: (params) => api.get('/outputs', { params }).then((r) => r.data),
   get: (id) => api.get(`/outputs/${id}`).then((r) => r.data),
   youtube: (id, privacy) => api.post(`/outputs/${id}/youtube`, { privacy }).then((r) => r.data),
+  youtubePublish: (id, payload) => api.post(`/outputs/${id}/youtube`, payload).then((r) => r.data),
   youtubeStatus: (id) => api.get(`/outputs/${id}/youtube`).then((r) => r.data),
+  cancelYoutube: (id) => api.post(`/outputs/${id}/youtube/cancel`).then((r) => r.data),
 }

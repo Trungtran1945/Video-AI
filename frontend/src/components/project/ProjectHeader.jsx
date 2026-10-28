@@ -30,6 +30,7 @@ export default function ProjectHeader({
   }, [showRerunMenu]);
 
   const isDubMode = project?.mode !== 'SUMMARY';
+  const stagePickerEnabled = project?.status !== 'queued';
   const stageOptions = isDubMode ? [
     { label: 'Tự động (tiếp tục theo tiến độ)', stage: null },
     { label: 'Từ bước Dịch thuật', stage: 'dub.translate' },
@@ -75,39 +76,43 @@ export default function ProjectHeader({
                 type="button"
                 onClick={() => onRegenerate()}
                 disabled={regenerating}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-l-lg border border-primary/30 text-primary hover:bg-primary/10 text-xs font-semibold transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 ${stagePickerEnabled ? 'rounded-l-lg' : 'rounded-lg'} border border-primary/30 text-primary hover:bg-primary/10 text-xs font-semibold transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary`}
               >
                 {regenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />} Chạy lại
               </button>
-              <button
-                type="button"
-                onClick={() => setShowRerunMenu((prev) => !prev)}
-                disabled={regenerating}
-                title="Chọn bước chạy lại cụ thể"
-                className="inline-flex items-center px-1.5 py-1.5 rounded-r-lg border-y border-r border-primary/30 text-primary hover:bg-primary/10 text-xs font-semibold transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              >
-                <ChevronDown className="w-3.5 h-3.5" />
-              </button>
-              {showRerunMenu && (
-                <div className="absolute top-full right-0 mt-1 w-56 py-1 bg-card border border-border rounded-lg shadow-xl z-50 animate-in fade-in zoom-in-95 duration-100">
-                  <div className="px-3 py-1.5 text-[11px] font-semibold text-muted-foreground border-b border-border/50 uppercase tracking-wider">
-                    Chạy lại theo giai đoạn
-                  </div>
-                  {stageOptions.map((opt) => (
-                    <button
-                      key={opt.stage || 'auto'}
-                      type="button"
-                      onClick={() => {
-                        setShowRerunMenu(false);
-                        onRegenerate(opt.stage);
-                      }}
-                      className="w-full text-left px-3 py-2 text-xs text-foreground hover:bg-muted transition flex items-center justify-between"
-                    >
-                      <span>{opt.label}</span>
-                      {opt.stage && <span className="text-[10px] text-muted-foreground font-mono">{opt.stage.split('.')[1]}</span>}
-                    </button>
-                  ))}
-                </div>
+              {stagePickerEnabled && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowRerunMenu((prev) => !prev)}
+                    disabled={regenerating}
+                    title="Chọn bước chạy lại cụ thể"
+                    className="inline-flex items-center px-1.5 py-1.5 rounded-r-lg border-y border-r border-primary/30 text-primary hover:bg-primary/10 text-xs font-semibold transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+                  {showRerunMenu && (
+                    <div className="absolute top-full right-0 mt-1 w-56 py-1 bg-card border border-border rounded-lg shadow-xl z-50 animate-in fade-in zoom-in-95 duration-100">
+                      <div className="px-3 py-1.5 text-[11px] font-semibold text-muted-foreground border-b border-border/50 uppercase tracking-wider">
+                        Chạy lại theo giai đoạn
+                      </div>
+                      {stageOptions.map((opt) => (
+                        <button
+                          key={opt.stage || 'auto'}
+                          type="button"
+                          onClick={() => {
+                            setShowRerunMenu(false);
+                            onRegenerate(opt.stage);
+                          }}
+                          className="w-full text-left px-3 py-2 text-xs text-foreground hover:bg-muted transition flex items-center justify-between"
+                        >
+                          <span>{opt.label}</span>
+                          {opt.stage && <span className="text-[10px] text-muted-foreground font-mono">{opt.stage.split('.')[1]}</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}

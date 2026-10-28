@@ -63,10 +63,15 @@ Use-case gọi `resolveTts(settings.voiceProvider)` → **không biết** implem
 - `SummaryPipeline` — điều phối các stage SUMMARY (gọi provider qua interface).
 - `TranslateDubPipeline` [CURRENT] — chạy sequential theo `STAGES.TRANSLATE_DUB`
   (`backend/src/pipeline/runner.js:111-129`):
-  `[dub.ingest, dub.stt, dub.merge, dub.translate, dub.ttsAlign, dub.render]`.
+  `[dub.ingest, dub.stt, dub.merge, dub.translate, dub.mask, dub.ttsAlign, dub.render]`.
   Pipeline là STT-only: toàn bộ legacy OCR (`dubOcr.js`, `tesseractOcr.js`, thư viện `tesseract.js`,
   cờ `ocrMode`) đã bị gỡ bỏ hoàn toàn khỏi codebase; phụ đề được render mặc định ở đáy khung hình (`\an2`).
   Dữ liệu OCR cũ nếu còn trong DB được cô lập với `source = 'LEGACY_OCR'`.
+  Stage `dub.mask` (vision) chạy sau `dub.translate` và trước `dub.ttsAlign`/`dub.render`:
+  sample ≤8 frame → `vision.detectSubtitle` → hợp nhất 1 bbox tĩnh (`ocr_regions`
+  `source='AUTO'`, `status='APPROVED'`, `start_sec=0`, `end_sec=duration`) để che
+  hardsub gốc xuyên suốt video; `dub.render` burn mask trước rồi mới burn ASS dịch
+  nên phụ đề dịch luôn visible trên lớp che.
 - `AlignService` — thuật toán đồng bộ giọng ↔ cảnh của SUMMARY (xem `05`).
 - `ForcedAlignService` — ép khớp thời lượng TTS vào slot timestamp gốc của TRANSLATE_DUB
   (tempo stretching / chèn lặng / pause expansion / rút gọn câu).
@@ -90,11 +95,15 @@ Use-case gọi `resolveTts(settings.voiceProvider)` → **không biết** implem
     { "warnings": [{ "segmentId": "...", "type": "reading_speed", "cps": 32.5, "threshold": 25 }] }
     ```
 - `SubtitleMaskService` [CURRENT] — quản lý mask qua bảng `ocr_regions` với lifecycle: `DRAFT`, `APPROVED`, `DISABLED`.
+  - **Mask tự động `dub.mask`**: 1 row `source='AUTO'`/`APPROVED` tĩnh (`start_sec=0`,
+    `end_sec=duration`, `is_static=1`) do pipeline ghi trực tiếp (không qua REST, không bump
+    `transcript_version`); read-only trên API (PATCH/DELETE → 400, muốn chỉnh phải "Nhân bản tay");
+    rerun từ `dub.mask` thay thế row cũ, MANUAL giữ nguyên.
   - **Bất biến APPROVED**: Mask `APPROVED` bị khoá chỉnh sửa hình học/thị giác (HTTP 409 `MASK_APPROVED_IMMUTABLE`). Muốn sửa toạ độ phải chuyển về `DRAFT`.
   - **Render an toàn**: `dubRender` chỉ render mask `APPROVED`. Trả lỗi rõ ràng `BLOCK_RENDER: MASK_DATA_UNAVAILABLE` khi DB fail và `BLOCK_RENDER: MASK_INVALID` khi toạ độ/thời gian sai lệch.
   - **Đồng bộ Stale**: Mọi thao tác tạo/sửa/xoá mask APPROVED/DRAFT đều tăng `projects.transcript_version` để kích hoạt cờ `outputStale: true`.
 - `RenderService` — gọi `backend/src/media/mediaService.js` sinh video (hỗ trợ dynamic sidechain ducking −12dB khi có giọng nói và hồi phục âm lượng đầy đủ khi ngắt nghỉ).
-- `Regenerate / Rerun by Stage` [CURRENT] — `POST /projects/:id/regenerate` hỗ trợ tham số `{ fromStage?: string }` cho phép chạy lại từ stage chỉ định (TRANSLATE_DUB: `dub.translate`, `dub.ttsAlign`, `dub.render`; SUMMARY: `summary.script`, `summary.tts`, `summary.render`), validate theo `stagesForProject(project)`.
+- `Regenerate / Rerun by Stage` [CURRENT] — `POST /projects/:id/regenerate` hỗ trợ tham số `{ fromStage?: string }` cho phép chạy lại từ stage chỉ định (TRANSLATE_DUB: `dub.translate`, `dub.mask`, `dub.ttsAlign`, `dub.render`; SUMMARY: `summary.script`, `summary.tts`, `summary.render`), validate theo `stagesForProject(project)`. Chạy lại từ `dub.translate` sẽ làm mới vùng che tự động (`dub.mask` chạy lại sau).
 - `CancelProjectUseCase` [CURRENT] — huỷ job `pending`/`running` của 1 project
   (`backend/src/usecases/cancelProjectUseCase.js`): đặt `projects.status = 'cancelled'`
   (không `failed`), `generation_jobs` liên quan → `'cancelled'`, abort pipeline đang
@@ -273,7 +282,7 @@ Giá trị `status='rate_limited'` giúp `QuotaGuardService` và trang `Logs`/`A
 - Khi worker crash, BullMQ retry; `GenerationJob` lưu `attempts` & `error`.
   [CURRENT]: retry/backoff theo `RETRY_POLICY` trong `runner.js:314-319`
   (`dub.ttsAlign` 3 lần 10s/30s/60s, `dub.render` 2 lần 30s/120s, `dub.stt` 3 lần
-  10s/30s/60s, `dub.translate` 3 lần 5s/15s/30s); rate-limit park `queued` + `retry`
+  10s/30s/60s, `dub.translate` 3 lần 5s/15s/30s, `dub.mask` 2 lần 15s/60s); rate-limit park `queued` + `retry`
   với `next_retry_at` (tối đa 5 lần).
 - [CURRENT] Validation `TRANSLATE_NEEDS_REVIEW` / `BLOCK_RENDER` là lỗi dữ liệu →
   fail-fast 1 lần, không retry/backoff/park (`isValidationError`, `runner.js:29-36, 400-405`).

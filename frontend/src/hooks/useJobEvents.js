@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { apiClient } from '@/api/client'
-
-const API_BASE = import.meta.env.VITE_API_BASE || '/api/v1'
+import { projectsApi } from '@/api/projects'
+import { resolveSseUrl } from '@/lib/apiBase'
 
 /**
  * Lắng nghe tiến trình pipeline realtime qua SSE GET /projects/:id/events.
@@ -104,10 +103,11 @@ export function useJobEvents(projectId, enabled = true) {
       let url = null
       try {
         // Mỗi attempt xin ticket mới (single-use, không reuse ticket cũ).
-        const { data } = await apiClient.post(`/projects/${projectId}/sse-ticket`)
+        // D1: qua helper projectsApi.sseTicket (chống drift path/param).
+        const ticketData = await projectsApi.sseTicket(projectId).catch(() => null)
         if (cancelled || gen !== generationRef.current) return
-        if (data?.ticket) {
-          url = `${API_BASE}/projects/${projectId}/events?ticket=${encodeURIComponent(data.ticket)}`
+        if (ticketData?.ticket) {
+          url = resolveSseUrl(projectId, ticketData.ticket)
         }
       } catch {
         /* ticket không lấy được → retry với ticket mới (bounded) */

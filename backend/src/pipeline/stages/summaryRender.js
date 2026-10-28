@@ -45,7 +45,7 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 export async function summaryRender(ctx) {
-  const { project, setProgress, signal, runToken } = ctx
+  const { project, setProgress, signal, runToken, transcriptVersionSnapshot } = ctx
   await assertRunOwner(project.id, runToken)
   const src = requireSourceFile(project.source_video_key, 'Video nguồn (phim)')
   const clips = await query(
@@ -138,12 +138,23 @@ export async function summaryRender(ctx) {
 
   const info = await probe(finalPath)
   await assertRunOwner(project.id, runToken)
+  // ensureDir(thumbs/) trước makeThumbnail — try/catch câm cũ nuốt lỗi thiếu dir.
+  const thumbsAbs = ensureDir(path.join(path.dirname(finalPath), 'thumbs'))
   const thumbRel = `outputs/thumbs/${outId}.jpg`
   try {
-    await makeThumbnail(finalPath, Math.min(3, info.durationSec / 2), path.join(path.dirname(finalPath), 'thumbs', `${outId}.jpg`))
-  } catch (_) {}
+    await makeThumbnail(finalPath, Math.min(3, info.durationSec / 2), path.join(thumbsAbs, `${outId}.jpg`))
+  } catch (err) {
+    console.warn(`[summaryRender] makeThumbnail failed project=${project.id}: ${String(err?.message || err).slice(0, 160)}`)
+  }
 
   await assertRunOwner(project.id, runToken)
+  // Provenance parity DUB: snapshot generation (runner capture transcript_version
+  // ở boundary), fallback current version — không bao giờ null.
+  const { queryOne: qOne } = await import('../../db/query.js')
+  const curRow = await qOne('SELECT transcript_version FROM projects WHERE id = ?', [project.id]).catch(() => null)
+  const provenanceVersion = Number.isInteger(transcriptVersionSnapshot)
+    ? transcriptVersionSnapshot
+    : Number(curRow?.transcript_version ?? 0)
   await createOutput({
     id: outId,
     projectId: project.id,
@@ -151,7 +162,7 @@ export async function summaryRender(ctx) {
     status: 'success',
     durationSec: round2(info.durationSec),
     thumbnailKey: thumbRel,
-    transcriptVersion: null,
+    transcriptVersion: provenanceVersion,
     runToken,
   })
 

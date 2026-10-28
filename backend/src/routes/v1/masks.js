@@ -188,11 +188,12 @@ router.get('/projects/:id/masks', requireProjectOwner, async (req, res) => {
     )
     const params = parseParams(req.project.params)
     const legacyAuto = await deriveAutoMasks(req.project.id, params.maskMethod)
-    // Phân biệt rõ MANUAL vs LEGACY_AUTO / LEGACY_OCR
+    // Stored rows gồm MANUAL (tay) + AUTO tĩnh từ dub.mask (giữ nguyên source
+    // để frontend phân biệt read-only AUTO vs MANUAL). Legacy suy ra từ
+    // transcript cũ đi kênh riêng (isLegacy + id legacy_ocr:*) nên không trùng.
     const formattedStored = (stored || []).map((row) => {
       const src = String(row.source || 'MANUAL').toUpperCase()
-      const normalizedSource = src === 'AUTO' ? 'LEGACY_AUTO' : src
-      return toMaskJson({ ...row, source: normalizedSource })
+      return toMaskJson({ ...row, source: src })
     })
     res.json({ masks: [...formattedStored, ...legacyAuto] })
   } catch (err) {
