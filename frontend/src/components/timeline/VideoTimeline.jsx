@@ -147,45 +147,57 @@ export default function VideoTimeline({
       });
     }
 
-    // Original language layer (read-only timing from transcript)
-    if (Array.isArray(transcript) && transcript.length > 0) {
-      transcript.forEach((seg, idx) => {
-        const startSec = Number(seg.startSec ?? seg.start_sec) || 0;
-        const endSec = Number(seg.endSec ?? seg.end_sec) || startSec + 1;
-        const dur = Math.max(0.1, Number((endSec - startSec).toFixed(2)));
+      // Original language layer (read-only timing from transcript)
+      if (Array.isArray(transcript) && transcript.length > 0) {
+        transcript.forEach((seg, idx) => {
+          const startSec = Number(seg.startSec ?? seg.start_sec) || 0;
+          const endSec = Number(seg.endSec ?? seg.end_sec) || startSec + 1;
+          const dur = Math.max(0.1, Number((endSec - startSec).toFixed(2)));
+          const rawStatus = seg.status || (seg.cached ? 'cached' : seg.repaired ? 'repaired' : (seg.warning || seg.hasWarning) ? 'warning' : seg.processing ? 'processing' : 'idle');
 
-        newClips.push({
-          id: `orig-${seg.id || idx}`,
-          segmentId: seg.id,
-          trackId: 'track-original-1',
-          start: startSec,
-          duration: dur,
-          type: 'original',
-          content: seg.text || '',
-          color: '#78350f',
-          speaker: seg.speaker,
+          newClips.push({
+            id: `orig-${seg.id || idx}`,
+            segmentId: seg.id,
+            trackId: 'track-original-1',
+            start: startSec,
+            duration: dur,
+            type: 'original',
+            content: seg.text || '',
+            color: '#78350f',
+            speaker: seg.speaker,
+            status: rawStatus,
+            cached: Boolean(seg.cached || rawStatus === 'cached'),
+            repaired: Boolean(seg.repaired || rawStatus === 'repaired'),
+            warning: Boolean(seg.warning || seg.hasWarning || rawStatus === 'warning'),
+            processing: Boolean(seg.processing || rawStatus === 'processing'),
+          });
         });
-      });
 
-      // Translated language layer (independent, user-editable timing)
-      transcript.forEach((seg, idx) => {
-        const startSec = Number(seg.startSec ?? seg.start_sec) || 0;
-        const endSec = Number(seg.endSec ?? seg.end_sec) || startSec + 1;
-        const dur = Math.max(0.1, Number((endSec - startSec).toFixed(2)));
+        // Translated language layer (independent, user-editable timing)
+        transcript.forEach((seg, idx) => {
+          const startSec = Number(seg.startSec ?? seg.start_sec) || 0;
+          const endSec = Number(seg.endSec ?? seg.end_sec) || startSec + 1;
+          const dur = Math.max(0.1, Number((endSec - startSec).toFixed(2)));
+          const rawStatus = seg.status || (seg.cached ? 'cached' : seg.repaired ? 'repaired' : (seg.warning || seg.hasWarning) ? 'warning' : seg.processing ? 'processing' : 'idle');
 
-        newClips.push({
-          id: `trans-${seg.id || idx}`,
-          segmentId: seg.id,
-          trackId: 'track-translated-1',
-          start: startSec,
-          duration: dur,
-          type: 'translated',
-          content: seg.translation || seg.text || '',
-          color: '#064e3b',
-          speaker: seg.speaker,
+          newClips.push({
+            id: `trans-${seg.id || idx}`,
+            segmentId: seg.id,
+            trackId: 'track-translated-1',
+            start: startSec,
+            duration: dur,
+            type: 'translated',
+            content: seg.translation || seg.text || '',
+            color: '#064e3b',
+            speaker: seg.speaker,
+            status: rawStatus,
+            cached: Boolean(seg.cached || rawStatus === 'cached'),
+            repaired: Boolean(seg.repaired || rawStatus === 'repaired'),
+            warning: Boolean(seg.warning || seg.hasWarning || rawStatus === 'warning'),
+            processing: Boolean(seg.processing || rawStatus === 'processing'),
+          });
         });
-      });
-    }
+      }
 
     setClips(newClips);
   }, [transcript, propDuration, outputUrl, project?.title, setClips]);

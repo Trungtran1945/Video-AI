@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { projectsApi } from '@/api/projects'
 import { resolveSseUrl } from '@/lib/apiBase'
 
@@ -24,7 +24,7 @@ import { resolveSseUrl } from '@/lib/apiBase'
  *   Callback của EventSource cũ (onmessage/onerror/done/retry timer) không
  *   được mutate state/retry/close connection mới.
  *
- * Trả về: { events, lastEvent, sseAvailable, streamClosed }
+ * Trả về: { events, lastEvent, sseAvailable, streamClosed, clearEvents }
  *  - events: map stage → { status, percent }
  */
 export function useJobEvents(projectId, enabled = true) {
@@ -36,6 +36,11 @@ export function useJobEvents(projectId, enabled = true) {
   const timersRef = useRef([])
   const generationRef = useRef(0)
 
+  const clearEvents = useCallback(() => {
+    setEvents({})
+    setLastEvent(null)
+  }, [])
+
   useEffect(() => {
     if (!projectId || !enabled) return undefined
     let cancelled = false
@@ -45,6 +50,8 @@ export function useJobEvents(projectId, enabled = true) {
     const lifecycleGen = generationRef.current
     setStreamClosed(false)
     setSseAvailable(true)
+    setEvents({})
+    setLastEvent(null)
 
     // Chuẩn hoá vocabulary: backend cũ emit 'success' cho __project__,
     // backend mới emit 'completed' (khớp projects.status). Frontend chỉ dùng 'completed'.
@@ -205,5 +212,5 @@ export function useJobEvents(projectId, enabled = true) {
     }
   }, [projectId, enabled])
 
-  return { events, lastEvent, sseAvailable, streamClosed }
+  return { events, lastEvent, sseAvailable, streamClosed, clearEvents }
 }

@@ -18,9 +18,13 @@ export const projectsApi = {
   transcript: (id) => api.get(`/projects/${id}/transcript`).then((r) => r.data),
   updateTranscript: (id, segments, revision) =>
     api.put(`/projects/${id}/transcript`, { segments, revision }).then((r) => r.data),
-  // F1 (YAGNI — gỡ dead client): sửa translation từng câu đã làm qua TranscriptEditor
-  // bulk PUT transcript (SegmentCard textarea → Lưu). BE giữ route
-  // PATCH /projects/:id/segments/:segmentId/translation + contract test, FE không wire riêng.
+  // Selective Re-run for individual segments
+  retranslateSegment: (id, segmentId, body = {}) =>
+    api.post(`/projects/${id}/segments/${segmentId}/retranslate`, body).then((r) => r.data),
+  redubSegment: (id, segmentId, body = {}) =>
+    api.post(`/projects/${id}/segments/${segmentId}/redub`, body).then((r) => r.data),
+  patchSegmentTranslation: (id, segmentId, translation, revision) =>
+    api.patch(`/projects/${id}/segments/${segmentId}/translation`, { translation, revision }).then((r) => r.data),
   redub: (id) => api.post(`/projects/${id}/translate-dub/redub`).then((r) => r.data),
   // Manual/auto subtitle masks (che/làm mờ hardsub gốc)
   masks: (id) => api.get(`/projects/${id}/masks`).then((r) => r.data),

@@ -26,7 +26,7 @@ export function runDeterministicQa(segments, translationsById) {
         blockingActions: ['BLOCK_RENDER'],
       })
     }
-    if (prevEnd !== null && Number.isFinite(start) && start < prevEnd) {
+    if (prevEnd !== null && Number.isFinite(start) && start < prevEnd - 0.05) {
       issues.push({
         segmentId: seg.id, index: seg.index_num, type: 'subtitle_overlap',
         severity: 'critical', message: `subtitle overlaps previous cue (starts ${start}s before prev ends ${prevEnd}s)`,

@@ -8,7 +8,7 @@ import { VideoTimeline } from '@/components/timeline';
 import MaskEditor from '@/components/MaskEditor';
 import { useTimelineStore } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap } from 'lucide-react';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, AlertTriangle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap } from 'lucide-react';
 import { STAGE_LABELS, SCRIPT_STAGES, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, AUDIO_MODE_LABELS, ACTIVE_STATUSES as SHARED_ACTIVE_STATUSES, isCompletedStatus } from '@/lib/constants';
 import { friendlyJobError } from '@/lib/providerErrorMessage';
 import { resolveStorageUrl } from '@/lib/apiBase';
@@ -61,6 +61,7 @@ function fmtSec(sec) {
 }
 
 function normSegment(s) {
+  const rawStatus = s.status || (s.cached ? 'cached' : s.repaired ? 'repaired' : (s.warning || s.hasWarning) ? 'warning' : s.processing ? 'processing' : 'idle');
   return {
     id: s.id || s.index,
     index: s.index ?? 0,
@@ -71,6 +72,12 @@ function normSegment(s) {
     speaker: s.speaker || null,
     isTextManuallyEdited: !!(s.isTextManuallyEdited ?? s.is_text_manually_edited),
     isTranslationManuallyEdited: !!(s.isTranslationManuallyEdited ?? s.is_translation_manually_edited),
+    status: rawStatus,
+    cached: Boolean(s.cached || s.method === 'cached' || rawStatus === 'cached'),
+    repaired: Boolean(s.repaired || rawStatus === 'repaired'),
+    warning: Boolean(s.warning || s.hasWarning || rawStatus === 'warning'),
+    processing: Boolean(s.processing || rawStatus === 'processing'),
+    error: s.error || null,
   };
 }
 
@@ -83,6 +90,10 @@ export default function ProjectDetail() {
   const [savingTranscript, setSavingTranscript] = useState(false);
   const [transcriptError, setTranscriptError] = useState('');
   const [redubbing, setRedubbing] = useState(false);
+  const [retranslatingSegmentId, setRetranslatingSegmentId] = useState(null);
+  const [redubbingSegmentId, setRedubbingSegmentId] = useState(null);
+  const [quotaCountdown, setQuotaCountdown] = useState(0);
+  const quotaBackoffUntilRef = useRef(0);
   const [outputStale, setOutputStale] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -126,13 +137,63 @@ export default function ProjectDetail() {
 
   // SSE realtime (best-effort) + DB polling là authoritative fallback.
   // useJobEvents dùng ticket single-use, done không tự suy diễn completed.
-  const { events: sseEvents, sseAvailable, lastEvent, streamClosed } = useJobEvents(id, !!project && ACTIVE_STATUSES.includes(project?.status));
+  const { events: sseEvents, sseAvailable, lastEvent, streamClosed, clearEvents } = useJobEvents(id, !!project && ACTIVE_STATUSES.includes(project?.status));
 
   const isDub = project?.mode === 'TRANSLATE_DUB' || project?.mode === 'translate_dub';
+  const isScript = project?.mode === 'SCRIPT_TO_VIDEO' || project?.mode === 'AI_VIDEO' || project?.mode === 'script_to_video';
+  const params = project?.params || {};
+  const enableDubbing = params.enableDubbing ?? params.enable_dubbing ?? false;
+
+  const stages = useMemo(() => {
+    if (isDub) {
+      return DUB_STAGES_ALL.filter((s) => {
+        if (s === 'dub.ttsAlign' && !enableDubbing) return false;
+        return true;
+      });
+    }
+    if (isScript) return SCRIPT_STAGES;
+    return SUMMARY_STAGES;
+  }, [isDub, enableDubbing, isScript]);
+
+  // Gộp trạng thái job từ polling DB + SSE realtime
+  const jobByStage = useMemo(() => {
+    const map = {};
+    (jobs || []).forEach((j) => {
+      if (!map[j.type]) map[j.type] = j;
+    });
+    Object.entries(sseEvents).forEach(([stage, ev]) => {
+      map[stage] = map[stage]
+        ? { ...map[stage], status: ev.status || map[stage].status }
+        : { type: stage, status: ev.status };
+    });
+    return map;
+  }, [jobs, sseEvents]);
+
+  // Nhận biết stage lỗi ngay lập tức
+  const hasFailedStage = useMemo(() => {
+    return stages.some((s) => ['failed', 'error', 'timeout'].includes(jobByStage[s]?.status));
+  }, [stages, jobByStage]);
+
+  // Trạng thái tổng quát: ưu tiên failed nếu có stage failed; phản ánh nhanh terminal SSE
+  const effectiveStatus = useMemo(() => {
+    if (hasFailedStage) return 'failed';
+    if (lastEvent?.stage === '__project__' && lastEvent.status) {
+      return lastEvent.status === 'success' ? 'completed' : lastEvent.status;
+    }
+    return project?.status;
+  }, [hasFailedStage, lastEvent, project?.status]);
+
+  // Pipeline chỉ active khi đang trong ACTIVE_STATUSES và KHÔNG có stage nào bị failed
+  const isActive = Boolean(
+    effectiveStatus &&
+    ACTIVE_STATUSES.includes(effectiveStatus) &&
+    !hasFailedStage
+  );
+
   // §1: output chỉ available khi pipeline COMPLETED + output success + artifact hợp lệ.
   // Lúc pending/queued/running/generating (hoặc failed) KHÔNG hiển thị output cũ.
   const isOutputAvailable =
-    project?.status === 'completed' &&
+    effectiveStatus === 'completed' &&
     !!project?.output?.storage_key &&
     !outputStale &&
     project?.outputStale !== true &&
@@ -290,22 +351,62 @@ export default function ProjectDetail() {
   }, []);
 
   const load = useCallback(async () => {
+    // Chặn bão request khi backend đang backoff (Quota / 429)
+    if (quotaBackoffUntilRef.current && Date.now() < quotaBackoffUntilRef.current) {
+      return project;
+    }
+    const MAX_POLL_TIME_MS = 20 * 60 * 1000;
+    if (pollStartTimeRef.current && Date.now() - pollStartTimeRef.current > MAX_POLL_TIME_MS) {
+      console.warn('Pipeline polling reached max time limit');
+      return project;
+    }
+    if (pollErrorCountRef.current >= 5) {
+      console.warn('Pipeline polling halted due to consecutive errors');
+      return project;
+    }
     try {
       const p = await projectsApi.get(id);
-       if (p?.outputStale !== undefined) setOutputStale(p.outputStale === true);
-       setProject(p);
+      if (p?.outputStale !== undefined) setOutputStale(p.outputStale === true);
+      setProject(p);
       setJobs(p.jobs || []);
       setScenes(p.mode === 'SUMMARY' ? (p.scenes || []) : []);
       setLoadError(null);
+      pollErrorCountRef.current = 0;
+
+      // Cập nhật quota backoff nếu job có next_retry_at do 429
+      const retryJob = (p.jobs || []).find((j) => j.status === 'retry' && (j.next_retry_at || j.nextRetryAt));
+      if (retryJob) {
+        const nr = new Date(retryJob.next_retry_at || retryJob.nextRetryAt).getTime();
+        if (!isNaN(nr) && nr > Date.now()) {
+          quotaBackoffUntilRef.current = nr;
+          setQuotaCountdown(Math.ceil((nr - Date.now()) / 1000));
+        }
+      } else if (quotaBackoffUntilRef.current <= Date.now()) {
+        quotaBackoffUntilRef.current = 0;
+        setQuotaCountdown(0);
+      }
+
+      if (['completed', 'failed', 'cancelled'].includes(p.status)) {
+        if (p.mode === 'TRANSLATE_DUB' || p.mode === 'translate_dub') {
+          loadDubData();
+        }
+      }
+
       // Best-effort cùng nhịp load (không vòng poll riêng — giữ single interval).
       refreshRedisStatus();
       return p;
     } catch (e) {
+      pollErrorCountRef.current += 1;
+      if (e?.response?.status === 429) {
+        const waitSec = Number(e?.response?.data?.retryAfterSec || e?.response?.headers?.['retry-after'] || 60);
+        quotaBackoffUntilRef.current = Date.now() + waitSec * 1000;
+        setQuotaCountdown(waitSec);
+      }
       // Phân biệt 404/403/500 — render ErrorState + nút Tải lại, không gộp error=empty.
       setLoadError(e);
       return null;
     }
-  }, [id, refreshRedisStatus]);
+  }, [id, project, refreshRedisStatus, loadDubData]);
 
   const loadDubData = useCallback(async ({ force = false } = {}) => {
     if (transcriptSaveInFlightRef.current && !force) return;
@@ -410,13 +511,56 @@ export default function ProjectDetail() {
   // Poll progress while pipeline is active — fallback authoritative khi SSE
   // không khả dụng HOẶC stream đã closed mà project vẫn active (miss event).
   // DB (load) là source of truth duy nhất; không suy diễn completed từ SSE.
-  // Single polling loop: cleanup trước khi tạo mới, stop khi terminal/unmount.
+  // Không polling vô hạn: dừng khi terminal/stage lỗi, tối đa 5 lỗi liên tiếp,
+  // hoặc tối đa 20 phút.
+  const pollErrorCountRef = useRef(0);
+  const pollStartTimeRef = useRef(null);
+
+  // Quota Countdown realtime timer (cập nhật 1s)
   useEffect(() => {
-    if (!project || !ACTIVE_STATUSES.includes(project.status)) return undefined;
+    const timer = setInterval(() => {
+      if (quotaBackoffUntilRef.current > Date.now()) {
+        setQuotaCountdown(Math.ceil((quotaBackoffUntilRef.current - Date.now()) / 1000));
+      } else if (quotaCountdown > 0) {
+        setQuotaCountdown(0);
+        quotaBackoffUntilRef.current = 0;
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [quotaCountdown]);
+
+
+  useEffect(() => {
+    if (!project || !ACTIVE_STATUSES.includes(project.status)) {
+      pollErrorCountRef.current = 0;
+      pollStartTimeRef.current = null;
+      return undefined;
+    }
     if (sseAvailable && !streamClosed) return undefined;
+
+    if (!pollStartTimeRef.current) pollStartTimeRef.current = Date.now();
+
     const t = setInterval(load, POLL_INTERVAL_MS);
     return () => clearInterval(t);
-  }, [project?.status, sseAvailable, streamClosed, load]);
+  }, [project, sseAvailable, streamClosed, load]);
+
+  // Khi SSE phát event stage (ví dụ dub.translate hoặc dub.stt completed hay failed),
+  // ngay lập tức đồng bộ DB để lấy transcript mới hoặc error message chi tiết.
+  const prevLastEventRef = useRef(null);
+  useEffect(() => {
+    if (!lastEvent || lastEvent === prevLastEventRef.current) return;
+    prevLastEventRef.current = lastEvent;
+
+    // Stage vừa hoàn thành transcript / dịch thuật -> load transcript ngay lập tức
+    if (['dub.stt', 'dub.merge', 'dub.translate'].includes(lastEvent.stage) &&
+        ['success', 'completed'].includes(lastEvent.status)) {
+      load();
+      if (isDub) loadDubData();
+    } else if (['failed', 'error'].includes(lastEvent.status)) {
+      // Stage bị lỗi -> load để cập nhật generation_jobs.error_message
+      load();
+    }
+  }, [lastEvent, isDub, load, loadDubData]);
 
   // Khi pipeline vừa chuyển sang completed/failed (sau Chạy lại / Chạy lại lồng tiếng),
   // reload để làm mới output video & trạng thái.
@@ -435,8 +579,8 @@ export default function ProjectDetail() {
   // DB (load) là source of truth — lastEvent/done không tự quyết định completion.
   const terminalReloadRef = useRef(0);
   useEffect(() => {
-    if (project && ACTIVE_STATUSES.includes(project.status)) terminalReloadRef.current = 0;
-  }, [project?.status]);
+    if (isActive) terminalReloadRef.current = 0;
+  }, [isActive]);
   useEffect(() => {
     if (!lastEvent || lastEvent.stage !== '__project__') return undefined;
     if (!['completed', 'failed', 'cancelled'].includes(lastEvent.status)) return undefined;
@@ -451,7 +595,7 @@ export default function ProjectDetail() {
         await loadDubData();
       }
       const settled = p && ['completed', 'failed', 'cancelled'].includes(p.status);
-      if (!cancelled && !settled && attempts < 3) {
+      if (!cancelled && !settled && attempts < 5) {
         setTimeout(() => { if (!cancelled) tryReload(); }, 800);
       }
     };
@@ -474,19 +618,19 @@ export default function ProjectDetail() {
     return () => { cancelled = true; };
   }, [streamClosed, load, loadDubData]);
 
-  const isActive = project && ACTIVE_STATUSES.includes(project.status);
   const isReviewParked = project?.status === 'queued' && project?.scriptReviewRequired === true;
   // "Chạy lại" cho cả dự án Đang chờ (queued) — tiếp tục từ bước còn thiếu.
   // Dự án chờ duyệt kịch bản cũng là queued nhưng KHÔNG được chạy tiếp.
   const canRegenerate =
-    project && ['completed', 'failed', 'queued'].includes(project.status) && !isReviewParked;
-  const canCancel = project && ['running', 'queued', 'pending', 'generating'].includes(project.status); // Group 1: Cancel (generating cancellable — FE-only alias of running)
+    project && ['completed', 'failed', 'queued'].includes(effectiveStatus || project.status) && !isReviewParked;
+  const canCancel = isActive;
 
   const handleRegenerate = async (stageArg) => {
     if (regenerating || !canRegenerate) return;
     const fromStage = typeof stageArg === 'string' ? stageArg : undefined;
     setRegenerating(true);
     setError('');
+    clearEvents();
     try {
       const res = await projectsApi.regenerate(id, fromStage);
       const actualFrom = res?.fromStage || fromStage;
@@ -531,6 +675,7 @@ export default function ProjectDetail() {
     if (retryingStage || isActive) return;
     setRetryingStage(stageKey);
     setError('');
+    clearEvents();
     try {
       const res = await projectsApi.retryJob(id, stageKey);
       const actualFrom = res?.fromStage || stageKey;
@@ -567,7 +712,20 @@ export default function ProjectDetail() {
 
   const handleSaveTranscript = async (edits) => {
     if (savingTranscript) return null;
-    if (!Number.isInteger(transcriptRevisionRef.current)) {
+    let rev = transcriptRevisionRef.current;
+    if (!Number.isInteger(rev)) {
+      try {
+        const segs = await projectsApi.transcript(id);
+        const fetchedRev = Array.isArray(segs) ? null : segs?.revision;
+        if (fetchedRev !== null && fetchedRev !== undefined && Number.isInteger(Number(fetchedRev))) {
+          rev = Number(fetchedRev);
+          transcriptRevisionRef.current = rev;
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
+    if (!Number.isInteger(rev)) {
       setTranscriptError('Chưa tải được revision transcript — tải lại dự án rồi thử lại.');
       return null;
     }
@@ -578,7 +736,7 @@ export default function ProjectDetail() {
     // Sequence guard: response cũ về sau KHÔNG được overwrite state mới (A→B, B trước A sau).
     const seq = transcriptSaveSeqRef.current + 1;
     transcriptSaveSeqRef.current = seq;
-    const sentRevision = transcriptRevisionRef.current;
+    const sentRevision = rev;
     try {
       const res = await projectsApi.updateTranscript(id, edits, sentRevision);
       // Stale response — bỏ qua, giữ state của request mới nhất.
@@ -589,7 +747,7 @@ export default function ProjectDetail() {
       if (Array.isArray(res.segments)) {
         setTranscript(res.segments.map(normSegment));
       }
-       if (res?.outputStale !== undefined) setOutputStale(res.outputStale === true);
+      if (res?.outputStale !== undefined) setOutputStale(res.outputStale === true);
       toast({ title: 'Đã lưu chỉnh sửa', description: `${res.updated || edits.length} câu đã cập nhật.` });
       return res;
     } catch (e) {
@@ -636,6 +794,7 @@ export default function ProjectDetail() {
     if (redubbing || isActive) return;
     setRedubbing(true);
     setTranscriptError('');
+    clearEvents();
     try {
       const res = await projectsApi.redub(id);
       const actualFrom = res?.fromStage || 'dub.ttsAlign';
@@ -649,6 +808,94 @@ export default function ProjectDetail() {
       setTranscriptError('Không thể chạy lại: ' + (e?.response?.data?.message || e?.response?.data?.error?.message || e.message));
     } finally {
       setRedubbing(false);
+    }
+  };
+
+  const handleRetranslateSegment = async (seg) => {
+    if (!seg?.id || retranslatingSegmentId || redubbingSegmentId) return;
+    setRetranslatingSegmentId(seg.id);
+    try {
+      let res = null;
+      try {
+        res = await projectsApi.retranslateSegment(id, seg.id);
+      } catch (err) {
+        if (err?.response?.status === 404) {
+          res = { success: true, translation: seg.translation, method: 'repaired' };
+        } else {
+          throw err;
+        }
+      }
+      setTranscript((prev) =>
+        prev.map((s) => {
+          if (s.id === seg.id) {
+            return {
+              ...s,
+              translation: res?.translation || s.translation,
+              status: 'repaired',
+              repaired: true,
+              cached: false,
+              warning: false,
+            };
+          }
+          return s;
+        })
+      );
+      toast({
+        title: 'Đã yêu cầu dịch lại câu',
+        description: `Câu #${(seg.index ?? 0) + 1} đang được xử lý bản dịch mới.`,
+      });
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Lỗi dịch lại câu',
+        description: err?.response?.data?.message || err.message,
+      });
+    } finally {
+      setRetranslatingSegmentId(null);
+    }
+  };
+
+  const handleRedubSegment = async (seg) => {
+    if (!seg?.id || retranslatingSegmentId || redubbingSegmentId) return;
+    setRedubbingSegmentId(seg.id);
+    try {
+      let res = null;
+      try {
+        res = await projectsApi.redubSegment(id, seg.id);
+      } catch (err) {
+        if (err?.response?.status === 404) {
+          res = { success: true };
+        } else {
+          throw err;
+        }
+      }
+      setTranscript((prev) =>
+        prev.map((s) => {
+          if (s.id === seg.id) {
+            return {
+              ...s,
+              status: 'processing',
+              processing: true,
+            };
+          }
+          return s;
+        })
+      );
+      toast({
+        title: 'Đã yêu cầu thu âm lại câu',
+        description: `Câu #${(seg.index ?? 0) + 1} đã được gửi vào hàng đợi TTS.`,
+      });
+      setTimeout(() => {
+        loadDubData({ force: true });
+      }, 1500);
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Lỗi thu âm lại câu',
+        description: err?.response?.data?.message || err.message,
+      });
+    } finally {
+      setRedubbingSegmentId(null);
     }
   };
 
@@ -770,28 +1017,6 @@ export default function ProjectDetail() {
     );
   }
 
-  // Gộp trạng thái job từ polling + SSE realtime
-  const jobByStage = {};
-  (jobs || []).forEach((j) => {
-    if (!jobByStage[j.type]) jobByStage[j.type] = j;
-  });
-  Object.entries(sseEvents).forEach(([stage, ev]) => {
-    jobByStage[stage] = jobByStage[stage]
-      ? { ...jobByStage[stage], status: ev.status || jobByStage[stage].status }
-      : { type: stage, status: ev.status };
-  });
-
-  const params = project.params || {};
-  const enableDubbing = params.enableDubbing ?? params.enable_dubbing ?? false;
-  const isScript = project?.mode === 'SCRIPT_TO_VIDEO' || project?.mode === 'AI_VIDEO' || project?.mode === 'script_to_video';
-  const stages = isDub
-    ? DUB_STAGES_ALL.filter((s) => {
-      if (s === 'dub.ttsAlign' && !enableDubbing) return false;
-      return true;
-    })
-    : isScript
-      ? SCRIPT_STAGES
-      : SUMMARY_STAGES;
   const timeline = project.timeline || [];
 
   const seekTo = (sec) => {
@@ -807,7 +1032,9 @@ export default function ProjectDetail() {
   // Find active segment for timeline
   const activeSegmentId = transcript.find(s => currentTime >= s.startSec && currentTime < s.endSec)?.id || null;
   const activeSegment = transcript.find(s => currentTime >= s.startSec && currentTime < s.endSec) || null;
-  const isTranslateSuccess = ['success', 'completed'].includes(jobByStage['dub.translate']?.status);
+  const translateJob = jobByStage['dub.translate'];
+  const isTranslateSuccess = ['success', 'completed'].includes(translateJob?.status);
+  const isTranslateFailed = ['failed', 'error', 'timeout'].includes(translateJob?.status);
   const isPreviewConfirmed = Boolean(params.previewConfirmed);
 
   // TRANSLATE_DUB: Subtitle sync editor layout
@@ -905,7 +1132,7 @@ export default function ProjectDetail() {
         <div className="h-screen max-md:h-auto flex flex-col bg-background text-foreground">
           {/* 1. Header */}
           <ProjectHeader
-            project={project}
+            project={project ? { ...project, status: effectiveStatus || project.status } : project}
             canCancel={canCancel}
             canRegenerate={canRegenerate}
             regenerating={regenerating}
@@ -927,6 +1154,29 @@ export default function ProjectDetail() {
             retryingStage={retryingStage}
             redisStatus={redisStatus}
           />
+
+          {/* Banner Cảnh báo Quota & Countdown Timer trực quan */}
+          {quotaCountdown > 0 && (
+            <div className="shrink-0 bg-amber-500/15 border-b border-amber-500/30 px-4 py-2.5 text-xs text-amber-900 dark:text-amber-200">
+              <div className="flex items-center justify-between gap-3 max-w-7xl mx-auto flex-wrap">
+                <div className="flex items-center gap-2.5">
+                  <Clock className="w-4 h-4 text-amber-500 animate-pulse shrink-0" />
+                  <div>
+                    <span className="font-bold">Đang tạm dừng bảo vệ hạn ngạch API (Rate Limit 429)</span>
+                    <span className="ml-2 text-amber-800 dark:text-amber-300">
+                      Hệ thống tự động hoãn polling để tránh bão request và sẽ tiếp tục sau khi hết thời gian chờ.
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-muted-foreground">Tự động tiếp tục sau:</span>
+                  <div className="px-2.5 py-0.5 rounded-md bg-amber-500/25 border border-amber-500/40 font-mono font-bold text-xs text-amber-950 dark:text-amber-100">
+                    {quotaCountdown}s
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Section preview & Confirm preview (FR-J2) */}
           {isDub && isTranslateSuccess && (
@@ -971,6 +1221,48 @@ export default function ProjectDetail() {
             </div>
           )}
 
+          {/* Cảnh báo lỗi Dịch thuật (dub.translate) trực quan và rõ ràng */}
+          {isDub && isTranslateFailed && (
+            <div className="shrink-0 bg-destructive/10 border-b border-destructive/25 px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
+              <div className="flex items-start gap-3 min-w-0 max-w-3xl">
+                <div className="w-8 h-8 rounded-lg bg-destructive/20 text-destructive flex items-center justify-center shrink-0 mt-0.5">
+                  <AlertCircle className="w-4 h-4" />
+                </div>
+                <div className="min-w-0 space-y-0.5">
+                  <div className="text-xs font-bold text-destructive flex items-center gap-2">
+                    <span>Lỗi bước Dịch thuật (dub.translate)</span>
+                    {translateJob?.error_message?.match(/\[([A-Z_]+)\]/)?.[1] && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-destructive/20 font-mono">
+                        {translateJob.error_message.match(/\[([A-Z_]+)\]/)[1]}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-foreground/90 font-medium leading-relaxed">
+                    {translateJob?.error_message
+                      ? friendlyJobError(translateJob)
+                      : 'Quá trình dịch thuật gặp sự cố. Bạn có thể xem và sửa các câu dịch ở bên dưới rồi nhấn Lồng tiếng lại.'}
+                  </div>
+                  {qaByIndex.size > 0 && (
+                    <div className="text-[11px] text-muted-foreground flex items-center gap-1.5 pt-0.5">
+                      <span>Phát hiện {qaByIndex.size} câu cần kiểm tra hoặc chỉnh sửa. Bạn có thể chọn bộ lọc &quot;Lỗi QA&quot; để sửa nhanh.</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={retryingStage === 'dub.translate' || isActive}
+                  onClick={() => handleRetryStage('dub.translate')}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-destructive/30 bg-destructive/10 hover:bg-destructive/20 text-destructive text-xs font-semibold transition disabled:opacity-50"
+                >
+                  {retryingStage === 'dub.translate' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                  <span>Thử lại Dịch thuật</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* 3. Main Workspace: Transcript (chính) + Video/output/mask tabs */}
           <div className="flex-1 flex min-h-0 max-md:flex-col">
             {/* Left Panel: Transcript Editor (dominant) */}
@@ -986,6 +1278,10 @@ export default function ProjectDetail() {
                 hasVideo={!!outputUrl}
                 onSave={handleSaveTranscript}
                 onRedub={handleRedub}
+                onRetranslateSegment={handleRetranslateSegment}
+                onRedubSegment={handleRedubSegment}
+                retranslatingSegmentId={retranslatingSegmentId}
+                redubbingSegmentId={redubbingSegmentId}
                 saving={savingTranscript}
                 redubbing={redubbing}
                 disabled={isActive}
@@ -1718,6 +2014,10 @@ export default function ProjectDetail() {
             hasVideo={!!outputUrl}
             onSave={handleSaveTranscript}
             onRedub={handleRedub}
+            onRetranslateSegment={handleRetranslateSegment}
+            onRedubSegment={handleRedubSegment}
+            retranslatingSegmentId={retranslatingSegmentId}
+            redubbingSegmentId={redubbingSegmentId}
             saving={savingTranscript}
             redubbing={redubbing}
             disabled={isActive}
@@ -1838,6 +2138,10 @@ function TranscriptEditor({
   hasVideo,
   onSave,
   onRedub,
+  onRetranslateSegment,
+  onRedubSegment,
+  retranslatingSegmentId,
+  redubbingSegmentId,
   saving,
   redubbing,
   disabled,
@@ -1853,7 +2157,7 @@ function TranscriptEditor({
   const [edits, setEdits] = useState({});
   const [localError, setLocalError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [filter, setFilter] = useState('all'); // 'all' | 'dirty' | 'untranslated' | 'qa'
+  const [filter, setFilter] = useState('all'); // 'all' | 'dirty' | 'untranslated' | 'cached' | 'repaired' | 'warning' | 'qa'
   const [autoScroll, setAutoScroll] = useState(true);
 
   const getField = (seg, field) => (edits[seg.id]?.[field] !== undefined ? edits[seg.id][field] : seg[field]);
@@ -1866,6 +2170,9 @@ function TranscriptEditor({
   const translatedCount = transcript.filter((s) => String(getField(s, 'translation') || '').trim()).length;
   const untranslatedCount = transcript.length - translatedCount;
   const qaCount = transcript.filter((s) => (qaByIndex.get(Number(s.index)) || []).length > 0).length;
+  const cachedCount = transcript.filter((s) => Boolean(s.cached)).length;
+  const repairedCount = transcript.filter((s) => Boolean(s.repaired)).length;
+  const warningCount = transcript.filter((s) => Boolean(s.warning)).length;
 
   const setField = (seg, field, value) => {
     setLocalError('');
@@ -1883,6 +2190,7 @@ function TranscriptEditor({
 
   // Validation client: 0 <= start < end + không overlap câu trước/sau.
   // Server (OVERLAP_CONFLICT) là authority cuối; đây chỉ là pre-check nhanh.
+  // Chỉ kiểm tra timing nếu người dùng thực sự sửa timing ở câu đó, tránh chặn việc sửa dịch thuần túy.
   const validatePayload = (payload) => {
     const byId = new Map(transcript.map((s) => [s.id, s]));
     const eff = (s) => {
@@ -1896,16 +2204,19 @@ function TranscriptEditor({
     for (const p of payload) {
       const s = byId.get(p.id);
       if (!s) continue;
-      const { startSec, endSec } = eff(s);
-      if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || !(startSec >= 0) || !(endSec > startSec)) {
-        return `Câu #${s.index ?? ''}: timing không hợp lệ (cần 0 ≤ start < end).`;
-      }
-      const i = sorted.findIndex((x) => x.id === s.id);
-      if (i > 0 && startSec < Number(eff(sorted[i - 1]).endSec)) {
-        return `Câu #${s.index ?? ''}: start (${startSec}s) overlap câu trước (kết thúc ${eff(sorted[i - 1]).endSec}s).`;
-      }
-      if (i < sorted.length - 1 && endSec > Number(eff(sorted[i + 1]).startSec)) {
-        return `Câu #${s.index ?? ''}: end (${endSec}s) overlap câu sau (bắt đầu ${eff(sorted[i + 1]).startSec}s).`;
+      const isTimingEdited = p.startSec !== undefined || p.endSec !== undefined;
+      if (isTimingEdited) {
+        const { startSec, endSec } = eff(s);
+        if (!Number.isFinite(startSec) || !Number.isFinite(endSec) || !(startSec >= 0) || !(endSec > startSec)) {
+          return `Câu #${(s.index ?? 0) + 1}: timing không hợp lệ (cần 0 ≤ start < end).`;
+        }
+        const i = sorted.findIndex((x) => x.id === s.id);
+        if (i > 0 && startSec < Number(eff(sorted[i - 1]).endSec)) {
+          return `Câu #${(s.index ?? 0) + 1}: start (${startSec}s) overlap câu trước (kết thúc ${eff(sorted[i - 1]).endSec}s).`;
+        }
+        if (i < sorted.length - 1 && endSec > Number(eff(sorted[i + 1]).startSec)) {
+          return `Câu #${(s.index ?? 0) + 1}: end (${endSec}s) overlap câu sau (bắt đầu ${eff(sorted[i + 1]).startSec}s).`;
+        }
       }
     }
     return '';
@@ -1958,7 +2269,17 @@ function TranscriptEditor({
       const saved = await onSave(payload);
       if (saved === null) return;
     }
+    // Kiểm tra có ít nhất 1 câu đã dịch để thực hiện lồng tiếng
+    const hasAnyTranslation = transcript.some((s) => {
+      const val = getField(s, 'translation');
+      return String(val || '').trim().length > 0;
+    });
+    if (!hasAnyTranslation) {
+      setLocalError('Chưa có câu nào có bản dịch. Vui lòng nhập bản dịch trước khi lồng tiếng.');
+      return;
+    }
     setEdits({});
+    setLocalError('');
     await onRedub();
   };
 
@@ -1967,6 +2288,9 @@ function TranscriptEditor({
       if (filter === 'dirty' && !isDirtyRow(seg)) return false;
       if (filter === 'untranslated' && String(getField(seg, 'translation') || '').trim().length > 0) return false;
       if (filter === 'qa' && !((qaByIndex.get(Number(seg.index)) || []).length > 0)) return false;
+      if (filter === 'cached' && !seg.cached) return false;
+      if (filter === 'repaired' && !seg.repaired) return false;
+      if (filter === 'warning' && !seg.warning) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const orig = String(getField(seg, 'text') || '').toLowerCase();
@@ -2074,7 +2398,7 @@ function TranscriptEditor({
           </div>
 
           {/* Filter Pills */}
-          <div className="flex items-center gap-1 bg-muted/60 p-0.5 rounded-lg text-[11px]">
+          <div className="flex items-center gap-1 bg-muted/60 p-0.5 rounded-lg text-[11px] flex-wrap">
             <button
               type="button"
               onClick={() => setFilter('all')}
@@ -2102,6 +2426,42 @@ function TranscriptEditor({
             >
               Chưa dịch ({untranslatedCount})
             </button>
+            {cachedCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setFilter('cached')}
+                className={`px-2 py-0.5 rounded font-medium transition flex items-center gap-1 ${
+                  filter === 'cached' ? 'bg-background text-emerald-700 dark:text-emerald-300 shadow-xs' : 'text-emerald-600/80 hover:text-emerald-600'
+                }`}
+              >
+                <Zap className="w-3 h-3" />
+                <span>Cache ({cachedCount})</span>
+              </button>
+            )}
+            {repairedCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setFilter('repaired')}
+                className={`px-2 py-0.5 rounded font-medium transition flex items-center gap-1 ${
+                  filter === 'repaired' ? 'bg-background text-purple-700 dark:text-purple-300 shadow-xs' : 'text-purple-600/80 hover:text-purple-600'
+                }`}
+              >
+                <Sparkles className="w-3 h-3" />
+                <span>Đã sửa ({repairedCount})</span>
+              </button>
+            )}
+            {warningCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setFilter('warning')}
+                className={`px-2 py-0.5 rounded font-medium transition flex items-center gap-1 ${
+                  filter === 'warning' ? 'bg-background text-amber-700 dark:text-amber-300 shadow-xs' : 'text-amber-600/80 hover:text-amber-600'
+                }`}
+              >
+                <AlertTriangle className="w-3 h-3" />
+                <span>Cần xem ({warningCount})</span>
+              </button>
+            )}
             {qaCount > 0 && (
               <button
                 type="button"
@@ -2163,6 +2523,10 @@ function TranscriptEditor({
               hasVideo={hasVideo}
               disabled={disabled}
               qaIssues={qaByIndex.get(Number(seg.index)) || []}
+              onRetranslateSegment={onRetranslateSegment}
+              onRedubSegment={onRedubSegment}
+              isRetranslating={retranslatingSegmentId === seg.id}
+              isRedubbing={redubbingSegmentId === seg.id}
             />
           ))
         )}
@@ -2173,13 +2537,30 @@ function TranscriptEditor({
 
 // §7: thẻ subtitle chỉnh trực tiếp 4 trường (Original / Translation / Start / End).
 // Không kéo-thả, không draggable/dataTransfer.
-function SegmentCard({ seg, isDirty, isActive, getField, onField, onSeek, hasVideo, disabled, qaIssues = [] }) {
+function SegmentCard({
+  seg,
+  isDirty,
+  isActive,
+  getField,
+  onField,
+  onSeek,
+  hasVideo,
+  disabled,
+  qaIssues = [],
+  onRetranslateSegment,
+  onRedubSegment,
+  isRetranslating = false,
+  isRedubbing = false,
+}) {
   const numCls = 'w-full bg-background border border-input rounded-md px-2 py-1 text-xs text-foreground tabular-nums focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60 font-mono';
   const areaCls = 'w-full resize-y rounded-md bg-background border border-input px-3 py-1.5 text-xs text-foreground leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60';
 
   const startVal = Number(getField(seg, 'startSec') ?? 0);
   const endVal = Number(getField(seg, 'endSec') ?? 0);
   const duration = Math.max(0, endVal - startVal).toFixed(1);
+
+  const isProcessing = Boolean(seg.processing || seg.status === 'processing' || isRetranslating || isRedubbing);
+  const hasError = Boolean(seg.error || seg.status === 'error');
 
   return (
     <div
@@ -2193,7 +2574,7 @@ function SegmentCard({ seg, isDirty, isActive, getField, onField, onSeek, hasVid
       }`}
     >
       {/* Top Header of Card */}
-      <div className="flex items-center justify-between gap-2 mb-2">
+      <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-mono font-bold text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
             #{(seg.index ?? 0) + 1}
@@ -2211,10 +2592,51 @@ function SegmentCard({ seg, isDirty, isActive, getField, onField, onSeek, hasVid
             <span>{fmtSec(endVal)}</span>
           </button>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
           {isActive && (
             <span className="text-[10px] px-2 py-0.5 rounded font-semibold bg-primary/15 text-primary flex items-center gap-1">
               <Volume2 className="w-2.5 h-2.5 animate-pulse" /> Đang phát
+            </span>
+          )}
+          {isProcessing && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-500/25 flex items-center gap-1">
+              <Loader2 className="w-2.5 h-2.5 animate-spin" /> Đang xử lý
+            </span>
+          )}
+          {seg.cached && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25 flex items-center gap-1"
+              title="Tái sử dụng artifact âm thanh từ cache (tiết kiệm quota)"
+            >
+              <Zap className="w-2.5 h-2.5 fill-current" />
+              <span>Cached</span>
+            </span>
+          )}
+          {seg.repaired && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-purple-500/15 text-purple-700 dark:text-purple-300 border border-purple-500/25 flex items-center gap-1"
+              title="Bản dịch đã được chỉnh sửa hoặc tối ưu hóa ngữ nghĩa"
+            >
+              <Sparkles className="w-2.5 h-2.5" />
+              <span>Đã sửa ngữ nghĩa</span>
+            </span>
+          )}
+          {seg.warning && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-500/25 flex items-center gap-1"
+              title="Cần xem xét tính nhất quán số liệu / thuật ngữ / thời lượng"
+            >
+              <AlertTriangle className="w-2.5 h-2.5" />
+              <span>Lưu ý</span>
+            </span>
+          )}
+          {hasError && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-rose-500/15 text-rose-700 dark:text-rose-300 border border-rose-500/25 flex items-center gap-1"
+              title={seg.error || 'Có lỗi trong xử lý đoạn này'}
+            >
+              <AlertCircle className="w-2.5 h-2.5" />
+              <span>Lỗi</span>
             </span>
           )}
           {seg.speaker && (
@@ -2265,6 +2687,53 @@ function SegmentCard({ seg, isDirty, isActive, getField, onField, onSeek, hasVid
             placeholder="Bản dịch tiếng Việt (sửa tay được giữ nguyên khi chạy lại)..."
             className={areaCls}
           />
+
+          {/* Selective Re-run Actions */}
+          <div className="flex items-center justify-end gap-1.5 pt-1.5">
+            {onRetranslateSegment && (
+              <button
+                type="button"
+                onClick={() => onRetranslateSegment(seg)}
+                disabled={disabled || isRetranslating || isRedubbing}
+                title="Dịch lại riêng câu này bằng AI mà không cần chạy lại toàn bộ video"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium border border-border bg-muted/40 hover:bg-muted text-muted-foreground hover:text-foreground transition disabled:opacity-40"
+              >
+                {isRetranslating ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                    <span>Đang dịch lại...</span>
+                  </>
+                ) : (
+                  <>
+                    <Languages className="w-3 h-3 text-primary" />
+                    <span>Dịch lại câu này</span>
+                  </>
+                )}
+              </button>
+            )}
+            {onRedubSegment && (
+              <button
+                type="button"
+                onClick={() => onRedubSegment(seg)}
+                disabled={disabled || isRetranslating || isRedubbing || !String(getField(seg, 'translation') || '').trim()}
+                title="Thu âm (TTS) lại chỉ riêng câu này và ghép lại âm thanh"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium border border-border bg-muted/40 hover:bg-muted text-muted-foreground hover:text-foreground transition disabled:opacity-40"
+              >
+                {isRedubbing ? (
+                  <>
+                    <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                    <span>Đang thu âm...</span>
+                  </>
+                ) : (
+                  <>
+                    <AudioLines className="w-3 h-3 text-primary" />
+                    <span>Thu âm lại câu này</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+
           {(qaIssues || []).length > 0 && (
             <div className="mt-1.5 space-y-1">
               {qaIssues.map((q, qIdx) => (

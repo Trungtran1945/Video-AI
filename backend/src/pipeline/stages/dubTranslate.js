@@ -4,8 +4,9 @@ import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne, updateById, insert, run, withTransaction } from '../../db/query.js'
 import { updateGenerationJobOwned, isProjectRunOwned } from '../../services/projectAdmission.js'
 import { applyGeneratedTranslations, sanitizeTranscriptOverlaps, TranscriptRevisionConflict } from '../../services/transcriptMutationService.js'
-import { getProvider } from '../../providers/registry.js'
+import { getProvider, listProvidersForCapability } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
+import { withProviderFailover } from '../../lib/providerFailover.js'
 import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js'
 import { projectDir, extractJsonBlock } from '../context.js'
 import { TRANSLATION_VERSION } from '../../lib/cacheKey.js'
@@ -33,6 +34,12 @@ export const LLM_BATCH_MAX_LINES = 30
 export const LLM_BATCH_MAX_CHARS = 2500
 export const LLM_BATCH_CONCURRENCY = 2
 export const LLM_CONTEXT_LINES = 3
+// Per-batch LLM timeout (ms) so a stalled Gemini call cannot hang the stage
+// forever. Env override: LLM_BATCH_TIMEOUT_MS.
+export const LLM_BATCH_TIMEOUT_MS = (() => {
+  const v = Number(process.env.LLM_BATCH_TIMEOUT_MS)
+  return Number.isFinite(v) && v > 0 ? v : 120_000
+})()
 
 // Normalize source text before sending to LLM: NFC + collapse whitespace.
 // Keeps timing/DB untouched (prompt-only); gate still checks original.
@@ -204,8 +211,35 @@ export async function dubTranslate(ctx) {
   // Lấy providers: LLM là primary (luôn thử), Google Translate là fallback
 //  // (chỉ gọi cho segment LLM unresolved). Không throw khi thiếu GT ở đây —
   // GT thiếu thì LLM phải gánh toàn bộ; chỉ fail khi cả hai đều trống.
+  // Provider failover: resolve ALL LLM keys for this user/capability and wrap
+  // complete() so a quota/rate/auth failure on one key fails over to the next
+  // instead of aborting the whole stage. Single key keeps legacy behavior.
   let llm = null
-  try { llm = await getProvider(project.user_id, 'llm') } catch (_) { llm = null }
+  let llmCandidates = []
+  try {
+    llmCandidates = await listProvidersForCapability(project.user_id, 'llm')
+  } catch (_) {
+    llmCandidates = []
+  }
+  if (llmCandidates.length) {
+    const primary = llmCandidates[0]
+    llm = {
+      id: primary.id,
+      apiKeyId: primary.apiKeyId,
+      provider: {
+        model: primary.provider?.model || primary.id,
+        complete: async (opts = {}) => {
+          const { result } = await withProviderFailover(
+            { capability: 'llm', candidates: llmCandidates, maxAttempts: llmCandidates.length },
+            async (cand) => cand.provider.complete({ ...opts, timeoutMs: opts.timeoutMs ?? LLM_BATCH_TIMEOUT_MS, signal: opts.signal ?? signal })
+          )
+          return result
+        },
+      },
+    }
+  } else {
+    try { llm = await getProvider(project.user_id, 'llm') } catch (_) { llm = null }
+  }
   let gt = null
   try { gt = await getProvider(project.user_id, 'translate') } catch (_) { gt = null }
 
@@ -234,7 +268,7 @@ export async function dubTranslate(ctx) {
     const directMap = await translateMissingWithLlm(llm, segmentsToTranslate, {
       system, targetLanguage, sourceLanguage, glossary,
       job, projectId: project.id, userId: project.user_id,
-      allSegments: pool,
+      allSegments: pool, signal,
     })
     for (const [idx, txt] of directMap) {
       gtResults.set(idx, txt)
@@ -359,12 +393,13 @@ export async function dubTranslate(ctx) {
       }
 
       const { map: restyledGroup, fallback } = await restyleWithFallback(
-        llm, restyleSystem, groupTranslations, preset, job, project.id, project.user_id
+        llm, restyleSystem, groupTranslations, preset, job, project.id, project.user_id, signal
       )
       if (fallback) styleFallback = true
       for (const [idx, txt] of restyledGroup) if (!styledAll.has(idx)) styledAll.set(idx, txt)
 
       for (const seg of group) {
+
         const final = resolveFinalTranslation({
           source: seg.text,
           base: gtResults.get(seg.index_num),
@@ -379,22 +414,42 @@ export async function dubTranslate(ctx) {
           // Bounded repair: base hard-fail nhưng LLM có thể dịch lại đúng.
           // Tối đa 1 lần/segment; output phải pass gate mới dùng; TRANSIENT
           // (LLM quá tải) thì bỏ qua lặng và giữ unresolved như cũ.
+          const baseVal = gtResults.get(seg.index_num)
           const gi = group.indexOf(seg)
-          const repaired = await repairTranslationWithLlm(llm, {
-            source: seg.text,
-            badTranslation: gtResults.get(seg.index_num) || restyledGroup.get(seg.index_num) || null,
-            prev: group[gi - 1]?.text || '',
-            next: group[gi + 1]?.text || '',
-            targetLanguage,
-            system,
-          }, { job, projectId: project.id, userId: project.user_id }).catch(() => null)
+          let repaired = null
+          let repairError = null
+          try {
+            repaired = await repairTranslationWithLlm(llm, {
+              source: seg.text,
+              badTranslation: baseVal || restyledGroup.get(seg.index_num) || null,
+              prev: group[gi - 1]?.text || '',
+              next: group[gi + 1]?.text || '',
+              targetLanguage,
+              system,
+            }, { job, projectId: project.id, userId: project.user_id })
+          } catch (e) {
+            repaired = null
+            repairError = e
+          }
           if (repaired) {
             generatedUpdates.push({ id: seg.id, translation: repaired })
             translations.set(seg.id, repaired)
             styleFallback = true
             console.warn(`[dubTranslate] segment #${seg.index_num} repaired qua LLM (base+styled đều fail gate)`)
           } else {
-            unresolved.push(seg.index_num)
+            const baseVal = gtResults.get(seg.index_num)
+            const baseGate = hasHardTranslationError(seg.text, baseVal || '', targetLanguage)
+            const onlyNumberMismatch = baseVal && baseGate.hard && baseGate.errors.length > 0 &&
+              baseGate.errors.every((e) => String(e).startsWith('number mismatch'))
+            const repairNonRetryable = repairError && classifyProviderError(repairError).retryable === false
+            if (onlyNumberMismatch && repairNonRetryable) {
+              generatedUpdates.push({ id: seg.id, translation: baseVal })
+              translations.set(seg.id, baseVal)
+              styleFallback = true
+              console.warn(`[dubTranslate] segment #${seg.index_num} accepted GT base despite number mismatch: ${baseGate.errors.join(';')}`)
+            } else {
+              unresolved.push(seg.index_num)
+            }
             const bErr = (validateTranslation(seg.text, gtResults.get(seg.index_num) || '', targetLanguage).errors || []).join(';')
             const sErr = (validateTranslation(seg.text, restyledGroup.get(seg.index_num) || '', targetLanguage).errors || []).join(';')
             console.warn(`[dubTranslate] Block segment #${seg.index_num}: restyle+GT đều fail gate (base:[${bErr}] styled:[${sErr}])`)
@@ -470,18 +525,37 @@ export async function dubTranslate(ctx) {
       if (isManualTranslation(seg)) continue // §8: giữ bản sửa tay, không ghi đè
       let gtText = gtResults.get(seg.index_num)
       if (!gtText) {
-        if (seg.text && seg.text.trim()) noStyleUnresolved.push(seg.index_num)
+        if (seg.text && seg.text.trim()) {
+          console.warn(`[dubTranslate] Block segment #${seg.index_num}: missing base translation (no GT/LLM result)`)
+          noStyleUnresolved.push(seg.index_num)
+        }
         continue
       }
       const gate = hasHardTranslationError(seg.text, gtText, targetLanguage)
       if (gate.hard) {
-        const fixed = repairLlm ? await repairTranslationWithLlm(repairLlm, {
-          source: seg.text, badTranslation: gtText,
-          prev: pool[si - 1]?.text || '', next: pool[si + 1]?.text || '',
-          targetLanguage, system,
-        }, { job, projectId: project.id, userId: project.user_id }) : null
+        let fixed = null
+        let repairThrew = false
+        try {
+          fixed = repairLlm ? await repairTranslationWithLlm(repairLlm, {
+            source: seg.text, badTranslation: gtText,
+            prev: pool[si - 1]?.text || '', next: pool[si + 1]?.text || '',
+            targetLanguage, system,
+          }, { job, projectId: project.id, userId: project.user_id }) : null
+        } catch (e) {
+          fixed = null
+          repairThrew = true
+        }
         if (fixed) gtText = fixed
         else {
+          const gateNow = hasHardTranslationError(seg.text, gtText, targetLanguage)
+          const onlyNumberMismatch = gateNow.errors.length > 0 && gateNow.errors.every((e) => String(e).startsWith('number mismatch'))
+          const repairNonRetryable = repairThrew // provider-level failure (quota/timeout/auth)
+          if (onlyNumberMismatch && (repairNonRetryable || !repairLlm)) {
+            console.warn(`[dubTranslate] segment #${seg.index_num} accepted GT base despite number mismatch: ${gateNow.errors.join(';')}`)
+            generatedUpdates.push({ id: seg.id, translation: gtText })
+            translations.set(seg.id, gtText)
+            continue
+          }
           const errs = (validateTranslation(seg.text, gtText, targetLanguage).errors || []).join(';')
           console.warn(`[dubTranslate] Block segment #${seg.index_num}: semantic gate failed [${errs}]`)
           noStyleUnresolved.push(seg.index_num); continue
@@ -635,7 +709,7 @@ export async function persistTranslateReview(job, details, runToken = null) {
 // Dịch trực tiếp source → target, có validate + repair bounded.
 // Không bịa translation, không copy source. Preserve index_num. Bounded: mỗi group
 // tối đa 2 attempts cho TRANSIENT, PERMANENT/CONFIGURATION → dừng ngay.
-export async function translateMissingWithLlm(llm, missingSegments, { system, targetLanguage, sourceLanguage = 'auto', glossary = [], job, projectId, userId, allSegments = [] }) {
+export async function translateMissingWithLlm(llm, missingSegments, { system, targetLanguage, sourceLanguage = 'auto', glossary = [], job, projectId, userId, allSegments = [], signal } = {}) {
   const out = new Map() // index_num → validated translation
   if (!llm || !missingSegments?.length) return out
   const list = [...missingSegments].sort((a, b) => (a.index_num || 0) - (b.index_num || 0))
@@ -686,6 +760,7 @@ export async function translateMissingWithLlm(llm, missingSegments, { system, ta
       try {
         const raw = await translateGroup(llm, segSystem, prompt, job, projectId, {
           requiredIndexes, maxOutputTokens, userId, temperature: 0.2,
+          timeoutMs: LLM_BATCH_TIMEOUT_MS, signal, maxRetries: 2,
         })
         collected = remap(raw)
         lastErr = null
@@ -713,7 +788,7 @@ export async function translateMissingWithLlm(llm, missingSegments, { system, ta
     const workers = Array.from(
       { length: Math.min(LLM_BATCH_CONCURRENCY, pending.length) },
       async () => {
-        while (pending.length && !providerDown) {
+        while (pending.length && !providerDown && !signal?.aborted) {
           const group = pending.shift()
           const { collected, lastErr } = await translateOneGroup(group)
           for (const [idx, txt] of collected) if (!collectedAll.has(idx)) collectedAll.set(idx, txt)
@@ -822,12 +897,13 @@ function sleepMs(ms) {
 // Gọi restyleGroup với retry giới hạn cho lỗi TRANSIENT rồi fallback.
 // Không bao giờ throw: trả về { map, fallback } — caller dùng base cho
 // phần còn thiếu. Lỗi PERMANENT/CONFIGURATION → fallback ngay, không retry.
-async function restyleWithFallback(llm, restyleSystem, groupTranslations, preset, job, projectId, userId) {
+async function restyleWithFallback(llm, restyleSystem, groupTranslations, preset, job, projectId, userId, signal = null) {
   const required = groupTranslations.map((t) => t.index)
   let lastError = null
   for (let attempt = 1; attempt <= 2; attempt++) {
+    if (signal?.aborted) break
     try {
-      const map = await restyleGroup(llm, restyleSystem, groupTranslations, preset, job, projectId, userId)
+      const map = await restyleGroup(llm, restyleSystem, groupTranslations, preset, job, projectId, userId, signal)
       const complete = required.every((i) => map.has(i))
       return { map, fallback: !complete, error: complete ? null : new Error('incomplete restyle coverage') }
     } catch (err) {
@@ -846,7 +922,7 @@ async function restyleWithFallback(llm, restyleSystem, groupTranslations, preset
 
 // LLM restyle: chỉ viết lại bản dịch đã chính xác theo style preset.
 // KHÔNG dịch lại — giữ nguyên nghĩa, chỉ thay văn phong.
-async function restyleGroup(llm, system, groupTranslations, preset, job, projectId, userId) {
+async function restyleGroup(llm, system, groupTranslations, preset, job, projectId, userId, signal = null) {
   const input = groupTranslations
     .map((t) => `${t.index}|src:${t.original || ''}|tgt:${t.translation}`)
     .join('\n')
@@ -878,7 +954,7 @@ async function restyleGroup(llm, system, groupTranslations, preset, job, project
         type: 'llm',
         model: llm.provider.model || llm.id,
         input: { system, prompt: pp, json: true, temperature: 0.4, maxOutputTokens },
-        fn: () => llm.provider.complete({ system, prompt: pp, json: true, temperature: 0.4, maxOutputTokens }),
+        fn: () => llm.provider.complete({ system, prompt: pp, json: true, temperature: 0.4, maxOutputTokens, timeoutMs: LLM_BATCH_TIMEOUT_MS, signal, maxRetries: 2 }),
         userId,
         apiKeyId: llm.apiKeyId,
         projectId,
@@ -969,14 +1045,14 @@ async function writeSrt(project, cues, runToken = null, expectedRevision = null)
 
 // Giữ lại translateGroup làm fallback (nếu Google Translate lỗi)
 export async function translateGroup(llm, system, prompt, job, projectId, opts = {}) {
-  const { requiredIndexes = null, maxOutputTokens = null, userId = null, temperature = 0.4 } = opts
+  const { requiredIndexes = null, maxOutputTokens = null, userId = null, temperature = 0.4, timeoutMs = LLM_BATCH_TIMEOUT_MS, signal = null, maxRetries = 2 } = opts
   const call = (p) =>
     callProvider({
       provider: llm.id,
       type: 'llm',
       model: llm.provider.model || llm.id,
       input: { system, prompt: p, json: true, temperature, maxOutputTokens },
-      fn: () => llm.provider.complete({ system, prompt: p, json: true, temperature, maxOutputTokens }),
+      fn: () => llm.provider.complete({ system, prompt: p, json: true, temperature, maxOutputTokens, timeoutMs, signal, maxRetries }),
       userId,
       apiKeyId: llm.apiKeyId,
       projectId,
@@ -1206,7 +1282,7 @@ export async function repairTranslationWithLlm(llm, { source, badTranslation, pr
     const res = await callProvider({
       provider: llm.id, type: 'llm', model: llm.provider.model || llm.id,
       input: { system: system || 'translate', prompt, temperature: 0.2, maxOutputTokens: 300 },
-      fn: () => llm.provider.complete({ system: system || 'translate', prompt, temperature: 0.2, maxOutputTokens: 300 }),
+      fn: () => llm.provider.complete({ system: system || 'translate', prompt, temperature: 0.2, maxOutputTokens: 300, timeoutMs: LLM_BATCH_TIMEOUT_MS, maxRetries: 2 }),
       userId, apiKeyId: llm.apiKeyId, projectId, jobId: job?.id,
     })
     const out = String(res?.text || '').replace(/^["'\s]+|["'\s]+$/g, '').trim()
@@ -1218,7 +1294,12 @@ export async function repairTranslationWithLlm(llm, { source, badTranslation, pr
     // trước đây đòi .ok tuyệt đối nên bản repair chỉ dính soft warning
     // (entity changed/length) bị loại oan dù pipeline vẫn accept via base.
     if (!hasHardTranslationError(source, out, targetLanguage).hard) return out
-  } catch (_) {}
+  } catch (err) {
+    const cls = classifyProviderError(err)
+    if (cls.kind === ERROR_KINDS.TRANSIENT || cls.kind === ERROR_KINDS.PERMANENT || cls.kind === ERROR_KINDS.CONFIGURATION) {
+      throw err
+    }
+  }
   return null
 }
 

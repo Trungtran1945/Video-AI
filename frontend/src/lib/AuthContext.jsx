@@ -66,6 +66,20 @@ export const AuthProvider = ({ children }) => {
     return data
   }
 
+  const sendOtp = async (email) => {
+    return await authApi.sendOtp(email)
+  }
+
+  const loginWithOtp = async (email, otp) => {
+    const data = await authApi.loginWithOtp(email, otp)
+    setAccessToken(data.accessToken)
+    setUser(data.user)
+    setIsAuthenticated(true)
+    setAuthError(null)
+    postAccessUpdated(data.accessToken, data.user)
+    return data
+  }
+
   const register = async (email, password, name) => {
     const data = await authApi.register(email, password, name)
     setAccessToken(data.accessToken)
@@ -119,6 +133,8 @@ export const AuthProvider = ({ children }) => {
         authError,
         authChecked,
         login,
+        sendOtp,
+        loginWithOtp,
         register,
         logout,
         navigateToLogin,

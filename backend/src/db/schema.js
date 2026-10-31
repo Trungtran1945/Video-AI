@@ -45,6 +45,18 @@ export async function initSchema() {
     created_date TEXT DEFAULT (datetime('now'))
   )`)
 
+  db.run(`CREATE TABLE IF NOT EXISTS email_otps (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    otp_hash TEXT NOT NULL,
+    purpose TEXT DEFAULT 'login',
+    expires_at TEXT NOT NULL,
+    attempts INTEGER DEFAULT 0,
+    max_attempts INTEGER DEFAULT 5,
+    used INTEGER DEFAULT 0,
+    created_date TEXT DEFAULT (datetime('now'))
+  )`)
+
   db.run(`CREATE TABLE IF NOT EXISTS settings (
     user_id TEXT PRIMARY KEY,
     default_language TEXT DEFAULT 'vi',
@@ -558,6 +570,7 @@ export async function initSchema() {
   db.run(`CREATE INDEX IF NOT EXISTS idx_provider_logs_created_date ON provider_logs(created_date)`)
   // Supporting indexes for the hot queries used by the API routes
   db.run(`CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_email_otps_email_used ON email_otps(email, used)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_assets_project ON assets(project_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_scenes_project ON scenes(project_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)`)

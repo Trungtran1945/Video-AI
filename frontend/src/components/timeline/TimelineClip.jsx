@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Type, GripVertical, Film } from 'lucide-react';
+import { Type, GripVertical, Film, Zap, Sparkles, AlertTriangle, Loader2 } from 'lucide-react';
 import { useTimelineStore } from './timelineStore';
 import { getMagneticSnap, getHandleSnap } from './timelineUtils';
 import FloatingToolbar from './FloatingToolbar';
@@ -261,9 +261,31 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
             {clip.content ? `"${clip.content}"` : ''}
           </span>
         </div>
-        <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border flex-shrink-0 ml-1 ${badgeColor}`}>
-          {clip.duration.toFixed(1)}s
-        </span>
+        <div className="flex items-center gap-1 shrink-0 ml-1">
+          {clip.processing && (
+            <span title="Đang xử lý segment" className="flex items-center text-blue-500">
+              <Loader2 size={11} className="animate-spin" />
+            </span>
+          )}
+          {clip.cached && !clip.processing && (
+            <span title="Tái sử dụng artifact (Cache)" className="inline-flex items-center text-emerald-600 dark:text-emerald-400">
+              <Zap size={11} />
+            </span>
+          )}
+          {clip.repaired && !clip.processing && (
+            <span title="Đã sửa ngữ nghĩa" className="inline-flex items-center text-purple-600 dark:text-purple-400">
+              <Sparkles size={11} />
+            </span>
+          )}
+          {clip.warning && !clip.processing && (
+            <span title="Cần lưu ý số liệu/ngữ nghĩa" className="inline-flex items-center text-amber-600 dark:text-amber-400">
+              <AlertTriangle size={11} />
+            </span>
+          )}
+          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border flex-shrink-0 ${badgeColor}`}>
+            {clip.duration.toFixed(1)}s
+          </span>
+        </div>
       </div>
 
       {isSelected && isEditable && !isTrackLocked && (

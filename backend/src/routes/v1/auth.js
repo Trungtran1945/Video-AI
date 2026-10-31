@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import bcrypt from 'bcryptjs'
 import { v4 as uuidv4 } from 'uuid'
-import { queryOne, insert, withTransaction } from '../../db/query.js'
+import { queryOne, insert, run, withTransaction } from '../../db/query.js'
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -16,6 +16,7 @@ import { sendError, ERR } from '../../lib/httpError.js'
 import { noteRefreshFallback } from '../../lib/refreshMetrics.js'
 import { config } from '../../config.js'
 import { cookieCsrf } from '../../middleware/cookieCsrf.js'
+import { generateNumericOtp, hashOtp, sendOtpEmail, OTP_TTL_SECONDS } from '../../services/emailService.js'
 
 const router = Router()
 
@@ -276,6 +277,192 @@ router.post('/reset-password', async (req, res) => {
     res.json({ message: 'Mật khẩu đã được cập nhật.' })
   } catch (err) {
     console.error('Reset password error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
+// Rate limiting maps for OTP
+const otpLastSentByEmail = new Map()
+const otpHitsByEmail = new Map()
+const otpHitsByIp = new Map()
+
+export function __resetOtpRateLimitForTests() {
+  otpLastSentByEmail.clear()
+  otpHitsByEmail.clear()
+  otpHitsByIp.clear()
+}
+
+function isValidEmail(email) {
+  return typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+}
+
+// POST /api/v1/auth/otp/send — Gửi mã OTP đăng nhập qua Email
+router.post('/otp/send', async (req, res) => {
+  try {
+    const { email } = req.body
+    if (!email || !isValidEmail(email)) {
+      return sendError(res, 400, ERR.VALIDATION, 'Email không hợp lệ hoặc bị thiếu', { field: 'email' })
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase()
+    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown'
+    const now = Date.now()
+
+    // 1. Cooldown 60s per email
+    const lastSent = otpLastSentByEmail.get(normalizedEmail)
+    if (lastSent && now - lastSent < 60 * 1000) {
+      const wait = Math.max(1, Math.ceil((60 * 1000 - (now - lastSent)) / 1000))
+      return sendError(res, 429, 'RATE_LIMITED', `Vui lòng đợi 60 giây trước khi yêu cầu mã OTP mới.`, { retryAfterSec: wait })
+    }
+
+    // 2. Max 5 req/h per email
+    const emailHits = (otpHitsByEmail.get(normalizedEmail) || []).filter((t) => now - t < 60 * 60 * 1000)
+    if (emailHits.length >= 5) {
+      const oldest = emailHits[0]
+      const wait = Math.max(1, Math.ceil(((oldest + 60 * 60 * 1000) - now) / 1000))
+      return sendError(res, 429, 'RATE_LIMITED', 'Đã vượt quá số lần yêu cầu OTP trong 1 giờ cho email này (tối đa 5 lần/giờ).', { retryAfterSec: wait })
+    }
+
+    // 3. Max 10 req/h per IP
+    const ipHits = (otpHitsByIp.get(String(ip)) || []).filter((t) => now - t < 60 * 60 * 1000)
+    if (ipHits.length >= 10) {
+      const oldest = ipHits[0]
+      const wait = Math.max(1, Math.ceil(((oldest + 60 * 60 * 1000) - now) / 1000))
+      return sendError(res, 429, 'RATE_LIMITED', 'Quá nhiều yêu cầu gửi OTP từ địa chỉ IP của bạn. Vui lòng thử lại sau.', { retryAfterSec: wait })
+    }
+
+    // Vô hiệu hóa OTP cũ của email
+    await run('UPDATE email_otps SET used = 1 WHERE email = ? AND used = 0', [normalizedEmail])
+
+    // Sinh OTP mới, hash và lưu DB
+    const otp = generateNumericOtp(6)
+    const otpHash = hashOtp(otp)
+    const expiresAt = new Date(now + OTP_TTL_SECONDS * 1000).toISOString()
+    const otpId = uuidv4()
+
+    await insert('email_otps', {
+      id: otpId,
+      email: normalizedEmail,
+      otp_hash: otpHash,
+      purpose: 'login',
+      expires_at: expiresAt,
+      attempts: 0,
+      max_attempts: 5,
+      used: 0,
+      created_date: new Date(now).toISOString(),
+    })
+
+    // Gửi email OTP
+    const { devOtp } = await sendOtpEmail({ email: normalizedEmail, otp, purpose: 'login' })
+
+    // Cập nhật rate limit sau khi gửi thành công
+    otpLastSentByEmail.set(normalizedEmail, now)
+    emailHits.push(now)
+    otpHitsByEmail.set(normalizedEmail, emailHits)
+    ipHits.push(now)
+    otpHitsByIp.set(String(ip), ipHits)
+
+    res.json({
+      success: true,
+      message: 'Mã xác thực OTP đã được gửi đến email của bạn',
+      cooldownSeconds: 60,
+      expiresInSeconds: OTP_TTL_SECONDS,
+      ...(devOtp !== undefined ? { devOtp } : {}),
+    })
+  } catch (err) {
+    console.error('Send OTP error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
+// POST /api/v1/auth/otp/verify — Xác thực đăng nhập OTP qua Email
+router.post('/otp/verify', async (req, res) => {
+  try {
+    const { email, otp } = req.body
+    if (!email || !otp) {
+      return sendError(res, 400, ERR.VALIDATION, 'Email và mã OTP là bắt buộc', { field: 'email,otp' })
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase()
+    const cleanOtp = String(otp).trim()
+
+    if (!/^\d{6}$/.test(cleanOtp)) {
+      return sendError(res, 400, ERR.VALIDATION, 'Mã OTP phải gồm 6 chữ số', { field: 'otp' })
+    }
+
+    // Tìm OTP mới nhất còn hiệu lực chưa dùng
+    const row = await queryOne(
+      `SELECT * FROM email_otps WHERE email = ? AND purpose = 'login' AND used = 0 ORDER BY created_date DESC, id DESC LIMIT 1`,
+      [normalizedEmail]
+    )
+
+    if (!row) {
+      return sendError(res, 400, 'INVALID_OTP', 'Mã OTP không hợp lệ hoặc đã được sử dụng')
+    }
+
+    // Kiểm tra số lần thử tối đa
+    if (row.attempts >= (row.max_attempts || 5)) {
+      return sendError(res, 400, 'OTP_MAX_ATTEMPTS_EXCEEDED', 'Mã OTP đã vượt quá số lần thử cho phép. Vui lòng yêu cầu mã mới.')
+    }
+
+    // Kiểm tra hết hạn
+    if (new Date(row.expires_at) < new Date()) {
+      return sendError(res, 400, 'OTP_EXPIRED', 'Mã OTP đã hết hạn. Vui lòng yêu cầu mã mới.')
+    }
+
+    // Kiểm tra hash
+    const inputHash = hashOtp(cleanOtp)
+    if (inputHash !== row.otp_hash) {
+      const nextAttempts = (row.attempts || 0) + 1
+      await run(`UPDATE email_otps SET attempts = ? WHERE id = ?`, [nextAttempts, row.id])
+      const remaining = Math.max(0, (row.max_attempts || 5) - nextAttempts)
+      return sendError(res, 400, 'INVALID_OTP', 'Mã OTP không chính xác', { remainingAttempts: remaining })
+    }
+
+    // Đánh dấu used=1 nguyên tử trong transaction
+    try {
+      await withTransaction(async (tx) => {
+        const claimed = await tx.runAffected(
+          `UPDATE email_otps SET used = 1 WHERE id = ? AND used = 0`,
+          [row.id],
+          { op: 'auth.otp.claim' }
+        )
+        if (claimed !== 1) {
+          const err = new Error('Mã OTP đã được sử dụng')
+          err.code = 'INVALID_OTP'
+          throw err
+        }
+      }, { op: 'auth.otp.verify' })
+    } catch (e) {
+      if (e?.code === 'INVALID_OTP') return sendError(res, 400, 'INVALID_OTP', e.message)
+      throw e
+    }
+
+    // Passwordless auto-provisioning nếu user chưa tồn tại
+    let user = await queryOne(`SELECT * FROM users WHERE email = ?`, [normalizedEmail])
+    if (!user) {
+      const dummyPassword = await bcrypt.hash(uuidv4(), 10)
+      user = await insert('users', {
+        id: uuidv4(),
+        email: normalizedEmail,
+        password: dummyPassword,
+        role: 'user',
+        name: normalizedEmail.split('@')[0],
+      })
+    }
+
+    // Cấp accessToken JWT và set cookie refresh_token chuẩn auth hiện tại
+    const accessToken = generateAccessToken(user)
+    const refreshToken = generateRefreshToken(user)
+    await storeRefreshToken(user.id, refreshToken)
+    setRefreshCookie(res, refreshToken)
+
+    res.json({
+      accessToken,
+      user: publicUser(user),
+    })
+  } catch (err) {
+    console.error('Verify OTP error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })

@@ -348,7 +348,7 @@ async function resolveRateLimitOpts(provider, userId, rateLimitOpts) {
 
 async function executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts }) {
   // 2. Rate limiter
-  const limiter = getRateLimiter(userId || 'system', provider, apiKeyId, await resolveRateLimitOpts(provider, userId, rateLimitOpts))
+  const limiter = getRateLimiter(userId || 'system', provider, apiKeyId, await resolveRateLimitOpts(provider, userId, rateLimitOpts), model)
 
   await limiter.acquire()
   const startMs = Date.now()

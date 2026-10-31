@@ -163,10 +163,16 @@ const registry = new Map()
  * @param {RateLimiterOptions} opts
  * @returns {RateLimiter}
  */
-export function getRateLimiter(userId, provider, apiKeyId, opts) {
-  const key = `${userId}:${provider}:${apiKeyId || 'default'}`
+export function getRateLimiter(userId, provider, apiKeyId, opts, model) {
+  // Backward-compat: allow opts to carry model, or apiKeyId to be opts.
+  if (apiKeyId && typeof apiKeyId === 'object' && !opts) {
+    opts = apiKeyId
+    apiKeyId = undefined
+  }
+  const resolvedModel = (model || opts?.model || 'default')
+  const key = `${userId}:${provider}:${resolvedModel}:${apiKeyId || 'default'}`
   if (!registry.has(key)) {
-    registry.set(key, new RateLimiter(opts))
+    registry.set(key, new RateLimiter(opts || {}))
   }
   return registry.get(key)
 }

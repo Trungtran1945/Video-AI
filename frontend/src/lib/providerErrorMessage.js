@@ -24,7 +24,30 @@ export function friendlyJobError(raw) {
     if (isOverloaded) {
       return `Mô hình AI dịch thuật đang quá tải — các câu chưa đạt chuẩn cần xem xét${unresStr}. Vui lòng thử Chạy lại sau ít phút hoặc sửa câu lỗi trong tab Transcript.`
     }
-    return `Còn câu chưa dịch đạt chuẩn hoặc cần xem xét${ratioStr}${unresStr} — Mở tab Transcript sửa câu lỗi rồi Chạy lại từ bước Dịch thuật (dub.translate).`
+    return `Còn câu chưa dịch đạt chuẩn hoặc cần xem xét${ratioStr}${unresStr} — Mở tab Transcript sửa câu lỗi rồi Chạy lại từ bước Dịch thuật (dub.translate) hoặc bấm Lồng tiếng lại.`
+  }
+
+  // 1b. dub.translate specific LLM & provider errors
+  if (/LLM không trả về bản dịch hợp lệ nào/i.test(msg)) {
+    return 'Mô hình AI không trả về bản dịch hợp lệ (kể cả phương án dự phòng). Vui lòng nhấn Thử lại hoặc chỉnh sửa trực tiếp trong tab Transcript.'
+  }
+  if (/Không có transcript để dịch/i.test(msg)) {
+    return 'Không có dữ liệu lời thoại để dịch — bước nhận dạng giọng nói (dub.stt) chưa có kết quả hoặc video không có lời thoại.'
+  }
+  if (/User location is not supported|location is not supported/i.test(msg)) {
+    return 'Khu vực địa lý chưa được hỗ trợ bởi Gemini API. Vui lòng chuyển sang cấu hình provider AI khác (OpenAI/Anthropic) trong trang Cài đặt.'
+  }
+  if (/RESOURCE_EXHAUSTED|Resource has been exhausted/i.test(msg)) {
+    return 'Mô hình AI dịch thuật (Gemini) đã hết hạn ngạch (quota) hoặc bị giới hạn tần suất. Vui lòng kiểm tra API Key hoặc thử lại sau ít phút.'
+  }
+  if (/API_KEY_INVALID|API key not valid|invalid api key/i.test(msg)) {
+    return 'API Key của dịch vụ AI dịch thuật không hợp lệ hoặc đã hết hạn. Vui lòng cập nhật API Key chính xác trong trang Cài đặt.'
+  }
+  if (/SAFETY|Candidate was blocked due to SAFETY|HARM_CATEGORY/i.test(msg)) {
+    return 'Nội dung lời thoại bị bộ lọc an toàn của mô hình AI chặn. Vui lòng chỉnh sửa câu thoại trong tab Transcript rồi thử lại.'
+  }
+  if (/dub\.translate incomplete/i.test(msg)) {
+    return 'Bước dịch thuật chưa hoàn tất đủ các câu. Vui lòng mở tab Transcript để kiểm tra và bổ sung bản dịch.'
   }
 
   // 2. BLOCK_RENDER codes with actionable guidance (FE-E01)
