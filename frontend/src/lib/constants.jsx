@@ -134,7 +134,7 @@ export const STATUS_LABELS = {
   };
   
   export const VOICE_PROVIDER_LABELS = {
-    zerotts: 'ZeroTTS (Local)',
+    voicestudio: 'VoiceStudio (Local)',
     edge_tts: 'Edge TTS (Miễn phí)',
     elevenlabs: 'ElevenLabs',
     google_tts: 'Google TTS',
@@ -145,7 +145,7 @@ export const STATUS_LABELS = {
   export const LLM_PROVIDERS = ['gemini', 'openai', 'anthropic', 'huggingface'];
   export const IMAGE_PROVIDERS = ['flux', 'stable_diffusion', 'google_image', 'huggingface_inference'];
   export const VIDEO_PROVIDERS = ['kling', 'hailuo', 'pixverse', 'runway', 'luma'];
-  export const VOICE_PROVIDERS = ['zerotts', 'edge_tts', 'elevenlabs', 'google_tts', 'azure_speech', 'openai_tts'];
+  export const VOICE_PROVIDERS = ['voicestudio', 'edge_tts', 'elevenlabs', 'google_tts', 'azure_speech', 'openai_tts'];
   export const SUBTITLE_PROVIDERS = ['whisper', 'openai_whisper', 'faster_whisper'];
   
   // Canonical project statuses: pending/queued/running/completed/failed/cancelled.

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, FileText, Languages, AlertCircle, AudioLines, AlertTriangle, Search } from 'lucide-react';
+import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, FileText, Languages, AlertCircle, AudioLines, AlertTriangle, Search, RotateCcw } from 'lucide-react';
 import {
   LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS,
   MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
@@ -128,7 +128,9 @@ export default function CreateProject() {
     { key: 'config', label: 'Cấu hình video', icon: Palette },
     { key: 'generate', label: 'Tạo video', icon: Wand2 },
   ];
-  const steps = form.mode === 'SUMMARY' ? summarySteps : (form.mode === 'SCRIPT_TO_VIDEO' || form.mode === 'AI_VIDEO') ? scriptSteps : dubSteps;
+  const isDub = form.mode === 'TRANSLATE_DUB';
+  const isScript = form.mode === 'SCRIPT_TO_VIDEO' || form.mode === 'AI_VIDEO';
+  const steps = form.mode === 'SUMMARY' ? summarySteps : isScript ? scriptSteps : dubSteps;
 
   useEffect(() => {
     if (form.mode !== 'TRANSLATE_DUB') return;
@@ -285,6 +287,17 @@ export default function CreateProject() {
     }
   };
 
+  const handleResetScriptFile = () => {
+    update('scriptUploadId', null);
+    update('scriptFileName', '');
+    update('scriptCharCount', 0);
+    update('scriptByteSize', 0);
+    update('scriptPreview', '');
+    setError('');
+    const input = document.getElementById('script-file-input');
+    if (input) input.value = '';
+  };
+
   const handleRetryUpload = () => {
     if (!selectedFile || uploading) return;
     setError('');
@@ -292,6 +305,11 @@ export default function CreateProject() {
   };
 
   const canNext = () => {
+    if (isScript) {
+      if (step === 0) return !!form.scriptUploadId && !scriptUploading;
+      if (step === 1) return !!form.aspectRatio && !!form.voiceProvider;
+      return true;
+    }
     if (form.mode === 'SUMMARY') {
       if (step === 0) return !!form.sourceVideoKey;
       // B3 Option A: gate bước ngôn ngữ = đã có video (BE bắt buộc sourceVideoKey,
@@ -322,7 +340,23 @@ export default function CreateProject() {
         return;
       }
       let payload;
-      if (form.mode === 'SUMMARY') {
+      if (isScript) {
+        payload = {
+          mode: 'SCRIPT_TO_VIDEO',
+          title: form.title.trim() || form.scriptFileName?.replace(/\.[^/.]+$/, '') || 'Video từ kịch bản',
+          scriptUploadId: form.scriptUploadId,
+          aspectRatio: form.aspectRatio || '16:9',
+          copyrightAcknowledged: copyrightAck,
+          params: {
+            aspectRatio: form.aspectRatio || '16:9',
+            voiceProvider: form.voiceProvider || 'edge_tts',
+            voiceId: form.voiceName || undefined,
+            voiceName: form.voiceName || undefined,
+            burnSubtitles: form.burnSubtitles !== false,
+            imageProvider: 'slide',
+          },
+        };
+      } else if (form.mode === 'SUMMARY') {
         payload = {
           mode: 'SUMMARY',
           title: form.title.trim() || 'Review phim mới',
@@ -419,8 +453,6 @@ export default function CreateProject() {
     );
   }
 
-  const isDub = form.mode === 'TRANSLATE_DUB';
-  const isScript = form.mode === 'SCRIPT_TO_VIDEO' || form.mode === 'AI_VIDEO';
   const selectedPreset = presets.find((p) => p.slug === form.stylePreset);
 
   return (
@@ -446,41 +478,58 @@ export default function CreateProject() {
             >
               {isScript && step === 0 && (
                 <div className="space-y-4">
-                  <div className="rounded-xl border-2 border-dashed border-border/80 hover:border-primary/50 transition p-6 text-center">
-                    <input
-                      type="file"
-                      id="script-file-input"
-                      accept=".txt,.md"
-                      onChange={handleScriptFile}
-                      className="hidden"
-                    />
-                    <label htmlFor="script-file-input" className="cursor-pointer block">
-                      <FileText className="w-10 h-10 text-primary mx-auto mb-2" />
-                      <span className="text-sm font-semibold text-foreground block">
-                        {form.scriptFileName || 'Chọn file kịch bản (.txt, .md)'}
-                      </span>
-                      <span className="text-xs text-muted-foreground mt-1 block">
-                        Tối đa 2MB và 60.000 ký tự UTF-8
-                      </span>
-                    </label>
-                  </div>
-                  {scriptUploading && (
-                    <div className="flex items-center justify-center gap-2 text-sm text-primary py-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Đang đọc và kiểm tra kịch bản...</span>
+                  <input
+                    type="file"
+                    id="script-file-input"
+                    accept=".txt,.md"
+                    onChange={handleScriptFile}
+                    className="hidden"
+                  />
+                  {!form.scriptUploadId ? (
+                    <div className="rounded-xl border-2 border-dashed border-border/80 hover:border-primary/50 transition p-6 text-center">
+                      <label htmlFor="script-file-input" className="cursor-pointer block">
+                        <FileText className="w-10 h-10 text-primary mx-auto mb-2" />
+                        <span className="text-sm font-semibold text-foreground block">
+                          Chọn file kịch bản (.txt, .md)
+                        </span>
+                        <span className="text-xs text-muted-foreground mt-1 block">
+                          Tối đa 2MB và 60.000 ký tự UTF-8
+                        </span>
+                      </label>
                     </div>
-                  )}
-                  {form.scriptUploadId && (
-                    <div className="rounded-xl bg-muted/40 border border-border p-4 space-y-2 text-left">
+                  ) : (
+                    <div className="rounded-xl bg-muted/40 border border-border p-4 space-y-3 text-left">
                       <div className="flex items-center justify-between text-xs text-muted-foreground font-medium">
-                        <span>Tệp: <strong className="text-foreground">{form.scriptFileName}</strong></span>
-                        <span>{form.scriptCharCount?.toLocaleString()} ký tự ({Math.round((form.scriptByteSize || 0) / 1024)} KB)</span>
+                        <span className="flex items-center gap-1.5 text-foreground font-semibold">
+                          <FileText className="w-4 h-4 text-primary shrink-0" />
+                          <span>{form.scriptFileName}</span>
+                        </span>
+                        <span className="font-mono">{form.scriptCharCount?.toLocaleString()} ký tự ({Math.round((form.scriptByteSize || 0) / 1024)} KB)</span>
                       </div>
                       {form.scriptPreview && (
                         <div className="p-3 bg-background rounded-lg border border-border text-xs text-muted-foreground font-mono max-h-36 overflow-y-auto whitespace-pre-wrap">
                           {form.scriptPreview}
                         </div>
                       )}
+                      <div className="flex items-center justify-between pt-1 border-t border-border/60">
+                        <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
+                          <Check className="w-3.5 h-3.5" /> File kịch bản đã sẵn sàng
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleResetScriptFile}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-xs font-semibold text-foreground transition"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span>Thay đổi file kịch bản</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {scriptUploading && (
+                    <div className="flex items-center justify-center gap-2 text-sm text-primary py-2">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Đang đọc và kiểm tra kịch bản...</span>
                     </div>
                   )}
                 </div>
@@ -511,21 +560,65 @@ export default function CreateProject() {
                     <label className="text-sm font-semibold text-foreground mb-2 block">
                       2. Nhà cung cấp giọng đọc (TTS)
                     </label>
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <OptionCard
                         selected={form.voiceProvider === 'edge_tts'}
-                        onClick={() => update('voiceProvider', 'edge_tts')}
+                        onClick={() => {
+                          update('voiceProvider', 'edge_tts');
+                          update('voiceName', '');
+                        }}
                         title="Edge-TTS"
                         desc="Miễn phí, giọng đọc mượt mà tự nhiên"
                       />
                       <OptionCard
+                        selected={form.voiceProvider === 'voicestudio'}
+                        onClick={() => {
+                          update('voiceProvider', 'voicestudio');
+                          update('voiceName', '');
+                        }}
+                        title="VoiceStudio"
+                        desc="Local TTS offline, độ trễ thấp"
+                      />
+                      <OptionCard
                         selected={form.voiceProvider === 'elevenlabs'}
-                        onClick={() => update('voiceProvider', 'elevenlabs')}
+                        onClick={() => {
+                          update('voiceProvider', 'elevenlabs');
+                          update('voiceName', '');
+                        }}
                         title="ElevenLabs"
                         desc="Giọng đọc AI cao cấp biểu cảm"
                       />
                     </div>
                   </div>
+
+                  {SAMPLE_VOICES[form.voiceProvider]?.length > 0 && (
+                    <div className="p-3.5 rounded-xl bg-muted/40 border border-border space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-semibold text-foreground">
+                          Chọn giọng đọc mẫu ({VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider}):
+                        </label>
+                        {form.voiceProvider === 'voicestudio' && (
+                          <span className="text-[11px] text-muted-foreground font-mono">http://localhost:3900</span>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {SAMPLE_VOICES[form.voiceProvider].map((v) => (
+                          <button
+                            key={v.id}
+                            type="button"
+                            onClick={() => update('voiceName', form.voiceName === v.id ? '' : v.id)}
+                            className={`px-2.5 py-1 text-xs rounded-md border transition-all ${
+                              form.voiceName === v.id
+                                ? 'bg-primary text-primary-foreground border-primary font-medium shadow-xs'
+                                : 'bg-background hover:bg-muted text-muted-foreground hover:text-foreground border-border'
+                            }`}
+                          >
+                            {v.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between p-3.5 rounded-xl bg-muted/40 border border-border">
                     <div>
                       <span className="text-sm font-medium text-foreground block">Đóng dấu phụ đề vào video (Burn-in Subtitles)</span>
@@ -557,7 +650,7 @@ export default function CreateProject() {
                     <div className="flex justify-between"><span>Kịch bản:</span><strong className="text-foreground">{form.scriptFileName}</strong></div>
                     <div className="flex justify-between"><span>Độ dài:</span><strong className="text-foreground">{form.scriptCharCount?.toLocaleString()} ký tự</strong></div>
                     <div className="flex justify-between"><span>Tỉ lệ:</span><strong className="text-foreground">{form.aspectRatio}</strong></div>
-                    <div className="flex justify-between"><span>Giọng đọc:</span><strong className="text-foreground">{form.voiceProvider}</strong></div>
+                    <div className="flex justify-between"><span>Giọng đọc:</span><strong className="text-foreground">{VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider}{form.voiceName ? ` (${form.voiceName})` : ''}</strong></div>
                     <div className="flex justify-between"><span>Phụ đề:</span><strong className="text-foreground">{form.burnSubtitles !== false ? 'Có (Burn-in ASS)' : 'Không'}</strong></div>
                   </div>
                   <div className="flex items-start gap-2 pt-2">
@@ -1144,7 +1237,30 @@ function UploadBlock({ label, fileName, onChange, accept, multiple, uploading, h
   );
 }
 
+const SAMPLE_VOICES = {
+  voicestudio: [
+    { id: 'default', label: 'Default (Chuẩn)' },
+    { id: 'alloy', label: 'Alloy (Cân bằng)' },
+    { id: 'echo', label: 'Echo (Ấm áp)' },
+    { id: 'fable', label: 'Fable (Diễn cảm)' },
+    { id: 'onyx', label: 'Onyx (Trầm ấm)' },
+    { id: 'nova', label: 'Nova (Trẻ trung)' },
+    { id: 'shimmer', label: 'Shimmer (Rõ ràng)' },
+  ],
+  edge_tts: [
+    { id: 'vi-VN-HoaiMyNeural', label: 'Hoài My (Nữ)' },
+    { id: 'vi-VN-NamMinhNeural', label: 'Nam Minh (Nam)' },
+  ],
+  elevenlabs: [
+    { id: 'Rachel', label: 'Rachel' },
+    { id: 'Adam', label: 'Adam' },
+    { id: 'Josh', label: 'Josh' },
+  ],
+};
+
 function VoiceStep({ form, update, optional }) {
+  const currentSamples = SAMPLE_VOICES[form.voiceProvider] || [];
+
   return (
     <div className="space-y-4">
       <div>
@@ -1163,13 +1279,40 @@ function VoiceStep({ form, update, optional }) {
         </div>
       </div>
       <div>
-        <label className="text-xs sm:text-sm font-semibold text-foreground mb-2 block">Tên giọng / Voice ID (tuỳ chọn)</label>
+        <div className="flex items-center justify-between mb-2">
+          <label className="text-xs sm:text-sm font-semibold text-foreground">Tên giọng / Voice ID (tuỳ chọn)</label>
+          {form.voiceProvider === 'voicestudio' && (
+            <span className="text-[11px] text-muted-foreground font-mono">VoiceStudio: http://localhost:3900</span>
+          )}
+        </div>
         <input
           value={form.voiceName}
           onChange={(e) => update('voiceName', e.target.value)}
-          placeholder="VD: Rachel, Adam, Josh..."
+          placeholder={form.voiceProvider === 'voicestudio' ? 'VD: default, alloy, echo, onyx...' : 'VD: Rachel, Adam, Josh...'}
           className="w-full px-3.5 py-2 rounded-lg bg-background border border-input text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
         />
+
+        {currentSamples.length > 0 && (
+          <div className="mt-2.5">
+            <span className="text-xs text-muted-foreground block mb-1.5">Giọng mẫu khả dụng:</span>
+            <div className="flex flex-wrap gap-1.5">
+              {currentSamples.map((v) => (
+                <button
+                  key={v.id}
+                  type="button"
+                  onClick={() => update('voiceName', v.id)}
+                  className={`px-2.5 py-1 text-xs rounded-md border transition-all ${
+                    form.voiceName === v.id
+                      ? 'bg-primary text-primary-foreground border-primary font-medium shadow-xs'
+                      : 'bg-muted/40 hover:bg-muted text-muted-foreground hover:text-foreground border-border'
+                  }`}
+                >
+                  {v.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

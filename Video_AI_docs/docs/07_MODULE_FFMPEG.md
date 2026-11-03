@@ -1,219 +1,70 @@
-# 07 — Module FFmpeg (packages/media) [PARTIAL — CURRENT là `backend/src/media/ffmpeg.js` + `backend/src/media/mediaService.js` JS, không `packages/media` TS]
+# 07 — Module FFmpeg (`backend/src/media/`)
 
-Gói `media` đóng gói mọi thao tác FFmpeg thành hàm TypeScript an toàn, dùng chung bởi cả 2 mode.
-Mục tiêu: backend không gọi lệnh ffmpeg thô, mà qua interface `MediaService`.
-
-# Current Implementation (CURRENT)
-
-- [CURRENT] `resolveBin`: `FFMPEG_PATH`→PATH→`C:\ffmpeg\bin`→bare name (`backend/src/media/ffmpeg.js:13-52`).
-- [CURRENT] `enqueue()` serialize mọi ffmpeg/ffprobe vì build Windows crash exit -22 khi 2 tiến trình ghi file đồng thời (`backend/src/media/ffmpeg.js:123-136`).
-- [CURRENT] NVENC `p4`/`cq23` else libx264 `veryfast`/`crf20` chỉ ở `burnSubtitlesStyled` qua `encodeArgs()`; các helper khác hardcode x264; `muxStream` dùng `-c:v copy` (`backend/src/media/mediaService.js:366-375,450-503`).
-- [CURRENT] Timeout stage 15/30m (`backend/src/pipeline/runner.js:321-327`) + `BURN 20m` + `DUB_TRACK 15m` (`backend/src/pipeline/stages/dubRender.js:20-21`); `SIGTERM`→`SIGKILL` 5s trong `runBin` (`backend/src/media/ffmpeg.js:54-91`).
-- [CURRENT] ASS `\pos` từ `ocr_regions` ratios (`original`/`top`/`bottom`/`custom`) qua `loadSubtitleRegions`/`buildAss` (`backend/src/pipeline/stages/dubRender.js:199-279`).
-- [CURRENT] Fallback loudnorm→raw (`dubIngest.js:34-38`).
-- [CURRENT] `applySubtitleMasks()`: Đã cài đặt trong `backend/src/media/mediaService.js:450-475`; áp dụng filter `boxblur` cho type `blur` và `drawbox` cho type `solid` theo toạ độ tỷ lệ `ratioX/Y/W/H` của các mask `APPROVED` từ `loadSubtitleRegions` (`dubRender.js:67-85`). Inpaint cần external provider.
-- [CURRENT] `trimAudioSilence()`: Loại bỏ 100-300ms im lặng thừa đầu/cuối clip thoại qua `silenceremove` filter (`backend/src/media/mediaService.js:484-500`).
-- [CURRENT] `buildDubTrack()` dynamic sidechain ducking: Hỗ trợ `useSidechainDucking = true` qua `sidechaincompress=threshold=0.04:ratio=8:attack=50:release=250` nén nhạc nền −12dB khi có tiếng nói và thở về 100% âm lượng khi im lặng, kết thúc bằng `loudnorm` (`mediaService.js:544-565`).
-- [PARTIAL] `signal` + `CANCELLED_BY_USER` + cleanup partial: `runBin`/`ffmpeg()` hỗ trợ `signal` (`ffmpeg.js:54-81,133-135`) nhưng `mediaService.js` hầu hết không nhận `signal`; abort hiện chỉ ở biên stage (`if (signal?.aborted) throw new Error('Cancelled')`, vd `dubRender.js:30`, `dubIngest.js:16`), error là `'Cancelled'` chung, không mã `CANCELLED_BY_USER`, không xoá output dở dang tập trung.
-- [NOT IMPLEMENTED] Inpaint FFmpeg-native: cần external provider (Vision/inpainting), ffmpeg chỉ composite.
-
-> Mọi khối TS `export interface MediaService` + chữ ký có `signal`/`maskRegions` phía dưới là [TARGET]; chỉ các đoạn gắn [CURRENT]/[PARTIAL]/[NOT IMPLEMENTED] mới phản ánh code main.
+> Triển khai hiện tại: `backend/src/media/ffmpeg.js` và `backend/src/media/mediaService.js` (JavaScript ESM).
+> Mọi thao tác xử lý video/audio được đóng gói thành các hàm có kiểm tra lỗi an toàn, serialize tiến trình trên Windows và tự động nhận diện tăng tốc phần cứng NVENC.
 
 ---
 
-## 1. API chính [TARGET]
+## 1. Cơ chế Cốt lõi & Quản lý Tiến trình (`ffmpeg.js`)
 
-> [TARGET] — Khối interface dưới là thiết kế (TS `packages/media`). [CURRENT] là các hàm JS rời trong `backend/src/media/mediaService.js` (`probe`, `extractAudio`, `burnSubtitlesStyled`, `buildDubTrack`, `muxStream`...). [NOT IMPLEMENTED] `maskRegions`; [PARTIAL] `signal` (xem `# Current Implementation`).
-
-```ts
-export interface MediaService {
-  probe(file: string): Promise<MediaInfo>;          // duration, streams, fps, size
-  extractAudio(src: string, out: string): Promise<void>;
-  detectScenes(src: string): Promise<Scene[]>;       // shot detection
-  transcodeToMezzanine(src: string, out: string): Promise<void>;
-  applySpeed(inFile: string, out: string, speed: number): Promise<void>;
-  applyGrade(inFile: string, out: string, grade: ColorGrade): Promise<void>;
-  applyMotion(inFile: string, out: string, m: Motion): Promise<void>; // ken-burns
-  concatClips(clips: ConcatInput[], out: string, opts: ConcatOpts): Promise<void>;
-  addSubtitles(inFile: string, sub: string, out: string): Promise<void>;
-  mixAudio(inVideo: string, voice: string, music: string|null, out: string): Promise<void>;
-  addIntroOutro(main: string, intro: string, outro: string, out: string): Promise<void>;
-  makeThumbnail(inFile: string, atSec: number, out: string): Promise<void>;
-
-  // === TRANSLATE_DUB ===
-  sampleFrames(src: string, fps: 1|2, outDir: string): Promise<Frame[]>;
-  normalizeLoudness(inFile: string, out: string, targetLufs?: number): Promise<void>; // mặc định -16
-  // MaskRegion: { startSec, endSec, ratioX, ratioY, ratioW, ratioH, maskStrength, isStatic? }
-  // pixel được tính từ ratio × videoDims tại runtime (scale-invariant).
-  maskRegions(inFile: string, regions: MaskRegion[], method: 'blur'|'fill'|'delogo', out: string, opts?: { videoDims?: {width:number;height:number} }): Promise<void>;
-  burnSubtitlesStyled(inFile: string, assFile: string, out: string): Promise<void>;
-  mixDubAudio(video: string, dubVoice: string|null, background: string|null, out: string): Promise<void>;
-  muxStream(inVideo: string, inAudio: string, out: string, format?: 'mp4'|'mkv'): Promise<void>;
-}
-```
+1. **Tìm kiếm & Phân giải Binary (`resolveBin`)**:
+   - Ưu tiên biến môi trường `FFMPEG_PATH` trong `.env`
+   - Kiểm tra trong `PATH` hệ thống
+   - Kiểm tra đường dẫn mặc định trên Windows `C:\ffmpeg\bin`
+   - Tự động kiểm tra tính sẵn sàng qua `ffmpegAvailable()` (ghi nhận phiên bản hoặc cảnh báo khi thiếu).
+2. **Tuần tự hóa trên Windows (`enqueue`)**:
+   - Trên hệ điều hành Windows, việc chạy đồng thời nhiều tiến trình FFmpeg ghi đè file có thể dẫn đến lỗi crash exit `-22`. Hàng đợi `enqueue()` tuần tự hóa các tác vụ FFmpeg nặng để đảm bảo an toàn tuyệt đối.
+3. **Quản lý Vòng đời & Timeout**:
+   - Hỗ trợ `AbortSignal` và tham số `timeout` cho các tác vụ render lâu.
+   - Khi bị huỷ hoặc hết hạn: Gửi tín hiệu `SIGTERM`, nếu tiến trình không thoát sau 5 giây sẽ ép buộc dừng bằng `SIGKILL`.
 
 ---
 
-## 2. Chi tiết implementation
+## 2. Các Hàm Xử lý Media (`mediaService.js`)
 
-### 2.1. probe
-`ffprobe -v quiet -print_format json -show_format -show_streams` → parse JSON.
+### 2.1. Thăm dò & Trích xuất Dữ liệu
+- **`probe(file)`**: Gọi `ffprobe` trích xuất thông tin kỹ thuật: duration, width, height, fps, bitrate, audio/video streams.
+- **`extractAudio(src, out)`**: Tách luồng audio 16kHz mono WAV (`-vn -ac 1 -ar 16000`) phục vụ ASR Whisper.
+- **`sliceAudio(src, out, startSec, durSec)`**: Cắt phân đoạn âm thanh theo khoảng thời gian.
+- **`sampleFrames(src, outDir, opts)`**: Trích xuất frame hình ảnh (mặc định 2 fps) phục vụ phân tích thị giác.
+- **`extractMaskFrames(src, projectDirPath, timestamps, opts)`**: Trích xuất các frame cụ thể tại các timestamp dự kiến để phát hiện hardsub.
 
-### 2.2. extractAudio
-`ffmpeg -i src -vn -ac 1 -ar 16000 out.wav` (chuẩn ASR).
+### 2.2. Phân đoạn & Dựng Video (SUMMARY & SCRIPT_TO_VIDEO)
+- **`detectScenes(src, opts)`**: Shot detection phát hiện các điểm cắt cảnh bằng FFmpeg filter `select='gt(scene,0.4)'`.
+- **`makeThumbnail(src, atSec, out)`**: Xuất ảnh thumbnail tại mốc giây xác định.
+- **`transcodeToMezzanine(src, out)`**: Chuyển đổi video về định dạng H.264 mezzanine (`veryfast`, CRF 18) giúp quá trình concat không bị lệch keyframe.
+- **`clipSlice({ src, inSec, outSec, speed, out })`**: Cắt đoạn clip kèm điều chỉnh tốc độ qua `setpts` và `atempo`.
+- **`concatClips(clips, out, opts)`**: Ghép nối các phân đoạn video bằng filter `xfade` (transition duration 0.3s).
+- **`applyMotionImage({ src, out, durationSec, ... })`**: Tạo hiệu ứng chuyển động Ken-Burns (zoompan) cho ảnh tĩnh trong video.
 
-### 2.3. detectScenes
-Dùng `select='gt(scene,0.4)'` + `showinfo`, hoặc gọi PySceneDetect nếu có.
-Trả `Scene[] { startSec, endSec, thumbnailKey }`.
+### 2.3. Xử lý Âm thanh & Lồng tiếng (TRANSLATE_DUB)
+- **`normalizeLoudness(inFile, out, targetLufs = -16)`**: Chuẩn hoá âm lượng chuẩn EBU R128 (`loudnorm=I=-16:TP=-1.5:LRA=11`).
+- **`trimAudioSilence(inFile, out)`**: Tự động loại bỏ 100-300ms im lặng thừa trước và sau câu thoại do TTS sinh ra bằng filter `silenceremove`.
+- **`applyTempoAudio(inFile, out, { tempo, padBeforeSec, padAfterSec })`**: Co dãn thời lượng audio lồng tiếng (giới hạn `TEMPO_MAX = 1.35`) và chèn khoảng lặng đệm.
+- **`buildDubTrack({ originalMedia, entries, out, backgroundVolume, useSidechainDucking, audioMode })`**:
+  - Hỗ trợ 3 chế độ âm thanh (`AUDIO_MODES`):
+    - `DUB_MIX`: Lồng tiếng AI + giữ nhạc nền gốc có ducking.
+    - `DUB_REPLACE`: Thay thế hoàn toàn bằng giọng lồng tiếng mới.
+    - `ORIGINAL_ONLY`: Giữ nguyên âm thanh gốc, chỉ thay đổi phụ đề.
+  - **Dynamic Sidechain Ducking**: Nén âm lượng nhạc nền gốc -12dB (`sidechaincompress=threshold=0.04:ratio=8:attack=50:release=250`) khi có tiếng thuyết minh và tự động hồi phục 100% âm lượng trong khoảng nghỉ giữa các câu thoại.
 
-### 2.4. transcodeToMezzanine
-`ffmpeg -i src -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p out.mp4`
-(Nhanh cho concat, chất lượng đủ).
-
-### 2.5. applySpeed (cho align)
-Video: `-filter:v "setpts=PTS/${speed}"`.
-Audio kèm: `-filter:a "atempo(${speed})"` (atempo giới hạn 0.5–2.0; ghép nếu cần).
-Speed nằm [0.9, 1.1] theo thiết kế align → an toàn.
-
-### 2.6. applyGrade (chỉnh màu)
-`-vf "eq=contrast=${c}:saturation=${s}, colorbalance=..."` hoặc áp LUT:
-`-vf "lut3d=file=teal-orange.cube"`.
-
-### 2.7. applyMotion (ken-burns)
-`-vf "zoompan=z='min(zoom+0.002,1.12)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"`.
-
-### 2.8. concatClips (SUMMARY)
-- Mỗi clip đã transcode → `concat demuxer` (`filelist.txt`).
-- Transition: với `cross`, render clip A kết thúc + clip B bắt đầu chồng 0.3s qua `xfade`:
-  `filter_complex "[0][1]xfade=transition=fade:duration=0.3:offset=..."`.
-- Thứ tự `startAtSec` đã tính overlap → giọng không lệch.
-
-### 2.9. mixAudio (voice + music)
-- Voice chính, music nền duck `-filter_complex "[1]volume=0.2[music];[0][music]amix=inputs=2"`.
-- Chuẩn hoá: `-af loudnorm=I=-16:TP=-1.5:LRA=11`.
-
-### 2.10. addSubtitles
-Burn-in: `-vf "subtitles=sub.srt"`. Hoặc mux sidecar (`-c:s mov_text`).
-
-### 2.11. sampleFrames
-`ffmpeg -i src -vf fps=2 -q:v 2 out/frame_%05d.jpg` — trích frame khi cần phân tích hình ảnh. Không tham gia vào active transcript extraction của `TRANSLATE_DUB` (pipeline đã chuyển sang STT-only).
-Chỉ decode video stream (`-an`) để tiết kiệm CPU.
-
-### 2.12. normalizeLoudness (TRANSLATE_DUB)
-Hai pass chuẩn EBU R128: đo rồi áp
-`-af loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json`. Audio đầu vào chuẩn LUFS giúp STT
-và TTS mixing ổn định hơn.
-
-### 2.13. maskRegions (TRANSLATE_DUB) ★ [NOT IMPLEMENTED]
-
-> [NOT IMPLEMENTED] — Không có `maskRegions()` trong `backend/src/media/mediaService.js` (grep toàn `backend/src/media` rỗng). Bảng `ocr_regions` đã có `mask_strength`/`is_static` + ratios (`backend/src/db/schema.js:286-300`) nhưng chưa có consumer; `between(t)`/`boxblur`/`drawbox`/`delogo` dưới đây là [TARGET].
-Che vùng hardsub theo từng `OcrRegion { startSec, endSec, ratioX, ratioY, ratioW, ratioH, maskStrength, isStatic? }`;
-pixel được tính `x = round(ratioX * vw)`, ... từ `videoDims`, chỉ bật filter trong khoảng thời gian đó:
-
-| Method | Filter |
-| --- | --- |
-| `blur` | `boxblur=luma_radius=<R>` áp trên vùng crop bbox, overlay trả về — `R = clamp(round(maskStrength * min(bw,bh) / 4), 1, ...)` |
-| `fill` | `drawbox=x:y:w:h:color=<nền>@<op>:t=fill` — `op = 0.4 + maskStrength*0.6`, màu nền lấy từ **background color sampling** quanh bbox (tránh vệt chữ lem còn sót khi blur) |
-| `delogo` | `delogo=x:y:w:h` — nội suy từ biên, tốt cho nền tĩnh (dùng làm xấp xỉ `inpaint` khi chưa có model AI offline) |
-
-`maskStrength` (0–1) là **1 tham số duy nhất** điều khiển cả bán kính blur và độ đục lớp phủ — khớp
-với thanh kéo "độ mờ" trên `SubRegionEditor` (xem `04` §4.1). `isStatic=true` → mở rộng
-`enable='between(t,0,duration)'` cho toàn bộ video.
-
-AI inpainting (`method='inpaint'`) không chạy bằng ffmpeg: VisionProvider sinh frame đã lấp chữ,
-ffmpeg chỉ composite lại vào timeline gốc. ⚠️ `inpaint` là **tùy chọn nâng cao (premium)** — gọi thêm
-Vision/Inpainting Provider, render lâu hơn và tốn chi phí API; `blur`/`fill` là mặc định nhanh nhẹ.
-
-> [NOT IMPLEMENTED] — `inpaint` KHÔNG phải FFmpeg-native, cần external provider; hiện chưa có pipeline nào cài đặt (xem `# Current Implementation`).
-
-### 2.14. burnSubtitlesStyled (TRANSLATE_DUB) [CURRENT]
-
-> [CURRENT] — `burnSubtitlesStyled` dùng `encodeArgs()` (NVENC `p4`/`cq23` else x264 `veryfast`/`crf20`) + ASS `\pos` từ ratios (`backend/src/media/mediaService.js:366-375`, `dubRender.js:231-279`).
-Burn file **ASS** (không phải SRT) vì cần `\pos` định vị theo vùng mask: mặc định đè lên vị trí bbox
-cũ (tính từ `ratioX/Y/W/H` × `videoDims`), hoặc theo `subPosition` (`original`/`top`/`bottom`/`custom`)
-user chọn (xem `01` §3.2) + font/outline:
-`-vf "ass=subs.ass"` — giữ nguyên timing `[startSec, endSec]` của TranscriptSegment.
-
-### 2.15. mixDubAudio & muxStream (TRANSLATE_DUB) [CURRENT]
-
-> [CURRENT] — `muxStream` là `-c:v copy` (không re-encode, không NVENC) + `-c:a aac 192k` (`mediaService.js:450-462`); `buildDubTrack` amix + ducking ×0.25 + `loudnorm` (`mediaService.js:391-447`). Câu "Mux cuối: `-c:v h264_nvenc -preset p4`..." dưới đây là [TARGET] (chỉ đúng cho `burnSubtitlesStyled`/`encodeVideo`).
-
-- **Audio dub timing handling** (xem `05_THIET_KE_PIPELINE_CHI_TIET.md` §B.5 chi tiết):
-  - **Pause-expansion**: Đoạn thoại được phép mở rộng vào khoảng lặng kế tiếp (`roomDur`), giữ nguyên tempo 1.0x tự nhiên.
-  - **Timing lệch lớn**: Đề xuất rút gọn câu dịch nếu vượt quá cả khoảng lặng kế tiếp.
-  - **Timing lệch nhỏ**: time-stretch audio dub trong khoảng `[0.80–1.35]` (TransFlow `MAX_FIT_TEMPO = 1.35`).
-  - **Silence trimming & Fade-out**: Cắt 100-300ms im lặng thừa trước/sau bằng `silenceremove`; fade-out `afade=t=out:d=0.12` ở đuôi clip cắt ngắn.
-  - **Timing khớp**: giữ nguyên audio dub thực tế.
-  - `tts_audio_ref` là source of truth cho audio đã dub (KHÔNG dùng `dub_track_asset_id`).
-- Dubbing bật: thay voice gốc bằng dub track; nếu có background stem (nhạc/tiếng động môi trường)
-  thì áp dụng **dynamic sidechain ducking** (`useSidechainDucking = true`, nén −12dB khi có lời và hồi phục 100% khi im lặng), kết thúc bằng `loudnorm`.
-- Dubbing tắt: copy audio gốc (`-c:a copy`).
-- Mux cuối: `-c:v h264_nvenc -preset p4` nếu có GPU NVIDIA (tăng tốc phần cứng), fallback
-  `libx264 -preset veryfast/crf20` (`mediaService.js:465-503`); container MP4 hoặc MKV theo tuỳ chọn.
-
-### 2.16. Subtitle presentation options (TRANSLATE_DUB)
-
-User chọn trước render, lưu trong `Project.params`:
-
-| Option | Giá trị mặc định | Mô tả |
-| --- | --- | --- |
-| `target_font` | `Arial` | Font-family từ danh sách có sẵn |
-| `target_font_size` | `22` | Font size (16–48px) |
-| `target_opacity` | `1.0` | Đopacity (0.5–1.0) |
-| `target_color` | `#FFFFFF` | Font color hex |
-| `subtitle_position` | `BOTTOM` | Vị trí phụ đề (`TOP`/`MIDDLE`/`BOTTOM`/`CUSTOM`) |
-| `hard_sub_enabled` | `true` | Burn subtitle vào video (mặc định cho TRANSLATE_ONLY) |
-
-### 2.17. Render validation
-
-Sau khi render xong, kiểm tra output:
-
-1. **FFmpeg probe**: Kiểm tra file không bị corrupt (có video/audio stream đầy đủ).
-2. **Duration check**: Output duration ±2s so với duration gốc.
-3. **Resolution check**: Output resolution khớp config (1080p mặc định).
-4. **Audio check**: Audio stream tồn tại, sample rate ≥ 44100Hz.
-5. Nếu render fail → retry 1 lần (FFmpeg có thể do transient), sau đó `FAILED`.
+### 2.4. Phụ đề & Che Hardsub (Masking)
+- **`buildMaskFilter(regions, { width, height })`**:
+  - Chuyển đổi các toạ độ tỷ lệ scale-invariant (`ratioX, ratioY, ratioW, ratioH`) thành pixel thực tế.
+  - Sinh bộ lọc FFmpeg: Dùng `boxblur` cho vùng che kiểu `blur` và `drawbox` cho vùng che kiểu `solid`.
+- **`applySubtitleMasks(inFile, regions, opts)`**: Áp dụng các vùng che hardsub từ danh sách mask `APPROVED`.
+- **`burnSubtitlesStyled(inFile, assPath, out, opts)`**:
+  - Burn file phụ đề ASS có định dạng kiểu dáng và toạ độ `\pos` neo ở đáy khung hình (`\an2`).
+  - Tự động nhận diện NVENC GPU (`h264_nvenc -preset p4 -cq 23`), fallback về CPU `libx264 -preset veryfast -crf 20`.
+- **`muxStream(inVideo, inAudio, out, opts)`**: Ghép luồng video và luồng audio thành phẩm bằng `-c:v copy` và `-c:a aac 192k` mà không cần re-encode hình ảnh lần thứ hai.
 
 ---
 
-## 3. Worker & tài nguyên
+## 3. Quy trình Render Hoàn chỉnh theo Chế độ
 
-- Render chạy trong **BullMQ worker riêng** (không block API).
-- Tách worker **CPU** (ffmpeg: demux, mask, burn-in, mux) và worker **GPU/AI** (ASR, OCR, TTS,
-  inpainting) — render nặng không tranh chấp VRAM với inference (xem `08_TRIEN_KHAI_VA_VAN_HANH.md`).
-- Giới hạn concurrent render (semaphore) theo CPU/RAM; video dài chia chunk song song.
-- File trung gian lưu `storage/tmp`, dọn sau khi xuất hoặc theo retention policy (`Project.expiresAt`,
-  xem `08` §6 và `02` §5).
-
-### 3.1. Huỷ tiến trình FFmpeg giữa chừng (Cancel) [PARTIAL]
-
-> [PARTIAL] — `runBin`/`ffmpeg()` đã hỗ trợ `signal` + `SIGTERM`→`SIGKILL` 5s + `timeout` (`backend/src/media/ffmpeg.js:54-91,133-135`). Nhưng `mediaService.js` hầu hết không nhận `signal` (chỉ `burnSubtitlesStyled`/`buildDubTrack` nhận `timeout`); abort hiện chỉ ở biên stage (`signal?.aborted → throw 'Cancelled'`), không mã `CANCELLED_BY_USER`, không cleanup partial tập trung. Chữ ký `signal?` + `CANCELLED_BY_USER` dưới đây là [TARGET].
-
-Mọi hàm `MediaService` chạy lâu (render, concat, mask, burn-in) nhận thêm tham số tuỳ chọn
-`signal?: AbortSignal`:
-
-```ts
-concatClips(clips: ConcatInput[], out: string, opts: ConcatOpts, signal?: AbortSignal): Promise<void>;
-```
-
-- Khi worker nhận tín hiệu huỷ (từ `CancelProjectUseCase`, xem `03` §3 và `01` §5.2), `AbortController`
-  tương ứng được `abort()`; wrapper FFmpeg lắng nghe sự kiện này và gọi `child_process.kill('SIGTERM')`
-  lên tiến trình `ffmpeg` con, sau đó `SIGKILL` nếu không thoát trong 5s.
-- File output dở dang bị xoá ngay; `GenerationJob.status = FAILED`, `error = 'CANCELLED_BY_USER'`.
-- Vì FFmpeg không hỗ trợ resume giữa chừng một lệnh đơn, huỷ luôn đồng nghĩa phải chạy lại từ đầu
-  stage đó nếu user muốn tiếp tục sau này (khác với upload resumable ở tầng ingest).
-
----
-
-## 4. Quyết định media
-
-| Quyết định | Lý do |
-| --- | --- |
-| Mezzanine trước concat | concat nhanh, tránh re-encode lặp |
-| speed qua setpts/atempo | align chính xác, giữ đồng bộ |
-| xfade cho transition | mượt, không nhảy hình |
-| `fill` màu nền sampling là mặc định che chữ | blur để lại vệt chữ lem; inpaint đẹp nhưng đắt GPU |
-| Mask theo `enable='between(t,...)'` | chỉ xử lý đúng đoạn có hardsub, không đè toàn video |
-| Burn-in bằng ASS thay SRT | cần `\pos` khớp bbox cũ + style chữ nhất quán |
-| NVENC ưu tiên khi mux | render 1080p/4K nhanh gấp nhiều lần so với libx264 CPU |
-| `AbortSignal` xuyên suốt `MediaService` | Cho phép huỷ job render giữa chừng an toàn (FR-J1), giải phóng CPU/GPU ngay thay vì chờ hết pipeline |
+1. **SUMMARY**:
+   Transcode cảnh ➔ Ghép concat xfade ➔ Tạo voice track tổng ➔ Hòa trộn nhạc nền ➔ Burn phụ đề ASS ➔ Xuất file MP4.
+2. **TRANSLATE_DUB**:
+   Nạp mask `APPROVED` ➔ Áp dụng filter làm mờ/che chữ gốc (`applySubtitleMasks`) ➔ Burn phụ đề ASS dịch mới (`burnSubtitlesStyled`) ➔ Tạo dub track âm thanh với ducking (`buildDubTrack`) ➔ Đóng gói mux stream cuối cùng (`muxStream`).
+3. **SCRIPT_TO_VIDEO**:
+   Chuyển ảnh slide thành video clip có hiệu ứng Ken-Burns ➔ Concat theo thứ tự kịch bản ➔ Ghép âm thanh thuyết minh và nhạc nền ➔ Burn phụ đề ASS ➔ Xuất file MP4.

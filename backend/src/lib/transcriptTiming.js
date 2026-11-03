@@ -20,6 +20,9 @@ export const TIMING_GAP = 0.1
 // push toàn transcript trên STT dày đặc (incident c47817c2: 1 overlap 0.92s
 // khiến mọi PUT đều conflict + EXCEEDS_DURATION, editor unsaveable).
 export const RENDER_OVERLAP_TOL = 0.05
+// Cho phép end_sec vượt duration một chút (STT thường sinh segment cuối
+// légèrement au-delà de la durée vidéo). Vượt quá ngưỡng này mới coi là lỗi.
+export const DURATION_TOL = 2.0
 const EPS = 1e-9
 
 function num(v) {
@@ -203,11 +206,11 @@ export function computeProposedState(allSegments, incoming, { gap = TIMING_GAP, 
     }
   }
 
-  // Step 3: duration guard (only when known).
+  // Step 3: duration guard (only when known). Cho phép vượt nhẹ (DURATION_TOL).
   const dur = num(durationSec)
   if (dur !== null && dur > 0) {
     for (const r of ordered) {
-      if (r.end_sec - dur > EPS) {
+      if (r.end_sec - dur > DURATION_TOL) {
         errors.push({ code: 'EXCEEDS_DURATION', segmentId: String(r.id), message: `end ${r.end_sec}s vượt video duration ${dur}s` })
         break
       }
@@ -239,7 +242,7 @@ export function validateProposedState(ordered, { durationSec = null } = {}) {
   const dur = Number(durationSec)
   if (Number.isFinite(dur) && dur > 0) {
     for (const r of list) {
-      if (r.end_sec - dur > EPS) {
+      if (r.end_sec - dur > DURATION_TOL) {
         errors.push({ code: 'EXCEEDS_DURATION', segmentId: String(r.id), message: `Vượt duration ${dur}s` })
         break
       }

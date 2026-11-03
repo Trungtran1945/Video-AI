@@ -1,138 +1,57 @@
-# 09 — Đóng góp và Quy trình phát triển
+# 09 — Đóng góp và Quy trình Phát triển
 
-Tài liệu này định nghĩa quy trình đóng góp, chất lượng code và cấu trúc chuẩn để dự án nhất quán,
-dễ bảo trì (theo yêu cầu Clean Architecture, SOLID, không code trùng lặp).
-
----
-
-## 1. Quy tắc chung
-
-- **Ngôn ngữ**: TypeScript strict ở mọi package. [TARGET/FUTURE — CURRENT là JS thuần, xem §2].
-- **Không hardcode secret**: luôn qua env / `MASTER_KEY`.
-- **Không placeholder/TODO**: mọi code merge phải chạy được.
-- **Không duplicate**: dùng lại service/component/hook có sẵn; nếu lặp >2 chỗ → đưa vào `shared` hoặc `core`.
-- **Provider mới**: implement interface + đăng ký DI, **không sửa** use-case.
+Tài liệu này định nghĩa quy chuẩn đóng góp mã nguồn, tiêu chuẩn kiểm thử và quy trình đảm bảo chất lượng cho toàn bộ dự án Video-AI.
 
 ---
 
-## 2. Code Quality [CURRENT]
+## 1. Quy tắc Phát triển Chung
 
-> [CURRENT] Không pnpm workspace, không Vitest/Jest, không Husky/lint-staged/Commitlint/Prettier
-> trong code. Test runner duy nhất là `node:test` (node bản địa).
+- **Ngôn ngữ & Chuẩn mã nguồn**: JavaScript (ES modules) trên Node.js >=18; Frontend sử dụng React 18 + JSX + Tailwind CSS.
+- **Không hardcode bí mật**: Tuyệt đối không lưu secret, token, mật khẩu hay API key trong mã nguồn; luôn đọc từ biến môi trường qua `src/config.js` hoặc giải mã qua `MASTER_KEY`.
+- **Không sinh mã giữ chỗ (No Placeholder Code)**: Mọi đoạn mã được đẩy lên phải hoàn chỉnh, có khả năng thực thi và được kiểm chứng.
+- **Provider Pattern**: Khi bổ sung một nhà cung cấp AI mới (TTS, LLM, ASR, Vision, Image), cài đặt trong `backend/src/providers/` và đăng ký qua `registry.js`, tuyệt đối không sửa đổi logic nghiệp vụ trong `runner.js`.
 
-| Công cụ | Mục đích | CURRENT |
+---
+
+## 2. Tiêu chuẩn Chất lượng Mã nguồn (Verification Gates)
+
+| Thành phần | Lệnh thực thi | Mục đích & Tiêu chuẩn |
 | --- | --- | --- |
-| ESLint | style, unused, hooks | `frontend: npm run lint` (backend không có script lint) |
-| TypeScript (qua jsconfig) | typecheck nhẹ cho JS | `frontend: npm run typecheck` = `tsc -p ./jsconfig.json` |
-| `node:test` | unit & integration test | backend `npm test` = `node scripts/run-tests.mjs` (~115 file `tests/*.test.mjs`); `timeline.test.js` của frontend cũng là `node:test` (frontend không có script `test`) |
+| **Backend Lint** | `cd backend && npm run lint` | Kiểm tra cú pháp ESLint toàn bộ thư mục `src/`, `tests/`, `scripts/` |
+| **Backend Test** | `cd backend && npm test` | Chạy toàn bộ bộ kiểm thử hồi quy `node scripts/run-tests.mjs` (kiểm tra toàn bộ các file `tests/*.test.mjs`) |
+| **Frontend Lint** | `cd frontend && npm run lint` | Kiểm tra cú pháp và quy chuẩn React/JSX |
+| **Frontend Typecheck** | `cd frontend && npm run typecheck` | Kiểm tra kiểu dữ liệu nhẹ qua `tsc -p ./jsconfig.json` |
+| **Frontend Build** | `cd frontend && npm run build` | Kiểm tra tính sẵn sàng của gói build Vite SPA |
 
-Cấu hình mẫu [CURRENT]:
-```jsonc
-// backend/package.json
-{
-  "scripts": {
-    "dev": "node server.js",
-    "start": "node server.js",
-    "check:redis": "node scripts/check-redis.mjs",
-    "test": "node scripts/run-tests.mjs"   // chạy tuần tự mọi tests/*.test.mjs, fail-fast
-  }
-}
-// frontend/package.json
-{
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "lint": "eslint . --quiet",
-    "lint:fix": "eslint . --fix",
-    "typecheck": "tsc -p ./jsconfig.json",
-    "preview": "vite preview"              // chú ý: không có script "test"
-  }
-}
-```
+> ⚠️ **Lưu ý Quan trọng**: Frontend không có lệnh `npm test` — không tự ý tạo thêm script test ở frontend. Cổng kiểm tra hồi quy chính của dự án là bộ test của backend (`cd backend && npm test`).
 
 ---
 
-## 3. Quy trình đóng góp (Contribution)
+## 3. Quy trình Đóng góp (Contribution Workflow)
 
-1. Fork / tạo branch `feature/<tên>` hoặc `fix/<tên>`.
-2. Viết code + test (unit cho service, integration cho API/pipeline — `node:test`, backend đặt
-   trong `backend/tests/*.test.mjs` để `scripts/run-tests.mjs` nhặt tự động).
-3. Chạy `cd frontend && npm run lint && npm run typecheck && npm run build`, rồi
-   `cd ../backend && npm test` — phải xanh. (Chú ý: frontend không có script `test`, CI cũng
-   không chạy test — xem `08` §4; không dùng `pnpm -r` / Vitest / Jest.)
-4. Commit theo Commitlint; push & tạo PR. (Lưu ý cho agent: CHỈ commit/push khi user yêu cầu
-   rõ ràng trong turn hiện tại — không tự ý commit/push; `git reset --hard` và `git clean -fd`
-   bị cấm trong mọi trường hợp.)
-5. PR cần ≥1 review (ADMIN duyệt nếu chạm core).
-6. CI pass → merge vào `main` → auto deploy staging.
+1. Tạo branch phát triển mới: `feature/<ten-tinh-nang>` hoặc `fix/<ten-loi>`.
+2. Thực hiện thay đổi mang tính phẫu thuật (surgical changes): Chỉ chỉnh sửa những file thực sự cần thiết, không refactor lan man code không liên quan.
+3. Thực hiện kiểm thử toàn diện:
+   - Backend: `cd backend && npm run lint && npm test`.
+   - Frontend: `cd frontend && npm run lint && npm run build`.
+4. Tuân thủ quy định Git nghiêm ngặt:
+   - Được phép chạy: `git status`, `git diff`, `git log`, `git branch`.
+   - **Chỉ thực hiện `git commit`, `git push`, `git merge` khi người dùng yêu cầu rõ ràng** trong phiên làm việc hiện tại.
+   - **Tuyệt đối không bao giờ chạy**: `git reset --hard` hoặc `git clean -fd`.
 
 ---
 
-## 4. Cấu trúc thư mục chuẩn (áp dụng mọi package)
+## 4. Viết Test & Kiểm thử Tự động
 
-```
-packages/<name>/
-├── src/
-│   ├── index.ts          # public API / barrel
-│   ├── domain/           # interfaces, types
-│   ├── application/      # use-cases (nếu có)
-│   ├── infrastructure/   # implementations
-│   └── __tests__/        # test
-├── package.json
-├── tsconfig.json
-└── README.md (nếu phức tạp)
-```
+Mọi tính năng hoặc sửa lỗi mới đều cần đi kèm bài kiểm tra tương ứng trong `backend/tests/`:
 
----
-
-## 5. Viết test
-
-- **Provider**: mock HTTP, assert gọi đúng & map kết quả; test lỗi → `ProviderLog` status error.
-- **AlignService** (SUMMARY): test invariant `sum(clip.duration*speed) ≈ D` với nhiều kịch bản (thiếu cảnh, thừa cảnh).
-- **ForcedAlignService** (TRANSLATE_DUB): fixture TTS dài/ngắn hơn slot → assert lệch < 5% slot,
-  không segment nào chồng nhau, pause-expansion mở rộng hợp lý, atempo không vượt `[0.80–1.35]` (`forcedAlignService.js:14-15`).
-- **Mask lifecycle & validation** (TRANSLATE_DUB): assert mask `APPROVED` bất biến khi sửa toạ độ/thị giác (409 `MASK_APPROVED_IMMUTABLE`), `loadSubtitleRegions` chỉ nạp mask `APPROVED`, DB lỗi trả `BLOCK_RENDER: MASK_DATA_UNAVAILABLE`, mask sai toạ độ trả `BLOCK_RENDER: MASK_INVALID`.
-- **TranslateService**: cùng input, khác StylePreset → assert đúng systemPrompt được inject và
-  output khớp JSON schema `{segments:[{index, translation}]}`.
-- **API**: test controller qua `node:test` + mock use-case. [CURRENT — không supertest, xem §2].
-- **E2E pipeline dùng video 30s**: mặc định chạy với `DEFAULT_PROVIDER_MODE=mock` trong CI (xem
-  `11` §6) để tách biệt hoàn toàn khỏi rate limit của provider thật — CI **luôn xanh** bất kể free
-  tier bên ngoài có bị giới hạn hay không.
-- **CancelProjectUseCase**: assert job `PENDING` bị remove khỏi BullMQ, job `RUNNING` nhận tín hiệu
-  `AbortSignal`, file tạm bị xoá, `Project.status = cancelled` (không `failed`) với `cancelledAt` được set.
-- **Overlap Detection (UpdateSegmentTimingSchema)**: fixture 3 segment liên tiếp — assert đè lên
-  N-1 bị từ chối (`VAL_002`), đè lên N+1 chưa chỉnh tay thì tự đẩy đúng offset, đè lên N+1 đã
-  `isTimeManuallyAdjusted=true` thì bị từ chối.
-- **Concurrency limit**: tạo > `MAX_CONCURRENT_PROJECTS_PER_USER` project cùng lúc → assert project
-  vượt ngưỡng có `status=QUEUED` thay vì enqueue ngay; assert cron dequeue đúng thứ tự FIFO khi có
-  slot trống.
-- **Cleanup cron**: fixture project có `expiresAt` trong quá khứ → assert file trong `storage/tmp`
-  bị xoá, `Output` không bị ảnh hưởng.
-- **RateLimiter (Token Bucket)**: fixture RPM=2 → gọi `acquire()` 5 lần liên tiếp, assert 2 lần đầu
-  resolve ngay, các lần sau bị delay đúng theo cửa sổ; chạm `requestsPerDay` → assert throw
-  `RateLimitExhaustedError` thay vì tiếp tục chờ vô hạn.
-- **ProviderCache**: gọi `callProvider()` 2 lần với input giống hệt → assert lần 2 không tạo thêm
-  `ProviderLog`, không gọi `fn()` thật, trả đúng kết quả cache.
-- **Đa key round-robin**: fixture 2 `ApiKey` cùng provider, 1 key trả liên tiếp lỗi 429 → assert
-  hệ thống tự chuyển sang key còn lại mà không làm job `FAILED`.
-- **QuotaGuardService**: fixture `ProviderLog` gần chạm `requestsPerDay` → assert `getSnapshot()`
-  trả `percentUsed ≥ 0.8` và job liên quan có `warnings` chứa `quota_risk`.
-
----
-
-## 6. Tài liệu
-
-- Mọi thay đổi API/schema phải cập nhật `06_API.md` / `02_CO_SO_DU_LIEU.md`.
-- Thêm provider/mode → cập nhật `01_KIEN_TRUC_TONG_THE.md` & `05_PIPELINE`.
-- Giữ README là chỉ mục.
-
----
-
-## 7. Quyết định contribution
-
-| Quyết định | Lý do |
-| --- | --- |
-| Husky + Commitlint | lịch sử sạch, dễ truy vết |
-| Test mock provider | tốc độ + không tốn API thật |
-| E2E dùng video 30s | pipeline chạy nhanh trong CI |
-| Chuẩn thư mục mọi package | nhất quán, dễ onboard |
+- **Kiểm thử Provider AI**: Sử dụng mock HTTP hoặc `mockAsr`, `mockLlm`, `mockTts`, `mockVision` với biến môi trường `DEFAULT_PROVIDER_MODE=mock` để không tốn quota API thật.
+- **Kiểm thử Pipeline SUMMARY**: Kiểm tra thuật toán `AlignService`, đảm bảo bất biến tổng thời lượng clip khớp với thời lượng giọng đọc review (`sai lệch < 1s`).
+- **Kiểm thử Pipeline TRANSLATE_DUB**:
+  - Kiểm tra `ForcedAlignService`: Tốc độ co dãn không vượt `TEMPO_MAX = 1.35`, tận dụng khoảng lặng pause-expansion, không chồng lấn timestamp giữa các câu thoại kế tiếp.
+  - Kiểm tra tính bất biến của Mask: Mask ở trạng thái `APPROVED` không được phép sửa toạ độ (`409 MASK_APPROVED_IMMUTABLE`).
+  - Kiểm tra validation trước render (`BLOCK_RENDER`): Dừng ngay lập tức nếu thiếu bản dịch hoặc thiếu audio dub.
+- **Kiểm thử Pipeline SCRIPT_TO_VIDEO**:
+  - Kiểm tra độ phủ của lời đọc (`narration` coverage) trong phân đoạn kịch bản, không bị mất văn bản gốc.
+  - Kiểm tra Review Gate (`script_review_required = 1`): Dự án dừng lại ở trạng thái `queued` chờ duyệt trước khi sinh media.
+- **Kiểm thử Resumable Upload**: Kiểm tra cơ chế gửi chunk, phát hiện lệch offset (`OFFSET_MISMATCH`) và hoàn tất tải lên với băm SHA-256.

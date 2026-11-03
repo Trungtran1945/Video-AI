@@ -127,6 +127,16 @@ export const config = {
   providerCacheEnabled: process.env.PROVIDER_CACHE_ENABLED !== 'false',
   providerCacheTtlDays: Number(process.env.PROVIDER_CACHE_TTL_DAYS || 90),
   defaultProviderMode: process.env.DEFAULT_PROVIDER_MODE || 'live', // 'live' | 'mock'
+  // VoiceStudio provider config (OpenAI-compatible speech API on port 3900)
+  voicestudio: {
+    url: process.env.VOICESTUDIO_URL || '',
+    host: process.env.VOICESTUDIO_HOST || '127.0.0.1',
+    port: Number(process.env.VOICESTUDIO_PORT || 3900),
+    model: process.env.VOICESTUDIO_MODEL || 'tts-1',
+    voice: process.env.VOICESTUDIO_VOICE || 'default',
+    apiKey: process.env.VOICESTUDIO_API_KEY || '',
+    timeoutMs: Number(process.env.VOICESTUDIO_TIMEOUT_MS || 60000),
+  },
   // BE-D01: ZeroTTS provider + service hardening env (docs/03,05,08,11).
   // Node client đọc trực tiếp process.env (zeroTts.js); fines này là source document
   // + validate tập trung cho Docker/CI. Invalid → fallback default, không throw lúc

@@ -4,477 +4,129 @@
 
 > Nguồn đối chiếu (source of truth, branch main): `backend/src/db/schema.js` (toàn file).
 
-CURRENT có đúng 24 tables (verbatim): users, reset_tokens, settings, projects, assets, generation_jobs, scenes, script_segments, timeline_clips, audios, subtitles, outputs, youtube_uploads, api_keys, provider_logs, provider_rate_limits, provider_cache, transcript_segments, ocr_regions, style_presets, sse_tickets, project_idempotency, project_cleanup_tasks, upload_sessions.
+CURRENT có đúng **29 tables** (verbatim):
+`users`, `reset_tokens`, `email_otps`, `settings`, `projects`, `assets`, `generation_jobs`, `scenes`, `script_segments`, `timeline_clips`, `audios`, `subtitles`, `outputs`, `youtube_uploads`, `script_uploads`, `youtube_accounts`, `youtube_oauth_states`, `api_keys`, `provider_logs`, `provider_rate_limits`, `provider_cache`, `transcript_segments`, `ocr_regions`, `style_presets`, `project_glossaries`, `sse_tickets`, `project_idempotency`, `project_cleanup_tasks`, `upload_sessions`.
 
-- Không FK constraints (manual cleanup): các `CREATE TABLE` không khai báo `FOREIGN KEY`; quan hệ dọn tay trong code (vd: xóa project đặt `provider_logs.project_id = NULL`). `PRAGMA foreign_keys = ON` trong `backend/src/db.js` nhưng schema không định nghĩa FK nào.
-- Lowercase enums: `status`/`role` lưu lowercase (`pending`, `queued`, `running`, `completed`, `failed`, `cancelled`, `user`, `admin`...), không dùng enum UPPERCASE của Prisma (SQLite không có native enum).
-- projects.status='completed' ngoài enum cũ: pipeline đánh `'completed'` khi xong (`backend/src/pipeline/runner.js`); enum `JobStatus` Prisma ở §2 [TARGET/FUTURE] không có giá trị này.
-- projects bổ sung tracking: `transcript_version` (tăng khi sửa transcript hoặc sửa mask APPROVED/DRAFT để đồng bộ `outputStale`), `run_token`, `lease_expires_at`, `video_hash`, `started_at`, `heartbeat_at`, `cancelled_at`, `expires_at`.
-- settings ~15 cột (voice_provider='edge_tts', default_style='cinematic', không maskMethod): defaults `voice_provider='edge_tts'`, `default_style='cinematic'`; không có cột `maskMethod` (mask method chỉ nằm trong `projects.params` JSON của TRANSLATE_DUB).
-- transcript_segments thiếu ttsAudioRef/startMs/endMs + wpm_warning TEXT: CURRENT chỉ có `tts_audio_id` (+ `subtitle_id`), `wpm_warning TEXT`, `is_time_manually_adjusted`; không có `ttsAudioRef`/`startMs`/`endMs` như model Prisma §2.
-- ocr_regions bổ sung mask lifecycle: `status TEXT DEFAULT 'DRAFT'` (`DRAFT` | `APPROVED` | `DISABLED`), `enabled INTEGER DEFAULT 1`. Chỉ mask `APPROVED` mới được đưa vào render. Mask `APPROVED` là bất biến (immutable về toạ độ, thời gian và kiểu mask).
-- extras sse_tickets, project_idempotency, project_cleanup_tasks, reset_tokens, upload_sessions:
-  - `sse_tickets`: lưu `ticket_hash = sha256(ticket)`, `expires_at` (TTL 30s), `used = 0|1` cho cơ chế vé xem EventSource một lần an toàn, không lộ JWT dài hạn trên query URL.
-  - `project_idempotency`: lưu `(user_id, idem_key)`, `request_fingerprint` (SHA-256 body), `expires_at` (TTL 7 ngày) chống tạo project trùng lặp an toàn.
-  - `project_cleanup_tasks`: outbox dọn file filesystem sau DELETE project (`status = pending|failed|completed`), commit cùng transaction với DB wipe.
-  - `reset_tokens`: lưu `token = sha256(raw_token)` thay vì lưu raw token, `expires_at`, `used`.
-  - `upload_sessions`: upload resumable TUS-style (`docs/06` §2.1) có `last_activity_at`, `expires_at`, index `(status, expires_at)` và state machine `pending → completing → completed|expired`; `storage_key` + `video_hash` là durable completion intent trước filesystem rename.
-- Prisma MediaConsent/MediaJob/MediaJobStage là NOT IMPLEMENTED (không table trong schema.js); CURRENT equivalents là generation_jobs(type,step) + transcript_segments/ocr_regions: tracking stage dùng `generation_jobs` (`type` = tên stage, `step`, `status`, `progress` + index `(project_id, type)`), dữ liệu dub dùng `transcript_segments`/`ocr_regions`.
-- Mapping snake↔camel (DB ↔ API/frontend): project_id↔projectId, start_sec↔startSec, tts_audio_id↔ttsAudioId, storage_key↔storageKey.
+- **Không FK constraints cứng (manual cleanup)**: Các lệnh `CREATE TABLE` không khai báo `FOREIGN KEY` ràng buộc tầng database engine; việc dọn dẹp quan hệ được xử lý trong mã nguồn (vd: khi xoá project, đặt `provider_logs.project_id = NULL`, dọn `assets`, `outputs`, v.v.).
+- **Lowercase enums**: `status` / `role` lưu dạng chữ thường (`pending`, `queued`, `running`, `completed`, `failed`, `cancelled`, `user`, `admin`...), không dùng enum UPPERCASE của Prisma (SQLite không có native enum).
+- **projects.status='completed'**: Pipeline đánh dấu `'completed'` khi kết thúc thành công (chuẩn hoá các row legacy `'success'` sang `'completed'`).
+- **projects hỗ trợ 3 modes**: `SUMMARY`, `TRANSLATE_DUB`, và `SCRIPT_TO_VIDEO`.
+- **projects bổ sung tracking chi tiết**:
+  - `transcript_version`: Tăng khi sửa transcript hoặc sửa mask APPROVED/DRAFT để đồng bộ cờ `outputStale`.
+  - `run_token`, `lease_expires_at`: Quản lý quyền chạy độc quyền (lease ownership) chống race condition giữa các worker/process.
+  - `started_at`, `last_heartbeat_at`, `recovery_reason`: Heartbeat phục vụ phát hiện job bị treo và tự động phục hồi sau restart server.
+  - `copyright_acknowledged`, `copyright_ack_at`: Ghi nhận bắt buộc xác nhận bản quyền trước khi pipeline khởi chạy.
+  - `cancelled_at`, `expires_at`: Quản lý thời điểm huỷ và hạn lưu trữ (retention policy).
+  - `script_upload_id`, `script_key`, `script_hash`, `script_version`, `script_review_required`: Quản lý provenance và review gate cho chế độ `SCRIPT_TO_VIDEO`.
+  - `next_cleanup_attempt_at`: Quản lý backoff khi dọn dẹp dự án.
+- **settings (~15 cột)**: Mặc định `voice_provider='edge_tts'`, `default_style='cinematic'`, `aspect_ratio='16:9'`, `default_duration=60`, `max_retries=3`, cấu hình provider mặc định (`active_llm_provider`, `active_voice_provider`, v.v.).
+- **ocr_regions bổ sung mask lifecycle**: `status TEXT DEFAULT 'DRAFT'` (`DRAFT` | `APPROVED` | `DISABLED`), `enabled INTEGER DEFAULT 1`. Chỉ mask `APPROVED` mới được đưa vào render. Mask `APPROVED` là bất biến (immutable về toạ độ, thời gian và kiểu mask).
+- **Chi tiết các bảng mở rộng**:
+  - `email_otps`: Xác thực đăng nhập qua OTP gửi về email (`email`, `otp_hash`, `purpose`, `expires_at`, `attempts`, `used`).
+  - `reset_tokens`: Lưu `token = sha256(raw_token)`, `expires_at`, `used` cho luồng quên mật khẩu.
+  - `script_uploads`: Lưu thông tin file kịch bản tải lên (`sha256`, `char_count`, `storage_key`, `filename`).
+  - `youtube_accounts` & `youtube_oauth_states`: Quản lý liên kết OAuth Google/YouTube (`channel_id`, `access_token`, `refresh_token`) và bảo mật PKCE state.
+  - `project_glossaries`: Bảng từ điển thuật ngữ riêng cho từng project phục vụ dịch thuật nhất quán (`term`, `translation`, `notes`).
+  - `sse_tickets`: Lưu `ticket_hash = sha256(ticket)`, `expires_at` (TTL 30s), `used = 0|1` cho vé EventSource một lần an toàn.
+  - `project_idempotency`: Lưu `(user_id, idem_key)`, `request_fingerprint` (SHA-256 body), `expires_at` (TTL 7 ngày) chống tạo project trùng lặp.
+  - `project_cleanup_tasks`: Outbox dọn file filesystem sau DELETE project (`status = pending|failed|completed`), commit cùng transaction với DB wipe.
+  - `upload_sessions`: Upload resumable TUS-style có `last_activity_at`, `expires_at`, index `(status, expires_at)` và state machine `pending → completing → completed|expired`.
 
-> **Lưu ý Triển khai:** Thiết kế target dùng Prisma ORM.
-> Triển khai hiện tại dùng sql.js với raw SQL trực tiếp (`backend/src/db/schema.js`).
-> Schema SQL mirror các model Prisma [PARTIAL] — lệch đã biết xem `# Current Implementation`: thêm `reset_tokens`/`upload_sessions`, thiếu `MediaConsent`/`MediaJob`/`MediaJobStage`; enum giá trị lowercase (không có native enum trong SQLite).
-
-Hệ thống dùng **Prisma ORM**. MVP: **SQLite**; production: **PostgreSQL** (chỉ đổi `provider` trong
-`datasource`, schema không đổi). Tất cả thời gian lưu dạng `Float` (giây) hoặc `DateTime`.
+> **Lưu ý Triển khai:** Thiết kế target hướng tới Prisma ORM + PostgreSQL. Triển khai hiện tại dùng `sql.js` (WebAssembly SQLite) với raw SQL trực tiếp (`backend/src/db/schema.js`).
 
 ---
 
-## 1. Thực thể (Entities) & quan hệ
+## 1. Thực thể (Entities) & Quan hệ
 
 ```
 User 1──* Project 1──* Asset
                    │
                    ├──* GenerationJob
-                   ├──* MediaConsent        (versioned, theo Terms)
-                   ├──* MediaJob
-                   │     └──* MediaJobStage (tracking từng stage)
                    ├──* Scene             (SUMMARY)
-                   ├──* ScriptSegment     (SUMMARY)
-                   ├──* TimelineClip      (SUMMARY)
+                   ├──* ScriptSegment     (SUMMARY / SCRIPT_TO_VIDEO)
+                   ├──* TimelineClip      (SUMMARY / SCRIPT_TO_VIDEO)
                    ├──* TranscriptSegment (TRANSLATE_DUB)
                    ├──* OcrRegion         (TRANSLATE_DUB)
+                   ├──* ProjectGlossary   (TRANSLATE_DUB / SCRIPT_TO_VIDEO)
                    ├──* Audio
                    ├──* Subtitle
                    └──* Output 1──* YouTubeUpload
 
 User 1──* ApiKey
 User 1──1 Settings
+User 1──* EmailOtp
+User 1──* ResetToken
+User 1──* YouTubeAccount
 StylePreset (bảng dùng chung, seed 13 phong cách)
 Project 1──* ProviderLog
 GenerationJob 1──* ProviderLog
 ```
 
-> [NOT IMPLEMENTED] — `MediaConsent`, `MediaJob`, `MediaJobStage` trong sơ đồ trên chưa có table trong `backend/src/db/schema.js`; equivalents CURRENT là `generation_jobs(type,step)` + `transcript_segments`/`ocr_regions` (xem `# Current Implementation`).
+---
+
+## 2. Chi tiết 29 Bảng trong Cơ sở Dữ liệu (`backend/src/db/schema.js`)
+
+### 2.1. Nhóm Người dùng & Bảo mật
+1. **`users`**: Tài khoản người dùng (`id`, `email`, `password`, `role`, `name`, `refresh_token`, `refresh_expires`, `created_date`, `updated_date`).
+2. **`reset_tokens`**: Mã đặt lại mật khẩu (`id`, `email`, `token` dạng SHA-256 hash, `expires_at`, `used`).
+3. **`email_otps`**: Mã OTP xác thực qua email (`id`, `email`, `otp_hash`, `purpose`, `expires_at`, `attempts`, `max_attempts`, `used`).
+4. **`api_keys`**: Quản lý API key của người dùng (`id`, `user_id`, `provider`, `key` mã hoá AES-256-GCM, `key_preview`, `is_active`, `tier`, `priority`, `label`).
+
+### 2.2. Nhóm Cấu hình & Dự án
+5. **`settings`**: Cài đặt mặc định của user (`user_id`, `default_language`, `default_style`, `default_duration`, `max_retries`, `aspect_ratio`, `active_llm_provider`, `active_voice_provider`, `voice_provider`, v.v.).
+6. **`projects`**: Thông tin dự án cốt lõi:
+   - Cơ bản: `id`, `user_id`, `mode` (`'SUMMARY'`, `'TRANSLATE_DUB'`, `'SCRIPT_TO_VIDEO'`), `title`, `status` (`'pending'`, `'queued'`, `'running'`, `'completed'`, `'failed'`, `'cancelled'`), `language`, `style`, `target_duration_sec`, `aspect_ratio`, `params` (JSON).
+   - Nguồn media: `source_video_id`, `source_video_key`, `video_hash`.
+   - Nguồn kịch bản: `script_upload_id`, `script_key`, `script_hash`, `script_version`, `script_review_required`.
+   - Vòng đời & Bản quyền: `copyright_acknowledged`, `copyright_ack_at`, `cancelled_at`, `expires_at`, `next_cleanup_attempt_at`.
+   - Điều phối & Heartbeat: `progress`, `transcript_version`, `run_token`, `lease_expires_at`, `started_at`, `last_heartbeat_at`, `recovery_reason`.
+7. **`assets`**: File tài nguyên phụ trợ (`id`, `project_id`, `kind`, `storage_key`, `meta`).
+8. **`generation_jobs`**: Tiến trình thực thi từng công đoạn (`id`, `project_id`, `type`, `status`, `progress`, `step`, `error_message`, `payload`, `result`, `attempts`, `next_retry_at`).
+
+### 2.3. Nhóm Dữ liệu Video theo Chế độ
+9. **`scenes`** (`SUMMARY`): Phân đoạn cảnh quay phát hiện được (`id`, `project_id`, `start_sec`, `end_sec`, `thumbnail_key`, `description`, `embedding`).
+10. **`script_segments`** (`SUMMARY` / `SCRIPT_TO_VIDEO`): Đoạn kịch bản lời bình (`id`, `project_id`, `order_num`, `narration`, `target_duration_sec`, `scene_refs`, `voice_audio_id`, `visual_prompt`).
+11. **`timeline_clips`** (`SUMMARY` / `SCRIPT_TO_VIDEO`): Phân đoạn clip trên timeline kết xuất (`id`, `project_id`, `order_num`, `source_type`, `ref_id`, `start_at_sec`, `in_sec`, `out_sec`, `speed`, `transition_in`, `transition_out`).
+12. **`transcript_segments`** (`TRANSLATE_DUB`): Từng câu thoại trích xuất từ audio (`id`, `project_id`, `index_num`, `start_sec`, `end_sec`, `text`, `translation`, `speaker`, `tts_audio_id`, `subtitle_id`, `is_time_manually_adjusted`, `wpm_warning`).
+13. **`ocr_regions`** (`TRANSLATE_DUB`): Vùng che hardsub video (`id`, `project_id`, `start_sec`, `end_sec`, `ratio_x`, `ratio_y`, `ratio_w`, `ratio_h`, `type` ['blur'/'solid'], `blur_radius`, `opacity`, `enabled`, `status` ['DRAFT'/'APPROVED'/'DISABLED'], `source` ['AUTO'/'MANUAL'/'LEGACY_OCR'], `is_static`).
+14. **`style_presets`**: 13 phong cách dịch dựng sẵn (`slug`, `name`, `description`, `system_prompt`, `is_system`).
+15. **`project_glossaries`**: Bảng thuật ngữ chuyên ngành của dự án (`id`, `project_id`, `term`, `translation`, `notes`).
+16. **`script_uploads`**: Tệp kịch bản đã upload (`id`, `user_id`, `filename`, `storage_key`, `char_count`, `sha256`).
+
+### 2.4. Nhóm Media Đầu ra & Xuất bản
+17. **`audios`**: File âm thanh sinh ra (`id`, `project_id`, `kind`, `storage_key`, `duration_sec`, `provider`, `model`).
+18. **`subtitles`**: File phụ đề tạo ra (`id`, `project_id`, `format`, `language`, `storage_key`, `cues`).
+19. **`outputs`**: Video thành phẩm cuối cùng (`id`, `project_id`, `storage_key`, `status`, `duration_sec`, `thumbnail_key`, `transcript_version`).
+20. **`youtube_uploads`**: Trạng thái đẩy video lên YouTube (`id`, `output_id`, `status`, `youtube_video_id`, `privacy`, `error`).
+21. **`youtube_accounts`**: Tài khoản YouTube liên kết (`id`, `user_id`, `channel_id`, `channel_title`, `access_token`, `refresh_token`, `token_expiry`).
+22. **`youtube_oauth_states`**: Quản lý phiên OAuth PKCE YouTube (`state`, `code_verifier`, `user_id`, `expires_at`).
+
+### 2.5. Nhóm Quản trị, Giới hạn & Vận hành
+23. **`provider_logs`**: Nhật ký chi tiết mọi cuộc gọi AI (`id`, `project_id`, `job_id`, `provider`, `type`, `model`, `tokens_in`, `tokens_out`, `cost_usd`, `duration_ms`, `status`, `error`).
+24. **`provider_rate_limits`**: Cấu hình RPM, RPD của các provider (`id`, `provider`, `tier`, `requests_per_minute`, `requests_per_day`, `concurrency`).
+25. **`provider_cache`**: Bộ nhớ đệm kết quả gọi AI (`id`, `input_hash`, `provider`, `type`, `model`, `response`, `expires_at`).
+26. **`sse_tickets`**: Vé xác thực ngắn hạn EventSource (`ticket_hash`, `user_id`, `project_id`, `expires_at`, `used`).
+27. **`project_idempotency`**: Khoá chống trùng lặp request tạo dự án (`id`, `user_id`, `idem_key`, `request_fingerprint`, `project_id`, `expires_at`).
+28. **`project_cleanup_tasks`**: Outbox dọn file filesystem sau DELETE project (`id`, `operation`, `operation_key`, `payload`, `status`, `attempts`, `next_attempt_at`).
+29. **`upload_sessions`**: Phiên upload resumable kiểu TUS (`id`, `user_id`, `filename`, `size`, `mime`, `received_bytes`, `storage_key`, `video_hash`, `status`, `expires_at`).
 
 ---
 
-## 2. Schema Prisma (trích) [TARGET/FUTURE]
+## 3. Chỉ mục quan trọng (Indexes)
 
-> [TARGET/FUTURE] — Toàn bộ schema Prisma dưới đây là thiết kế tương lai, NOT IMPLEMENTED (không Prisma trong code; CURRENT là raw SQL trong `backend/src/db/schema.js` — xem `# Current Implementation` ở đầu file). Lệch đã biết: `Settings` CURRENT ~15 cột (`default_style='cinematic'`, `voice_provider='edge_tts'`, không `maskMethod`); `TranscriptSegment` [PARTIAL] (thiếu `ttsAudioRef`/`startMs`/`endMs`, `wpm_warning TEXT`); `MediaConsent`/`MediaJob`/`MediaJobStage` [NOT IMPLEMENTED].
-
-```prisma
-// packages/database/prisma/schema.prisma
-datasource db {
-  provider = "sqlite"          // MVP; production: "postgresql"
-  url      = env("DATABASE_URL")
-}
-
-generator client { provider = "prisma-client-js" }
-
-enum Role       { USER ADMIN GUEST }
-enum ProjectMode { SUMMARY TRANSLATE_DUB }
-enum JobStatus  { PENDING QUEUED RUNNING SUCCESS FAILED RETRY CANCELLED }
-enum AssetKind  { VIDEO IMAGE AUDIO }
-enum AudioKind  { VOICE MUSIC SFX }
-
-model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
-  passwordHash String
-  role         Role     @default(USER)
-  refreshToken String?
-  createdAt    DateTime @default(now())
-  apiKeys      ApiKey[]
-  settings     Settings?
-  projects     Project[]
-}
-
-model ApiKey {
-  id         String   @id @default(uuid())
-  userId     String
-  provider   String   // 'gemini' | 'openai' | 'elevenlabs'...
-  label      String
-  encryptedKey String // mã hoá AES-256 tại rest
-  tier       String   @default("free")  // liên kết ProviderRateLimit.tier; xem `11`
-  priority   Int      @default(0)       // số nhỏ hơn = ưu tiên dùng trước (đa key round-robin)
-  isActive   Boolean  @default(true)    // tự tắt khi cooldown do 429 liên tục, hoặc bị revoke
-  lastUsedAt DateTime?
-  createdAt  DateTime @default(now())
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model ProviderRateLimit {   // giới hạn RPM/RPD theo provider — bảo vệ free tier (xem `11`)
-  id                String   @id @default(uuid())
-  provider          String
-  tier              String   @default("free")  // 'free' | 'paid' | 'custom'
-  requestsPerMinute Int
-  requestsPerDay    Int?
-  tokensPerMinute   Int?
-  concurrency       Int      @default(1)
-  userId            String?  // null = mặc định hệ thống; có giá trị = override riêng của user
-  updatedAt         DateTime @updatedAt
-
-  @@unique([provider, tier, userId])
-}
-
-model ProviderCache {      // cache kết quả provider theo nội dung — tiết kiệm quota khi test lặp lại
-  id         String   @id @default(uuid())
-  provider   String
-  type       String        // 'llm' | 'tts' | 'vision' | 'asr' | 'ocr'
-  inputHash  String        // SHA-256(provider + type + model + normalized input)
-  result     String        // JSON kết quả
-  createdAt  DateTime @default(now())
-  expiresAt  DateTime?
-
-  @@unique([provider, type, inputHash])
-  @@index([inputHash])
-}
-
-model Settings {
-  userId          String   @id
-  defaultLanguage String   @default("vi")
-  defaultStyle    String   @default("bat-trend") // slug của StylePreset
-  voiceProvider   String   @default("elevenlabs")
-  maskMethod      String   @default("fill")      // 'blur' | 'fill' | 'inpaint'
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model Project {
-  id               String      @id @default(uuid())
-  userId           String
-  mode             ProjectMode
-  title            String
-  status           JobStatus   @default(PENDING)
-  language         String      @default("vi")
-  targetDurationSec Int        // SUMMARY: 1200–1800; TRANSLATE_DUB: bằng duration nguồn
-  params           String?     // JSON SUMMARY: topic, tone... | TRANSLATE_DUB:
-                               // { sourceLanguage, stylePreset, enableDubbing,
-                               //   voiceId, maskMethod, subPosition }
-  sourceVideoId    String?     // SUMMARY: phim gốc | TRANSLATE_DUB: video cần Việt hoá
-  copyrightAcknowledged Boolean @default(false) // user xác nhận quyền sử dụng nội dung nguồn (xem `00` §5)
-  copyrightAckAt   DateTime?
-  cancelledAt      DateTime?   // set khi user gọi POST /projects/:id/cancel
-  expiresAt        DateTime?   // mốc tự động dọn file trung gian/nguồn (retention policy)
-  createdAt        DateTime    @default(now())
-  user             User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  assets           Asset[]
-  jobs             GenerationJob[]
-  scenes           Scene[]
-  segments         ScriptSegment[]
-  clips            TimelineClip[]
-  transcriptSegments TranscriptSegment[]
-  ocrRegions       OcrRegion[]
-  audios           Audio[]
-  subtitles        Subtitle[]
-  outputs          Output[]
-  logs             ProviderLog[]
-}
-
-model Asset {
-  id         String    @id @default(uuid())
-  projectId  String
-  kind       AssetKind
-  storageKey String
-  meta       String?   // JSON: width,height,durationSec...
-  durationSec Float?
-  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-}
-
-model GenerationJob {
-  id         String    @id @default(uuid())
-  projectId  String
-  type       String    // 'summary.transcribe' | 'dub.stt' | 'dub.ocr'...
-  status     JobStatus @default(PENDING)
-  step       String?
-  payload    String?   // JSON
-  result     String?   // JSON
-  attempts   Int       @default(0)
-  error      String?
-  createdAt  DateTime  @default(now())
-  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  logs       ProviderLog[]
-}
-
-model Scene {            // chỉ SUMMARY
-  id          String   @id @default(uuid())
-  projectId   String
-  sourceVideoId String
-  startSec    Float
-  endSec      Float
-  thumbnailKey String?
-  description String?   // do VisionProvider sinh
-  embedding   String?   // JSON vector (semantic match)
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-}
-
-model ScriptSegment {   // chỉ SUMMARY
-  id               String   @id @default(uuid())
-  projectId        String
-  index            Int
-  narration        String   // lời review
-  targetDurationSec Float
-  sceneRefs        String?  // JSON: [{sceneId, weight, reason}]
-  voiceAudioId     String?
-  subtitleId       String?
-  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-}
-
-model TimelineClip {    // chỉ SUMMARY
-  id            String   @id @default(uuid())
-  projectId     String
-  order         Int
-  sourceType    String   // 'SCENE'
-  refId         String   // Scene.id
-  inSec         Float    // điểm vào trên nguồn
-  outSec        Float    // điểm ra
-  speed         Float    @default(1.0) // 0.9–1.1 (align)
-  transitionIn  String?  // 'fade' | 'cross' | null
-  transitionOut String?
-  voiceAudioId  String?
-  startAtSec    Float    // vị trí trên timeline xuất
-  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-}
-
-model TranscriptSegment {  // TRANSLATE_DUB: 1 câu/đoạn thoại do STT nhận dạng — [PARTIAL] CURRENT thiếu ttsAudioRef/startMs/endMs, wpm_warning TEXT (xem # Current Implementation)
-  id          String   @id @default(uuid())
-  projectId   String
-  index       Int
-  startSec    Float    // mốc thời gian gốc — chuẩn cho mọi đồng bộ
-  endSec      Float
-  text        String   // văn bản gốc (STT)
-  speaker     String?  // diarization: 'SPK_1'...
-  language    String?  // ngôn ngữ nguồn (auto-detect)
-  translation String?  // bản dịch đích (stage translate điền)
-  ttsAudioId  String?  // audio dub đã ép khớp slot (nếu enableDubbing)
-  ttsAudioRef String?  // SOURCE OF TRUTH cho audio đã dub (ưu tiên hơn ttsAudioId)
-  subtitleId  String?
-  isTimeManuallyAdjusted Boolean @default(false) // Đánh dấu nếu user tự sửa start/end
-  wpmWarning       Boolean @default(false)       // Cảnh báo tốc độ đọc quá nhanh
-  startMs     Int?     // milliseconds — dùng cho forced alignment chi tiết
-  endMs       Int?     // milliseconds
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-}
-
-model OcrRegion {          // TRANSLATE_DUB: vùng hardsub cần che/burn-in đè lên
-  id          String   @id @default(uuid())
-  projectId   String
-  startSec    Float
-  endSec      Float
-  // Tọa độ LƯU THEO TỶ LỆ (0.0–1.0) so với kích thước khung hình gốc → scale-invariant,
-  // không bị lệch khi render ở độ phân giải khác (4K nguồn → 1080p xuất, xem §1 lý do).
-  ratioX      Float    // 0.0–1.0 (tỷ lệ theo chiều rộng)
-  ratioY      Float    // 0.0–1.0 (tỷ lệ theo chiều cao)
-  ratioW      Float    // 0.0–1.0
-  ratioH      Float    // 0.0–1.0
-  maskStrength Float  @default(0.6)  // 0.0–1.0: cường độ làm mờ (blur radius) + độ đục lớp phủ
-  isStatic    Boolean  @default(false) // true: hardsub tĩnh → áp dụng cho toàn bộ duration (1 record)
-  text        String?  // text gốc OCR đọc được (phục vụ đối chiếu bản dịch)
-  confidence  Float?
-  source      String   @default("AUTO") // 'AUTO' | 'MANUAL' (user khoanh trên Canvas)
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-}
-
-model StylePreset {        // 13 phong cách dịch, seed hệ thống
-  id           String  @id @default(uuid())
-  slug         String  @unique // 'co-trang', 'bat-trend', 'review-phim'...
-  name         String
-  description  String?
-  systemPrompt String  // prompt inject vào LLM khi dịch
-  isSystem     Boolean @default(true)
-}
-
-model Audio {
-  id         String    @id @default(uuid())
-  projectId  String
-  kind       AudioKind
-  storageKey String
-  durationSec Float
-  provider   String?
-  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-}
-
-model Subtitle {
-  id         String   @id @default(uuid())
-  projectId  String
-  format     String   @default("srt") // 'srt' | 'vtt'
-  language   String   @default("vi")
-  storageKey String
-  cues       String?  // JSON: [{start,end,text}]
-  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-}
-
-model Output {
-  id           String   @id @default(uuid())
-  projectId    String
-  storageKey   String
-  status       JobStatus @default(SUCCESS)
-  durationSec  Float?
-  thumbnailKey String?
-  createdAt    DateTime @default(now())
-  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  uploads      YouTubeUpload[]
-}
-
-model YouTubeUpload {
-  id             String   @id @default(uuid())
-  outputId       String
-  status         JobStatus
-  youtubeVideoId String?
-  privacy        String   @default("private")
-  error          String?
-  output         Output   @relation(fields: [outputId], references: [id], onDelete: Cascade)
-}
-
-model ProviderLog {      // quan sát mọi cuộc gọi AI
-  id         String   @id @default(uuid())
-  projectId  String?
-  jobId      String?
-  provider   String
-  type       String   // 'llm' | 'asr' | 'tts' | 'vision'
-  model      String?
-  tokensIn   Int?
-  tokensOut  Int?
-  costUsd    Float?
-  durationMs Int?
-  status     String   // 'ok' | 'error' | 'rate_limited' — 'rate_limited' phân biệt hết quota
-                       // tạm thời (429/quota-exceeded) với lỗi thật, xem `11` §4.2
-  error      String?
-  createdAt  DateTime @default(now())
-  project    Project? @relation(fields: [projectId], references: [id])
-  job        GenerationJob? @relation(fields: [jobId], references: [id])
-}
-
-// ========== MEDIA PIPELINE ENTITIES [NOT IMPLEMENTED] ==========
-// [NOT IMPLEMENTED] — không table trong backend/src/db/schema.js; equivalents CURRENT: generation_jobs(type,step) + transcript_segments/ocr_regions.
-
-model MediaConsent {  // [NOT IMPLEMENTED]
-  id           String   @id @default(uuid())
-  projectId    String
-  userId       String
-  termsVersion String   // version của Terms of Service tại thời điểm consent
-  consentedAt  DateTime @default(now())
-  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-
-  @@unique([projectId, userId])
-}
-
-model MediaJob {  // [NOT IMPLEMENTED]
-  id               String    @id @default(uuid())
-  projectId        String
-  sourceLanguage   String?   // ngôn ngữ nguồn (auto-detect hoặc user override)
-  targetLanguage   String    @default("vi")
-  stylePresetSlug  String    @default("bat-trend")
-  enableDubbing    Boolean   @default(false)
-  voiceId          String?   // voice ID cho TTS (nếu enableDubbing)
-  maskMethod       String    @default("fill")  // 'blur' | 'fill' | 'inpaint'
-  status           JobStatus @default(PENDING)
-  progress         Float     @default(0)  // 0.0–1.0
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
-  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  stages           MediaJobStage[]
-}
-
-model MediaJobStage {  // [NOT IMPLEMENTED]
-  id           String    @id @default(uuid())
-  mediaJobId   String
-  stage        String    // 'EXTRACT_AUDIO' | 'STT' | 'OCR' | 'TRANSLATE' | 'TTS' | 'RENDER'
-  status       String    @default("PENDING") // 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'STALE' | 'SKIPPED'
-  progress     Float     @default(0)
-  error        String?
-  outputRef    String?   // reference đến output của stage (storage key, JSON, v.v.)
-  attempts     Int       @default(0)
-  startedAt    DateTime?
-  completedAt  DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  mediaJob     MediaJob  @relation(fields: [mediaJobId], references: [id], onDelete: Cascade)
-
-  @@unique([mediaJobId, stage])
-}
-```
+- `idx_generation_jobs_project_type`: `generation_jobs(project_id, type)` (UNIQUE) — đảm bảo mỗi stage chỉ có đúng 1 job hiện tại.
+- `idx_projects_user_status`: `projects(user_id, status)` — đếm nhanh số project `running` để kiểm soát giới hạn concurrency.
+- `idx_transcript_segments_project`: `transcript_segments(project_id, index_num)` — truy vấn và sắp xếp câu thoại theo thứ tự.
+- `idx_ocr_regions_project`: `ocr_regions(project_id, status, enabled)` — nạp nhanh danh sách mask `APPROVED` khi render.
+- `idx_provider_cache_hash`: `provider_cache(input_hash)` — tra cứu cache O(1).
+- `idx_cleanup_tasks_due`: `project_cleanup_tasks(status, next_attempt_at)` — quét tác vụ dọn dẹp đến hạn.
+- `idx_upload_sessions_status_expires`: `upload_sessions(status, expires_at)` — quét phiên upload hết hạn.
 
 ---
 
-## 3. Chỉ mục & hiệu năng
+## 4. Quyết định Thiết kế Cốt lõi (Design Decisions)
 
-- `GenerationJob(projectId, type)` — truy vấn tiến trình nhanh.
-- `TimelineClip(projectId, order)` — xuất timeline tuần tự.
-- `ProviderLog(createdAt)` — báo cáo cost/analytics.
-- `Scene(embedding)` — MVP lưu JSON; PostgreSQL có thể chuyển `vector` extension để tìm cảnh ngữ nghĩa.
-- `Project(expiresAt)` — cho cron job dọn dẹp file trung gian/nguồn quá hạn retention (xem `08` §6).
-- `Project(userId, status)` — đếm nhanh số project `RUNNING` đồng thời của user để áp NFR-12
-  (giới hạn concurrency).
-- `ProviderLog(provider, status, createdAt)` — `QuotaGuardService` đếm nhanh số request theo phút/ngày
-  cho từng provider để tính `percentUsed` (xem `11` §4.1), tránh full-scan bảng log.
-- `ProviderCache(inputHash)` — tra cache O(1) trước mỗi lời gọi provider thật (xem `11` §3.2).
-- `project_idempotency.request_fingerprint` — hash chuẩn của body `POST /projects` (mode/title/language/style/targetDurationSec/params/sourceVideoKey...); cùng `Idempotency-Key` + cùng fingerprint → replay, khác fingerprint → `409 IDEMPOTENCY_KEY_REUSE` (row legacy fingerprint NULL vẫn replay tương thích). PK `(user_id, idem_key)` nên key độc lập theo từng user; TTL 7 ngày (`expires_at`), hết hạn reclaim như request mới.
-- `project_cleanup_tasks(operation, operation_key)` — outbox dọn file sau `DELETE /projects/:id` (commit cùng transaction với DB wipe). `operation='PROJECT_DELETE'`, `operation_key='project-delete:<projectId>'`; partial unique index `idx_cleanup_tasks_active_unique ON project_cleanup_tasks(operation_key) WHERE status='pending'` giữ đúng 1 task `pending` cho mỗi project, retry claim qua `INSERT OR IGNORE`; index `(status, next_attempt_at)` cho sweep (`idx_cleanup_tasks_due`).
-
----
-
-## 4. Migration & seed [TARGET/FUTURE]
-
-> [TARGET/FUTURE] — Lệnh Prisma dưới đây chưa áp dụng được. CURRENT: schema khởi tạo từ `backend/src/db/schema.js` (`initSchema()`), seed từ `backend/src/db/seed.js` (admin + settings + style presets + provider_rate_limits).
-
-```bash
-pnpm --filter @asf/database prisma migrate dev --name init
-pnpm --filter @asf/database prisma db seed   # user admin mặc định, settings
-```
-
----
-
-## 5. Quyết định DB
-
-| Quyết định | Lý do |
-| --- | --- |
-| JSON cho `params/result/cues` | Linh hoạt, ít join, đủ với MVP |
-| `OcrRegion` là bảng riêng, không nhét JSON | User sửa/xoá từng region (MANUAL) và render truy vấn theo `[startSec, endSec]` |
-| `OcrRegion` lưu `ratioX/Y/W/H` (Float 0–1) thay vì pixel | Scale-invariant: vùng che không lệch khi nguồn 4K mà xuất 1080p; frontend lưu % và backend nhân `videoDims` khi render |
-| `OcrRegion.maskStrength` (0–1) | Điều khiển đồng thời bán kính blur và độ đục lớp phủ — 1 tham số duy nhất cho thanh kéo "độ mờ" trên editor |
-| `OcrRegion.isStatic` | Hardsub tĩnh (logo, credit) chỉ cần 1 record áp dụng cho toàn bộ video, tránh sinh hàng chục region rời rạc |
-| `StylePreset` bảng riêng + seed | Thêm/sửa phong cách dịch không cần deploy code |
-| `TimelineClip` chỉ SUMMARY | TRANSLATE_DUB render theo cue + OcrRegion, không dựng timeline |
-| `TranscriptSegment` giữ cả text gốc & dịch | Đối chiếu song ngữ, retry TTS không mất bản dịch |
-| `TranscriptSegment.isTimeManuallyAdjusted` | Phân biệt thời gian AI tự căn chỉnh vs user sửa thủ công; backend dùng để quyết định có cần chạy lại ForcedAlignService hay không |
-| `TranscriptSegment.wpmWarning` | Đánh dấu segment có cảnh báo tốc độ đọc, giúp UI hiển thị icon cảnh báo trực quan |
-| `ProviderLog` độc lập | Analytics không phụ thuộc project còn tồn tại |
-| SQLite → Postgres không đổi schema | Đổi `datasource` là đủ |
-| `Project.copyrightAcknowledged` | Bắt buộc user xác nhận quyền nội dung trước khi xử lý (NFR-14, `00` §5) — tránh trách nhiệm pháp lý mơ hồ |
-| `Project.expiresAt` + cron dọn dẹp | File nguồn 2GB/2-3h phim tốn storage nhanh; retention rõ ràng tránh phình dung lượng vô hạn (NFR-13) |
-| `Project.cancelledAt` + `JobStatus.CANCELLED` | Phân biệt job dừng do lỗi hệ thống vs dừng theo yêu cầu user, phục vụ analytics & UX (FR-J1) |
-| Thêm `QUEUED` vào `JobStatus` | Phân biệt job đã enqueue nhưng đang chờ do giới hạn concurrency (NFR-12) với `PENDING` (chưa enqueue) |
-| `ApiKey.tier/priority/isActive` | Hỗ trợ đa key round-robin + cooldown tự động khi 1 key bị rate-limit liên tục (`11` §5) |
-| `ProviderRateLimit` bảng riêng, không hardcode | RPM/RPD của free tier hay thay đổi theo nhà cung cấp; admin/user override được mà không deploy lại (`11` §2.1) |
-| `ProviderCache` theo `inputHash` | Test lặp lại pipeline nhiều lần (nhu cầu thực tế khi dùng free key) không tốn quota cho nội dung đã xử lý (`11` §3.2) |
-| `ProviderLog.status='rate_limited'` | Tách bạch "hết quota tạm thời" khỏi "lỗi hệ thống" trong Analytics/Admin |
-| [NOT IMPLEMENTED] `MediaConsent` versioned theo Terms | Khi Terms version thay đổi → cần re-consent; asset cũ vẫn dùng được cho Jobs đang chạy |
-| [NOT IMPLEMENTED] `MediaJob` + `MediaJobStage` tách riêng | MediaJob chứa config (language, voice, style), MediaJobStage chứa progress từng stage — tách bách để rerun stage độc lập |
-| [TARGET/FUTURE] `MediaJobStage.status` hỗ trợ `STALE` | Khi dependency upstream thay đổi → stage cần rerun, không phải FAILED |
-| [TARGET/FUTURE] `TranscriptSegment.ttsAudioRef` ưu tiên hơn `ttsAudioId` | Source of truth cho audio đã dub — `ttsAudioId` deprecated để tránh confusion |
-| [TARGET/FUTURE] `TranscriptSegment.startMs/endMs` bổ sung | Millisecond precision cho forced alignment,避免浮点数精度问题 |
-
----
-
-## 6. Ghi chú triển khai MVP (sql.js) (CURRENT)
-
-Backend MVP chạy bằng sql.js (SQLite) thay vì Prisma; schema SQL mirror [PARTIAL] các model trên
-(`backend/src/db/schema.js`). Các lệch có chủ đích, cần giữ nhất quán khi nâng cấp lên Postgres:
-
-| Lệch | Chi tiết | Lý do |
-| --- | --- | --- |
-| Enum giá trị **lowercase** | DB/API lưu `'user'`, `'pending'`, `'completed'`, `'failed'`, `'cancelled'`, `'queued'`... thay vì `USER`, `PENDING`, `SUCCESS`... | SQLite không có enum native; frontend đang so sánh lowercase. Khi chuyển Postgres/Prisma phải map lại hoặc cập nhật toàn bộ consumer |
-| Project hoàn thành dùng status `'completed'` | Ngoài enum `JobStatus` ở trên | Frontend lọc `'completed'`; khi migrate cân nhắc thêm giá trị này vào enum hoặc đổi sang `SUCCESS` |
-| Project lưu song song `_id` + `_key` | `sourceVideoId` tham chiếu Asset (mục 2), đồng thời giữ `source_video_key` vì API (`06`) nhận/trả storage key | Tương thích API hiện tại và tham chiếu chuẩn theo mục 2 |
-| Mode `TRANSLATE_DUB` lưu `'translate_dub'` | Giá trị mode lowercase có gạch dưới, thay cho `'style_edit'` cũ | Nhất quán với quy ước enum lowercase ở trên |
-| Bảng mới mirror 1-1 | `transcript_segments`, `ocr_regions`, `style_presets` (seed 13 preset khi migrate), `provider_rate_limits` (seed giá trị free-tier mặc định), `provider_cache` (xem `11`) | Đảm bảo schema MVP khớp thiết kế Prisma |
-| Bảng mở rộng `reset_tokens` | Flow quên mật khẩu (email + hash token + expires) | Không có trong schema gốc; token lưu dạng SHA-256 |
-| Bảng mở rộng `sse_tickets` | Vé xác thực ngắn hạn một lần cho SSE (`/projects/:id/events`) | Tránh lộ token JWT dài hạn trên query parameters |
-| Bảng mở rộng `project_idempotency` | Idempotency-Key kèm `request_fingerprint` (SHA-256) | Chống tạo duplicate project khi mạng retry; TTL 7 ngày |
-| Bảng mở rộng `project_cleanup_tasks` | Outbox dọn dẹp file tạm bền vững sau DELETE | Commit transaction cùng DB delete, retry độc lập khi lỗi FS |
-| Single-writer lock file | `sqlite_single_writer.lock` chứa metadata PID và host | Báo lỗi rõ ràng kèm PID/host sở hữu lock nếu tiến trình khác cố tranh chấp |
-| Persistence state | `HEALTHY`, `DEGRADED`, `WRITE_BLOCKED` | Theo dõi trạng thái ghi đĩa của sql.js; `/ready` trả 503 khi WRITE_BLOCKED |
-| Xoá project | `provider_logs.project_id` đặt `NULL` (không xoá log); `youtube_uploads` dọn qua join `outputs`; các bảng con còn lại xoá trực tiếp | Đúng quyết định "ProviderLog độc lập"; FK cascade chỉ áp dụng cho bảng tạo mới |
-| Seed | Admin mặc định từ env `ADMIN_EMAIL`/`ADMIN_PASSWORD` (fallback dev) + row `settings` + 13 `style_presets` + `provider_rate_limits` mặc định (free tier, xem `11` §2.1) | Tương đương `prisma db seed` |
+1. **sql.js in-memory + File Persistence**: Dùng SQLite thông qua WebAssembly, mọi thao tác ghi diễn ra trên bộ nhớ và được đẩy ra file `data.db` bằng cơ chế ghi atomic memory snapshot. Single-writer lock file (`data.db.writer.lock`) ngăn ngừa xung đột đa tiến trình.
+2. **Optimistic Concurrency với `transcript_version`**: Khi người dùng chỉnh sửa transcript hoặc mask, `projects.transcript_version` được tăng lên. Bảng `outputs` lưu lại phiên bản lúc render; nếu version lệch, cờ `outputStale: true` báo hiệu cần kết xuất lại.
+3. **Mask Lifecycle & Tính Bất Biến**: Mask `APPROVED` được coi là hợp đồng kết xuất bất biến (không thể sửa toạ độ hay thời gian khi đang APPROVED; phải chuyển về `DRAFT` để chỉnh sửa).
+4. **Resumable Upload Sessions**: Quản lý phiên upload theo chunk bằng bảng `upload_sessions`, có khả năng tự phục hồi khi máy chủ khởi động lại.

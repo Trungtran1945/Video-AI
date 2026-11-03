@@ -1,6 +1,5 @@
-// Friendly mapping for backend provider error codes (TransFlow behavior).
 // Backend sends `[PROVIDER_QUOTA_EXCEEDED] ...` / `[NO_PROVIDER_AVAILABLE] ...`
-// or ZeroTTS admission/limit errors — show root cause, never a raw stage timeout.
+// or VoiceStudio connection/limit errors — show root cause, never a raw stage timeout.
 export function friendlyJobError(raw) {
   let msg = ''
   let aggregate = null
@@ -111,7 +110,18 @@ export function friendlyJobError(raw) {
     return 'Chưa cấu hình API key cho nhận dạng giọng nói (ASR/STT) — Vui lòng kiểm tra API Key trong trang Cài đặt.'
   }
 
-  // 6. ZeroTTS backpressure & admission queue limits (429 / 503 SERVER_BUSY / QUEUE_FULL)
+  // 6. VoiceStudio local service connection & errors
+  if (
+    /VOICESTUDIO|ZeroTTS/i.test(msg) &&
+    (/ECONNREFUSED|connect|timeout|not running|chưa chạy|không phản hồi|3900|localhost:3900/i.test(msg))
+  ) {
+    return 'VoiceStudio local service không phản hồi tại http://localhost:3900. Hãy kiểm tra dịch vụ VoiceStudio đang chạy và có thể truy cập được.'
+  }
+  if (/voicestudio.*(error|fail|lỗi)|VoiceStudio không ghi được tệp/i.test(msg)) {
+    return 'VoiceStudio gặp lỗi khi xử lý âm thanh. Vui lòng kiểm tra console hoặc dịch vụ VoiceStudio tại http://localhost:3900.'
+  }
+
+  // 6b. TTS backpressure & admission queue limits (429 / 503 SERVER_BUSY / QUEUE_FULL)
   if (
     /SERVER_BUSY|QUEUE_FULL|admission queue full|concurrency limit reached|Server is stopping/i.test(msg) ||
     (/TTS/i.test(msg) && /(429|503)/.test(msg))
@@ -119,9 +129,9 @@ export function friendlyJobError(raw) {
     return 'Máy chủ TTS đang bận, thử lại sau'
   }
 
-  // 6b. ZeroTTS path jail (defense in depth — backend binary transport không gửi out_path)
-  if (/FORBIDDEN_PATH|out_path outside OUTPUT_ROOT/i.test(msg)) {
-    return 'ZeroTTS không ghi được tệp âm thanh (OUTPUT_ROOT). Cập nhật backend rồi khởi động lại `npm run dev`; nếu vẫn lỗi, kiểm tra quyền ghi thư mục storage.'
+  // 6c. TTS audio storage / path issues
+  if (/FORBIDDEN_PATH|out_path outside OUTPUT_ROOT|VoiceStudio không ghi được/i.test(msg)) {
+    return 'Dịch vụ TTS không ghi được tệp âm thanh (OUTPUT_ROOT). Cập nhật backend rồi khởi động lại `npm run dev`; nếu vẫn lỗi, kiểm tra quyền ghi thư mục storage.'
   }
 
   // 7. Request body / text length limits (413 BODY_TOO_LARGE / TEXT_TOO_LONG)

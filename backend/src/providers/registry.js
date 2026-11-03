@@ -10,6 +10,7 @@ import OpenAiTts from './tts/openaiTts.js'
 import EdgeTts from './tts/edgeTts.js'
 import GoogleTts from './tts/googleTts.js'
 import MockTts from './tts/mockTts.js'
+import VoiceStudio from './tts/voiceStudio.js'
 import ZeroTts from './tts/zeroTts.js'
 import GeminiVision from './vision/geminiVision.js'
 import MockVision from './vision/mockVision.js'
@@ -39,6 +40,7 @@ export const PROVIDER_LABELS = {
   openai_whisper: 'OpenAI Whisper API',
   elevenlabs: 'ElevenLabs',
   openai_tts: 'OpenAI TTS',
+  voicestudio: 'VoiceStudio (Local)',
   zerotts: 'ZeroTTS (Local)',
   edge_tts: 'Edge TTS (miễn phí)',
   google_tts: 'Google TTS (miễn phí)',
@@ -59,11 +61,12 @@ const ENV_KEYS = {
   openai_whisper: ['WHISPER_API_KEY', 'GROQ_API_KEY', 'OPENAI_API_KEY'],
   elevenlabs: ['ELEVENLABS_API_KEY'],
   openai_tts: ['OPENAI_API_KEY'],
+  voicestudio: ['VOICESTUDIO_API_KEY'],
   translate: ['GOOGLE_TRANSLATE_SCRIPT_URL'],
 }
 
-// Provider chạy không cần API key (ZeroTTS local, Edge-TTS của Microsoft, Google Translate via Apps Script, Mock providers).
-const KEYLESS = new Set(['zerotts', 'edge_tts', 'google_tts', 'google_translate', 'mock', 'slide'])
+// Provider chạy không cần API key (VoiceStudio local, Edge-TTS của Microsoft, Google Translate via Apps Script, Mock providers).
+const KEYLESS = new Set(['voicestudio', 'zerotts', 'edge_tts', 'google_tts', 'google_translate', 'mock', 'slide'])
 
 const REGISTRY = {
   llm: {
@@ -80,6 +83,7 @@ const REGISTRY = {
     faster_whisper: null,
   },
   tts: {
+    voicestudio: (key) => new VoiceStudio(key),
     zerotts: (key) => new ZeroTts(key),
     edge_tts: (key) => new EdgeTts(key),
     elevenlabs: (key) => new ElevenLabsTts(key),

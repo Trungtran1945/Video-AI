@@ -30,6 +30,103 @@ const AUTONOMOUS_RULES = `
 4. TUYỆT ĐỐI KHÔNG tự ý git push hay git reset --hard.
 `.trim();
 
+const ROLES_4_SKILLS = {
+  planner: {
+    name: 'PLANNER (Lead Architect & Product Planner)',
+    skills: [
+      'agency-software-architect',
+      'spec-driven-loop',
+      'writing-plans',
+      'agency-product-manager',
+      'agency-sprint-prioritizer',
+      'brainstorming'
+    ],
+    rules: [
+      'TỰ ĐỘNG KÍCH HOẠT VÀ SỬ DỤNG KỸ NĂNG: Bạn được trang bị các kỹ năng chuyên môn trên. Khi nhận nhiệm vụ từ User, bạn PHẢI tự động chọn và áp dụng phương pháp của các kỹ năng này mà không cần User yêu cầu hay gọi tên skill.',
+      'Khảo sát & Kiến trúc (agency-software-architect, spec-driven-loop): Quét toàn bộ codebase, thiết kế module boundaries, schema dữ liệu, API contracts và shell invariants trước khi lên kế hoạch.',
+      'Phân tích yêu cầu & Phạm vi (agency-product-manager, brainstorming): Bóc tách User Stories, Acceptance Criteria (AC), lường trước các edge cases và rủi ro tiềm ẩn.',
+      'Kế hoạch hành động khả thi (writing-plans, agency-sprint-prioritizer): Lập checklist từng bước chi tiết (đường dẫn file cụ thể, phương pháp sửa) cho CODER và ma trận kiểm thử cho TESTER.',
+      'Ghi toàn bộ vào file .team/PLAN.md.'
+    ]
+  },
+  coder: {
+    name: 'CODER (Senior Full-Stack Software Engineer)',
+    skills: [
+      'agency-frontend-developer',
+      'agency-backend-architect',
+      'agency-database-optimizer',
+      'api-endpoint-builder',
+      'design-taste-frontend',
+      'anti-ui-slop',
+      'karpathy-guidelines',
+      'bug-hunter'
+    ],
+    rules: [
+      'TỰ ĐỘNG KÍCH HOẠT VÀ SỬ DỤNG KỸ NĂNG: Bạn được trang bị các kỹ năng chuyên môn trên. Khi đọc .team/PLAN.md, bạn PHẢI tự động chọn và áp dụng phương pháp của các kỹ năng này mà không cần User yêu cầu hay gọi tên skill.',
+      'Surgical Changes (karpathy-guidelines): Sửa code tối giản, chính xác có mục tiêu, không tự ý refactor ngoài checklist, không suy đoán vô căn cứ.',
+      'Frontend Craft (agency-frontend-developer, design-taste-frontend, anti-ui-slop): Giao diện đẹp mắt, khoảng cách/typography chuẩn, loại bỏ mọi UI generic, cẩu thả.',
+      'Backend & API (agency-backend-architect, api-endpoint-builder): Xây dựng REST API endpoints chuẩn, schema validation, error handling và HTTP status code rõ ràng.',
+      'Database Optimization (agency-database-optimizer): Tối ưu hóa câu lệnh query, transaction an toàn, indexing đúng cách.',
+      'Bug Hunting (bug-hunter): Truy vết tận gốc nguyên nhân lỗi nếu đang sửa bug, tránh gây lỗi hồi quy.',
+      'Ghi tóm tắt toàn bộ file đã sửa và lý do vào .team/CODE_CHANGES.md.'
+    ]
+  },
+  tester: {
+    name: 'TESTER (Independent QA & Automation Engineer)',
+    skills: [
+      'agency-reality-checker',
+      'agency-evidence-collector',
+      'agency-api-tester',
+      'agency-test-automation-engineer',
+      'agency-test-results-analyzer',
+      'test-driven-development',
+      'playwright-cli'
+    ],
+    rules: [
+      'TỰ ĐỘNG KÍCH HOẠT VÀ SỬ DỤNG KỸ NĂNG: Bạn được trang bị các kỹ năng chuyên môn trên. Khi nhận bàn giao từ CODER, bạn PHẢI tự động chọn và áp dụng phương pháp của các kỹ năng này mà không cần User yêu cầu hay gọi tên skill.',
+      'Reality Checker (agency-reality-checker): ĐỘC LẬP 100% với CODER. TUYỆT ĐỐI KHÔNG TIN OUTPUT CỦA CODER. Mặc định ở trạng thái nghi ngờ ("NEEDS WORK") cho đến khi có bằng chứng chạy thực tế chứng minh pass.',
+      'Evidence Collector (agency-evidence-collector): Luôn thu thập bằng chứng thực tế từ terminal (stdout, exit codes, test outputs, trace logs). Không chấp nhận phán đoán suông.',
+      'Test Automation & Edge Cases (agency-api-tester, agency-test-automation-engineer): Chạy test thực tế trong terminal (npm test, build, lint, pytest, v.v.), kiểm tra cả happy path và edge cases (dữ liệu rỗng, timeout, input sai định dạng).',
+      'Test Result Synthesis (agency-test-results-analyzer): Tổng hợp bảng kết quả test, tỷ lệ pass/fail và phân loại lỗi vào .team/TEST_RESULTS.md.'
+    ]
+  },
+  reviewer: {
+    name: 'REVIEWER (Principal Code Reviewer - Read-Only Gatekeeper)',
+    skills: [
+      'agency-code-reviewer',
+      'karpathy-guidelines',
+      'brooks-lint',
+      'diagnosing-bugs',
+      'agency-application-security-engineer',
+      'agency-technical-writer'
+    ],
+    rules: [
+      'TỰ ĐỘNG KÍCH HOẠT VÀ SỬ DỤNG KỸ NĂNG: Bạn được trang bị các kỹ năng chuyên môn trên. Khi thẩm định, bạn PHẢI tự động chọn và áp dụng phương pháp của các kỹ năng này mà không cần User yêu cầu hay gọi tên skill.',
+      'READ-ONLY TUYỆT ĐỐI: KHÔNG ĐƯỢC CHỈNH SỬA BẤT KỲ FILE CODE NÀO CỦA DỰ ÁN. Bạn chỉ được ghi vào .team/REVIEW.md và REPORT.md.',
+      'Diff Inspection & Karpathy Guidelines (agency-code-reviewer, karpathy-guidelines): Soi từng dòng git status và git diff, đảm bảo thay đổi là tối giản, đúng yêu cầu trong PLAN.md, không sửa lan man ngoài scope.',
+      'Architecture & Smell Detection (brooks-lint): Phát hiện bad architectural smells, tight coupling, rò rỉ abstraction, vi phạm clean code.',
+      'Formal Logic & Security Audit (diagnosing-bugs, agency-application-security-engineer): Phát hiện race condition, unhandled exceptions, rò rỉ secrets/token, XSS, injection, thiếu auth.',
+      'Phán quyết rõ ràng trong .team/REVIEW.md: "DECISION: APPROVED" hoặc "DECISION: CHANGES_REQUESTED" kèm checklist sửa chi tiết.',
+      'Tổng kết toàn diện (agency-technical-writer): Nếu APPROVED, xuất bản báo cáo hoàn chỉnh vào REPORT.md cho User.'
+    ]
+  }
+};
+
+function formatAutoSkillsInstruction(roleKey) {
+  const roleInfo = ROLES_4_SKILLS[roleKey];
+  if (!roleInfo) return '';
+  const skillsList = roleInfo.skills.map((s) => `\`${s}\``).join(', ');
+  const rulesList = roleInfo.rules.map((r, i) => `${i + 1}. ${r}`).join('\n');
+  return `
+[QUY TẮC BẮT BUỘC: TỰ ĐỘNG CHỌN & ÁP DỤNG KỸ NĂNG CHUYÊN MÔN (AUTO-SKILLS)]:
+Bạn được ủy quyền và PHẢI tự động kích hoạt, lựa chọn và áp dụng các kỹ năng chuyên môn phù hợp với vai trò của mình mà KHÔNG CẦN người dùng phải yêu cầu trực tiếp:
+- Danh sách Kỹ năng được trang bị: ${skillsList}
+- Nguyên tắc thực thi tự động:
+${rulesList}
+`.trim();
+}
+
+
 function normalizePath(p) {
   if (!p) return '';
   return path.resolve(p).toLowerCase().replace(/\\/g, '/');
@@ -693,8 +790,11 @@ async function runTaskPipeline(taskDescription, roles, startStage = 'planner', m
     // STAGE 1: PLANNER
     if (cycle === 1) {
       if (startStage === 'planner') {
+        const plannerSkills = formatAutoSkillsInstruction('planner');
         const plannerPrompt = `
 ${AUTONOMOUS_RULES}
+
+${plannerSkills}
 
 [YÊU CẦU TỪ NGƯỜI DÙNG]:
 ${taskDescription}
@@ -720,8 +820,11 @@ Khi hoàn thành, trả lời: 'Kế hoạch kỹ thuật đã sẵn sàng tại
     } else {
       // Cycle > 1: Planner takes feedback from Reviewer and plans next sprint
       console.log(`📐 [PLANNER] Tiếp nhận đánh giá & đề xuất từ Reviewer để lập kế hoạch Chu kỳ ${cycle}...`);
+      const plannerSkills = formatAutoSkillsInstruction('planner');
       const nextPlanPrompt = `
 ${AUTONOMOUS_RULES}
+
+${plannerSkills}
 
 [CHẾ ĐỘ XOAY VÒNG - CHU KỲ ${cycle}/${totalLoops}]
 Nhiệm vụ tổng thể ban đầu của User:
@@ -749,8 +852,11 @@ Khi hoàn thành, trả lời: 'Kế hoạch kỹ thuật cho Chu kỳ ${cycle} 
     if (cycle === 1 && startStage !== 'planner' && startStage !== 'coder') {
       console.log('⏩ Bỏ qua bước [CODER].');
     } else {
+      const coderSkills = formatAutoSkillsInstruction('coder');
       const coderPrompt = cycle === 1 ? `
 ${AUTONOMOUS_RULES}
+
+${coderSkills}
 
 Bạn là Senior Software Engineer (CODER). Model của bạn: ${roles.CODER_KIND === 'agy' ? 'Antigravity' : 'OpenCode'}.
 Nhiệm vụ: Đọc kỹ bản đặc tả kỹ thuật và kế hoạch tại '.team/PLAN.md' do PLANNER lập ra.
@@ -762,6 +868,8 @@ Nhiệm vụ: Đọc kỹ bản đặc tả kỹ thuật và kế hoạch tại 
 Khi hoàn tất, trả lời: 'Code đã hoàn thành. Chi tiết tại .team/CODE_CHANGES.md'.
 `.trim() : `
 ${AUTONOMOUS_RULES}
+
+${coderSkills}
 
 [CHẾ ĐỘ XOAY VÒNG - CHU KỲ ${cycle}/${totalLoops}]
 Bạn là Senior Software Engineer (CODER). Model của bạn: ${roles.CODER_KIND === 'agy' ? 'Antigravity' : 'OpenCode'}.
@@ -781,8 +889,11 @@ Khi hoàn tất, trả lời: 'Code Chu kỳ ${cycle} đã hoàn thành. Chi ti�
     if (cycle === 1 && startStage === 'reviewer') {
       console.log('⏩ Bỏ qua bước [TESTER].');
     } else {
+      const testerSkills = formatAutoSkillsInstruction('tester');
       const testerPrompt = cycle === 1 ? `
 ${AUTONOMOUS_RULES}
+
+${testerSkills}
 
 Bạn là QA & Testing Engineer (TESTER).
 Nhiệm vụ: Đọc '.team/PLAN.md' và các thay đổi code tại '.team/CODE_CHANGES.md'.
@@ -796,6 +907,8 @@ Nhiệm vụ: Đọc '.team/PLAN.md' và các thay đổi code tại '.team/CODE
 Khi hoàn tất, trả lời: 'Kiểm thử hoàn tất. Kết quả tại .team/TEST_RESULTS.md'.
 `.trim() : `
 ${AUTONOMOUS_RULES}
+
+${testerSkills}
 
 [CHẾ ĐỘ XOAY VÒNG - CHU KỲ ${cycle}/${totalLoops}]
 Bạn là QA & Testing Engineer (TESTER).
@@ -812,8 +925,11 @@ Khi hoàn tất, trả lời: 'Kiểm thử Chu kỳ ${cycle} hoàn tất. Kết
 
     // STAGE 4: REVIEWER (READ-ONLY)
     const isLastCycle = cycle === totalLoops;
+    const reviewerSkills = formatAutoSkillsInstruction('reviewer');
     const reviewerPrompt = totalLoops === 1 ? `
 ${AUTONOMOUS_RULES}
+
+${reviewerSkills}
 
 Bạn là Principal Code Reviewer (REVIEWER).
 QUY TẮC BẮT BUỘC: Bạn ở CHẾ ĐỘ READ-ONLY. TUYỆT ĐỐI KHÔNG ĐƯỢC CHỈNH SỬA, TẠO MỚI HAY XOÁ BẤT KỲ FILE CODE NÀO CỦA DỰ ÁN (Chỉ được ghi file đánh giá .team/REVIEW.md và REPORT.md).
@@ -833,6 +949,8 @@ Nhiệm vụ:
 Khi hoàn tất, trả lời: 'Đã hoàn thành review. Phán quyết tại .team/REVIEW.md'.
 `.trim() : (isLastCycle ? `
 ${AUTONOMOUS_RULES}
+
+${reviewerSkills}
 
 Bạn là Principal Code Reviewer (REVIEWER).
 QUY TẮC BẮT BUỘC: Bạn ở CHẾ ĐỘ READ-ONLY. TUYỆT ĐỐI KHÔNG ĐƯỢC CHỈNH SỬA, TẠO MỚI HAY XOÁ BẤT KỲ FILE CODE NÀO CỦA DỰ ÁN (Chỉ được ghi file đánh giá .team/REVIEW.md và REPORT.md).
@@ -855,6 +973,8 @@ Nhiệm vụ:
 Khi hoàn tất, trả lời: 'Đã hoàn thành review Chu kỳ cuối (${cycle}/${totalLoops}). Phán quyết tại .team/REVIEW.md'.
 `.trim() : `
 ${AUTONOMOUS_RULES}
+
+${reviewerSkills}
 
 Bạn là Principal Code Reviewer (REVIEWER).
 QUY TẮC BẮT BUỘC: Bạn ở CHẾ ĐỘ READ-ONLY. TUYỆT ĐỐI KHÔNG ĐƯỢC CHỈNH SỬA, TẠO MỚI HAY XOÁ BẤT KỲ FILE CODE NÀO CỦA DỰ ÁN (Chỉ được ghi file đánh giá .team/REVIEW.md và REPORT.md).

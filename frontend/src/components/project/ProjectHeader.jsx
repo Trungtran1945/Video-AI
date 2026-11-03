@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Trash2, XCircle, RotateCcw, Loader2, Play, Download, AlertCircle, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Trash2, XCircle, RotateCcw, Loader2, Play, Download, AlertCircle, ChevronDown, Youtube } from 'lucide-react';
 import { StatusBadge } from '@/lib/constants';
 
 export default function ProjectHeader({
@@ -13,6 +13,7 @@ export default function ProjectHeader({
   onConfirmDelete,
   onCancel,
   onRegenerate,
+  onPublishYoutube,
 }) {
   const [showRerunMenu, setShowRerunMenu] = useState(false);
   const menuRef = useRef(null);
@@ -29,13 +30,19 @@ export default function ProjectHeader({
     }
   }, [showRerunMenu]);
 
-  const isDubMode = project?.mode !== 'SUMMARY';
+  const isDubMode = project?.mode === 'TRANSLATE_DUB';
+  const isScriptMode = project?.mode === 'SCRIPT_TO_VIDEO';
   const stagePickerEnabled = project?.status !== 'queued';
   const stageOptions = isDubMode ? [
     { label: 'Tự động (tiếp tục theo tiến độ)', stage: null },
     { label: 'Từ bước Dịch thuật', stage: 'dub.translate' },
     { label: 'Từ bước Lồng tiếng (TTS)', stage: 'dub.ttsAlign' },
     { label: 'Từ bước Render video', stage: 'dub.render' },
+  ] : isScriptMode ? [
+    { label: 'Tự động (tiếp tục theo tiến độ)', stage: null },
+    { label: 'Từ bước Tạo ảnh slide', stage: 'script.image' },
+    { label: 'Từ bước Tạo giọng (TTS)', stage: 'script.tts' },
+    { label: 'Từ bước Render video', stage: 'script.render' },
   ] : [
     { label: 'Tự động (tiếp tục theo tiến độ)', stage: null },
     { label: 'Từ bước Kịch bản', stage: 'summary.script' },
@@ -133,6 +140,15 @@ export default function ProjectHeader({
               >
                 <Download className="w-3.5 h-3.5" /> Tải
               </a>
+              {onPublishYoutube && (
+                <button
+                  type="button"
+                  onClick={onPublishYoutube}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold transition shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                >
+                  <Youtube className="w-3.5 h-3.5" /> Xuất bản YouTube
+                </button>
+              )}
             </>
           )}
         </div>

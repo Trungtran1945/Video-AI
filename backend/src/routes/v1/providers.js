@@ -3,6 +3,8 @@ import { query } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { sendError } from '../../lib/httpError.js'
 import { getQuotaSnapshot } from '../../services/quotaGuardService.js'
+import VoiceStudio from '../../providers/tts/voiceStudio.js'
+import ZeroTts from '../../providers/tts/zeroTts.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -56,6 +58,7 @@ router.get('/', async (req, res) => {
         decorate('openai_whisper'),
       ],
       tts: [
+        decorate('voicestudio'),
         decorate('zerotts'),
         decorate('edge_tts'),
         decorate('elevenlabs'),
@@ -117,6 +120,28 @@ router.get('/quota-summary', async (req, res) => {
     console.error('Quota summary error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
+})
+
+// GET /api/v1/providers/:provider/health — probe provider service liveness
+router.get('/:provider/health', async (req, res) => {
+  const provider = String(req.params.provider || '').toLowerCase()
+  if (provider === 'voicestudio') {
+    const vs = new VoiceStudio()
+    const health = await vs.checkHealth()
+    if (!health.ok) {
+      return res.status(503).json({ provider, ok: false, ...health })
+    }
+    return res.json({ provider, ok: true, ...health })
+  }
+  if (provider === 'zerotts') {
+    const zt = new ZeroTts()
+    const health = await zt.checkHealth()
+    if (!health.ok) {
+      return res.status(503).json({ provider, ok: false, ...health })
+    }
+    return res.json({ provider, ok: true, ...health })
+  }
+  res.json({ provider, ok: true })
 })
 
 // GET /api/v1/providers/:provider/quota — quota usage for current user

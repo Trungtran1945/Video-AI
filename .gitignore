@@ -30,6 +30,8 @@ yarn-error.log*
 pnpm-debug.log*
 
 # ===== AI tool folders =====
+.agents/
+.opencode/
 .team/
 .claude/
 .codex/
@@ -53,6 +55,8 @@ transflow/
 .idea/
 *.suo
 *.sw?
+*.bak
+*.bak_*
 
 # ===== OS =====
 .DS_Store

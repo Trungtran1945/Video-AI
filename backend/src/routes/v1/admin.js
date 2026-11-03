@@ -38,14 +38,14 @@ router.put('/users/:id', async (req, res) => {
 const CAPABILITY_PROVIDERS = {
   llm: ['gemini', 'openai', 'mock', 'anthropic', 'huggingface'],
   asr: ['whisper', 'openai_whisper', 'mock', 'faster_whisper'],
-  tts: ['zerotts', 'edge_tts', 'elevenlabs', 'openai_tts', 'google_tts', 'mock', 'azure_speech'],
+  tts: ['voicestudio', 'zerotts', 'edge_tts', 'elevenlabs', 'openai_tts', 'google_tts', 'mock', 'azure_speech'],
   vision: ['gemini', 'mock', 'clip'],
   translate: ['google_translate'],
 }
 const ENV_KEY_NAMES = {
   gemini: 'GEMINI_API_KEY', openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY',
   huggingface: 'HUGGINGFACE_TOKEN', whisper: 'WHISPER_API_KEY', openai_whisper: 'OPENAI_API_KEY',
-  elevenlabs: 'ELEVENLABS_API_KEY', openai_tts: 'OPENAI_API_KEY',
+  elevenlabs: 'ELEVENLABS_API_KEY', openai_tts: 'OPENAI_API_KEY', voicestudio: 'VOICESTUDIO_API_KEY',
 }
 
 // GET /api/v1/admin/providers
@@ -57,7 +57,7 @@ router.get('/providers', async (req, res) => {
       return {
         id,
         label: PROVIDER_LABELS[id] || id,
-        keyless: ['zerotts', 'edge_tts', 'google_tts', 'google_translate', 'mock'].includes(id),
+        keyless: ['voicestudio', 'zerotts', 'edge_tts', 'google_tts', 'google_translate', 'mock'].includes(id),
         envKeyConfigured: envName ? Boolean(process.env[envName]) : false,
       }
     }),

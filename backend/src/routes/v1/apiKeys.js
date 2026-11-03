@@ -29,7 +29,7 @@ function safePreview(encryptedKey) {
 // provider sớm 400, không insert rồi fail ở stage xa (PROV_001).
 const KNOWN_PROVIDERS = new Set([
   'gemini', 'openai', 'anthropic', 'huggingface', 'whisper', 'openai_whisper',
-  'faster_whisper', 'elevenlabs', 'openai_tts', 'zerotts', 'edge_tts',
+  'faster_whisper', 'elevenlabs', 'openai_tts', 'voicestudio', 'zerotts', 'edge_tts',
   'google_tts', 'azure_speech', 'clip', 'google_translate', 'mock',
 ])
 

@@ -60,8 +60,8 @@ services:
       # HTTP LAN nội bộ (http://<LAN-IP>): giữ true chỉ khi đã terminate TLS,
       # ngược lại browser drop cookie refresh_token → COOKIE_SECURE=false.
       - COOKIE_SECURE=${COOKIE_SECURE:-true}
-      - ZEROTTS_URL=${ZEROTTS_URL:-http://zerotts:5005}
-      - ZEROTTS_TIMEOUT_MS=${ZEROTTS_TIMEOUT_MS:-60000}
+      - VOICESTUDIO_URL=${VOICESTUDIO_URL:-http://voicestudio:3900}
+      - VOICESTUDIO_TIMEOUT_MS=${VOICESTUDIO_TIMEOUT_MS:-60000}
     volumes:
       - storage_data:/app/storage
       - db_data:/app/data
@@ -74,29 +74,18 @@ services:
       timeout: 10s
       retries: 3
 
-  # BE-D02: ZeroTTS local inference riêng (ONNX Runtime, keyless). Không expose public
-  # port mặc định; api gọi qua http://zerotts:5005 (không 127.0.0.1 giữa containers).
-  zerotts:
-    build:
-      context: .
-      dockerfile: docker/zerotts.Dockerfile
+  # VoiceStudio local inference (OpenAI-compatible speech API, keyless)
+  voicestudio:
+    image: ${VOICESTUDIO_IMAGE:-ghcr.io/debpalash/voicestudio:stable}
+    ports:
+      - "3900:3900"
     environment:
-      - ZEROTTS_HOST=0.0.0.0
-      - ZEROTTS_PORT=5005
-      - ZEROTTS_MODEL=${ZEROTTS_MODEL:-zeroweight-ai/ZeroTTS}
-      - ZEROTTS_VOICE=${ZEROTTS_VOICE:-maichi}
-      - ZEROTTS_THREADS=${ZEROTTS_THREADS:-4}
-      - ZEROTTS_CONCURRENCY=${ZEROTTS_CONCURRENCY:-1}
-      - ZEROTTS_MAX_INFLIGHT_REQUESTS=${ZEROTTS_MAX_INFLIGHT_REQUESTS:-8}
-      - ZEROTTS_MAX_BODY_BYTES=${ZEROTTS_MAX_BODY_BYTES:-65536}
-      - ZEROTTS_MAX_TEXT_CHARS=${ZEROTTS_MAX_TEXT_CHARS:-2000}
-      - ZEROTTS_OUTPUT_ROOT=${ZEROTTS_OUTPUT_ROOT:-/tmp/zerotts_service}
-      - ZEROTTS_SHUTDOWN_TIMEOUT_MS=${ZEROTTS_SHUTDOWN_TIMEOUT_MS:-15000}
+      - OMNIVOICE_DATA_DIR=/app/omnivoice_data
     volumes:
-      - zerotts_models:/root/.cache
-      - zerotts_out:/tmp/zerotts_service
+      - voicestudio_data:/app/omnivoice_data
+      - voicestudio_models:/root/.cache
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5005/health',timeout=4).status==200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3900/health',timeout=4).status==200 else 1)"]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -129,5 +118,5 @@ volumes:
   redis_data:
   storage_data:
   db_data:
-  zerotts_models:
-  zerotts_out:
+  voicestudio_data:
+  voicestudio_models:

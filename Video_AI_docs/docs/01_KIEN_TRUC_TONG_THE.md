@@ -2,24 +2,24 @@
 
 # Current Implementation (CURRENT)
 
-- layout `backend/`+`frontend/` phẳng JS ESM (không apps/packages)
-- DB sql.js/SQLite file backend/data.db + schema backend/src/db/schema.js
-- pipeline backend/src/pipeline/runner.js sequential (SUMMARY 8 stages, TRANSLATE_DUB 6 stages [dub.ingest,dub.stt,dub.merge,dub.translate,dub.ttsAlign,dub.render]), không BullMQ per-stage
-- TRANSLATE_DUB là STT-only: legacy OCR (dubOcr.js, tesseract) đã loại bỏ hoàn toàn; phụ đề mặc định neo đáy (\an2)
-- Mask editor (MaskEditor.jsx) tích hợp tại ProjectDetail với lifecycle DRAFT, APPROVED, DISABLED; mask APPROVED là bất biến (immutable); render chỉ áp dụng mask APPROVED
-- POST /projects/:id/regenerate hỗ trợ chạy lại tự động hoặc chọn lọc theo stage (fromStage)
-- queue BullMQ+Redis chỉ cho projectQueue/notifyQueue/cleanupQueue
+- **Cấu trúc Repository**: Bố cục phẳng `backend/` và `frontend/` (JavaScript ESM, không `apps/` + `packages/`).
+- **Cơ sở dữ liệu**: `sql.js` (WebAssembly SQLite) ghi tệp `backend/data.db` với 29 bảng định nghĩa tại `backend/src/db/schema.js`. Cơ chế lưu trữ: atomic in-memory snapshot sang đĩa, single-writer lock (`data.db.writer.lock`), hàng đợi tuần tự hóa các truy vấn ghi (`query.js`), giám sát trạng thái `HEALTHY` / `DEGRADED` / `WRITE_BLOCKED`.
+- **Pipeline điều phối (`backend/src/pipeline/runner.js`)**: Hỗ trợ **3 chế độ** chạy tuần tự:
+  - `SUMMARY` (8 stages): `summary.transcribe → summary.sceneDetect → summary.analyze → summary.script → summary.align → summary.tts → summary.subtitle → summary.render`.
+  - `TRANSLATE_DUB` (7 stages): `dub.ingest → dub.stt → dub.merge → dub.translate → dub.mask → dub.ttsAlign → dub.render`. STT-only (Whisper ASR + 15s overlap stitching), 13 StylePreset, Masking (tự động hoặc thủ công), Forced Alignment TTS (`TEMPO_MAX = 1.35`), Dynamic Sidechain Ducking (-12dB).
+  - `SCRIPT_TO_VIDEO` (7 stages): `script.ingest → script.analyze → script.tts → script.image → script.align → script.subtitle → script.render`. Phân đoạn kịch bản qua LLM/quy tắc, review gate (`script_review_required = 1`), TTS phân đoạn, tạo slide ảnh minh họa, căn chỉnh timeline và render MP4.
+- **Hàng đợi & Worker (BullMQ + Redis 7)**: Điều phối `projectQueue`, `notifyQueue`, `cleanupQueue`, `drainQueue` với các workers `drainQueued`, `notifyWorker`, `cleanupWorker`, `youtubeUploadWorker`. Redis được thăm dò sẵn sàng tại `/health` và `npm run check:redis`, backend có cơ chế chạy degraded an toàn khi Redis chưa bật.
+- **Sidecar ZeroTTS**: Tự động kích hoạt sidecar Python (`scripts/zerotts_service.py`) trong môi trường phát triển (`npm run dev`), backend chuyển đổi WAV sang MP3 bằng FFmpeg.
+- **Mặt cắt API & SSE**: API REST tiền tố `/api/v1/`, Upload resumable kiểu TUS chunk 8MB (giới hạn 2GB), SSE realtime tiến trình `/projects/:id/events` dùng vé ngắn hạn một lần (`sse-ticket`), tĩnh bảo mật tại `/storage/<key>`.
+- **Mask Editor & Subtitle**: `MaskEditor.jsx` Canvas trực tiếp tại `ProjectDetail` quản lý lifecycle `DRAFT`, `APPROVED`, `DISABLED`. Mask `APPROVED` là bất biến (immutable); render chỉ áp dụng mask `APPROVED`.
+- **Chạy lại & Tiếp tục**: `POST /projects/:id/regenerate` hỗ trợ tiếp tục tự động từ stage chưa hoàn thành (`firstRunnableStage`) hoặc chạy lại từ một stage chỉ định (`fromStage`).
 
 # Target Architecture (FUTURE — NOT IMPLEMENTED)
 
 > Mọi nội dung phía dưới là thiết kế tương lai (giữ nguyên, không xóa); chỉ các đoạn gắn nhãn CURRENT/PARTIAL mới phản ánh code hiện tại trên branch main.
-
+>
 > **Lưu ý Triển khai:** Tài liệu này mô tả thiết kế target (monorepo với `apps/` + `packages/`).
 > Triển khai hiện tại dùng cấu trúc phẳng `backend/` + `frontend/` với JavaScript (không TypeScript).
-> Xem `docs/superpowers/plans/` cho chi tiết gap giữa thiết kế và triển khai.
-
-Tài liệu này là **trọng tâm** của bộ thiết kế: mô tả cấu trúc monorepo, luồng dữ liệu của hai pipeline,
-mô hình Provider Pattern, hàng đợi và các sơ đồ trình tự.
 
 ---
 
@@ -35,7 +35,7 @@ AI-Shorts-Factory/
 │   ├── ai/                   # AIProvider (LLM) + Gemini/OpenAI/Anthropic/HuggingFace
 │   ├── providers/
 │   │   ├── asr/              # AsrProvider: Whisper / Faster-Whisper / OpenAI Whisper
-│   │   ├── tts/              # TtsProvider: ElevenLabs / Google / Azure / OpenAI
+│   │   ├── tts/              # TtsProvider: ElevenLabs / Google / Azure / OpenAI / ZeroTTS
 │   │   ├── vision/           # VisionProvider: Gemini / CLIP (hiểu cảnh phim)
 │   │   └── video-gen/        # (mở rộng) Kling/Hailuo/PixVerse...
 │   ├── media/                # FFmpeg wrapper: transcode, scene-detect, concat, conform, grade
@@ -62,7 +62,7 @@ Lớp trên không được import implementation cụ thể của lớp dưới
 │ Presentation: apps/web (React)  +  apps/api (Controllers) │
 ├──────────────────────────────────────────────────────────┤
 │ Application / Use-cases: services trong packages/core     │
-│   - CreateProjectUseCase, SummaryPipeline, TranslateDubPipeline│
+│   - CreateProjectUseCase, SummaryPipeline, TranslateDubPipeline, ScriptToVideoPipeline │
 ├──────────────────────────────────────────────────────────┤
 │ Domain: entities, interfaces (AIProvider, AsrProvider...)  │
 ├──────────────────────────────────────────────────────────┤
@@ -76,44 +76,59 @@ Lớp trên không được import implementation cụ thể của lớp dưới
 
 ---
 
-## 3. Hai luồng pipeline
+## 3. Ba luồng pipeline
 
-### 3.1. Mode `SUMMARY` (Review phim)
+### 3.1. Mode `SUMMARY` (Review phim & Video tóm tắt)
 
 ```
 Phim (2–3h)
    │
-   ▼  [ingest]        probe + tách audio + lưu source
-   ▼  [transcribe]    ASR → transcript(timestamp)
-   ▼  [scene-detect]  media → Scene[] (start/end/thumbnail)
-   ▼  [analyze]       VisionProvider → mô tả mỗi Scene
-   ▼  [script]        LLM → ScriptSegment[] (lời review + scene ref)
-   ▼  [align] ★       TTS đoạn → duration; gói Scene thành TimelineClip[]
-   ▼  [tts]           TtsProvider → Audio(giọng review)
-   ▼  [subtitle]     sinh cues khớp TTS
-   ▼  [render]        media/ffmpeg → Video 20–30 phút
-   ▼  [upload?]       YouTube
+   ▼  [summary.transcribe]   ASR Whisper → transcript (timestamp)
+   ▼  [summary.sceneDetect]  FFmpeg → Scene[] (start/end/thumbnail)
+   ▼  [summary.analyze]      VisionProvider → mô tả mỗi Scene
+   ▼  [summary.script]       LLM → ScriptSegment[] (lời review + scene ref)
+   ▼  [summary.align] ★      TTS đoạn → duration; gói Scene thành TimelineClip[]
+   ▼  [summary.tts]          TtsProvider → Audio (giọng review)
+   ▼  [summary.subtitle]     Sinh phụ đề ASS/SRT khớp TTS
+   ▼  [summary.render]       FFmpeg → Video 20–30 phút hoàn chỉnh
+   ▼  [upload?]              YouTube (tuỳ chọn)
 ```
 
 ### 3.2. Mode `TRANSLATE_DUB` (Dịch thuật & Lồng tiếng)
 
 ```
-Video nước ngoài
+Video nước ngoài (≤ 2GB)
    │
-   ▼  [ingest]        resumable upload → demux (audio/video) → normalize LUFS
-   ▼  [stt]           ASR → transcript(timestamp, speaker)
-   ▼  [merge]         Kiểm tra barrier: transcript + translation + duration + language
-   ▼  [translate]     LLM + StylePreset(13 phong cách) → bản dịch khớp context window
-   ▼  [ttsAlign?]     TTS + Forced Alignment khớp slot gốc (tuỳ chọn enableDubbing)
-   ▼  [render]        Burn-in sub mới → audio mix (dub voice + nền) → mux MP4/MKV (NVENC)
-   ▼  [upload?]       YouTube
+   ▼  [dub.ingest]           Resumable upload (chunk 8MB) → demux audio/video → normalize LUFS
+   ▼  [dub.stt]              ASR Whisper + overlap stitching 15s → transcript (timestamp)
+   ▼  [dub.merge]            Barrier kiểm tra: transcript, translation, duration, language
+   ▼  [dub.translate]        LLM + StylePreset (13 phong cách) gom context window (TransFlow 3 vòng)
+   ▼  [dub.mask]             Vision detect hardsub boxes hoặc nạp mask người dùng
+   ▼  [dub.ttsAlign?]        TTS + Forced Alignment ép khớp slot gốc (TEMPO_MAX=1.35, pause-expansion)
+   ▼  [dub.render]           Burn mask APPROVED + Burn sub mới (neo đáy \an2) + Ducking (-12dB) + NVENC
+   ▼  [upload?]              YouTube (tuỳ chọn)
 ```
 
-**Khác biệt cốt lõi:**
-- `SUMMARY` cắt từ **1 video nguồn duy nhất** (phim) và phải đồng bộ giọng ↔ cảnh (stage `align`);
-  đầu ra là **video mới dựng** từ các cảnh trích.
-- `TRANSLATE_DUB` **giữ nguyên hình ảnh gốc**, chỉ thay lớp ngôn ngữ: phụ đề dịch mới được burn-in
-  và (tuỳ chọn) giọng lồng AI ép khớp timestamp.
+### 3.3. Mode `SCRIPT_TO_VIDEO` (Tạo video từ kịch bản)
+
+```
+Kịch bản văn bản (.txt)
+   │
+   ▼  [script.ingest]        Kiểm tra toàn vẹn băm SHA-256, lưu script/source.txt
+   ▼  [script.analyze]       LLM phân tách thành script_segments (narration + visual prompt)
+   ▼  [Review Gate]          (Tạm dừng nếu script_review_required=1 để user kiểm tra/sửa)
+   ▼  [script.tts]           TTS Provider sinh audio giọng đọc cho từng phân đoạn
+   ▼  [script.image]         SlideImage sinh hình ảnh minh họa cho từng phân đoạn
+   ▼  [script.align]         Căn chỉnh thời lượng hình ảnh khớp chính xác với audio
+   ▼  [script.subtitle]      Tạo phụ đề ASS/SRT đồng bộ giọng đọc
+   ▼  [script.render]        FFmpeg kết xuất video MP4 kết hợp ảnh, voice, nhạc nền và phụ đề
+   ▼  [upload?]              YouTube (tuỳ chọn)
+```
+
+**So sánh cốt lõi:**
+- `SUMMARY`: Cắt từ **1 video nguồn duy nhất** (phim dài), thuật toán `align` gói các Scene lại để khớp thời lượng lời review; kết quả là video dựng mới.
+- `TRANSLATE_DUB`: **Giữ nguyên nhịp hình ảnh gốc**, chỉ thay lớp ngôn ngữ (phụ đề dịch + giọng lồng tiếng ép khớp slot thời gian gốc).
+- `SCRIPT_TO_VIDEO`: Bắt đầu từ **văn bản thuần túy**, sinh ra toàn bộ âm thanh và hình ảnh slide tương ứng, tự động dựng thành video.
 
 ---
 
@@ -126,7 +141,7 @@ Mọi dịch vụ ngoài được trừu tượng hoá qua interface. Ví dụ `
 ```ts
 // packages/providers/tts/types.ts
 export interface TtsProvider {
-  readonly id: string;                 // 'elevenlabs' | 'google' | 'azure' | 'openai'
+  readonly id: string;                 // 'elevenlabs' | 'google' | 'azure' | 'openai' | 'zerotts' | 'edge_tts'
   synthesize(input: TtsInput): Promise<TtsResult>;
 }
 
@@ -146,261 +161,158 @@ export interface TtsResult {
 }
 ```
 
-Tương tự: `AIProvider` (LLM), `AsrProvider` (transcribe + word timestamps + diarization),
-`VisionProvider` (mô tả cảnh / AI inpainting).
+Tương tự: `AIProvider` (LLM), `AsrProvider` (transcribe + word timestamps), `VisionProvider` (mô tả cảnh / phát hiện hardsub), `ImageProvider` (sinh ảnh slide).
 
-**Registry + Strategy:** dùng DI container ánh xạ `providerId → implementation`. Use-case chỉ gọi
-`container.resolve('tts', settings.voiceProvider)`. Thêm provider = thêm 1 file implement + đăng ký,
-**không sửa** business logic.
-
-> ⚠️ Mọi cuộc gọi qua provider thật (LLM/ASR/TTS/Vision) đều đi qua lớp `RateLimiter` +
-> `ProviderCache` trước khi chạm mạng, đặc biệt quan trọng khi user dùng **API key miễn phí**
-> (RPM/RPD thấp). Xem chi tiết cơ chế throttle, cache, đa key round-robin và provider `mock` cho
-> dev/CI tại `11_RATE_LIMIT_VA_FREE_TIER.md`.
+**Registry + Strategy:** Dùng DI container ánh xạ `providerId → implementation`. Use-case chỉ gọi `container.resolve('tts', settings.voiceProvider)`. Thêm provider = thêm 1 file implement + đăng ký, **không sửa** business logic.
 
 ---
 
-## 5. Hàng đợi (BullMQ + Redis) [TARGET/FUTURE]
+## 5. Hàng đợi (BullMQ + Redis)
 
-> [TARGET/FUTURE] — Job per-stage + worker song song mỗi stage là thiết kế tương lai.
-> CURRENT: pipeline chạy sequential trong `backend/src/pipeline/runner.js`; BullMQ + Redis chỉ dùng cho 3 queue `projects`/`notifications`/`cleanup` (`backend/src/queue/projectQueue.js`, `notifyQueue.js`, `cleanupQueue.js`).
+> [CURRENT]: Pipeline chạy sequential trong `backend/src/pipeline/runner.js`; BullMQ + Redis được sử dụng cho 4 queues: `projectQueue`, `notifyQueue`, `cleanupQueue`, `drainQueue` (`backend/src/queue/`).
 
-Mỗi stage là 1 loại job. Worker tiêu thụ song song, retry tự động.
+Các công đoạn trong các chế độ pipeline:
 
-```
-API ──enqueue──▶ Redis/BullMQ ──▶ Worker (per stage)
-                        │
-                        └─▶ GenerationJob (DB) gương trạng thái + log
-```
+| Job / Stage | Mode | Thực thi bởi | Retry Policy |
+| --- | --- | --- | --- |
+| `summary.transcribe` | SUMMARY | AsrProvider (Whisper) | 3, exp backoff |
+| `summary.sceneDetect` | SUMMARY | Media (FFmpeg) | 2 |
+| `summary.analyze` | SUMMARY | VisionProvider (Gemini) | 3 |
+| `summary.script` | SUMMARY | LLMProvider (Gemini/OpenAI) | 3 |
+| `summary.align` | SUMMARY | AlignService (core) | 2 |
+| `summary.tts` | SUMMARY | TtsProvider (Edge/Google/ElevenLabs) | 3 |
+| `summary.subtitle` | SUMMARY | Media (Core/FFmpeg) | 2 |
+| `summary.render` | SUMMARY | Media (FFmpeg) | 2 |
+| `dub.ingest` | TRANSLATE_DUB | Media (demux + LUFS) | 2 |
+| `dub.stt` | TRANSLATE_DUB | AsrProvider (Whisper) | 3 |
+| `dub.merge` | TRANSLATE_DUB | Core (barrier, check DB) | 1 |
+| `dub.translate` | TRANSLATE_DUB | LLM + 13 StylePresets | 3 |
+| `dub.mask` | TRANSLATE_DUB | Vision / User Masks | 2 |
+| `dub.ttsAlign` | TRANSLATE_DUB | TTS + ForcedAlignService | 3 |
+| `dub.render` | TRANSLATE_DUB | Media (FFmpeg burn/mix/mux) | 2 |
+| `script.ingest` | SCRIPT_TO_VIDEO| Core (SHA-256 integrity) | 2 |
+| `script.analyze` | SCRIPT_TO_VIDEO| LLMProvider (phân đoạn) | 3 |
+| `script.tts` | SCRIPT_TO_VIDEO| TtsProvider | 3 |
+| `script.image` | SCRIPT_TO_VIDEO| SlideImage / ImageProvider | 2 |
+| `script.align` | SCRIPT_TO_VIDEO| Core (căn chỉnh thời lượng) | 2 |
+| `script.subtitle` | SCRIPT_TO_VIDEO| Core / Media | 2 |
+| `script.render` | SCRIPT_TO_VIDEO| Media (FFmpeg video render) | 2 |
+| `output.uploadYoutube`| OUTPUT | YouTube OAuth Worker | 2 |
 
-| Job type | Stage | Retry |
-| --- | --- | --- |
-| `summary.transcribe` | ASR | 3, exp backoff |
-| `summary.sceneDetect` | media | 2 |
-| `summary.analyze` | vision | 3 |
-| `summary.script` | llm | 3 |
-| `summary.align` | core | 2 |
-| `summary.tts` | tts | 3 |
-| `summary.subtitle` | media | 2 |
-| `summary.render` | media | 2 |
-| `dub.ingest` | media (demux + LUFS) | 2 |
-| `dub.stt` | asr (+ diarization) | 3 |
-| `dub.merge` | api (barrier, không gọi provider) | 1 |
-| `dub.translate` | llm + StylePreset | 3 |
-| `dub.ttsAlign` | tts + ForcedAlignService | 3 |
-| `dub.render` | media (burn-in/mix/mux) | 2 |
-| `output.uploadYoutube` | api | 2 |
-
-> Riêng các job gọi provider bên ngoài (`summary.analyze`, `summary.script`, `summary.tts`,
-> `dub.stt`, `dub.translate`, `dub.ttsAlign`), khi provider trả `429`/hết quota, job
-> chuyển `RETRY` với `nextRetryAt` theo lịch reset của provider (không phải backoff cố định như
-> bảng trên) — xem `11_RATE_LIMIT_VA_FREE_TIER.md` §4.2.
-
-Mỗi job **idempotent**: key theo `(projectId, stage)`. Thất bại → tự động retry; hết retry → đánh dấu
-`GenerationJob.status = FAILED` và thông báo user.
-
-### 5.1. Cơ chế barrier `dub.stt` → `dub.merge` → `dub.translate` [TARGET/FUTURE]
-
-BullMQ không có "chờ 2 job cha" built-in một cách an toàn nếu chỉ dùng `Promise.all` phía API (rủi ro
-mất trạng thái nếu API restart giữa chừng). Thiết kế dùng **BullMQ Flow Producer**:
-
-```
-FlowProducer.add({
-  name: 'dub.merge',
-  queue: 'dub',
-  children: [
-    { name: 'dub.stt', queue: 'dub', data: { projectId } },
-  ],
-});
-```
-
-- `dub.merge` là job cha, chỉ chạy khi job con `dub.stt` hoàn tất thành công
-  (BullMQ tự động chờ, lưu trạng thái trong Redis — sống sót qua restart API).
-- `dub.merge` không gọi provider, chỉ kiểm tra `TranscriptSegment[]` đã có trong DB
-  rồi enqueue tiếp `dub.translate`.
-- Nếu job con `FAILED` sau hết retry, `dub.merge` không chạy → `Project.status = FAILED`,
-  hiển thị đúng job nào lỗi để user retry thủ công (`POST /projects/:id/jobs/:type/retry`).
-
-### 5.2. Huỷ (Cancel) và thông báo hoàn thành [PARTIAL]
-
-- **Cancel**: `POST /projects/:id/cancel` → API gọi `job.remove()` cho mọi job `PENDING` của project
-  trong BullMQ và gửi tín hiệu dừng cho job `RUNNING` (worker kiểm tra cờ `cancelled` định kỳ giữa các
-  bước con, đặc biệt trong FFmpeg — dùng `child_process.kill()` an toàn). `GenerationJob.status` các
-  job liên quan chuyển `FAILED` với `error = 'CANCELLED_BY_USER'`; file tạm được dọn ngay.
-- **Thông báo**: khi `Project.status` chuyển `SUCCESS`/`FAILED`, hệ thống enqueue job nhẹ
-  `notify.projectDone` gửi email (hoặc push nếu có) cho user — không phụ thuộc SSE, để user không
-  cần giữ tab mở với pipeline dài (2–3h phim SUMMARY).
+Mỗi job **idempotent**: key theo `(projectId, stage)`. Thất bại do lỗi tạm thời → tự động retry; hết retry hoặc gặp lỗi dữ liệu → đánh dấu `failed` và ghi log chi tiết.
 
 ---
 
-## 6. Sơ đồ trình tự (Sequence) — SUMMARY
+## 6. Sơ đồ trình tự (Sequence Diagrams)
+
+### 6.1. Sơ đồ trình tự — SUMMARY
 
 ```mermaid
 sequenceDiagram
   actor U as User
-  participant W as Web
-  participant A as API
-  participant Q as Queue
-  participant C as Core(Align)
-  participant P as Providers
-  participant M as Media(ffmpeg)
-  participant D as DB
+  participant W as Web (React)
+  participant A as API (Express)
+  participant R as Pipeline Runner
+  participant P as Providers (ASR/Vision/LLM/TTS)
+  participant M as Media (FFmpeg)
+  participant D as DB (sql.js)
 
-  U->>W: Upload phim + cấu hình
-  W->>A: POST /projects + start SUMMARY
-  A->>D: Tạo Project(mode=SUMMARY)
-  A->>Q: enqueue transcribe/sceneDetect/analyze
-  Q->>P: ASR + Vision
-  P-->>D: transcript, Scene[], mô tả
-  A->>Q: enqueue script
-  Q->>P: LLM sinh ScriptSegment[]
-  P-->>D: kịch bản review
-  A->>Q: enqueue align
-  Q->>C: Align(tập ScriptSegment, Scene)
-  C->>P: TTS mỗi đoạn → duration
-  C->>C: gói Scene thành TimelineClip[] (khớp thời lượng)
-  C-->>D: TimelineClip[]
-  A->>Q: enqueue render
-  Q->>M: ffmpeg ghép theo TimelineClip
-  M-->>D: Output(video 20–30ph)
-  A-->>W: notify hoàn thành
+  U->>W: Upload phim + cấu hình SUMMARY
+  W->>A: POST /api/v1/projects
+  A->>D: Lưu Project (mode=SUMMARY, status=pending)
+  A->>R: Khởi chạy runPipeline()
+  R->>P: summary.transcribe (ASR Whisper)
+  P-->>D: Lưu transcript
+  R->>M: summary.sceneDetect (FFmpeg)
+  M-->>D: Lưu danh sách scenes
+  R->>P: summary.analyze (Vision)
+  P-->>D: Cập nhật mô tả cảnh
+  R->>P: summary.script (LLM sinh kịch bản)
+  P-->>D: Lưu script_segments
+  R->>R: summary.align (Gói scene khớp thời lượng)
+  R->>P: summary.tts (Sinh giọng đọc)
+  P-->>D: Lưu audios
+  R->>M: summary.render (FFmpeg ghép cảnh, lồng tiếng, phụ đề)
+  M-->>D: Lưu outputs (status=completed)
+  R--)W: SSE Event: project completed
 ```
 
-### 6.1. Sơ đồ trình tự — TRANSLATE_DUB [PARTIAL]
-
-> [PARTIAL] — Luồng stage đúng với `STAGES.TRANSLATE_DUB` trong `backend/src/pipeline/runner.js:111-154`; riêng `FlowProducer: dub.merge cha ← [dub.stt] con` là [TARGET/FUTURE] (CURRENT chạy sequential, không BullMQ Flow).
+### 6.2. Sơ đồ trình tự — TRANSLATE_DUB
 
 ```mermaid
 sequenceDiagram
   actor U as User
-  participant W as Web
-  participant A as API
-  participant Q as Queue
-  participant P as Providers (ASR/LLM/TTS)
-  participant C as Core(ForcedAlign)
-  participant M as Media(ffmpeg)
-  participant D as DB
+  participant W as Web (React)
+  participant A as API (Express)
+  participant R as Pipeline Runner
+  participant P as Providers (ASR/LLM/TTS/Vision)
+  participant M as Media (FFmpeg)
+  participant D as DB (sql.js)
 
-  U->>W: Upload video resumable + chọn preset/dubbing
-  W->>A: POST /projects + start TRANSLATE_DUB
-  A->>D: Tạo Project(mode=TRANSLATE_DUB)
-  A->>Q: FlowProducer: dub.merge cha ← [dub.stt] con
-  Q->>P: ASR(audio LUFS)
-  P-->>D: TranscriptSegment[]
-  Q->>Q: dub.merge chạy khi con SUCCESS
-  A->>Q: enqueue dub.translate
-  Q->>P: LLM dịch theo StylePreset (context window)
-  P-->>D: translation gắn vào transcript
+  U->>W: Tải lên video resumable + chọn 13 StylePreset
+  W->>A: POST /api/v1/projects (TRANSLATE_DUB)
+  A->>R: Khởi chạy runPipeline()
+  R->>M: dub.ingest (Demux + chuẩn hoá LUFS)
+  R->>P: dub.stt (Whisper ASR)
+  P-->>D: Lưu transcript_segments
+  R->>R: dub.merge (Kiểm tra dữ liệu)
+  R->>P: dub.translate (LLM dịch 3 vòng theo StylePreset)
+  P-->>D: Cập nhật bản dịch
+  R->>P: dub.mask (Phát hiện hardsub tự động)
+  P-->>D: Lưu ocr_regions (APPROVED)
   alt enableDubbing
-    A->>Q: enqueue dub.ttsAlign
-    Q->>C: TTS từng câu → ép khớp slot gốc
-    C-->>D: Audio dub + startAtSec
+    R->>P: dub.ttsAlign (TTS + Forced Alignment)
+    P-->>D: Lưu audios khớp slot gốc
   end
-  A->>Q: enqueue dub.render
-  Q->>M: burn-in sub → mix → mux (NVENC)
-  M-->>D: Output(video đã Việt hoá)
-  A--)W: SSE progress realtime từng stage
+  R->>M: dub.render (Burn mask + Sub đáy + Ducking audio)
+  M-->>D: Lưu outputs (status=completed)
+  R--)W: SSE Event: tiến trình realtime từng stage
+```
+
+### 6.3. Sơ đồ trình tự — SCRIPT_TO_VIDEO
+
+```mermaid
+sequenceDiagram
+  actor U as User
+  participant W as Web (React)
+  participant A as API (Express)
+  participant R as Pipeline Runner
+  participant P as Providers (LLM/TTS/Image)
+  participant M as Media (FFmpeg)
+  participant D as DB (sql.js)
+
+  U->>W: Tải kịch bản .txt / paste text + chọn giọng đọc & khung hình
+  W->>A: POST /api/v1/projects (SCRIPT_TO_VIDEO)
+  A->>R: Khởi chạy runPipeline(parkAfterAnalysis=true)
+  R->>R: script.ingest (Kiểm tra băm SHA-256)
+  R->>P: script.analyze (LLM phân đoạn kịch bản)
+  P-->>D: Lưu script_segments
+  alt script_review_required
+    R->>D: Project status=queued (Tạm dừng chờ duyệt)
+    R--)W: SSE Event: chờ người dùng duyệt kịch bản
+    U->>W: Xem trước & chỉnh sửa phân đoạn
+    U->>A: POST /projects/:id/regenerate
+  end
+  R->>P: script.tts (Sinh giọng đọc từng đoạn)
+  R->>P: script.image (Sinh ảnh slide minh họa)
+  R->>R: script.align (Căn chỉnh thời lượng hình ↔ tiếng)
+  R->>M: script.render (FFmpeg kết xuất MP4 + phụ đề ASS)
+  M-->>D: Lưu outputs (status=completed)
+  R--)W: SSE Event: video hoàn thành
 ```
 
 ---
 
-## 7. Storage Abstraction [TARGET/FUTURE]
+## 7. Lưu trữ tệp (Storage Abstraction)
 
-> [TARGET/FUTURE] — `packages/storage` + `S3Storage` là thiết kế tương lai. CURRENT: lưu file local qua `backend/src/pipeline/context.js` (`projectDir`/`resolveStorageKey`).
-
-`packages/storage` định nghĩa `StorageProvider` (`put`, `get`, `delete`, `signedUrl`).
-MVP cài đặt `LocalStorage` (ghi vào `storage/`), production cài đặt `S3Storage`.
-Mọi asset (phim nguồn, scene, audio, video, subtitle, output) lưu qua abstraction → dễ đổi hạ tầng.
+- Mọi tệp tải lên (video nguồn, kịch bản) và tệp sinh ra (audio, ảnh slide, phụ đề ASS, video đầu ra) được lưu trữ tại `storage/` trên máy chủ cục bộ hoặc volume Docker (`/app/storage`).
+- Đường dẫn truy xuất an toàn thông qua middleware `createSafeMediaStatic` tại `/storage/<key>`, có cơ chế chống Directory Traversal (`isPathInside`) và cấm duyệt symlink độc hại.
 
 ---
 
-## 8. Error Handling Pattern (Bổ sung)
+## 8. Xử lý lỗi & Phục hồi (Fault-Tolerance & Recovery)
 
-### 8.1. Retry Policy per Stage Group
-
-| Stage Group | Max Retry | Delay | Retryable Errors |
-| --- | --- | --- | --- |
-| `EXTRACT_AUDIO` | 3 | 5s, 15s, 30s | Timeout, 5xx, network error |
-| `STT` | 3 | 10s, 30s, 60s | Timeout, 429 (rate limit), 5xx |
-| `TRANSLATE` | 3 | 5s, 15s, 30s | Timeout, 429, 5xx, invalid JSON |
-| `SUMMARIZE` | 3 | 5s, 15s, 30s | Timeout, 429, 5xx, business rule violation |
-| `TTS` | 3 | 10s, 30s, 60s | Timeout, voice not found, 5xx |
-| `RENDER` | 2 | 30s, 120s | FFmpeg crash, disk full, timeout |
-
-**Non-retryable errors** (FAILED ngay, không retry):
-- `PROVIDER_AUTH_FAILED`: API key sai/hết hạn → user cần cập nhật key
-- `PROVIDER_QUOTA_EXCEEDED`: Hết quota provider → user cần upgrade plan
-- `INPUT_INVALID`: File video corrupt, codec không hỗ trợ
-- `BUSINESS_RULE_VIOLATION`: Dịch quá dài/ngắn so với slot (không phải lỗi provider)
-
-**Exponential backoff**: Delay tăng theo `baseDelay * 2^attempt`, max `baseDelay * 8`.
-
-### 8.2. Idempotent Callback
-
-- Worker gửi callback về backend PHẢI chứa `(jobId, stage, status, outputRef)` + timestamp.
-- Backend kiểm tra: nếu `(jobId, stage)` đã ở trạng thái `COMPLETED` với `outputRef` trùng khớp →
-  ACK lại ngay, không xử lý lại (idempotent).
-- Nếu `outputRef` khác → coi như rerun mới, xử lý bình thường.
-
-### 8.3. SSE vs Polling Choice
-
-| Phương án | Ưu điểm | Nhược điểm | Khi nào dùng |
-| --- | --- | --- | --- |
-| **SSE (Server-Sent Events)** | Real-time, server push, đơn giản | Kết nối 1 chiều, không retry tự động | UI dashboard hiển thị progress pipeline |
-| **Polling** | Đơn giản, fault-tolerant | Delay, lãng phí bandwidth | Fallback khi SSE không khả dụng |
-| **WebSocket** | Full-duplex, bidirectional | Phức tạp hơn, cần quản lý connection | Chat, collaborative editing (tương lai) |
-
-**Quyết định**: Dùng **SSE** cho progress pipeline (vì chỉ cần server push 1 chiều).
-Khi SSE mất kết nối → frontend tự poll lại `/projects/:id` sau 5s.
-
-### 8.4. Stage State Machine [TARGET/FUTURE]
-
-> [TARGET/FUTURE] — State machine `MediaJob`/`MediaJobStage` với `STALE`/`SKIPPED`/`CANCEL_REQUESTED` là thiết kế tương lai, NOT IMPLEMENTED trong code hiện tại (không có bảng MediaJobStage trong `backend/src/db/schema.js`).
->
-> CURRENT: `generation_jobs.status` + `projects.status` dùng enum lowercase: pending/queued/running/completed/failed/cancelled (xem `backend/src/pipeline/runner.js`, `backend/src/usecases/cancelProjectUseCase.js`).
-
-Mỗi Stage trong MediaJob [TARGET/FUTURE] đi qua các trạng thái:
-
-```
-PENDING → PROCESSING → COMPLETED
-                 ↓
-               FAILED (→ retry nếu còn lượt)
-                 ↓
-               STALE (khi dependency upstream thay đổi)
-```
-
-| Trạng thái | Ý nghĩa |
-| --- | --- |
-| `PENDING` | Chưa bắt đầu, chờ dependency hoặc queue |
-| `PROCESSING` | Đang chạy (provider call, FFmpeg, v.v.) |
-| `COMPLETED` | Thành công, output đã lưu DB |
-| `FAILED` | Lỗi — có thể retry nếu chưa vượt max retry |
-| `STALE` [TARGET/FUTURE] | Đã completed nhưng dependency upstream thay đổi → cần rerun |
-| `SKIPPED` [TARGET/FUTURE] | Bỏ qua (vd: user tắt dubbing → Stage TTS được skip) |
-| `CANCEL_REQUESTED` [TARGET/FUTURE] | User yêu cầu huỷ — đang chờ graceful shutdown |
-| `CANCELLED` | Đã huỷ hoàn toàn |
-
-**Quy tắc STALE**: Khi user thay đổi `sourceLanguage` sau khi STT đã COMPLETED → Stage STT được rerun;
-các Stage `TRANSLATE`/`TTS` (nếu đã COMPLETED trước đó) → chuyển `STALE`, yêu cầu rerun. |
-
-
----
-
-## 8. Quyết định thiết kế (Design Decisions)
-
-| Quyết định | Lý do |
-| --- | --- |
-| Tách `script` và `scene selection` nhưng gộp ở `align` | Đảm bảo giọng ↔ cảnh đồng bộ từ **cùng một biên thời gian** |
-| TTS trả `durationSec` chính xác | Làm Input cho `align`, tránh đoán thời lượng |
-| Burn-in sub mới thay vì mask hardsub | Đơn giản hóa pipeline, giảm thời gian render, không cần OCR |
-| StylePreset lưu DB (không hardcode) | Thêm/sửa phong cách dịch không phải deploy lại code |
-| Job idempotent + DB mirror | Quan sát & tiếp tục từ stage lỗi |
-| [TARGET/FUTURE] Monorepo pnpm | Chia sẻ type/Zod giữa web & api, build nhất quán |
-| [TARGET/FUTURE] BullMQ Flow Producer cho `dub.merge` | Barrier an toàn qua restart, thay vì `Promise.all` phía API (dễ mất trạng thái) |
-| Job huỷ được (cancel) | Tránh lãng phí tài nguyên GPU/CPU khi user đổi ý giữa pipeline dài |
-| Thông báo qua email/push, không chỉ SSE | Pipeline SUMMARY có thể chạy 20–30 phút, user không nhất thiết giữ tab mở |
-| Rate Limiter + Cache bọc mọi provider thật | Free-tier API key (Gemini/OpenAI/ElevenLabs...) có RPM/RPD rất thấp; không throttle chủ động sẽ vỡ pipeline liên tục khi test nhiều lần (`11`) |
-| SSE thay vì WebSocket cho progress | Pipeline chỉ cần server push 1 chiều; SSE đơn giản hơn, không cần quản lý connection state |
-| Idempotent callback từ Worker | Tránh xử lý lại khi worker gửi duplicate callback (do network timeout) |
-| Graceful cancellation | Stage `PENDING` → `CANCELLED` ngay; Stage `PROCESSING` → đợi provider hoặc timeout 60s |
-| [NOT IMPLEMENTED] Media Consent versioned | Khi Terms version thay đổi → cần re-consent; asset cũ vẫn dùng được cho Jobs đang chạy |
+1. **Stale Project Recovery**: Khi máy chủ khởi động lại, `recoverStaleProjects()` quét toàn bộ dự án kẹt ở trạng thái `running` và chuyển về `queued` để chạy tiếp từ `firstRunnableStage`.
+2. **Durable Cleanup Tasks**: Các tác vụ dọn dẹp ổ đĩa sau khi xóa dự án được lưu vào bảng `project_cleanup_tasks` (outbox pattern), đảm bảo file luôn được dọn ngay cả khi Redis gián đoạn.
+3. **Optimistic Concurrency**: Mọi sửa đổi transcript hoặc mask APPROVED đều tăng `projects.transcript_version`. Các video output gắn kèm `transcript_version` thời điểm render; nếu version lệch, API và giao diện đánh dấu `outputStale: true` để cảnh báo cần render lại.
+4. **Graceful Cancellation**: `POST /projects/:id/cancel` kích hoạt `AbortController`, dừng các stage đang chờ hoặc đang chạy, dọn dẹp thư mục tạm và cập nhật trạng thái `cancelled`.

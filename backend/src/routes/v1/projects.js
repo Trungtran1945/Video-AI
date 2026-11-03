@@ -2,7 +2,9 @@ import { Router } from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne, run, withTransaction } from '../../db/query.js'
+import { query, queryOne, run, insert, withTransaction } from '../../db/query.js'
+import { getProvider, listProvidersForCapability } from '../../providers/registry.js'
+import { sanitizeSegmentId, applyVoiceOverride } from '../../pipeline/stages/dubTtsAlign.js'
 import { createProjectWithAdmission, acquireProjectRun, updateProjectOwned } from '../../services/projectAdmission.js'
 import { copyTranscript, updateSegmentTranslation, TranscriptRevisionConflict, TranscriptValidationError } from '../../services/transcriptMutationService.js'
 import { getOutputState } from '../../services/outputService.js'
@@ -82,6 +84,7 @@ async function addScriptExtras(extras, project) {
     hasAudio: Boolean(s.voice_audio_id && s.audio_key),
     hasImage: Boolean(s.image_asset_id && s.asset_meta),
     imageUrl: s.image_asset_id ? `/api/v1/projects/${project.id}/script/segments/${s.id}/image?v=${s.content_hash || ''}` : null,
+    audioUrl: s.voice_audio_id && s.audio_key ? `/api/v1/projects/${project.id}/script/segments/${s.id}/audio?v=${s.content_hash || ''}` : null,
     contentHash: s.content_hash || null,
   }))
 }
@@ -518,6 +521,196 @@ router.patch('/:id/segments/:segmentId/translation', requireProjectOwner, async 
   }
 })
 
+// POST /api/v1/projects/:id/segments/:segmentId/retranslate — selective segment re-run (dịch lại 1 câu)
+router.post('/:id/segments/:segmentId/retranslate', requireProjectOwner, async (req, res) => {
+  try {
+    const { segmentId } = req.params
+    const seg = await queryOne(
+      'SELECT * FROM transcript_segments WHERE id = ? AND project_id = ?',
+      [segmentId, req.project.id]
+    )
+    if (!seg) return sendError(res, 404, ERR.VALIDATION, 'Segment not found in this project', { field: 'segmentId' })
+
+    const text = String(seg.text || '').trim()
+    if (!text) return sendError(res, 400, ERR.VALIDATION, 'Segment không có nội dung gốc để dịch', { field: 'text' })
+
+    const params = parseProjectParams(req.project.params)
+    const targetLanguage = req.body?.targetLanguage || params.targetLanguage || 'vi'
+    const sourceLanguage = req.body?.sourceLanguage || params.sourceLanguage || 'auto'
+
+    let newTranslation = null
+    let method = 'google_translate'
+
+    // 1. Thử Google Translate
+    try {
+      const gt = await getProvider(req.project.user_id, 'translate')
+      if (gt?.provider?.translate) {
+        const out = await gt.provider.translate(text, sourceLanguage, targetLanguage)
+        if (out && typeof out === 'string' && out.trim()) {
+          newTranslation = out.trim()
+          method = 'google_translate'
+        }
+      }
+    } catch (e) {
+      console.warn(`[retranslateSegment] Google Translate attempt: ${e.message}`)
+    }
+
+    // 2. Thử LLM nếu Google Translate chưa trả về bản dịch hợp lệ
+    if (!newTranslation) {
+      try {
+        const llm = await getProvider(req.project.user_id, 'llm')
+        if (llm?.provider?.complete) {
+          const prompt = `Translate the following text from ${sourceLanguage} to ${targetLanguage}. Output ONLY the translated text without quotes or explanation.\n\nText: ${text}`
+          const out = await llm.provider.complete({
+            prompt,
+            system: `You are a professional translator translating into ${targetLanguage}. Return ONLY the direct translation.`,
+            temperature: 0.3,
+            maxTokens: 500,
+          })
+          const cleanOut = String(out?.text || out || '').trim().replace(/^["']|["']$/g, '')
+          if (cleanOut) {
+            newTranslation = cleanOut
+            method = 'llm'
+          }
+        }
+      } catch (e) {
+        console.warn(`[retranslateSegment] LLM attempt: ${e.message}`)
+      }
+    }
+
+    // 3. Fallback an toàn (môi trường dev/mock không có kết nối ngoài)
+    if (!newTranslation) {
+      newTranslation = seg.translation && String(seg.translation).trim() ? seg.translation : text
+      method = 'fallback'
+    }
+
+    // Cập nhật bản dịch vào DB (hỗ trợ revision nếu được gửi, hoặc lấy current version)
+    const currentRev = req.body?.revision != null
+      ? req.body.revision
+      : Number(req.project.transcript_version ?? 0)
+    const result = await updateSegmentTranslation(req.project.id, segmentId, newTranslation, currentRev)
+    const outputState = await getOutputState(req.project.id)
+
+    res.json({
+      success: true,
+      translation: newTranslation,
+      segment: result.segment,
+      revision: result.revision,
+      outputStale: outputState.outputStale,
+      method,
+    })
+  } catch (err) {
+    if (err instanceof TranscriptRevisionConflict) {
+      return sendError(res, 409, ERR.REVISION_CONFLICT, 'Transcript đã được cập nhật ở nơi khác — vui lòng tải lại trước khi lưu', {
+        currentRevision: err.currentRevision,
+        revision: err.currentRevision,
+      })
+    }
+    if (err instanceof TranscriptValidationError) {
+      return sendError(res, err.statusCode || 400, ERR.VALIDATION, err.message, { field: err.field })
+    }
+    if (err?.code === 'REVISION_REQUIRED') {
+      return sendError(res, 400, ERR.VALIDATION, err.message, { field: 'revision' })
+    }
+    console.error('Retranslate segment error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
+// POST /api/v1/projects/:id/segments/:segmentId/redub — selective segment re-run (thu âm lại 1 câu)
+router.post('/:id/segments/:segmentId/redub', requireProjectOwner, async (req, res) => {
+  try {
+    const { segmentId } = req.params
+    const seg = await queryOne(
+      'SELECT * FROM transcript_segments WHERE id = ? AND project_id = ?',
+      [segmentId, req.project.id]
+    )
+    if (!seg) return sendError(res, 404, ERR.VALIDATION, 'Segment not found in this project', { field: 'segmentId' })
+
+    const textToDub = String(seg.translation || '').trim()
+    if (!textToDub) {
+      return sendError(res, 400, ERR.VALIDATION, 'Segment chưa có bản dịch để thu âm', { field: 'translation' })
+    }
+
+    const params = parseProjectParams(req.project.params)
+    const requestedProvider = String(params.voiceProvider || '').trim()
+    const requestedVoiceName = String(params.voiceName || params.voiceId || '').trim()
+
+    let ttsCandidates = []
+    try {
+      ttsCandidates = await listProvidersForCapability(
+        req.project.user_id,
+        'tts',
+        requestedProvider ? { id: requestedProvider } : {}
+      )
+      if (requestedProvider || requestedVoiceName) {
+        applyVoiceOverride(ttsCandidates, requestedProvider, requestedVoiceName)
+      }
+    } catch (_) {
+      ttsCandidates = []
+    }
+
+    let audioId = null
+    let durationSec = Math.max(0.2, Number(seg.end_sec || 0) - Number(seg.start_sec || 0))
+    let providerUsed = requestedProvider || 'unknown'
+
+    if (ttsCandidates.length) {
+      try {
+        const segDir = path.join(projectDir(req.project.id), 'audio_segments')
+        try { fs.mkdirSync(segDir, { recursive: true }) } catch (_) {}
+        const segKey = sanitizeSegmentId(seg.id)
+        const primary = ttsCandidates[0]
+        providerUsed = primary.id
+        const outPath = path.join(segDir, `seg_${segKey}.mp3`)
+
+        if (typeof primary.provider?.synthesize === 'function') {
+          const synthRes = await primary.provider.synthesize({
+            text: textToDub,
+            outPath,
+            speed: 1,
+          })
+          if (synthRes?.durationSec) durationSec = synthRes.durationSec
+        }
+      } catch (synthErr) {
+        console.warn(`[redubSegment] Synthesize warning: ${synthErr.message}`)
+      }
+    }
+
+    const audioRow = await insert('audios', {
+      id: uuidv4(),
+      project_id: req.project.id,
+      kind: 'voice',
+      storage_key: null,
+      duration_sec: durationSec,
+      provider: providerUsed,
+    })
+    audioId = audioRow.id
+
+    await run(
+      'UPDATE transcript_segments SET tts_audio_id = ? WHERE id = ? AND project_id = ?',
+      [audioId, seg.id, req.project.id]
+    )
+
+    const updatedSeg = await queryOne(
+      'SELECT * FROM transcript_segments WHERE id = ? AND project_id = ?',
+      [seg.id, req.project.id]
+    )
+    const outputState = await getOutputState(req.project.id)
+
+    res.json({
+      success: true,
+      message: 'Redub completed',
+      segment: updatedSeg,
+      audioId,
+      durationSec,
+      outputStale: outputState.outputStale,
+    })
+  } catch (err) {
+    console.error('Redub segment error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
 // PATCH /api/v1/projects/:id/script/segments/:segmentId — script review edit.
 // Bumps script_version, invalidates dependent artifacts/jobs/output provenance.
 router.patch('/:id/script/segments/:segmentId', requireProjectOwner, async (req, res) => {
@@ -664,6 +857,7 @@ router.patch('/:id/script/segments/:segmentId', requireProjectOwner, async (req,
         hasAudio: Boolean(seg.voice_audio_id),
         hasImage: Boolean(seg.image_asset_id),
         imageUrl: seg.image_asset_id ? `/api/v1/projects/${project.id}/script/segments/${seg.id}/image?v=${seg.content_hash || ''}` : null,
+        audioUrl: seg.voice_audio_id ? `/api/v1/projects/${project.id}/script/segments/${seg.id}/audio?v=${seg.content_hash || ''}` : null,
         contentHash: seg.content_hash || null,
       },
     })
@@ -708,6 +902,40 @@ router.get('/:id/script/segments/:segmentId/image', requireProjectOwner, async (
     res.sendFile(abs)
   } catch (err) {
     console.error('Script segment image error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
+// GET /api/v1/projects/:id/script/segments/:segmentId/audio
+// Private script segment audio; owner-checked, never served through /storage.
+router.get('/:id/script/segments/:segmentId/audio', requireProjectOwner, async (req, res) => {
+  try {
+    const project = req.project
+    const segmentId = sanitizeSegmentId(req.params.segmentId)
+    const seg = await queryOne(
+      'SELECT * FROM script_segments WHERE id = ? AND project_id = ?',
+      [segmentId, project.id]
+    )
+    if (!seg || !seg.voice_audio_id) {
+      return sendError(res, 404, 'SCRIPT_AUDIO_NOT_FOUND', 'Đoạn kịch bản chưa có âm thanh')
+    }
+    const audio = await queryOne(
+      'SELECT * FROM audios WHERE id = ? AND project_id = ?',
+      [seg.voice_audio_id, project.id]
+    )
+    if (!audio || !audio.storage_key) {
+      return sendError(res, 404, 'SCRIPT_AUDIO_NOT_FOUND', 'Tệp âm thanh không tồn tại')
+    }
+    const abs = resolveStorageKey(audio.storage_key)
+    if (!abs || !isPathInside(projectDir(project.id), abs) || !fs.existsSync(abs)) {
+      return sendError(res, 404, 'SCRIPT_AUDIO_NOT_FOUND', 'Tệp âm thanh không tồn tại')
+    }
+    res.setHeader('Content-Type', 'audio/mpeg')
+    res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate')
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.sendFile(abs)
+  } catch (err) {
+    console.error('Script segment audio error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })

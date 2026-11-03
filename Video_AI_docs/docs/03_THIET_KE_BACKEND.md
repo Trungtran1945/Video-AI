@@ -1,317 +1,129 @@
 # 03 — Thiết kế Backend
 
-> **Lưu ý Triển khai:** Thiết kế target dùng TypeScript strict + `apps/api/`.
-> Triển khai hiện tại dùng JavaScript (ES modules) + `backend/` với sql.js thay vì Prisma.
+> **Lưu ý Triển khai:** Thiết kế target hướng tới TypeScript strict + `apps/api/`.
+> Triển khai hiện tại dùng JavaScript (ES modules) trong `backend/` với `sql.js` (SQLite in-memory + file persistence) thay vì Prisma.
 
-Backend (`apps/api`) là Express + TypeScript (strict), tổ chức theo **Clean Architecture** và
-**Dependency Injection**. Mọi logic nghiệp vụ nằm ở `packages/core`; API chỉ là lớp biên (boundary).
+Backend là ứng dụng Node.js (>=18 ESM) Express, tổ chức theo nguyên tắc **Clean Architecture** và **Provider Pattern**.
 
 ---
 
-## 1. Cấu trúc thư mục `apps/api`
+## 1. Cấu trúc thư mục thực tế (`backend/src/`)
 
 ```
-apps/api/
+backend/
+├── scripts/                  # check-redis.mjs, run-tests.mjs, dev.mjs, zerotts_service.py
 ├── src/
-│   ├── index.ts              # bootstrap: load env, DI, swagger, listen
-│   ├── container.ts          # DI registry (provider, db, storage, queue)
-│   ├── middlewares/
-│   │   ├── auth.ts           # JWT verify + role
-│   │   ├── validate.ts       # Zod guard
-│   │   └── error.ts           # centralized error
-│   ├── controllers/
-│   │   ├── auth.controller.ts
-│   │   ├── project.controller.ts
-│   │   ├── output.controller.ts
-│   │   ├── queue.controller.ts
-│   │   └── admin.controller.ts
-│   ├── routes/               # gắn controller + middleware
-│   └── lib/                  # pino logger, swagger setup
-├── Dockerfile
+│   ├── config.js             # Quản lý biến môi trường tập trung, CORS origin allowlist
+│   ├── db.js                 # sql.js wrapper, atomic snapshot, single-writer lock, persistence health
+│   ├── db/
+│   │   ├── schema.js         # Khởi tạo 29 bảng SQLite (DDL)
+│   │   ├── seed.js           # Dữ liệu khởi tạo (Admin, Settings, 13 StylePresets, RateLimits)
+│   │   └── query.js          # Hàng đợi tuần tự hoá truy vấn ghi, query/queryOne/run
+│   ├── lib/                  # httpError, safePath, callProvider, providerFailover, rateLimiter
+│   ├── media/                # ffmpeg.js (serialize Windows process), mediaService.js
+│   ├── middleware/           # auth, projectAccess, safeMediaStatic, sseAuth
+│   ├── pipeline/             # runner.js (3 mode), context.js, forcedAlignService.js, eventBus.js
+│   │   └── stages/           # dub* (7 stages), summary* (8 stages), script* (7 stages)
+│   ├── providers/            # registry.js, tracked.js, rateLimit.js
+│   │   ├── asr/              # openaiWhisper.js, mockAsr.js
+│   │   ├── image/            # slideImage.js
+│   │   ├── llm/              # gemini.js, openai.js, mockLlm.js
+│   │   ├── translate/        # googleTranslate.js
+│   │   ├── tts/              # edgeTts.js, elevenlabs.js, googleTts.js, openaiTts.js, zeroTts.js, mockTts.js
+│   │   └── vision/           # geminiVision.js, mockVision.js
+│   ├── queue/                # BullMQ queues & workers (projectQueue, notifyQueue, cleanupQueue, drainQueue)
+│   ├── routes/v1/            # Các route API REST v1
+│   ├── services/             # resumableUpload, scriptService, projectAdmission, quotaGuard, zeroTtsSupervisor...
+│   └── usecases/             # confirmPreviewUseCase, cancelProjectUseCase
+├── server.js                 # Điểm khởi chạy Express server, health check, recovery at boot
 └── package.json
 ```
 
 ---
 
-## 2. Dependency Injection
+## 2. Dependency Injection & Provider Pattern
 
-Dùng container nhẹ (vd `tsyringe` hoặc tự viết `Map`). Ví dụ:
+Tất cả các dịch vụ AI và phương thức ngoại vi được trừu tượng hóa và đăng ký tập trung qua `backend/src/providers/registry.js`.
 
-```ts
-// apps/api/container.ts
-import { TtsProvider } from '@asf/providers/tts';
-import { ElevenLabsTts } from '@asf/providers/tts/elevenlabs';
-import { GoogleTts } from '@asf/providers/tts/google';
-
-export const container = new Container();
-container.register('tts', 'elevenlabs', () => new ElevenLabsTts());
-container.register('tts', 'google', () => new GoogleTts());
-
-// core use-case chỉ biết interface
-export function resolveTts(id: string): TtsProvider {
-  return container.resolve('tts', id);
-}
-```
-
-Use-case gọi `resolveTts(settings.voiceProvider)` → **không biết** implementation cụ thể.
+- Mọi lời gọi AI đều đi qua `callProvider()` (`backend/src/lib/callProvider.js`), tự động áp dụng:
+  1. **Rate Limiting** (Token Bucket + Sliding Window).
+  2. **Provider Cache** (bộ nhớ đệm SHA-256 đầu vào, TTL 90 ngày).
+  3. **Tracking & Observability** (ghi log cuộc gọi vào `provider_logs`).
+  4. **Failover** (`withProviderFailover`): Tự động chuyển đổi provider dự phòng khi gặp lỗi.
 
 ---
 
-## 3. Use-cases (Application layer — `packages/core`)
+## 3. Các Luồng Pipeline (Application Layer — `runner.js`)
 
-- `CreateProjectUseCase` — validate, lưu Project, enqueue stage đầu.
-- `SummaryPipeline` — điều phối các stage SUMMARY (gọi provider qua interface).
-- `TranslateDubPipeline` [CURRENT] — chạy sequential theo `STAGES.TRANSLATE_DUB`
-  (`backend/src/pipeline/runner.js:111-129`):
-  `[dub.ingest, dub.stt, dub.merge, dub.translate, dub.mask, dub.ttsAlign, dub.render]`.
-  Pipeline là STT-only: toàn bộ legacy OCR (`dubOcr.js`, `tesseractOcr.js`, thư viện `tesseract.js`,
-  cờ `ocrMode`) đã bị gỡ bỏ hoàn toàn khỏi codebase; phụ đề được render mặc định ở đáy khung hình (`\an2`).
-  Dữ liệu OCR cũ nếu còn trong DB được cô lập với `source = 'LEGACY_OCR'`.
-  Stage `dub.mask` (vision) chạy sau `dub.translate` và trước `dub.ttsAlign`/`dub.render`:
-  sample ≤8 frame → `vision.detectSubtitle` → hợp nhất 1 bbox tĩnh (`ocr_regions`
-  `source='AUTO'`, `status='APPROVED'`, `start_sec=0`, `end_sec=duration`) để che
-  hardsub gốc xuyên suốt video; `dub.render` burn mask trước rồi mới burn ASS dịch
-  nên phụ đề dịch luôn visible trên lớp che.
-- `AlignService` — thuật toán đồng bộ giọng ↔ cảnh của SUMMARY (xem `05`).
-- `ForcedAlignService` — ép khớp thời lượng TTS vào slot timestamp gốc của TRANSLATE_DUB
-  (tempo stretching / chèn lặng / pause expansion / rút gọn câu).
-  - **Tốc độ tự nhiên (TEMPO_MAX = 1.35)**: Tốc độ co dãn tối đa chặn ở 1.35x (thay vì 1.20) để giữ pitch tự nhiên, không biến giọng đọc thành sóc chuột.
-  - **Pause-expansion**: Dòng phụ đề sở hữu slot của nó + khoảng lặng (pause) trước câu tiếp theo (chừa buffer 60ms an toàn) để không bị ép tốc độ giả hoặc rút gọn oan uổng.
-  - **Silence trimming**: Dùng FFmpeg `silenceremove` cắt 100-300ms im lặng thừa do provider sinh ra trước/sau giọng đọc trước khi đo đạc và căn chỉnh duration.
-  - **Overlap Detection**: Khi người dùng điều chỉnh `startSec`/`endSec` của segment N, hệ thống kiểm tra
-    và xử lý theo **một quy tắc thống nhất**:
-    1. Validate trước: `endSec` của segment N-1 phải ≤ `startSec` của segment N (cho phép khoảng lặng
-       hợp lý ≥ 0.1s). Nếu vi phạm với segment N-1 → **từ chối** request, trả lỗi `VAL_002`
-       (segment trước là "quá khứ", không được tự ý đẩy lùi vì có thể phá đồng bộ đã xác nhận).
-    2. Với segment N+1 trở về sau (chưa được user xác nhận thủ công, `isTimeManuallyAdjusted=false`):
-       hệ thống **tự động đẩy** `startSec`/`endSec` của các segment liền sau theo đúng độ lệch, miễn
-       không vượt slot của segment kế tiếp đó — trả về danh sách segment bị ảnh hưởng trong response
-       để UI hiển thị rõ (`{ adjustedSegments: [...] }`).
-    3. Nếu segment kế tiếp **đã** được user tự chỉnh tay (`isTimeManuallyAdjusted=true`) và việc đẩy
-       sẽ đè lên nó → từ chối request với `VAL_002`, yêu cầu user tự giải quyết xung đột thủ công.
-    
-  - **CPS Validation (Characters Per Second)**: Trước khi render, tính `CPS = length(translation) / (endSec - startSec)`. Nếu `CPS > 25` và `isTimeManuallyAdjusted == true`, trả về warning trong `GenerationJob.result`:
-    ```json
-    { "warnings": [{ "segmentId": "...", "type": "reading_speed", "cps": 32.5, "threshold": 25 }] }
-    ```
-- `SubtitleMaskService` [CURRENT] — quản lý mask qua bảng `ocr_regions` với lifecycle: `DRAFT`, `APPROVED`, `DISABLED`.
-  - **Mask tự động `dub.mask`**: 1 row `source='AUTO'`/`APPROVED` tĩnh (`start_sec=0`,
-    `end_sec=duration`, `is_static=1`) do pipeline ghi trực tiếp (không qua REST, không bump
-    `transcript_version`); read-only trên API (PATCH/DELETE → 400, muốn chỉnh phải "Nhân bản tay");
-    rerun từ `dub.mask` thay thế row cũ, MANUAL giữ nguyên.
-  - **Bất biến APPROVED**: Mask `APPROVED` bị khoá chỉnh sửa hình học/thị giác (HTTP 409 `MASK_APPROVED_IMMUTABLE`). Muốn sửa toạ độ phải chuyển về `DRAFT`.
-  - **Render an toàn**: `dubRender` chỉ render mask `APPROVED`. Trả lỗi rõ ràng `BLOCK_RENDER: MASK_DATA_UNAVAILABLE` khi DB fail và `BLOCK_RENDER: MASK_INVALID` khi toạ độ/thời gian sai lệch.
-  - **Đồng bộ Stale**: Mọi thao tác tạo/sửa/xoá mask APPROVED/DRAFT đều tăng `projects.transcript_version` để kích hoạt cờ `outputStale: true`.
-- `RenderService` — gọi `backend/src/media/mediaService.js` sinh video (hỗ trợ dynamic sidechain ducking −12dB khi có giọng nói và hồi phục âm lượng đầy đủ khi ngắt nghỉ).
-- `Regenerate / Rerun by Stage` [CURRENT] — `POST /projects/:id/regenerate` hỗ trợ tham số `{ fromStage?: string }` cho phép chạy lại từ stage chỉ định (TRANSLATE_DUB: `dub.translate`, `dub.mask`, `dub.ttsAlign`, `dub.render`; SUMMARY: `summary.script`, `summary.tts`, `summary.render`), validate theo `stagesForProject(project)`. Chạy lại từ `dub.translate` sẽ làm mới vùng che tự động (`dub.mask` chạy lại sau).
-- `CancelProjectUseCase` [CURRENT] — huỷ job `pending`/`running` của 1 project
-  (`backend/src/usecases/cancelProjectUseCase.js`): đặt `projects.status = 'cancelled'`
-  (không `failed`), `generation_jobs` liên quan → `'cancelled'`, abort pipeline đang
-  chạy, dọn file tạm, notify best-effort qua `notifyQueue` (bỏ qua khi Redis down).
-  Idempotent: project đã `completed`/`failed`/`cancelled` → trả trạng thái hiện tại.
-  [TARGET] BullMQ `job.remove()` + cờ `cancelled` cho worker (xem `01` §5.2) là thiết
-  kế tương lai.
-- **Giới hạn concurrency (NFR-12)**: `CreateProjectUseCase` kiểm tra
-  `count(Project where userId=X and status='RUNNING') < MAX_CONCURRENT_PROJECTS` (mặc định 2,
-  cấu hình qua env `MAX_CONCURRENT_PROJECTS_PER_USER`) trước khi enqueue stage đầu; vượt ngưỡng →
-  Project tạo với `status=QUEUED`, một cron/worker nhẹ định kỳ quét và enqueue project `QUEUED`
-  cũ nhất khi có slot trống.
-- `QuotaGuardService` — kiểm tra mức dùng provider trước khi enqueue các stage tốn nhiều request
-  (`analyze`, `tts`, `ttsAlign`, `translate`, `ocr`); cảnh báo sớm khi gần chạm giới hạn free tier.
-  Chi tiết thuật toán, `RateLimiter` (Token Bucket + Sliding Window), `ProviderCache` và đa key
-  round-robin nằm ở `11_RATE_LIMIT_VA_FREE_TIER.md` — **bắt buộc đọc trước khi cài đặt bất kỳ
-  provider client nào**, vì mọi lời gọi provider thật phải đi qua các lớp bọc này thay vì gọi SDK
-  trực tiếp.
+`backend/src/pipeline/runner.js` điều phối 3 pipeline theo chế độ:
 
-Ví dụ controller mỏng:
-
-```ts
-// project.controller.ts
-export async function startSummary(req: Req, res: Res) {
-  const uc = container.resolve(CreateProjectUseCase);
-  const project = await uc.execute({ ...req.body, mode: 'SUMMARY', userId: req.user.id });
-  await enqueueSummary(project.id);
-  res.status(202).json(project);
-}
-
-export async function startTranslateDub(req: Req, res: Res) {
-  const uc = container.resolve(CreateProjectUseCase);
-  const project = await uc.execute({ ...req.body, mode: 'TRANSLATE_DUB', userId: req.user.id });
-  await Promise.all([enqueueDubStt(project.id), enqueueDubOcr(project.id)]); // song song [TARGET]
-  res.status(202).json(project);
-}
+### 3.1. `SUMMARY` (Review phim & Video tóm tắt)
+Gồm 8 công đoạn tuần tự:
 ```
-// [TARGET] — ví dụ trên (enqueue song song 2 job) là thiết kế tương lai. [CURRENT]:
-// `POST /projects` insert project rồi `runPipeline(project.id)` sequential, không
-// BullMQ per-stage (`backend/src/routes/v1/projects.js:186-190`).
+summary.transcribe ➔ summary.sceneDetect ➔ summary.analyze ➔ summary.script ➔ summary.align ➔ summary.tts ➔ summary.subtitle ➔ summary.render
+```
+- **AlignService**: Lấy thời lượng đọc chính xác `durationSec` của lời review từ TTS làm chuẩn, đóng gói các cảnh quay (`scenes`) thành các `timeline_clips` có thời lượng tương ứng (sai lệch < 1s).
+- **FFmpeg Concat & Ducking**: Ghép các clip cảnh, chèn hiệu ứng chuyển cảnh, lồng tiếng review và xuất video MP4.
+
+### 3.2. `TRANSLATE_DUB` (Dịch thuật & Lồng tiếng)
+Gồm 7 công đoạn:
+```
+dub.ingest ➔ dub.stt ➔ dub.merge ➔ dub.translate ➔ dub.mask ➔ dub.ttsAlign ➔ dub.render
+```
+- **STT-Only Extraction**: Trích xuất lời thoại bằng Whisper ASR kèm xử lý overlap stitching 15s giữa các chunk và lọc ảo giác.
+- **TransFlow Multi-Round Translation**: Dịch 3 vòng (Parallel Batch → Rescue Batch → Single Fallback), hỗ trợ 13 StylePresets và kiểm soát rò rỉ CJK.
+- **Subtitle Masking (`dub.mask`)**: Tự động nhận diện khung chứa hardsub bằng Vision hoặc nạp mask người dùng vẽ tay trên Canvas. Mask `APPROVED` là bất biến khi đưa vào render.
+- **Forced Alignment TTS (`dub.ttsAlign`)**: Ép khớp thời lượng giọng lồng tiếng AI vào slot thời gian của câu gốc:
+  - `TEMPO_MAX = 1.35`: Tốc độ co dãn tối đa giữ ở 1.35x để bảo toàn cao độ giọng nói tự nhiên.
+  - **Pause-expansion**: Tận dụng khoảng lặng trước câu kế tiếp (`roomDur = Math.max(slotDur, nextStart - 0.06 - startSec)`) để giọng đọc không bị ép tăng tốc giả.
+  - **Silence trimming**: Dùng FFmpeg `silenceremove` cắt 100-300ms im lặng thừa trước và sau câu thoại.
+- **Dynamic Sidechain Ducking**: Nén nhạc nền -12dB khi có giọng lồng tiếng và phục hồi 100% âm lượng khi im lặng; phụ đề ASS dịch được burn ở đáy khung hình (`\an2`).
+
+### 3.3. `SCRIPT_TO_VIDEO` (Tạo video từ kịch bản)
+Gồm 7 công đoạn:
+```
+script.ingest ➔ script.analyze ➔ script.tts ➔ script.image ➔ script.align ➔ script.subtitle ➔ script.render
+```
+- **Ingest & Integrity**: Kiểm tra tính toàn vẹn của tệp kịch bản `.txt` qua băm SHA-256 (`script_hash`), lưu trữ cục bộ tại `script/source.txt`.
+- **Script Analyze**: Phân tách kịch bản thành các `script_segments` gồm câu thoại thuyết minh và mô tả thị giác (visual prompt). Hỗ trợ fallback phân đoạn ngữ pháp nếu LLM không trả JSON hợp lệ.
+- **Review Gate (`script_review_required = 1`)**: Pipeline tự động dừng lại ở trạng thái `queued` sau bước phân tích để người dùng xem trước và tinh chỉnh kịch bản trước khi sinh media.
+- **TTS & SlideImage**: Sinh audio giọng đọc cho từng phân đoạn và tạo ảnh slide minh họa tương ứng.
+- **Align & Render**: Căn thời lượng ảnh khớp chính xác với giọng đọc và render video MP4 hoàn chỉnh.
 
 ---
 
-## 4. Xác thực & phân quyền (Auth)
+## 4. Các Dịch vụ Cốt lõi (Core Services)
 
-- **Access token** (JWT, 15 phút) + **Refresh token** (JWT, 7 ngày, rotate).
-- Refresh lưu hash trong `User.refreshToken`; mỗi lần refresh phát token mới & thu hồi cũ.
-- Middleware `auth(['ADMIN'])` cho route quản trị.
-- **Mã hoá API key**: `ApiKey.encryptedKey` = AES-256-GCM với khóa từ env `MASTER_KEY`.
-  Khi dùng, giải mã trong memory, không log.
-
-### 4.1. Cookie-first refresh [CURRENT]
-
-- Cookie `refresh_token` là nguồn chính: `HttpOnly`, `Path=/api/v1/auth`, `SameSite=Lax`,
-  `Secure` khi production (`COOKIE_SECURE`, mặc định `true` khi `NODE_ENV=production`).
-  Rotation nguyên tử CAS — mỗi token cũ chỉ success đúng 1 lần.
-- Body `refreshToken` / header `x-refresh-token` là **fallback deprecated** cho client
-  không phải trình duyệt; mỗi lần dùng được đếm trong `GET /health` →
-  `auth.refreshFallback { count, lastAt, deprecated: true, removalTarget: 'v2' }`,
-  sẽ bị gỡ ở **v2**.
-- `POST /auth/refresh` và `POST /auth/logout` có lớp CSRF nhẹ (`cookieCsrf`):
-  chỉ khi request mang cookie `refresh_token` kèm `Origin`/`Referer` cross-origin
-  (ngoài allowlist `CORS_ORIGINS`) mới chặn `403 CSRF_ORIGIN_MISMATCH`. Thiếu cả
-  `Origin`/`Referer` (EventSource/non-browser) cho qua; API project Bearer-only
-  không bị ảnh hưởng (không cookie → `next()`).
-
-### 4.2. Idempotency tạo project [CURRENT]
-
-- `POST /projects` nhận `Idempotency-Key` (1–128 ký tự, PK `(user_id, idem_key)` nên
-  độc lập theo từng user, TTL 7 ngày). Body được hash thành `request_fingerprint`
-  (`services/projectAdmission.js` + `computeProjectFingerprint`): cùng key + cùng
-  fingerprint → replay (`idempotentReplay: true`); cùng key + khác fingerprint →
-  `409 IDEMPOTENCY_KEY_REUSE`.
-
-### 4.3. Admin repair cleanup [CURRENT]
-
-- `DELETE /projects/:id` ghi outbox `project_cleanup_tasks` cùng transaction với DB wipe;
-  admin sửa tay qua `GET /api/v1/admin/cleanup-tasks?status=&limit=` (không bao giờ
-  select `keys_json`) và `POST /api/v1/admin/cleanup-tasks/:id/retry`
-  (chỉ `failed` → `pending`, `UPDATE ... WHERE status='failed'` nên concurrent retry
-  tối đa 1 thắng).
-
-### Roles
-
-| Role | Quyền |
+| Service | Vai trò |
 | --- | --- |
-| GUEST | xem landing, docs |
-| USER | CRUD project của mình, quản lý API key, xem log project mình |
-| ADMIN | xem tất cả project, analytics toàn hệ, quản lý provider global, user |
+| `resumableUploadService.js` | Quản lý tải lên phân đoạn TUS-like (chunk 8MB, limit 2GB), tự phục hồi session khi khởi động lại máy chủ |
+| `scriptService.js` / `scriptUploadService.js` | Chuẩn hoá văn bản kịch bản, chunking, phân đoạn LLM, kiểm tra băm SHA-256 |
+| `projectAdmission.js` | Quản lý quyền sở hữu phiên chạy (`run_token`), lease timeout, kiểm tra giới hạn concurrency (`MAX_CONCURRENT_PROJECTS_PER_USER`) |
+| `transcriptMutationService.js` | Cập nhật câu dịch/thời gian, tự động tăng `transcript_version` và đồng bộ cờ `outputStale` |
+| `quotaGuardService.js` | Kiểm tra giới hạn hạn mức API của các provider trước khi chạy stage, cảnh báo cạn quota |
+| `zeroTtsSupervisor.js` | Quản lý vòng đời sidecar Python ZeroTTS trong môi trường phát triển (`npm run dev`) |
+| `projectCleanup.js` | Quản lý tác vụ dọn dẹp ổ đĩa qua outbox durable tasks (`project_cleanup_tasks`) |
+| `youtubeOAuthService.js` & `youtubePublishService.js` | Xử lý xác thực PKCE OAuth với Google và tải video lên YouTube |
+| `emailService.js` | Gửi email thông báo hoàn thành dự án và mã xác thực OTP qua SMTP Nodemailer |
 
 ---
 
-## 5. Validation (Zod)
+## 5. Cơ sở dữ liệu & Quản lý Trạng thái Lưu trữ (sql.js)
 
-Mọi request qua `validate(schema)`. Schema chia sẻ từ `packages/shared` (web & api dùng chung).
-
-```ts
-// packages/shared/schemas/project.ts
-export const CreateSummarySchema = z.object({
-  title: z.string().min(3),
-  language: z.enum(['vi', 'en', 'ja', 'ko', 'zh']),
-  style: z.string(),
-  targetDurationSec: z.number().int().min(1200).max(1800),
-  params: z.object({ tone: z.string(), spoilerAllowed: z.boolean() }).optional(),
-});
-
-export const CreateTranslateDubSchema = z.object({
-  title: z.string().min(3),
-  sourceLanguage: z.enum(['auto', 'en', 'ja', 'ko', 'zh']).default('auto'),
-  targetLanguage: z.enum(['vi', 'en']).default('vi'),
-  stylePreset: z.string(),            // slug của 1 trong 13 StylePreset
-  enableDubbing: z.boolean().default(false),
-  voiceId: z.string().optional(),     // bắt buộc khi enableDubbing
-  maskMethod: z.enum(['blur', 'fill', 'inpaint']).default('fill'),
-  // ⚠️ inpaint là premium (gọi thêm Vision/Inpainting Provider, chậm & tốn cost);
-  // blur/fill là mặc định nhanh nhẹ (docs/00 FR-T8).
-  maskStrength: z.number().min(0).max(1).default(0.6), // độ mờ: blur radius + độ đục lớp phủ
-  subPosition: z.enum(['original', 'top', 'bottom', 'custom']).default('original'),
-  // 'original' = đè lên vùng mask; 'top'/'bottom' = safe zone; 'custom' = toạ độ riêng
-  sourceVideoKey: z.string(),         // đã upload resumable xong
-});
-// [CURRENT] payload tạo project `POST /projects` nhận `{ mode, title, sourceVideoKey, copyrightAcknowledged, stylePreset, sourceLanguage?, targetLanguage?, enableDubbing?, voiceId?, params? }`.
-// `ocrMode` đã bị gỡ bỏ hoàn toàn; `maskMethod` và `maskStrength` được quản lý trực tiếp qua `MaskEditor` sau khi tạo project.
-
-export const UpdateSegmentTimingSchema = z.object({
-  segmentId: z.string().uuid(),
-  startSec: z.number().min(0),
-  endSec: z.number().min(0),
-}).refine(data => data.endSec > data.startSec, {
-  message: "endSec must be greater than startSec"
-});
-
-export const CreateProjectBaseSchema = z.object({
-  // ... các field theo mode (xem CreateSummarySchema / CreateTranslateDubSchema) +
-  copyrightAcknowledged: z.literal(true, {
-    errorMap: () => ({ message: "Bạn phải xác nhận quyền sử dụng nội dung nguồn trước khi tạo project" }),
-  }),
-});
-```
+- **In-Memory + Disk Atomic Snapshots**: `sql.js` nạp toàn bộ dữ liệu vào RAM để truy vấn siêu nhanh; mọi đột biến ghi được tuần tự hóa qua hàng đợi `query.js` và flush ra tệp `backend/data.db` bằng snapshot atomic.
+- **Single-Writer Lock (`data.db.writer.lock`)**: File lock ghi nhận PID và hostname của tiến trình sở hữu, ngăn chặn hai tiến trình ghi đè làm hỏng database.
+- **Persistence Health Monitoring**:
+  - `HEALTHY`: Quá trình ghi đĩa diễn ra bình thường.
+  - `DEGRADED`: Xuất hiện lỗi ghi đĩa tạm thời nhưng chưa vượt ngưỡng tối đa.
+  - `WRITE_BLOCKED`: Quá số lần ghi lỗi cho phép; máy chủ tự động chặn mọi thao tác ghi mới và endpoint `/ready` trả về HTTP 503 để bảo vệ dữ liệu.
 
 ---
 
-## 6. Logging & quan sát (ProviderLog)
+## 6. Xử lý Lỗi & Khả năng Chịu lỗi (Resilience)
 
-Dùng **Pino** cho app log. Mọi cuộc gọi provider bọc bởi `tracked(provider, type, fn)` —
-**và trước đó** bởi `RateLimiter.acquire()`/`ProviderCache` (xem `11_RATE_LIMIT_VA_FREE_TIER.md` §2.3
-cho lớp `callProvider()` bọc ngoài `tracked()`):
-
-```ts
-export async function tracked<T>(meta: ProviderMeta, fn: () => Promise<T>): Promise<T> {
-  const start = Date.now();
-  try {
-    const r = await fn();
-    await logProvider({ ...meta, status: 'ok', durationMs: Date.now() - start });
-    return r;
-  } catch (e) {
-    const status = isRateLimitError(e) ? 'rate_limited' : 'error'; // phân biệt hết quota tạm thời
-    await logProvider({ ...meta, status, error: String(e), durationMs: Date.now() - start });
-    throw e;
-  }
-}
-```
-
-`logProvider` ghi vào bảng `ProviderLog` (provider, model, tokensIn/Out, costUsd, durationMs, status).
-Giá trị `status='rate_limited'` giúp `QuotaGuardService` và trang `Logs`/`Analytics` phân biệt rõ
-"đang chờ tài nguyên bên ngoài hồi phục" với "lỗi cần sửa code/cấu hình".
-
----
-
-## 7. Xử lý lỗi & idempotency
-
-- Lỗi tập trung tại `error.ts` → format chuẩn `{ error: { code, message } }`.
-  [CURRENT]: `backend/src/lib/httpError.js:sendError` trả `{ message, code, error: { code, message } }`
-  (top-level `message`/`code` giữ song song cho frontend hiện tại).
-- Mỗi job BullMQ có `jobId = `${projectId}:${stage}`` → không chạy trùng. [TARGET]
-- Khi worker crash, BullMQ retry; `GenerationJob` lưu `attempts` & `error`.
-  [CURRENT]: retry/backoff theo `RETRY_POLICY` trong `runner.js:314-319`
-  (`dub.ttsAlign` 3 lần 10s/30s/60s, `dub.render` 2 lần 30s/120s, `dub.stt` 3 lần
-  10s/30s/60s, `dub.translate` 3 lần 5s/15s/30s, `dub.mask` 2 lần 15s/60s); rate-limit park `queued` + `retry`
-  với `next_retry_at` (tối đa 5 lần).
-- [CURRENT] Validation `TRANSLATE_NEEDS_REVIEW` / `BLOCK_RENDER` là lỗi dữ liệu →
-  fail-fast 1 lần, không retry/backoff/park (`isValidationError`, `runner.js:29-36, 400-405`).
-  User sửa tay (`PATCH /projects/:id/segments/:segmentId/translation`) rồi Regenerate/Retry
-  (resume từ stage lỗi earliest qua `firstRunnableStage`).
-- **Riêng lỗi rate-limit/quota** (xem `11` §4.2): job không dùng backoff cố định như lỗi thường —
-  `nextRetryAt` được tính theo `Retry-After` của provider hoặc chu kỳ reset RPM/RPD đã biết trước,
-  và số lần retry cho phép cao hơn (mặc định 5) vì bản chất là chờ tài nguyên hồi phục, không phải
-  lỗi logic cần sửa code.
-
----
-
-## 8. Swagger / OpenAPI
-
-- Định nghĩa schema qua decorator hoặc file YAML sinh tự động.
-- Truy cập `/docs` (swagger-ui). Bao phủ tất cả route (xem `06_API.md`).
-
----
-
-## 9. Quyết định backend
-
-| Quyết định | Lý do |
-| --- | --- |
-| Tách core khỏi api | api chỉ biên; test core dễ (mock provider) |
-| DI thay vì import tĩnh | thêm provider không sửa use-case |
-| Zod ở shared | web & api đồng bộ schema, tránh lệch |
-| AES API key | bảo mật secrets tại rest |
-| Pino thay console | structured log, tốc độ cao |
-| Overlap: từ chối đè lên segment N-1 / segment đã tự chỉnh, tự đẩy segment N+1 chưa chỉnh | Một quy tắc duy nhất, tránh nhập nhằng giữa "tự động sửa" và "báo lỗi" như thiết kế trước |
-| Giới hạn `MAX_CONCURRENT_PROJECTS_PER_USER` | Tránh 1 user chiếm hết worker GPU/CPU khi chưa có hệ thống gói cước (NFR-12) |
-| `copyrightAcknowledged` bắt buộc ở schema tạo project | Ép xác nhận bản quyền ngay tại validation layer, không thể bỏ qua qua client (NFR-14) |
-| Mọi provider client đi qua `callProvider()` (RateLimiter + Cache) | Free-tier API key có RPM/RPD thấp; không throttle chủ động sẽ vỡ pipeline khi test nhiều lần (`11`) |
+1. **Phân loại lỗi**:
+   - **Lỗi Dữ liệu (Validation)**: `TRANSLATE_NEEDS_REVIEW`, `BLOCK_RENDER` — fail-fast ngay lập tức, không retry mù; người dùng chỉnh sửa dữ liệu trên giao diện rồi nhấn Regenerate.
+   - **Lỗi Tạm thời (Transient)**: 503, timeout mạng — retry tự động theo `RETRY_POLICY` với exponential backoff.
+   - **Lỗi Hạn mức (Rate Limit / 429)**: Trích xuất `Retry-After`, đặt trạng thái project là `queued` và hẹn giờ thử lại tại `next_retry_at` (`parkProjectForRetry`).
+2. **Khôi phục phiên chạy dở dang (`recoverStaleProjects`)**: Tự động chuyển các dự án bị kẹt `running` do server crash/restart về `queued` để tiếp tục từ stage dở dang sớm nhất (`firstRunnableStage`).
+3. **Huỷ an toàn (`cancelProjectUseCase`)**: Kích hoạt `AbortController` để ngắt các tiến trình đang thực thi, chuyển trạng thái project sang `cancelled` và thu hồi tài nguyên tạm.

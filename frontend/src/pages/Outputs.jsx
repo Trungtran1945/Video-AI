@@ -8,7 +8,7 @@ import Loading from '@/components/Loading';
 import EmptyState from '@/components/EmptyState';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Film, Play, Youtube, Search, ArrowRight, AlertTriangle, Loader2 } from 'lucide-react';
+import { Film, Play, Youtube, Search, ArrowRight, AlertTriangle, Loader2, ExternalLink, AlertCircle } from 'lucide-react';
 import { formatDate, MODE_LABELS, isCompletedStatus } from '@/lib/constants';
 import { useToast } from '@/components/ui/use-toast';
 
@@ -76,12 +76,34 @@ export default function Outputs() {
       });
       toast({ title: 'Đã gửi yêu cầu xuất bản', description: 'Video đã được xếp hàng tải lên YouTube.' });
       setPublishTarget(null);
+      setOutputs((prev) => prev.map((item) => (
+        item.id === outputId
+          ? { ...item, youtubeUpload: { ...(item.youtubeUpload || {}), status: 'queued', progress: 0 } }
+          : item
+      )));
       // Poll publish status
       const deadline = Date.now() + 120000;
       const poll = async () => {
         try {
           const st = await youtubeApi.getPublishStatus(outputId);
           setYoutubeStatusById((prev) => ({ ...prev, [outputId]: st?.status || 'unknown' }));
+          if (st) {
+            setOutputs((prev) => prev.map((item) => (
+              item.id === outputId
+                ? {
+                    ...item,
+                    youtubeUpload: {
+                      ...(item.youtubeUpload || {}),
+                      status: st.status,
+                      progress: st.progress,
+                      youtubeVideoId: st.youtubeVideoId,
+                      youtubeVideoUrl: st.youtubeVideoUrl,
+                      errorMessage: st.errorMessage,
+                    },
+                  }
+                : item
+            )));
+          }
           const done = ['completed', 'failed', 'cancelled'].includes(st?.status);
           if (!done && Date.now() < deadline) setTimeout(poll, 3000);
         } catch {}
@@ -202,6 +224,13 @@ export default function Outputs() {
                         </span>
                       )}
 
+                      {/* YouTube Published Ribbon / Badge */}
+                      {o.youtubeUpload?.status === 'completed' && (
+                        <span className="absolute top-2 right-2 px-2 py-0.5 rounded bg-red-600/90 text-[10px] font-semibold text-white shadow-xs flex items-center gap-1">
+                          <Youtube className="w-3 h-3" /> YouTube
+                        </span>
+                      )}
+
                       {o.duration_sec && (
                         <span className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded bg-black/75 text-[10px] font-mono font-semibold text-white tracking-wide">
                           {Math.round(o.duration_sec)}s
@@ -224,28 +253,59 @@ export default function Outputs() {
                     </div>
                   </div>
 
-                  <div className="px-4 pb-3.5 pt-2 flex items-center justify-between border-t border-border/50">
+                  <div className="px-4 pb-3.5 pt-2 flex items-center justify-between gap-2 border-t border-border/50">
                     <Link
                       to={`/projects/${projectId}`}
-                      className="text-xs font-semibold text-primary hover:underline flex items-center gap-1 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded"
+                      className="text-xs font-semibold text-primary hover:underline flex items-center gap-1 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded shrink-0"
                     >
                       <span>Chi tiết</span>
                       <ArrowRight className="w-3 h-3" />
                     </Link>
-                    <button
-                      type="button"
-                      disabled={isUploading || ytNotImplemented}
-                      onClick={() => handleUploadYoutube(o)}
-                      title={ytNotImplemented ? 'Tải lên YouTube tự động chưa triển khai — tải file rồi upload thủ công' : youtubeStatusById[o.id] ? `Trạng thái YouTube: ${youtubeStatusById[o.id]}` : 'Tải lên YouTube (riêng tư)'}
-                      className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-red-500 transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded px-1.5 py-0.5 disabled:opacity-50"
-                    >
-                      {isUploading ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin text-red-500" />
-                      ) : (
+
+                    {/* YouTube State & Action */}
+                    {o.youtubeUpload?.status === 'completed' && o.youtubeUpload?.youtubeVideoUrl ? (
+                      <a
+                        href={o.youtubeUpload.youtubeVideoUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-500 hover:text-red-600 transition-colors px-2.5 py-1 rounded-md bg-red-500/10 hover:bg-red-500/15"
+                        title="Xem video trên YouTube"
+                      >
                         <Youtube className="w-3.5 h-3.5 text-red-500" />
-                      )}
-                      <span>{isUploading ? 'Đang gửi...' : ytNotImplemented ? 'YouTube chưa hỗ trợ' : youtubeStatusById[o.id] ? `YouTube: ${youtubeStatusById[o.id]}` : 'Tải lên YouTube'}</span>
-                    </button>
+                        <span>Xem trên YouTube</span>
+                        <ExternalLink className="w-3 h-3 opacity-70" />
+                      </a>
+                    ) : ['queued', 'uploading', 'processing'].includes(o.youtubeUpload?.status) ? (
+                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-500 bg-amber-500/10 px-2 py-1 rounded-md">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-500" />
+                        <span>Đang tải lên... {o.youtubeUpload.progress ? `${o.youtubeUpload.progress}%` : ''}</span>
+                      </span>
+                    ) : o.youtubeUpload?.status === 'failed' ? (
+                      <button
+                        type="button"
+                        onClick={() => handleUploadYoutube(o)}
+                        className="inline-flex items-center gap-1.5 text-xs font-medium text-destructive hover:bg-destructive/10 px-2 py-1 rounded-md transition-colors"
+                        title={o.youtubeUpload.errorMessage || 'Tải lên YouTube thất bại — bấm để thử lại'}
+                      >
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        <span>Thử lại YouTube</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={isUploading || ytNotImplemented}
+                        onClick={() => handleUploadYoutube(o)}
+                        className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-red-500 transition-colors rounded px-1.5 py-0.5 disabled:opacity-50"
+                        title={ytNotImplemented ? 'Tải lên YouTube tự động chưa triển khai — tải file rồi upload thủ công' : youtubeStatusById[o.id] ? `Trạng thái YouTube: ${youtubeStatusById[o.id]}` : 'Tải lên YouTube (riêng tư)'}
+                      >
+                        {isUploading ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-red-500" />
+                        ) : (
+                          <Youtube className="w-3.5 h-3.5 text-red-500" />
+                        )}
+                        <span>{isUploading ? 'Đang gửi...' : ytNotImplemented ? 'YouTube chưa hỗ trợ' : youtubeStatusById[o.id] ? `YouTube: ${youtubeStatusById[o.id]}` : 'Tải lên YouTube'}</span>
+                      </button>
+                    )}
                   </div>
                 </motion.div>
               );

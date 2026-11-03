@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { settingsApi, youtubeApi } from '@/api/extra';
 import Layout from '@/components/Layout';
 import PageHeader from '@/components/PageHeader';
@@ -8,6 +9,16 @@ import { motion } from 'framer-motion';
 import { Save, Loader2, Sliders, Moon, Check, Youtube } from 'lucide-react';
 import { useToast } from '@/components/ui/use-toast';
 
+const YOUTUBE_ERROR_MESSAGES = {
+  oauth_denied: 'Bạn đã từ chối cấp quyền truy cập tài khoản YouTube.',
+  invalid_state: 'Phiên xác thực không hợp lệ hoặc đã hết hạn.',
+  scope_missing: 'Chưa cấp đủ quyền quản lý kênh YouTube.',
+  channel_not_found: 'Không tìm thấy kênh YouTube tương ứng với tài khoản này.',
+  token_exchange_failed: 'Trao đổi token với Google thất bại.',
+  YOUTUBE_NOT_CONFIGURED: 'Hệ thống chưa cấu hình YouTube OAuth credentials.',
+  oauth_failed: 'Kết nối tài khoản YouTube thất bại. Vui lòng thử lại.',
+};
+
 export default function Settings() {
   const [settings, setSettings] = useState(null);
   const [loadError, setLoadError] = useState(null);
@@ -16,6 +27,7 @@ export default function Settings() {
   const [form, setForm] = useState({});
   const [ytAccount, setYtAccount] = useState(null);
   const [ytLoading, setYtLoading] = useState(false);
+  const [searchParams] = useSearchParams();
   const { toast } = useToast();
 
   const load = useCallback(async () => {
@@ -33,6 +45,27 @@ export default function Settings() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    const yt = searchParams.get('youtube');
+    if (!yt) return;
+    if (yt === 'connected') {
+      toast({
+        title: 'Kết nối thành công',
+        description: 'Đã kết nối kênh YouTube thành công!',
+      });
+      youtubeApi.getAccount().then(setYtAccount).catch(() => setYtAccount(null));
+    } else if (yt === 'error') {
+      const reason = searchParams.get('reason');
+      const desc = YOUTUBE_ERROR_MESSAGES[reason] || `Lỗi xác thực: ${reason || 'Không xác định'}`;
+      toast({
+        variant: 'destructive',
+        title: 'Kết nối YouTube thất bại',
+        description: desc,
+      });
+    }
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }, [searchParams, toast]);
 
   const update = (key, val) => setForm(f => ({ ...f, [key]: val }));
 

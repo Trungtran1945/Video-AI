@@ -151,14 +151,14 @@ export async function dubTtsAlign(ctx) {
   const llm = llmCandidates[0] || null
   const segDir = ensureDir(path.join(projectDir(project.id), 'audio_segments'))
 
-  // ZeroTTS đang tải model (503 MODEL_NOT_READY) → chờ bounded thay vì đánh fail
+  // VoiceStudio / Local TTS đang tải model/service → chờ bounded thay vì đánh fail
   // ngay; hết trần thì để failover xử lý (edge_tts/mock).
   const preferred = ttsCandidates[0]
-  if (preferred?.id === 'zerotts' && typeof preferred.provider.waitForReady === 'function') {
+  if ((preferred?.id === 'voicestudio' || preferred?.id === 'zerotts') && typeof preferred.provider?.waitForReady === 'function') {
     setProgress(2)
     const ready = await preferred.provider.waitForReady(undefined, signal)
     if (signal?.aborted) throw new Error('Cancelled')
-    if (!ready) console.warn('[dubTtsAlign] ZeroTTS chưa ready — tiếp tục với failover')
+    if (!ready) console.warn('[dubTtsAlign] VoiceStudio chưa ready — tiếp tục với failover')
   }
   setProgress(3)
 

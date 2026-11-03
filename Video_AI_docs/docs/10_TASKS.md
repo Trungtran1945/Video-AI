@@ -1,51 +1,75 @@
-# Roadmap (Lộ trình triển khai)
+# 10 — Lộ trình Triển khai & Trạng thái Công việc (Roadmap & Tasks)
 
-Dựa trên thiết kế tại [`01_KIEN_TRUC_TONG_THE.md`](01_KIEN_TRUC_TONG_THE.md) và
-[`05_THIET_KE_PIPELINE_CHI_TIET.md`](05_THIET_KE_PIPELINE_CHI_TIET.md).
+Tài liệu theo dõi trạng thái cài đặt thực tế của các tính năng trong dự án Video-AI.
 
-> Quy ước nhãn (đối chiếu code `backend/` + `frontend/`): [DONE] đã cài đặt;
-> [PARTIAL] cài đặt một phần; [NOT IMPLEMENTED] thiết kế chưa cài đặt;
-> [PLANNED] mục tiêu tương lai giữ lại (chưa code).
+> **Quy ước nhãn**:
+> - `[DONE]`: Đã cài đặt hoàn chỉnh và có kiểm thử bảo vệ.
+> - `[PARTIAL]`: Đã cài đặt một phần (hoặc backend đã có nhưng frontend chưa khai thác hết).
+> - `[PLANNED]`: Mục tiêu nâng cấp trong tương lai (Postgres, S3 storage, v.v.).
 
-## Giai đoạn 1 — Nền tảng
-- [NOT IMPLEMENTED] Monorepo pnpm, tsconfig strict, lint/prettier/husky. (CURRENT: JS thuần, npm riêng từng app, không `pnpm-workspace`; lint/typecheck chỉ FE — xem `09` §2.)
-- [NOT IMPLEMENTED] Prisma schema (`02_THIET_KE_CO_SO_DU_LIEU.md`) + migrate SQLite. (CURRENT: schema SQL thuần `backend/src/db/schema.js`, không `prisma/`.)
-- [DONE] Auth JWT access/refresh, RBAC, mã hoá API key. (`routes/v1/auth.js`; OWNER/ADMIN; `MASTER_KEY` AES — xem `06` §1, `08` §3.)
-- [DONE] Storage abstraction (local), Provider Pattern skeleton + DI. (`providers/registry.js` + `callProvider` bọc mọi provider; lưu local `projectDir`/`toStorageKey` — xem `08` §1.)
-- [DONE] Checkbox xác nhận bản quyền bắt buộc khi tạo project (`copyrightAcknowledged`). (`createProjectUseCase.js:13`, `projects.js:43`; thiếu → `COPYRIGHT_001`.)
-- [DONE] Giới hạn concurrency `MAX_CONCURRENT_PROJECTS_PER_USER` + trạng thái `QUEUED`. (`config.js:31` mặc định 2; vượt ngưỡng → `queued` — xem `03` §3, `06` §8 `LIMIT_001`.)
-- [DONE] **RateLimiter (Token Bucket + Sliding Window)** + `ProviderCache` bọc mọi provider client,
-      seed `ProviderRateLimit` mặc định cho free tier (`11_RATE_LIMIT_VA_FREE_TIER.md`). (`lib/rateLimiter.js`, `lib/callProvider.js`, bảng `provider_cache`/`provider_rate_limits`.)
-- [DONE] Provider `mock`/local (LLM, TTS, Vision) cho dev/CI — không tốn quota thật (`11` §6). (`mockAsr`/`mockTts`/`mockLlm`; `DEFAULT_PROVIDER_MODE=mock`.)
+---
 
-## Giai đoạn 2 — Pipeline SUMMARY (review phim)
-- [DONE] ingest + transcribe (ASR). (`summaryTranscribe.js` → `transcript.json`.)
-- [DONE] scene-detect + Vision mô tả cảnh. (`summarySceneDetect.js`, `summaryAnalyze.js` qua `callProvider` vision.)
-- [DONE] LLM sinh kịch bản review (ScriptSegment). (`summaryScript.js`.)
-- [DONE] **AlignService** (đồng bộ giọng ↔ cảnh). (`summaryAlign.js`; invariant ở `09` §5.)
-- [DONE] TTS + subtitle + render (ffmpeg). (`summaryTts.js`, `summarySubtitle.js`, `summaryRender.js`.)
+## Giai đoạn 1 — Nền tảng Kiến trúc Cốt lõi
+- `[DONE]` Hệ thống cơ sở dữ liệu `sql.js` (WebAssembly SQLite) 29 bảng, lưu tệp `backend/data.db`, atomic snapshot memory-disk và single-writer lock (`data.db.writer.lock`).
+- `[DONE]` Hệ thống xác thực JWT (Access token ngắn hạn + HttpOnly cookie `refresh_token` xoay vòng CAS, phân quyền USER / ADMIN).
+- `[DONE]` Quên mật khẩu & xác thực mã OTP qua email (`reset_tokens`, `email_otps`, Nodemailer SMTP).
+- `[DONE]` Kiến trúc Provider Pattern (`backend/src/providers/registry.js`, `callProvider.js`) hỗ trợ LLM, ASR, TTS, Vision, Image.
+- `[DONE]` Cơ chế Rate Limiting (Token Bucket + Sliding Window) theo từng provider/tier + bộ nhớ đệm `provider_cache` băm SHA-256 (TTL 90 ngày).
+- `[DONE]` Provider Mock (`mockAsr`, `mockLlm`, `mockTts`, `mockVision`) hỗ trợ dev/CI hoàn toàn độc lập, không tốn quota API thật.
+- `[DONE]` Kiểm soát giới hạn số dự án chạy đồng thời (`MAX_CONCURRENT_PROJECTS_PER_USER`, mặc định 2 project `running`), xếp hàng `queued` khi vượt ngưỡng.
+- `[DONE]` Bắt buộc xác nhận bản quyền nội dung (`copyrightAcknowledged = true`) trước khi khởi chạy pipeline.
 
-## Giai đoạn 3 — Pipeline TRANSLATE_DUB (dịch & lồng tiếng)
-- [DONE] Upload resumable (chunk 5–10MB, kiểu TUS) + ingest: demux, normalize LUFS. (Chunk 8MB cố định, limit 2GB — `upload.js:43,62`, `06` §2.1; `dubIngest.js` loudnorm −16 LUFS — `07` §2.12.)
-- [DONE] `dub.stt` — ASR + 15s overlap stitching (`buildSttChunks`, `dedupeOverlapSegments`), lọc ảo giác Whisper (`filterHallucinatedSegments`), canonical ASR cache (`buildAsrCacheInput`), diarization `speaker=NULL` ở v1.
-- [REMOVED] `dub.ocr` — Đã gỡ bỏ hoàn toàn khỏi codebase; TRANSLATE_DUB chuyển sang STT-only (`dub.ingest → dub.stt → dub.merge → dub.translate → dub.ttsAlign → dub.render`). Phụ đề neo đáy `\an2`. Dữ liệu OCR cũ cô lập về `source = 'LEGACY_OCR'`.
-- [NOT IMPLEMENTED] BullMQ Flow Producer: `dub.merge` chờ `dub.stt` ‖ `dub.ocr` song song (xem `01` §5.1). (CURRENT chạy sequential `startDubSequential` — `runner.js:70-108`; không FlowProducer.)
-- [DONE] `dub.translate` — LLM context window + 13 StylePreset routing; chiến lược dịch 3 vòng (TransFlow: parallel batch → chunk 5 → single fallback); multi-shape payload parser; gate chặn CJK leakage; tự động sửa ngữ nghĩa (`repairTranslationWithLlm`); `TRANSLATION_VERSION = 4`.
-- [PARTIAL] Bước "Xem trước & Xác nhận" (`POST /projects/:id/translate-dub/confirm-preview`) trước khi
-      render cuối (FR-J2). (BE CURRENT — `confirmPreview.js` + useCase; FE orphan — wrapper `api/projects.js:21` có nhưng `ProjectDetail` không gọi; xem `04` §4.)
-- [DONE] `dub.ttsAlign` — TTS (tuỳ chọn) + ForcedAlignService: `TEMPO_MAX = 1.35` (giữ pitch tự nhiên), pause-expansion mở rộng vào khoảng lặng câu kế, cắt khoảng lặng thừa (`trimAudioSilence`), fade-out đuôi audio clip cắt ngắn.
-- [DONE] Overlap Detection cho chỉnh thời gian thủ công segment (quy tắc thống nhất, xem `03` §3). (`dubData.js:83` `GAP=0.1`; đè N-1/N+1 → 400 `VAL_002`.)
-- [DONE] `dub.render` — Burn-in phụ đề ASS + burn mask `APPROVED` (`loadSubtitleRegions` + `applySubtitleMasks` với blur/solid) + dynamic sidechain ducking (−12dB khi có tiếng nói, thở về 100% khi im lặng) + mux NVENC/libx264.
-- [DONE] SSE progress realtime (`/projects/:id/events?ticket=...`) + `MaskEditor.jsx` Canvas (letterbox-aware, live preview blur/solid, quản lý lifecycle DRAFT/APPROVED/DISABLED, khoá sửa mask APPROVED).
-- [DONE] `POST /projects/:id/cancel` — huỷ pipeline đang chạy (FR-J1). (`cancelProjectUseCase`: job/project → `cancelled`, abort + dọn tmp, idempotent — xem `05` §E.4.)
-- [DONE] `POST /projects/:id/regenerate` — chạy lại pipeline tự động hoặc chọn lọc theo giai đoạn (`fromStage`), giao diện dropdown menu tại `ProjectHeader.jsx`.
+---
 
-## Giai đoạn 4 — Vận hành
-- [DONE] BullMQ worker scale, retry. (Retry thủ công `jobs/:type/retry` + chờ quota `RETRY_WAITING`; worker `notifications`/`cleanup`; scale ngang qua profile `scale` — xem `08` §5.)
-- [DONE] Dashboard (wizard, timeline preview, queue, logs). (FE: `Dashboard`, `CreateProject`, `ProjectDetail`, `Queue`, `Logs`.)
-- [DONE] YouTube upload (kèm cảnh báo bản quyền trước publish), Analytics, Admin. (YouTube là stub — `outputs.js:39-61` ghi `youtube_uploads` `pending`, upload thật chưa gắn; `Analytics.jsx`, `Admin.jsx` có.)
-- [DONE] Notification service (email/push khi pipeline hoàn thành/thất bại — FR-J3). (`notifyQueue` + `notifyWorker` nodemailer SMTP; runner enqueue khi done/fail, cancel cũng enqueue; thiếu SMTP thì skip graceful — `notifyWorker.js:17-20`.)
-- [DONE] Cron `cleanup.sweep` dọn file trung gian/nguồn theo `Project.expiresAt` (NFR-13). (`cleanupQueue` + `cleanupWorker` repeatable — xem `08` §6.1.)
-- [PARTIAL] `QuotaGuardService` + banner cảnh báo `quota_risk` trên UI; đa API key round-robin/cooldown
-      tự động khi dùng free tier (`11` §4, §5). (Guard [DONE một phần] — snapshot/warning + `GET /quota` + `QuotaBar` ở `ApiKeys`; banner toàn cục [PLANNED]; `selectBestApiKey` chết — registry chỉ lấy theo `priority`, không xoay vòng [PLANNED].)
-- [PARTIAL] Docker / CI / production (Postgres, S3). (Docker + CI [DONE] — `08` §1/§2/§4; Postgres/S3 [PLANNED] — CURRENT SQLite file + local.)
+## Giai đoạn 2 — Pipeline SUMMARY (Review phim & Video tóm tắt)
+- `[DONE]` `summary.transcribe`: Tách audio chuẩn 16kHz mono và nhận dạng lời thoại toàn bộ phim qua Whisper ASR.
+- `[DONE]` `summary.sceneDetect`: Shot detection tự động bằng FFmpeg và xuất thumbnail cảnh quay.
+- `[DONE]` `summary.analyze`: Phân tích ngữ nghĩa hình ảnh và bối cảnh các cảnh quay qua Gemini Vision.
+- `[DONE]` `summary.script`: LLM sinh kịch bản review có cấu trúc lời bình (`narration`) và liên kết cảnh (`sceneRefs`).
+- `[DONE]` `summary.align`: Thuật toán AlignService đóng gói các cảnh quay khớp chính xác với thời lượng đọc của TTS (dung sai < 1s).
+- `[DONE]` `summary.tts` & `summary.subtitle`: Tổng hợp giọng đọc thuyết minh và sinh phụ đề ASS/SRT đồng bộ.
+- `[DONE]` `summary.render`: FFmpeg ghép mezzanine, hiệu ứng chuyển cảnh `xfade`, lồng tiếng và kết xuất video MP4 1080p.
+
+---
+
+## Giai đoạn 3 — Pipeline TRANSLATE_DUB (Dịch thuật & Lồng tiếng video)
+- `[DONE]` Tải lên Resumable upload chuẩn TUS-like: Phân đoạn chunk 8MB (giới hạn file 2GB), tự phục hồi session tải lên sau mất mạng hoặc restart máy chủ.
+- `[DONE]` `dub.ingest`: Demux luồng audio/video và chuẩn hóa âm lượng EBU R128 (`loudnorm` -16 LUFS).
+- `[DONE]` `dub.stt`: Whisper ASR trích xuất câu thoại kèm mốc thời gian, xử lý overlap stitching 15s giữa các chunk và lọc ảo giác.
+- `[DONE]` `dub.merge`: Barrier kiểm tra tính toàn vẹn dữ liệu transcript trước khi dịch.
+- `[DONE]` `dub.translate`: Dịch thuật LLM theo 13 StylePresets dựng sẵn, chiến lược 3 vòng (TransFlow) chống mất câu, lọc rò rỉ chữ Hán CJK và tự sửa lỗi ngữ nghĩa.
+- `[DONE]` `dub.mask`: Tự động phát hiện khung chứa hardsub bằng Vision hoặc nhận diện mask người dùng; lưu vào `ocr_regions` với lifecycle `DRAFT`, `APPROVED`, `DISABLED`.
+- `[DONE]` `dub.ttsAlign`: TTS lồng tiếng + Forced Alignment:
+  - Khống chế tốc độ co dãn `TEMPO_MAX = 1.35` để bảo toàn cao độ giọng nói tự nhiên.
+  - Mở rộng pause-expansion vào khoảng lặng câu kế tiếp để giữ tempo tự nhiên 1.0x.
+  - Cắt khoảng lặng thừa đầu/cuối bằng `silenceremove`.
+- `[DONE]` `dub.render`: Burn mask `APPROVED` (boxblur/drawbox) + Burn phụ đề ASS neo đáy (`\an2`) + Dynamic Sidechain Ducking (-12dB khi có giọng nói) + Mux MP4 NVENC/x264.
+- `[DONE]` Trình chỉnh sửa phụ đề song ngữ (Bilingual Transcript Editor) với optimistic concurrency (`transcript_version`), audio preview và nút Lồng tiếng lại (`Redub`).
+- `[DONE]` Trình vẽ vùng che hardsub `MaskEditor.jsx` trên Canvas với cơ chế khoá sửa mask APPROVED (`MASK_APPROVED_IMMUTABLE`).
+
+---
+
+## Giai đoạn 4 — Pipeline SCRIPT_TO_VIDEO (Tạo video từ kịch bản)
+- `[DONE]` Tải lên kịch bản qua `POST /api/v1/script-uploads` (tệp `.txt` hoặc paste văn bản, kiểm tra băm SHA-256).
+- `[DONE]` `script.ingest`: Chuẩn hóa văn bản, đếm ký tự và lưu trữ kịch bản nguồn an toàn.
+- `[DONE]` `script.analyze`: LLM phân đoạn kịch bản thành `script_segments` (lời đọc + visual prompt), có fallback quy tắc ngữ pháp xác định.
+- `[DONE]` Review Gate: Dự án tự động tạm dừng tại `script_review_required = 1` để người dùng duyệt và sửa phân đoạn kịch bản trên giao diện trước khi sinh media.
+- `[DONE]` `script.tts`: Sinh audio giọng đọc thuyết minh AI cho từng phân đoạn kịch bản.
+- `[DONE]` `script.image`: Sinh hình ảnh slide minh họa qua `slideImage.js` theo tỷ lệ `16:9` hoặc `9:16`.
+- `[DONE]` `script.align`: Căn chỉnh thời lượng hình ảnh slide khớp chính xác với thời lượng đọc của audio.
+- `[DONE]` `script.subtitle` & `script.render`: Sinh phụ đề ASS và render video MP4 hoàn chỉnh kèm hiệu ứng Ken-Burns và nhạc nền.
+
+---
+
+## Giai đoạn 5 — Vận hành, Giám sát & Mở rộng
+- `[DONE]` Cập nhật tiến độ realtime qua Server-Sent Events (SSE) dùng vé xác thực một lần ngắn hạn (`sse-ticket`).
+- `[DONE]` Huỷ an toàn pipeline (`POST /projects/:id/cancel` via `AbortController`, chuyển status `cancelled`).
+- `[DONE]` Chạy lại pipeline linh hoạt (`POST /projects/:id/regenerate` từ `firstRunnableStage` hoặc từ `fromStage` chọn lọc).
+- `[DONE]` Tự phục hồi sau khởi động lại máy chủ (`recoverStaleProjects`, `recoverUploadSessions`).
+- `[DONE]` Durable cleanup outbox tasks (`project_cleanup_tasks` và `cleanupWorker`).
+- `[DONE]` Quản lý đa API key (Gemini, OpenAI, ElevenLabs) với thanh giám sát Quota Free Tier.
+- `[DONE]` Tích hợp sidecar ZeroTTS Python trong môi trường phát triển cục bộ (`npm run dev`).
+- `[DONE]` Liên kết tài khoản YouTube qua Google OAuth (PKCE) và xuất bản video.
+- `[DONE]` Thông báo hoàn thành/thất bại qua email bằng Nodemailer SMTP.
+- `[PLANNED]` Nâng cấp cơ sở dữ liệu lên PostgreSQL khi cần triển khai đa node worker song song.
+- `[PLANNED]` Lưu trữ đối tượng S3/MinIO cho volume media phân tán.

@@ -113,12 +113,35 @@ export async function getOutputState(projectId) {
      WHERE p.id = ?`,
     [projectId]
   )
-  if (!row) return { output: null, outputStale: false, transcriptVersion: null }
+  if (!row) return { output: null, outputStale: false, transcriptVersion: null, youtubeUpload: null }
   const project = {
     id: row.project_id,
     mode: row.project_mode,
     transcript_version: row.project_transcript_version,
     script_version: row.project_script_version,
+  }
+  let youtubeUpload = null
+  if (row.output_id) {
+    const ytRow = await queryOne(
+      `SELECT id, status, privacy, progress, youtube_video_id, youtube_url, error_message, updated_at, created_date
+       FROM youtube_uploads WHERE output_id = ? ORDER BY created_date DESC, rowid DESC LIMIT 1`,
+      [row.output_id]
+    )
+    if (ytRow) {
+      const videoUrl = ytRow.youtube_url || (ytRow.youtube_video_id ? `https://youtu.be/${ytRow.youtube_video_id}` : null)
+      youtubeUpload = {
+        id: ytRow.id,
+        status: ytRow.status,
+        privacy: ytRow.privacy,
+        progress: Number(ytRow.progress || 0),
+        youtubeVideoId: ytRow.youtube_video_id || null,
+        youtubeVideoUrl: videoUrl,
+        youtubeUrl: videoUrl,
+        errorMessage: ytRow.error_message || null,
+        updatedAt: ytRow.updated_at || ytRow.created_date || null,
+        createdAt: ytRow.created_date || null,
+      }
+    }
   }
   const output = row.output_id ? {
     id: row.output_id,
@@ -130,6 +153,7 @@ export async function getOutputState(projectId) {
     transcript_version: row.output_transcript_version,
     script_version: row.output_script_version,
     created_date: row.output_created_date,
+    youtubeUpload,
   } : null
   const mode = String(project.mode || '').toUpperCase().replace('-', '_')
   const currentVersion = mode === 'SCRIPT_TO_VIDEO'
@@ -138,6 +162,7 @@ export async function getOutputState(projectId) {
   return {
     project,
     output,
+    youtubeUpload,
     transcriptVersion: Number(project.transcript_version ?? 0),
     scriptVersion: Number(project.script_version ?? 0),
     outputStale: outputIsStale(project.mode, currentVersion, output),

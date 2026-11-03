@@ -4,7 +4,7 @@ import Layout from '@/components/Layout';
 import PageHeader from '@/components/PageHeader';
 import Loading from '@/components/Loading';
 import { motion } from 'framer-motion';
-import { Cpu, Check, Loader2, KeyRound } from 'lucide-react';
+import { Cpu, Check, Loader2, KeyRound, Activity } from 'lucide-react';
 import ErrorState from '@/components/ErrorState';
 import { useToast } from '@/components/ui/use-toast';
 import { LLM_PROVIDERS, IMAGE_PROVIDERS, VIDEO_PROVIDERS, VOICE_PROVIDERS, SUBTITLE_PROVIDERS } from '@/lib/constants';
@@ -22,18 +22,40 @@ const providerLabels = {
   flux: 'FLUX', stable_diffusion: 'Stable Diffusion', google_image: 'Google Image', huggingface_inference: 'HF Inference',
   kling: 'Kling', hailuo: 'Hailuo', pixverse: 'PixVerse', runway: 'Runway', luma: 'Luma',
   elevenlabs: 'ElevenLabs', google_tts: 'Google TTS', azure_speech: 'Azure Speech', openai_tts: 'OpenAI TTS',
-  zerotts: 'ZeroTTS (Local)', edge_tts: 'Edge TTS (Miễn phí)',
+  voicestudio: 'VoiceStudio (Local)', edge_tts: 'Edge TTS (Miễn phí)',
   whisper: 'Whisper (OpenAI/Groq)', openai_whisper: 'OpenAI Whisper', faster_whisper: 'Faster Whisper',
 };
 
-const KEYLESS_PROVIDERS = new Set(['zerotts', 'edge_tts']);
+const KEYLESS_PROVIDERS = new Set(['voicestudio', 'edge_tts']);
 
 export default function ProviderSettings() {
   const [settings, setSettings] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [providersData, setProvidersData] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [checkingVoiceStudio, setCheckingVoiceStudio] = useState(false);
   const { toast } = useToast();
+
+  const checkVoiceStudioHealth = async (e) => {
+    e?.stopPropagation?.();
+    setCheckingVoiceStudio(true);
+    try {
+      const h = await providersApi.health('voicestudio');
+      if (!h?.ok) throw new Error(h?.error || 'Dịch vụ VoiceStudio chưa phản hồi');
+      toast({
+        title: 'VoiceStudio sẵn sàng',
+        description: 'Kết nối thành công tới VoiceStudio local service tại http://localhost:3900.',
+      });
+    } catch {
+      toast({
+        variant: 'destructive',
+        title: 'Không thể kết nối VoiceStudio',
+        description: 'VoiceStudio local service không phản hồi tại http://localhost:3900. Hãy kiểm tra dịch vụ VoiceStudio đang chạy và có thể truy cập được.',
+      });
+    } finally {
+      setCheckingVoiceStudio(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -106,12 +128,20 @@ export default function ProviderSettings() {
                   const successRate = provInfo?.health?.calls > 0 ? provInfo.health.successRate : null;
 
                   return (
-                    <button
+                    <div
                       key={p}
-                      type="button"
-                      disabled={!isAvailable}
-                      onClick={() => selectProvider(cat.key, p)}
-                      className={`flex flex-col justify-between p-3 rounded-lg border text-left text-xs transition-all focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/60 ${
+                      role="button"
+                      tabIndex={isAvailable ? 0 : -1}
+                      aria-disabled={!isAvailable}
+                      onClick={() => { if (isAvailable) selectProvider(cat.key, p); }}
+                      onKeyDown={(e) => {
+                        if (!isAvailable) return;
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          selectProvider(cat.key, p);
+                        }
+                      }}
+                      className={`flex flex-col justify-between p-3 rounded-lg border text-left text-xs transition-all focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary/60 cursor-pointer ${
                         !isAvailable
                           ? 'opacity-40 border-border/40 bg-muted/20 cursor-not-allowed'
                           : selected
@@ -119,35 +149,60 @@ export default function ProviderSettings() {
                           : 'border-border bg-muted/30 text-foreground hover:border-primary/40 hover:bg-muted/60'
                       }`}
                     >
-                      <div className="flex items-center justify-between w-full mb-1">
-                        <span className="font-semibold truncate">{providerLabels[p] || p}</span>
-                        {selected && <Check className="w-4 h-4 shrink-0 text-primary ml-1" />}
+                      <div>
+                        <div className="flex items-center justify-between w-full mb-1">
+                          <span className="font-semibold truncate">{providerLabels[p] || p}</span>
+                          {selected && <Check className="w-4 h-4 shrink-0 text-primary ml-1" />}
+                        </div>
+
+                        <div className="flex items-center gap-1.5 flex-wrap mt-1 text-[10px]">
+                          {!isAvailable ? (
+                            <span className="text-muted-foreground italic">Chưa hỗ trợ</span>
+                          ) : (
+                            <>
+                              {hasKey && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-medium">
+                                  <KeyRound className="w-2.5 h-2.5" /> Có Key
+                                </span>
+                              )}
+                              {isKeyless && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-blue-500/10 text-blue-700 dark:text-blue-400 font-medium">
+                                  {p === 'voicestudio' ? 'Local / Keyless' : 'Miễn phí'}
+                                </span>
+                              )}
+                              {successRate !== null && (
+                                <span className="text-muted-foreground font-mono">
+                                  {successRate}% OK
+                                </span>
+                              )}
+                            </>
+                          )}
+                        </div>
                       </div>
 
-                      <div className="flex items-center gap-1.5 flex-wrap mt-1 text-[10px]">
-                        {!isAvailable ? (
-                          <span className="text-muted-foreground italic">Chưa hỗ trợ</span>
-                        ) : (
-                          <>
-                            {hasKey && (
-                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-medium">
-                                <KeyRound className="w-2.5 h-2.5" /> Có Key
-                              </span>
+                      {p === 'voicestudio' && (
+                        <div className="mt-2.5 pt-2 border-t border-border/40 flex flex-col gap-1.5 w-full">
+                          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                            <span className="text-[10px]">URL:</span>
+                            <span className="font-mono text-[10px] text-foreground font-medium truncate">http://localhost:3900</span>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={checkingVoiceStudio}
+                            onClick={checkVoiceStudioHealth}
+                            className="inline-flex items-center justify-center gap-1.5 px-2 py-1 rounded bg-secondary hover:bg-secondary/80 text-secondary-foreground text-[10px] font-medium transition-colors"
+                            title="Kiểm tra kết nối dịch vụ VoiceStudio cục bộ"
+                          >
+                            {checkingVoiceStudio ? (
+                              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                            ) : (
+                              <Activity className="w-2.5 h-2.5 text-emerald-500" />
                             )}
-                            {isKeyless && (
-                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-blue-500/10 text-blue-700 dark:text-blue-400 font-medium">
-                                {p === 'zerotts' ? 'Local / Keyless' : 'Miễn phí'}
-                              </span>
-                            )}
-                            {successRate !== null && (
-                              <span className="text-muted-foreground font-mono">
-                                {successRate}% OK
-                              </span>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    </button>
+                            <span>Kiểm tra kết nối (Health Check)</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>

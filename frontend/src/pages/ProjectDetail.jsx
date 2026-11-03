@@ -1,14 +1,14 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { projectsApi } from '@/api/projects';
-import { systemApi } from '@/api/extra';
+import { systemApi, youtubeApi } from '@/api/extra';
 import Layout from '@/components/Layout';
 import Loading from '@/components/Loading';
 import { VideoTimeline } from '@/components/timeline';
 import MaskEditor from '@/components/MaskEditor';
 import { useTimelineStore } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, AlertTriangle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap } from 'lucide-react';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, AlertTriangle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap, Save, Youtube, ExternalLink, Pencil, Copy } from 'lucide-react';
 import { STAGE_LABELS, SCRIPT_STAGES, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, AUDIO_MODE_LABELS, ACTIVE_STATUSES as SHARED_ACTIVE_STATUSES, isCompletedStatus } from '@/lib/constants';
 import { friendlyJobError } from '@/lib/providerErrorMessage';
 import { resolveStorageUrl } from '@/lib/apiBase';
@@ -84,6 +84,10 @@ function normSegment(s) {
 export default function ProjectDetail() {
   const { id } = useParams();
   const [project, setProject] = useState(null);
+  const projectRef = useRef(project);
+  useEffect(() => {
+    projectRef.current = project;
+  }, [project]);
   const [jobs, setJobs] = useState([]);
   const [scenes, setScenes] = useState([]);
   const [transcript, setTranscript] = useState([]);
@@ -122,6 +126,8 @@ export default function ProjectDetail() {
   const [glossaryDeleteTarget, setGlossaryDeleteTarget] = useState(null);
   const [deletingGlossary, setDeletingGlossary] = useState(false);
   const [confirmingPreview, setConfirmingPreview] = useState(false);
+  const [savingAllSegments, setSavingAllSegments] = useState(false);
+  const [showYoutubeModal, setShowYoutubeModal] = useState(false);
   const [redisStatus, setRedisStatus] = useState(null); // 'connected' | 'disconnected' | null (từ GET /health)
   const videoRef = useRef(null);
   // Optimistic concurrency (§4.6): revision server cấp, seq chống stale response.
@@ -129,6 +135,8 @@ export default function ProjectDetail() {
   const transcriptSaveSeqRef = useRef(0);
   const transcriptLoadSeqRef = useRef(0);
   const transcriptSaveInFlightRef = useRef(false);
+  const pollErrorCountRef = useRef(0);
+  const pollStartTimeRef = useRef(null);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -350,24 +358,47 @@ export default function ProjectDetail() {
     }
   }, []);
 
+  const loadDubData = useCallback(async ({ force = false } = {}) => {
+    if (transcriptSaveInFlightRef.current && !force) return;
+    const seq = transcriptLoadSeqRef.current + 1;
+    transcriptLoadSeqRef.current = seq;
+    try {
+      const segs = await projectsApi.transcript(id);
+      if (seq !== transcriptLoadSeqRef.current || (transcriptSaveInFlightRef.current && !force)) return;
+      // Server trả { revision, segments }; giữ tương thích array legacy.
+      const revision = Array.isArray(segs) ? null : segs?.revision;
+      const list = Array.isArray(segs) ? segs : segs?.segments || [];
+      if (revision !== null && revision !== undefined && Number.isInteger(Number(revision))) {
+        transcriptRevisionRef.current = Number(revision);
+      } else {
+        transcriptRevisionRef.current = null;
+      }
+      if (!Array.isArray(segs) && segs?.outputStale !== undefined) setOutputStale(segs.outputStale === true);
+      setTranscript(list.map(normSegment));
+    } catch {
+      /* endpoint chưa có — để trống */
+    }
+  }, [id]);
+
   const load = useCallback(async () => {
     // Chặn bão request khi backend đang backoff (Quota / 429)
     if (quotaBackoffUntilRef.current && Date.now() < quotaBackoffUntilRef.current) {
-      return project;
+      return projectRef.current;
     }
     const MAX_POLL_TIME_MS = 20 * 60 * 1000;
     if (pollStartTimeRef.current && Date.now() - pollStartTimeRef.current > MAX_POLL_TIME_MS) {
       console.warn('Pipeline polling reached max time limit');
-      return project;
+      return projectRef.current;
     }
     if (pollErrorCountRef.current >= 5) {
       console.warn('Pipeline polling halted due to consecutive errors');
-      return project;
+      return projectRef.current;
     }
     try {
       const p = await projectsApi.get(id);
       if (p?.outputStale !== undefined) setOutputStale(p.outputStale === true);
       setProject(p);
+      projectRef.current = p;
       setJobs(p.jobs || []);
       setScenes(p.mode === 'SUMMARY' ? (p.scenes || []) : []);
       setLoadError(null);
@@ -406,29 +437,7 @@ export default function ProjectDetail() {
       setLoadError(e);
       return null;
     }
-  }, [id, project, refreshRedisStatus, loadDubData]);
-
-  const loadDubData = useCallback(async ({ force = false } = {}) => {
-    if (transcriptSaveInFlightRef.current && !force) return;
-    const seq = transcriptLoadSeqRef.current + 1;
-    transcriptLoadSeqRef.current = seq;
-    try {
-      const segs = await projectsApi.transcript(id);
-      if (seq !== transcriptLoadSeqRef.current || (transcriptSaveInFlightRef.current && !force)) return;
-      // Server trả { revision, segments }; giữ tương thích array legacy.
-      const revision = Array.isArray(segs) ? null : segs?.revision;
-      const list = Array.isArray(segs) ? segs : segs?.segments || [];
-      if (revision !== null && revision !== undefined && Number.isInteger(Number(revision))) {
-        transcriptRevisionRef.current = Number(revision);
-      } else {
-        transcriptRevisionRef.current = null;
-      }
-      if (!Array.isArray(segs) && segs?.outputStale !== undefined) setOutputStale(segs.outputStale === true);
-      setTranscript(list.map(normSegment));
-    } catch {
-      /* endpoint chưa có — để trống */
-    }
-  }, [id]);
+  }, [id, refreshRedisStatus, loadDubData]);
 
   // Initial load
   useEffect(() => {
@@ -508,13 +517,7 @@ export default function ProjectDetail() {
     }
   };
 
-  // Poll progress while pipeline is active — fallback authoritative khi SSE
-  // không khả dụng HOẶC stream đã closed mà project vẫn active (miss event).
-  // DB (load) là source of truth duy nhất; không suy diễn completed từ SSE.
-  // Không polling vô hạn: dừng khi terminal/stage lỗi, tối đa 5 lỗi liên tiếp,
-  // hoặc tối đa 20 phút.
-  const pollErrorCountRef = useRef(0);
-  const pollStartTimeRef = useRef(null);
+
 
   // Quota Countdown realtime timer (cập nhật 1s)
   useEffect(() => {
@@ -542,7 +545,7 @@ export default function ProjectDetail() {
 
     const t = setInterval(load, POLL_INTERVAL_MS);
     return () => clearInterval(t);
-  }, [project, sseAvailable, streamClosed, load]);
+  }, [project?.status, sseAvailable, streamClosed, load]);
 
   // Khi SSE phát event stage (ví dụ dub.translate hoặc dub.stt completed hay failed),
   // ngay lập tức đồng bộ DB để lấy transcript mới hoặc error message chi tiết.
@@ -627,7 +630,25 @@ export default function ProjectDetail() {
 
   const handleRegenerate = async (stageArg) => {
     if (regenerating || !canRegenerate) return;
-    const fromStage = typeof stageArg === 'string' ? stageArg : undefined;
+    let fromStage = typeof stageArg === 'string' ? stageArg : undefined;
+    // Nếu người dùng đã sửa tay bản dịch, bỏ qua bước Dịch theo phong cách
+    // (dub.translate) và chạy từ bước Che chữ (dub.mask) trở đi.
+    if (!fromStage && isDub && transcript.some((s) => s.isTranslationManuallyEdited)) {
+      const translateJob = jobByStage?.['dub.translate'];
+      const translateDone = ['success', 'completed'].includes(translateJob?.status);
+      if (translateDone) fromStage = 'dub.mask';
+    }
+    // Nếu kịch bản SCRIPT_TO_VIDEO đã bị chỉnh sửa (outputStale), tự động tiếp tục từ bước
+    // tạo giọng đọc hoặc bước chưa hoàn tất gần nhất.
+    if (!fromStage && isScript && (outputStale || project?.outputStale)) {
+      const scriptStages = ['script.image', 'script.tts', 'script.align', 'script.subtitle', 'script.render'];
+      const incomplete = scriptStages.find((st) => {
+        const j = jobByStage?.[st];
+        return !j || j.status !== 'success';
+      });
+      if (incomplete) fromStage = incomplete;
+      else fromStage = 'script.tts';
+    }
     setRegenerating(true);
     setError('');
     clearEvents();
@@ -710,6 +731,49 @@ export default function ProjectDetail() {
     }
   };
 
+  const handleSaveAllSegments = async () => {
+    if (savingAllSegments || !project?.scriptSegments) return true;
+    setSavingAllSegments(true);
+    try {
+      let currentVersion = Number(project.scriptVersion || 0);
+      let updatedCount = 0;
+      for (const seg of project.scriptSegments) {
+        const narrEl = document.getElementById(`narration-${seg.id}`);
+        const visEl = document.getElementById(`visual-${seg.id}`);
+        const narr = narrEl ? narrEl.value : seg.narrationText;
+        const vis = visEl ? visEl.value : seg.visualPrompt;
+        if (narr !== seg.narrationText || vis !== seg.visualPrompt) {
+          const res = await projectsApi.updateScriptSegment(project.id, seg.id, {
+            scriptVersion: currentVersion,
+            narrationText: narr,
+            visualPrompt: vis,
+          });
+          if (res?.scriptVersion != null) {
+            currentVersion = Number(res.scriptVersion);
+          } else {
+            currentVersion += 1;
+          }
+          updatedCount++;
+        }
+      }
+      toast({
+        title: updatedCount > 0 ? 'Đã lưu tất cả thay đổi' : 'Đã kiểm tra kịch bản',
+        description: updatedCount > 0 ? `Đã lưu thành công ${updatedCount} phân đoạn kịch bản.` : 'Toàn bộ nội dung kịch bản đã được đồng bộ.',
+      });
+      await load();
+      return true;
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Lưu thay đổi thất bại',
+        description: err?.response?.data?.message || err.message,
+      });
+      return false;
+    } finally {
+      setSavingAllSegments(false);
+    }
+  };
+
   const handleSaveTranscript = async (edits) => {
     if (savingTranscript) return null;
     let rev = transcriptRevisionRef.current;
@@ -739,16 +803,21 @@ export default function ProjectDetail() {
     const sentRevision = rev;
     try {
       const res = await projectsApi.updateTranscript(id, edits, sentRevision);
-      // Stale response — bỏ qua, giữ state của request mới nhất.
-      if (seq !== transcriptSaveSeqRef.current) return null;
+      // Stale response — bỏ qua overwrite, nhưng refetch để đồng bộ.
+      if (seq !== transcriptSaveSeqRef.current) {
+        try { await loadDubData({ force: true }); } catch { /* giữ edits nếu refetch fail */ }
+        return null;
+      }
       if (res?.revision !== undefined && res?.revision !== null && Number.isInteger(Number(res.revision))) {
         transcriptRevisionRef.current = Number(res.revision);
       }
-      if (Array.isArray(res.segments)) {
+      if (Array.isArray(res.segments) && res.segments.length) {
         setTranscript(res.segments.map(normSegment));
+      } else {
+        try { await loadDubData({ force: true }); } catch { /* best-effort */ }
       }
       if (res?.outputStale !== undefined) setOutputStale(res.outputStale === true);
-      toast({ title: 'Đã lưu chỉnh sửa', description: `${res.updated || edits.length} câu đã cập nhật.` });
+      toast({ title: 'Đã lưu chỉnh sửa', description: `${res?.updated || edits.length} câu đã cập nhật.` });
       return res;
     } catch (e) {
       // Stale response lỗi cũng bỏ qua.
@@ -783,8 +852,10 @@ export default function ProjectDetail() {
       toast({ variant: 'destructive', title: 'Lỗi lưu transcript', description: rawErrMsg });
       return null;
     } finally {
+      // Luôn reset cờ in-flight để tránh bị kẹt (kể cả stale/conflict),
+      // chỉ tắt spinner nếu đây là request mới nhất.
+      transcriptSaveInFlightRef.current = false;
       if (seq === transcriptSaveSeqRef.current) {
-        transcriptSaveInFlightRef.current = false;
         setSavingTranscript(false);
       }
     }
@@ -1042,10 +1113,10 @@ export default function ProjectDetail() {
     return (
       <Layout>
         <div className="p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
-          <ProjectHeader project={project} canCancel={canCancel} canRegenerate={canRegenerate} onCancel={handleCancel} onRegenerate={handleRegenerate} />
+          <ProjectHeader project={project} canCancel={canCancel} canRegenerate={canRegenerate} onCancel={handleCancel} onRegenerate={handleRegenerate} onPublishYoutube={() => setShowYoutubeModal(true)} />
           <PipelineStatus progress={project.progress} isActive={isActive} sseAvailable={sseAvailable} stages={stages} jobByStage={jobByStage} onRetry={handleRetryStage} redisStatus={redisStatus} />
 
-          <div className="rounded-2xl bg-amber-500/10 border border-amber-500/20 p-5 flex items-center justify-between gap-4">
+          <div className="rounded-2xl bg-amber-500/10 border border-amber-500/20 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-300">
                 Kịch bản đã phân tích thành công ({project.scriptSegments?.length || 0} đoạn đọc)
@@ -1054,20 +1125,33 @@ export default function ProjectDetail() {
                 Hãy duyệt và chỉnh sửa lời thoại hoặc mô tả hình ảnh trước khi tạo video hoàn chỉnh.
               </p>
             </div>
-            <button
-              onClick={async () => {
-                try {
-                  await projectsApi.generateScriptVideo(project.id);
-                  toast({ title: 'Đang bắt đầu tạo video', description: 'Pipeline đang tiến hành lồng tiếng và kết xuất video...' });
-                  load();
-                } catch (err) {
-                  toast({ variant: 'destructive', title: 'Lỗi khởi chạy', description: err?.response?.data?.message || err.message });
-                }
-              }}
-              className="px-5 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition shrink-0 shadow-sm"
-            >
-              Bắt đầu tạo video
-            </button>
+            <div className="flex items-center gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={handleSaveAllSegments}
+                disabled={savingAllSegments}
+                className="px-4 py-2.5 rounded-xl border border-border bg-card hover:bg-muted text-foreground text-sm font-semibold transition shadow-xs disabled:opacity-50 flex items-center gap-2"
+              >
+                {savingAllSegments ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                <span>Lưu tất cả thay đổi</span>
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    await handleSaveAllSegments();
+                    await projectsApi.generateScriptVideo(project.id);
+                    toast({ title: 'Đang bắt đầu tạo video', description: 'Pipeline đang tiến hành lồng tiếng và kết xuất video...' });
+                    load();
+                  } catch (err) {
+                    toast({ variant: 'destructive', title: 'Lỗi khởi chạy', description: err?.response?.data?.message || err.message });
+                  }
+                }}
+                disabled={savingAllSegments}
+                className="px-5 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition shrink-0 shadow-sm disabled:opacity-50"
+              >
+                Bắt đầu tạo video
+              </button>
+            </div>
           </div>
 
           <div className="space-y-4">
@@ -1141,6 +1225,7 @@ export default function ProjectDetail() {
             onConfirmDelete={() => setConfirmDelete(true)}
             onCancel={handleCancel}
             onRegenerate={handleRegenerate}
+            onPublishYoutube={() => setShowYoutubeModal(true)}
           />
 
           {/* 2. Pipeline Progress */}
@@ -1370,6 +1455,12 @@ export default function ProjectDetail() {
                       </div>
                     ) : outputUrl ? (
                       <div className="flex-1 flex flex-col min-h-0 gap-2">
+                        {project.output?.youtubeUpload && (
+                          <YoutubeUploadBadge
+                            youtubeUpload={project.output.youtubeUpload}
+                            onOpenPublishModal={() => setShowYoutubeModal(true)}
+                          />
+                        )}
                         {/* Video Container */}
                         <div className="relative flex-1 min-h-[220px] bg-black rounded-xl overflow-hidden group">
                           <video
@@ -1826,6 +1917,13 @@ export default function ProjectDetail() {
             </AlertDialogContent>
           </AlertDialog>
         </div>
+        <YoutubePublishDialog
+          project={project}
+          open={showYoutubeModal}
+          onClose={() => setShowYoutubeModal(false)}
+          toast={toast}
+          onPublished={load}
+        />
       </Layout>
     );
   }
@@ -1847,7 +1945,8 @@ export default function ProjectDetail() {
             </div>
             <p className="text-sm text-muted-foreground">
               {MODE_LABELS[project.mode] || project.mode}
-              {!isDub && ` • ${project.target_duration_sec}s`}
+              {project.mode === 'SUMMARY' && project.target_duration_sec && ` • ${project.target_duration_sec}s`}
+              {isScript && project.aspect_ratio && ` • ${project.aspect_ratio}`}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -1875,6 +1974,13 @@ export default function ProjectDetail() {
                 <a href={outputUrl} download className="flex items-center gap-2 px-4 py-2 rounded-xl border border-border hover:bg-muted text-foreground text-sm font-semibold transition">
                   <Download className="w-4 h-4" /> Tải về
                 </a>
+                <button
+                  type="button"
+                  onClick={() => setShowYoutubeModal(true)}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition shadow-xs"
+                >
+                  <Youtube className="w-4 h-4" /> Xuất bản YouTube
+                </button>
               </>
             )}
           </div>
@@ -1886,9 +1992,35 @@ export default function ProjectDetail() {
           </div>
         )}
 
+        {outputStale && !isActive && (
+          <div className="mb-6 flex items-center justify-between gap-3 text-xs sm:text-sm text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>Nội dung kịch bản đã được chỉnh sửa. Nhấn <strong>Chạy lại</strong> để kết xuất lại video với các thay đổi mới nhất.</span>
+            </div>
+            {canRegenerate && (
+              <button
+                type="button"
+                onClick={() => handleRegenerate()}
+                disabled={regenerating}
+                className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-black font-semibold text-xs transition disabled:opacity-50"
+              >
+                {regenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                Chạy lại ngay
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Output preview */}
         {outputUrl && isVideoOutput && (
-          <div className="rounded-2xl bg-card border border-border p-4 mb-6 shadow-sm">
+          <div className="rounded-2xl bg-card border border-border p-4 mb-6 shadow-sm space-y-3">
+            {project.output?.youtubeUpload && (
+              <YoutubeUploadBadge
+                youtubeUpload={project.output.youtubeUpload}
+                onOpenPublishModal={() => setShowYoutubeModal(true)}
+              />
+            )}
             <video id="output-video" src={outputUrl} controls className="w-full max-h-[420px] rounded-xl bg-black" />
           </div>
         )}
@@ -2006,6 +2138,19 @@ export default function ProjectDetail() {
           </div>
         </div>
 
+        {/* SCRIPT_TO_VIDEO: Phân đoạn kịch bản, ảnh slide và audio preview */}
+        {isScript && (
+          <ScriptSegmentsShowcase
+            segments={project.scriptSegments}
+            aspectRatio={project.aspect_ratio}
+            projectId={project.id}
+            scriptVersion={project.scriptVersion}
+            canEdit={!isActive}
+            onUpdateSegment={load}
+            toast={toast}
+          />
+        )}
+
         {/* TRANSLATE_DUB: editor lời thoại song ngữ (sửa được) */}
         {isDub && (
           <TranscriptEditor
@@ -2101,11 +2246,19 @@ export default function ProjectDetail() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <YoutubePublishDialog
+        project={project}
+        open={showYoutubeModal}
+        onClose={() => setShowYoutubeModal(false)}
+        toast={toast}
+        onPublished={load}
+      />
     </Layout>
   );
 }
 
 function InfoGrid({ project, isDub, params }) {
+  const isScript = project?.mode === 'SCRIPT_TO_VIDEO' || project?.mode === 'AI_VIDEO' || project?.mode === 'script_to_video';
   const rows = isDub
     ? [
         ['Chế độ', MODE_LABELS[project.mode] || project.mode],
@@ -2113,10 +2266,18 @@ function InfoGrid({ project, isDub, params }) {
         ['Phong cách dịch', params.stylePreset ?? params.style_preset ?? '—'],
         ['Lồng tiếng AI', (params.enableDubbing ?? params.enable_dubbing) ? `Bật (${VOICE_PROVIDER_LABELS[params.voiceProvider] || params.voiceProvider || 'mặc định'})` : 'Tắt'],
       ]
+    : isScript
+    ? [
+        ['Chế độ', MODE_LABELS[project.mode] || project.mode],
+        ['Tỉ lệ khung hình', project.aspect_ratio || '16:9'],
+        ['Giọng đọc', VOICE_PROVIDER_LABELS[params.voiceProvider] || params.voiceProvider || 'Edge-TTS'],
+        ['Phân đoạn', `${(project.scriptSegments || []).length} đoạn`],
+        ['Đóng dấu phụ đề', params.burnSubtitles !== false ? 'Bật (ASS)' : 'Tắt'],
+      ]
     : [
         ['Chế độ', MODE_LABELS[project.mode] || project.mode],
         ['Ngôn ngữ', LANGUAGE_LABELS[project.language] || project.language],
-        ['Thời lượng', `${project.target_duration_sec}s`],
+        ['Thời lượng', project.target_duration_sec ? `${project.target_duration_sec}s` : '—'],
         ['Phong cách', STYLE_LABELS[project.style] || project.style],
         ['Giọng nói', VOICE_PROVIDER_LABELS[params.voiceProvider] || params.voiceProvider || '—'],
       ];
@@ -2128,6 +2289,599 @@ function InfoGrid({ project, isDub, params }) {
           <div className="text-sm font-semibold text-foreground mt-1 truncate" title={String(v)}>{v}</div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function ScriptSegmentsShowcase({ segments, aspectRatio, projectId, scriptVersion, canEdit, onUpdateSegment, toast }) {
+  const [editingSegmentId, setEditingSegmentId] = useState(null);
+  const [draftNarration, setDraftNarration] = useState('');
+  const [draftVisualPrompt, setDraftVisualPrompt] = useState('');
+  const [savingId, setSavingId] = useState(null);
+
+  if (!segments || !segments.length) return null;
+  const isPortrait = aspectRatio === '9:16';
+
+  const handleStartEdit = (seg) => {
+    setEditingSegmentId(seg.id);
+    setDraftNarration(seg.narrationText || '');
+    setDraftVisualPrompt(seg.visualPrompt || '');
+  };
+
+  const handleCancelEdit = () => {
+    setEditingSegmentId(null);
+    setDraftNarration('');
+    setDraftVisualPrompt('');
+  };
+
+  const handleSaveSegment = async (seg, idx) => {
+    if (!projectId) return;
+    setSavingId(seg.id);
+    try {
+      await projectsApi.updateScriptSegment(projectId, seg.id, {
+        scriptVersion,
+        narrationText: draftNarration,
+        visualPrompt: draftVisualPrompt,
+      });
+      if (toast) {
+        toast({
+          title: 'Đã lưu phân đoạn kịch bản',
+          description: `Phân đoạn #${idx + 1} đã được cập nhật. Nhấn 'Chạy lại' để kết xuất video mới.`,
+        });
+      }
+      setEditingSegmentId(null);
+      if (onUpdateSegment) onUpdateSegment();
+    } catch (err) {
+      if (toast) {
+        toast({
+          variant: 'destructive',
+          title: 'Lỗi cập nhật phân đoạn',
+          description: err?.response?.data?.message || err.message,
+        });
+      }
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const handleCopyFullScript = async () => {
+    const text = segments
+      .map((s, i) => `${i + 1}. ${s.narrationText || ''}`)
+      .filter(Boolean)
+      .join('\n\n');
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      if (toast) {
+        toast({
+          title: 'Đã sao chép kịch bản',
+          description: `Đã sao chép lời thoại của ${segments.length} phân đoạn vào clipboard.`,
+        });
+      }
+    } catch (_) {
+      if (toast) {
+        toast({
+          variant: 'destructive',
+          title: 'Không thể sao chép',
+          description: 'Trình duyệt chặn truy cập clipboard.',
+        });
+      }
+    }
+  };
+
+  return (
+    <div className="rounded-2xl bg-card border border-border p-5 sm:p-6 mb-6 shadow-xs">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+        <div>
+          <h3 className="text-sm sm:text-base font-semibold text-foreground">
+            Các phân đoạn kịch bản & Slide trình chiếu
+          </h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Danh sách {segments.length} phân đoạn gồm hình ảnh slide, lời thoại và âm thanh giọng đọc AI
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleCopyFullScript}
+          className="self-start sm:self-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-xs font-semibold text-foreground transition shrink-0"
+          title="Sao chép toàn bộ lời thoại kịch bản"
+        >
+          <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+          <span>Sao chép kịch bản</span>
+        </button>
+      </div>
+
+      <div className="space-y-3.5">
+        {segments.map((seg, idx) => {
+          const isEditing = editingSegmentId === seg.id;
+          return (
+            <div
+              key={seg.id || idx}
+              className={`flex flex-col sm:flex-row gap-4 p-4 rounded-xl border transition-colors ${
+                isEditing
+                  ? 'bg-muted/50 border-primary/40 shadow-sm'
+                  : 'bg-muted/30 border-border/70 hover:border-border'
+              }`}
+            >
+              {/* Cột trái: Thumbnail Slide */}
+              <div className={`shrink-0 overflow-hidden rounded-lg bg-black/60 border border-border/80 flex items-center justify-center relative group/slide ${
+                isPortrait ? 'w-24 h-40 sm:w-28 sm:h-44' : 'w-full sm:w-48 h-28'
+              }`}>
+                {seg.imageUrl ? (
+                  <>
+                    <img
+                      src={seg.imageUrl}
+                      alt={`Slide ${idx + 1}`}
+                      className="w-full h-full object-cover"
+                      loading="lazy"
+                    />
+                    <a
+                      href={`${seg.imageUrl}&size=full`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="absolute bottom-1.5 right-1.5 p-1 rounded-md bg-black/70 hover:bg-black/90 text-white backdrop-blur-xs opacity-0 group-hover/slide:opacity-100 transition-opacity"
+                      title="Xem ảnh slide gốc độ phân giải cao"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </>
+                ) : (
+                  <div className="flex flex-col items-center justify-center gap-1.5 p-3 text-center text-muted-foreground">
+                    <Film className="w-5 h-5 text-muted-foreground/60" />
+                    <span className="text-[11px] leading-tight">
+                      {seg.status === 'image_ready' || seg.status === 'completed'
+                        ? 'Slide'
+                        : 'Đang tạo slide...'}
+                    </span>
+                  </div>
+                )}
+                <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-black/70 text-white backdrop-blur-xs">
+                  #{idx + 1}
+                </span>
+              </div>
+
+              {/* Cột giữa: Lời thoại, Prompt hoặc Form chỉnh sửa */}
+              <div className="flex-1 min-w-0 flex flex-col justify-between gap-2.5">
+                {isEditing ? (
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[11px] font-semibold text-foreground uppercase tracking-wider block mb-1">
+                        Lời thoại thuyết minh:
+                      </label>
+                      <textarea
+                        value={draftNarration}
+                        onChange={(e) => setDraftNarration(e.target.value)}
+                        rows={3}
+                        className="w-full text-xs sm:text-sm p-2.5 rounded-lg bg-background border border-border text-foreground focus:outline-none focus:ring-1 focus:ring-primary leading-relaxed"
+                        placeholder="Nhập lời thoại của phân đoạn..."
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-foreground uppercase tracking-wider block mb-1">
+                        Mô tả ảnh slide (Visual Prompt):
+                      </label>
+                      <input
+                        type="text"
+                        value={draftVisualPrompt}
+                        onChange={(e) => setDraftVisualPrompt(e.target.value)}
+                        className="w-full text-xs p-2.5 rounded-lg bg-background border border-border text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                        placeholder="Mô tả hình ảnh trực quan cho slide..."
+                      />
+                    </div>
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={handleCancelEdit}
+                        disabled={savingId === seg.id}
+                        className="px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-xs font-medium text-muted-foreground transition"
+                      >
+                        Hủy
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSaveSegment(seg, idx)}
+                        disabled={savingId === seg.id}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold transition disabled:opacity-50"
+                      >
+                        {savingId === seg.id ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Đang lưu...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Save className="w-3.5 h-3.5" />
+                            <span>Lưu phân đoạn</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="space-y-1.5">
+                      <div className="text-xs sm:text-sm font-medium text-foreground leading-relaxed">
+                        {seg.narrationText || '—'}
+                      </div>
+                      {seg.visualPrompt && (
+                        <div className="text-xs text-muted-foreground/90 italic flex items-start gap-1.5">
+                          <span className="shrink-0 font-semibold not-italic text-[11px] uppercase tracking-wider text-muted-foreground/70">Mô tả:</span>
+                          <span>{seg.visualPrompt}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Trình phát âm thanh */}
+                    {seg.audioUrl ? (
+                      <div className="pt-1">
+                        <audio
+                          src={seg.audioUrl}
+                          controls
+                          preload="none"
+                          className="h-8 w-full max-w-md accent-primary"
+                        />
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-muted-foreground/70 flex items-center gap-1.5 pt-1">
+                        <Mic className="w-3.5 h-3.5" />
+                        <span>Đang chờ xử lý giọng đọc...</span>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Cột phải: Thời lượng, Trạng thái & Nút sửa */}
+              <div className="shrink-0 flex sm:flex-col items-center sm:items-end justify-between sm:justify-start gap-2.5 text-xs font-mono">
+                <div className="flex items-center sm:flex-col items-end gap-1.5">
+                  <span className="px-2 py-1 rounded-md bg-background border border-border text-foreground font-semibold">
+                    {seg.durationSec != null ? `${seg.durationSec}s` : '—'}
+                  </span>
+                  <span className={`text-[11px] capitalize ${
+                    seg.status === 'tts_ready' || seg.status === 'completed' || seg.hasAudio
+                      ? 'text-emerald-500'
+                      : 'text-muted-foreground'
+                  }`}>
+                    {seg.status || 'pending'}
+                  </span>
+                </div>
+
+                {canEdit && !isEditing && (
+                  <button
+                    type="button"
+                    onClick={() => handleStartEdit(seg)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-border hover:border-primary/40 hover:bg-muted text-xs font-medium text-foreground transition"
+                    title="Chỉnh sửa lời thoại hoặc mô tả hình ảnh"
+                  >
+                    <Pencil className="w-3 h-3 text-primary" />
+                    <span>Sửa</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function YoutubeUploadBadge({ youtubeUpload, onOpenPublishModal }) {
+  if (!youtubeUpload) return null;
+  const status = youtubeUpload.status;
+
+  if (status === 'completed') {
+    return (
+      <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-medium">
+        <div className="flex items-center gap-2 min-w-0">
+          <Youtube className="w-4 h-4 text-red-500 shrink-0" />
+          <span className="font-semibold text-foreground">Đã xuất bản lên YouTube</span>
+          {youtubeUpload.privacy && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-mono tracking-wider bg-red-500/20 text-red-300">
+              {youtubeUpload.privacy}
+            </span>
+          )}
+        </div>
+        {youtubeUpload.youtubeVideoUrl && (
+          <a
+            href={youtubeUpload.youtubeVideoUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold text-xs transition shadow-xs"
+          >
+            <Play className="w-3.5 h-3.5 fill-current" />
+            <span>Xem trên YouTube</span>
+            <ExternalLink className="w-3 h-3 opacity-70" />
+          </a>
+        )}
+      </div>
+    );
+  }
+
+  if (['queued', 'uploading', 'processing'].includes(status)) {
+    return (
+      <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-300 text-xs font-medium">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Loader2 className="w-4 h-4 animate-spin text-amber-400 shrink-0" />
+          <span className="font-semibold">Đang tải lên YouTube...</span>
+          {typeof youtubeUpload.progress === 'number' && youtubeUpload.progress > 0 && (
+            <span className="font-mono text-[11px] text-amber-400">({youtubeUpload.progress}%)</span>
+          )}
+        </div>
+        <span className="text-[11px] text-amber-400/80 capitalize font-mono shrink-0">
+          {status}
+        </span>
+      </div>
+    );
+  }
+
+  if (status === 'failed') {
+    return (
+      <div className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs font-medium">
+        <div className="flex items-center gap-2 min-w-0">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span className="truncate">
+            Tải lên YouTube thất bại{youtubeUpload.errorMessage ? `: ${youtubeUpload.errorMessage}` : ''}
+          </span>
+        </div>
+        {onOpenPublishModal && (
+          <button
+            type="button"
+            onClick={onOpenPublishModal}
+            className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold text-xs transition"
+          >
+            <RotateCcw className="w-3 h-3" />
+            <span>Thử lại</span>
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function YoutubePublishDialog({ project, open, onClose, toast, onPublished }) {
+  const [checking, setChecking] = useState(true);
+  const [account, setAccount] = useState(null);
+  const [publishing, setPublishing] = useState(false);
+  const [publishStatus, setPublishStatus] = useState(null);
+
+  useEffect(() => {
+    if (!open) {
+      setPublishStatus(null);
+      return;
+    }
+    setChecking(true);
+    youtubeApi.getAccount()
+      .then((acc) => setAccount(acc))
+      .catch(() => setAccount({ connected: false }))
+      .finally(() => setChecking(false));
+  }, [open]);
+
+  if (!open) return null;
+
+  const outputId = project?.output?.id;
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!outputId || publishing) return;
+    setPublishing(true);
+    const fd = new FormData(e.target);
+    const title = fd.get('title');
+    const description = fd.get('description');
+    const tags = fd.get('tags')?.split(',').map((t) => t.trim()).filter(Boolean) || [];
+    const privacy = fd.get('privacy') || 'private';
+
+    try {
+      await youtubeApi.publishOutput(outputId, {
+        title,
+        description,
+        tags,
+        categoryId: '22',
+        privacy,
+        confirmed: true,
+      });
+      toast({
+        title: 'Đã gửi yêu cầu xuất bản',
+        description: 'Video đã được xếp hàng tải lên YouTube.',
+      });
+      setPublishStatus('queued');
+      if (onPublished) onPublished();
+
+      // Poll status
+      const deadline = Date.now() + 120000;
+      const poll = async () => {
+        try {
+          const st = await youtubeApi.getPublishStatus(outputId);
+          setPublishStatus(st?.status || 'queued');
+          if (st?.status === 'completed') {
+            toast({
+              title: 'Xuất bản thành công!',
+              description: st?.youtubeVideoUrl ? `Video đã xuất bản: ${st.youtubeVideoUrl}` : 'Video đã xuất bản lên kênh YouTube của bạn.',
+            });
+            if (onPublished) onPublished();
+            setTimeout(onClose, 2000);
+            return;
+          }
+          if (['failed', 'cancelled'].includes(st?.status)) {
+            toast({
+              variant: 'destructive',
+              title: 'Xuất bản thất bại',
+              description: st?.errorMessage || 'Quá trình tải lên YouTube gặp lỗi.',
+            });
+            if (onPublished) onPublished();
+            return;
+          }
+          if (Date.now() < deadline) setTimeout(poll, 3000);
+        } catch (_) {}
+      };
+      poll();
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Lỗi xuất bản YouTube',
+        description: err?.response?.data?.message || err.message,
+      });
+      setPublishing(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
+      <div className="rounded-2xl bg-card border border-border p-6 max-w-lg w-full shadow-2xl space-y-4">
+        <div className="flex items-center justify-between pb-2 border-b border-border/60">
+          <div className="flex items-center gap-2 text-foreground font-semibold">
+            <Youtube className="w-5 h-5 text-red-600" />
+            <span>Xuất bản video lên YouTube</span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground text-sm p-1 rounded-md transition"
+          >
+            ✕
+          </button>
+        </div>
+
+        {checking ? (
+          <div className="py-8 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+            <Loader2 className="w-6 h-6 animate-spin text-primary" />
+            <span className="text-xs">Đang kiểm tra liên kết tài khoản...</span>
+          </div>
+        ) : !account?.connected ? (
+          <div className="py-4 space-y-4 text-center">
+            <div className="w-12 h-12 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-foreground">Chưa kết nối kênh YouTube</h4>
+              <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
+                Bạn cần liên kết tài khoản Google có kênh YouTube trước khi có thể xuất bản video.
+              </p>
+            </div>
+            <div className="pt-2 flex items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl border border-border text-xs font-semibold hover:bg-muted transition"
+              >
+                Đóng
+              </button>
+              <Link
+                to="/settings"
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-semibold transition inline-flex items-center gap-1.5"
+              >
+                <Youtube className="w-3.5 h-3.5" />
+                <span>Đi tới Cài đặt để kết nối</span>
+              </Link>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="flex items-center gap-2 p-2.5 rounded-lg bg-muted/40 border border-border/70 text-xs">
+              <div className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+              <span className="text-muted-foreground">Kênh đích:</span>
+              <strong className="text-foreground truncate">{account.channelTitle || account.channelId || 'Kênh đã kết nối'}</strong>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-foreground block mb-1">Tiêu đề video</label>
+              <input
+                type="text"
+                name="title"
+                required
+                maxLength={100}
+                defaultValue={project.title || 'Video AI'}
+                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-xs sm:text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-foreground block mb-1">Mô tả video</label>
+              <textarea
+                name="description"
+                rows={3}
+                maxLength={5000}
+                placeholder="Mô tả nội dung video xuất bản..."
+                defaultValue={`Video được tạo tự động bởi Video_AI.\nChế độ: ${MODE_LABELS[project.mode] || project.mode}`}
+                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-xs sm:text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-foreground block mb-1">Tags (phân cách bằng dấu phẩy)</label>
+                <input
+                  type="text"
+                  name="tags"
+                  placeholder="video ai, review, thuyết minh"
+                  className="w-full px-3 py-2 rounded-lg bg-background border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-foreground block mb-1">Quyền riêng tư</label>
+                <select
+                  name="privacy"
+                  defaultValue="private"
+                  className="w-full px-3 py-2 rounded-lg bg-background border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option value="private">Riêng tư (Private)</option>
+                  <option value="unlisted">Không công khai (Unlisted)</option>
+                  <option value="public">Công khai (Public)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-2 pt-1">
+              <input
+                type="checkbox"
+                name="confirmed"
+                id="modal-yt-confirm"
+                required
+                className="mt-0.5 w-4 h-4 rounded text-primary focus:ring-primary"
+              />
+              <label htmlFor="modal-yt-confirm" className="text-xs text-muted-foreground cursor-pointer">
+                Tôi xác nhận video tuân thủ chính sách bản quyền và nguyên tắc cộng đồng của YouTube.
+              </label>
+            </div>
+
+            {publishStatus && (
+              <div className="p-3 rounded-lg bg-primary/10 border border-primary/20 text-xs flex items-center gap-2 text-primary">
+                <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                <span>Trạng thái xuất bản: <strong className="uppercase font-mono">{publishStatus}</strong></span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/60">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={publishing}
+                className="px-4 py-2 rounded-xl border border-border text-xs font-medium hover:bg-muted transition"
+              >
+                Huỷ
+              </button>
+              <button
+                type="submit"
+                disabled={publishing}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-semibold transition flex items-center gap-2 shadow-sm disabled:opacity-50"
+              >
+                {publishing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Youtube className="w-3.5 h-3.5" />}
+                <span>{publishing ? 'Đang gửi...' : 'Xuất bản ngay'}</span>
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
     </div>
   );
 }
@@ -2155,6 +2909,7 @@ function TranscriptEditor({
   // §7: chỉnh trực tiếp Original / Translation / Start / End. Không drag-and-drop.
   // edits: { [segmentId]: { text?, translation?, startSec?, endSec? } }
   const [edits, setEdits] = useState({});
+  const savingRef = useRef(false);
   const [localError, setLocalError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState('all'); // 'all' | 'dirty' | 'untranslated' | 'cached' | 'repaired' | 'warning' | 'qa'
@@ -2235,6 +2990,7 @@ function TranscriptEditor({
       });
 
   const handleSave = async () => {
+    if (savingRef.current) return; // chống double-click → stale response
     const payload = changedPayload();
     if (!payload.length) return;
     const err = validatePayload(payload);
@@ -2242,20 +2998,28 @@ function TranscriptEditor({
       setLocalError(err);
       return;
     }
-    const result = await onSave(payload);
-    if (result === null) return;
-    const savedIds = new Set(payload.map((p) => p.id));
-    setEdits((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      savedIds.forEach((id) => {
-        if (id in next) {
-          delete next[id];
-          changed = true;
-        }
+    savingRef.current = true;
+    try {
+      const result = await onSave(payload);
+      if (result === null) {
+        // conflict/stale: edits được giữ, thông báo đã hiển thị ở onSave
+        return;
+      }
+      const savedIds = new Set(payload.map((p) => p.id));
+      setEdits((prev) => {
+        const next = { ...prev };
+        let changed = false;
+        savedIds.forEach((id) => {
+          if (id in next) {
+            delete next[id];
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
       });
-      return changed ? next : prev;
-    });
+    } finally {
+      savingRef.current = false;
+    }
   };
 
   const handleRedub = async () => {

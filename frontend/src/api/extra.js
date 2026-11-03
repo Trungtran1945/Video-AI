@@ -18,8 +18,7 @@ export const providersApi = {
   // 1-request aggregate thay cho fan-out N quota() (docs/06 §5).
   // Backend trả { providers: {name: snapshot} } — QuotaBanner chuẩn hoá cả 2 dạng.
   quotaSummary: () => api.get('/providers/quota-summary').then((r) => r.data),
-  // Backend không có GET /providers/zerotts/health — dùng providersApi.list()
-  // (tts[].id === 'zerotts' + health) hoặc quota-summary thay thế.
+  health: (provider) => api.get(`/providers/${provider}/health`).then((r) => r.data),
 }
 
 export const settingsApi = {
