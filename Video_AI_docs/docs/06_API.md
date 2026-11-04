@@ -77,6 +77,7 @@ Body mẫu theo 3 chế độ:
 | DELETE | `/projects/:id` | Bearer | Xóa dự án và đẩy task dọn file vào outbox `project_cleanup_tasks` |
 | POST | `/projects/:id/cancel` | Bearer | Huỷ pipeline đang chạy an toàn (`status = 'cancelled'`) |
 | POST | `/projects/:id/regenerate` | Bearer | Chạy lại pipeline tự động hoặc từ một stage chỉ định (`{ fromStage?: string }`) |
+| PATCH | `/projects/:id/dubbing` | Bearer | Cấu hình động lồng tiếng & khớp thời gian cho project TRANSLATE_DUB: `{ enableDubbing, voiceProvider?, voiceId?, voiceName?, audioMode? }` → `{ params, outputStale, output }`. Chỉ owner, chỉ TRANSLATE_DUB, 409 khi pipeline đang chạy. |
 | GET | `/projects/:id/jobs` | Bearer | Trạng thái các stage `generation_jobs` của dự án |
 | POST | `/projects/:id/jobs/:type/retry` | Bearer | Thử lại thủ công một stage bị lỗi |
 | GET | `/projects/:id/timeline` | Bearer | Lấy danh sách `TimelineClip[]` (SUMMARY / SCRIPT_TO_VIDEO) |

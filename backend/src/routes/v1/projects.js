@@ -1021,6 +1021,77 @@ router.post('/:id/regenerate', requireProjectOwner, async (req, res) => {
   res.json({ message: 'Pipeline restarted', status: admission.project.status, ...(targetStage ? { fromStage: targetStage } : {}) })
 })
 
+// PATCH /api/v1/projects/:id/dubbing — đổi model/giọng TTS hoặc bật/tắt lồng tiếng
+// cho dub.ttsAlign sau khi project đã tạo (AC-D01..AC-D05).
+const VALID_VOICE_PROVIDERS = new Set(['voicestudio', 'edge_tts', 'elevenlabs', 'google_tts', 'azure_speech', 'openai_tts'])
+router.patch('/:id/dubbing', requireProjectOwner, async (req, res) => {
+  try {
+    const project = req.project
+    const mode = String(project.mode || '').toUpperCase().replace('-', '_')
+    if (mode !== 'TRANSLATE_DUB') {
+      return sendError(res, 400, ERR.VALIDATION, 'Chỉ hỗ trợ project TRANSLATE_DUB', { field: 'mode' })
+    }
+    if (isPipelineRunning(project.id)) {
+      return sendError(res, 409, 'PIPELINE_RUNNING', 'Pipeline đang chạy, hãy đợi hoàn tất rồi mới thay đổi lồng tiếng')
+    }
+    const b = req.body || {}
+    const params = parseProjectParams(project.params)
+
+    const hasEnable = b.enableDubbing !== undefined
+    const newEnable = hasEnable ? Boolean(b.enableDubbing) : (params.enableDubbing ?? false)
+
+    let voiceProvider = params.voiceProvider || null
+    if (b.voiceProvider !== undefined) voiceProvider = String(b.voiceProvider).trim() || null
+    if (newEnable) {
+      if (!voiceProvider) voiceProvider = 'edge_tts'
+      if (!VOICE_ID_RE.test(voiceProvider) || !VALID_VOICE_PROVIDERS.has(voiceProvider)) {
+        return sendError(res, 400, ERR.VALIDATION, 'voiceProvider không hợp lệ', { field: 'voiceProvider' })
+      }
+    }
+    let voiceId = b.voiceId !== undefined ? (b.voiceId == null || b.voiceId === '' ? null : String(b.voiceId)) : (params.voiceId ?? null)
+    if (voiceId && !VOICE_ID_RE.test(voiceId)) {
+      return sendError(res, 400, ERR.VALIDATION, 'voiceId không hợp lệ', { field: 'voiceId' })
+    }
+    if (newEnable && voiceId && voiceProvider === 'google_tts') {
+      return sendError(res, 400, 'SCRIPT_VOICE_UNSUPPORTED', 'google_tts không hỗ trợ chọn voiceId', { field: 'voiceId' })
+    }
+    const voiceName = b.voiceName !== undefined ? (b.voiceName == null ? null : String(b.voiceName).trim() || null) : (params.voiceName ?? null)
+
+    let audioMode = params.audioMode || (params.enableDubbing ? 'DUB_MIX' : 'ORIGINAL_ONLY')
+    if (b.audioMode !== undefined) {
+      if (!['ORIGINAL_ONLY', 'DUB_MIX', 'DUB_REPLACE'].includes(b.audioMode)) {
+        return sendError(res, 400, ERR.VALIDATION, 'audioMode không hợp lệ', { field: 'audioMode' })
+      }
+      audioMode = b.audioMode
+    }
+    if (!newEnable) audioMode = 'ORIGINAL_ONLY'
+    else if (audioMode === 'ORIGINAL_ONLY') audioMode = 'DUB_MIX'
+
+    const providerChanged = newEnable && voiceProvider !== (params.voiceProvider || null)
+
+    const nextParams = {
+      ...params,
+      enableDubbing: newEnable,
+      voiceProvider: newEnable ? voiceProvider : params.voiceProvider,
+      voiceId: newEnable ? voiceId : params.voiceId,
+      voiceName: newEnable ? voiceName : params.voiceName,
+      audioMode,
+    }
+
+    await run('UPDATE projects SET params = ? WHERE id = ?', [JSON.stringify(nextParams), project.id])
+
+    if (providerChanged || !newEnable) {
+      await run('UPDATE transcript_segments SET tts_audio_id = NULL, tts_clip_key = NULL WHERE project_id = ?', [project.id])
+    }
+
+    const state = await getOutputState(project.id)
+    res.json({ params: nextParams, outputStale: state.outputStale, output: state.output })
+  } catch (err) {
+    console.error('Update dubbing config error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
 // DELETE /api/v1/projects/:id
 router.delete('/:id', async (req, res) => {
   try {

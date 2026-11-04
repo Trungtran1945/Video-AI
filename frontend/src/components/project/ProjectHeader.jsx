@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Trash2, XCircle, RotateCcw, Loader2, Play, Download, AlertCircle, ChevronDown, Youtube } from 'lucide-react';
+import { ArrowLeft, Trash2, XCircle, RotateCcw, Loader2, Play, Download, AlertCircle, ChevronDown, Youtube, AudioLines } from 'lucide-react';
 import { StatusBadge } from '@/lib/constants';
 
 export default function ProjectHeader({
@@ -14,6 +14,8 @@ export default function ProjectHeader({
   onCancel,
   onRegenerate,
   onPublishYoutube,
+  onToggleDubConfig = null,
+  isDubConfigHidden = false,
 }) {
   const [showRerunMenu, setShowRerunMenu] = useState(false);
   const menuRef = useRef(null);
@@ -33,10 +35,11 @@ export default function ProjectHeader({
   const isDubMode = project?.mode === 'TRANSLATE_DUB';
   const isScriptMode = project?.mode === 'SCRIPT_TO_VIDEO';
   const stagePickerEnabled = project?.status !== 'queued';
+  const enableDub = project?.params?.enableDubbing !== false && project?.params?.enable_dubbing !== false;
   const stageOptions = isDubMode ? [
     { label: 'Tự động (tiếp tục theo tiến độ)', stage: null },
     { label: 'Từ bước Dịch thuật', stage: 'dub.translate' },
-    { label: 'Từ bước Lồng tiếng (TTS)', stage: 'dub.ttsAlign' },
+    ...(enableDub ? [{ label: 'Từ bước Lồng tiếng (TTS)', stage: 'dub.ttsAlign' }] : []),
     { label: 'Từ bước Render video', stage: 'dub.render' },
   ] : isScriptMode ? [
     { label: 'Tự động (tiếp tục theo tiến độ)', stage: null },
@@ -77,6 +80,16 @@ export default function ProjectHeader({
               <XCircle className="w-3.5 h-3.5" /> Huỷ
             </button>
           )}
+          {isDubMode && onToggleDubConfig && isDubConfigHidden && (
+            <button
+              type="button"
+              onClick={onToggleDubConfig}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-primary/30 text-primary hover:bg-primary/10 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              title="Mở cài đặt Lồng tiếng AI"
+            >
+              <AudioLines className="w-3.5 h-3.5" /> Lồng tiếng AI
+            </button>
+          )}
           {canRegenerate && (
             <div className="relative inline-flex items-center" ref={menuRef}>
               <button
@@ -100,7 +113,7 @@ export default function ProjectHeader({
                   </button>
                   {showRerunMenu && (
                     <div className="absolute top-full right-0 mt-1 w-56 py-1 bg-card border border-border rounded-lg shadow-xl z-50 animate-in fade-in zoom-in-95 duration-100">
-                      <div className="px-3 py-1.5 text-[11px] font-semibold text-muted-foreground border-b border-border/50 uppercase tracking-wider">
+                      <div className="px-3 py-1.5 text-xs font-semibold text-muted-foreground border-b border-border/50">
                         Chạy lại theo giai đoạn
                       </div>
                       {stageOptions.map((opt) => (

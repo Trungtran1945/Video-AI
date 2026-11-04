@@ -8,7 +8,7 @@ import { VideoTimeline } from '@/components/timeline';
 import MaskEditor from '@/components/MaskEditor';
 import { useTimelineStore } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, AlertTriangle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap, Save, Youtube, ExternalLink, Pencil, Copy } from 'lucide-react';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, AlertTriangle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap, Save, Youtube, ExternalLink, Pencil, Copy, ChevronDown, ChevronUp, EyeOff, SlidersHorizontal } from 'lucide-react';
 import { STAGE_LABELS, SCRIPT_STAGES, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, AUDIO_MODE_LABELS, ACTIVE_STATUSES as SHARED_ACTIVE_STATUSES, isCompletedStatus } from '@/lib/constants';
 import { friendlyJobError } from '@/lib/providerErrorMessage';
 import { resolveStorageUrl } from '@/lib/apiBase';
@@ -96,7 +96,6 @@ export default function ProjectDetail() {
   const [redubbing, setRedubbing] = useState(false);
   const [retranslatingSegmentId, setRetranslatingSegmentId] = useState(null);
   const [redubbingSegmentId, setRedubbingSegmentId] = useState(null);
-  const [quotaCountdown, setQuotaCountdown] = useState(0);
   const quotaBackoffUntilRef = useRef(0);
   const [outputStale, setOutputStale] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -152,6 +151,30 @@ export default function ProjectDetail() {
   const params = project?.params || {};
   const enableDubbing = params.enableDubbing ?? params.enable_dubbing ?? false;
 
+  const [dubConfig, setDubConfig] = useState({
+    enableDubbing: Boolean(enableDubbing),
+    voiceProvider: params.voiceProvider || params.voice_provider || 'edge_tts',
+    voiceId: params.voiceId || params.voice_id || '',
+    voiceName: params.voiceName || params.voice_name || '',
+    audioMode: params.audioMode || params.audio_mode || (enableDubbing ? 'DUB_MIX' : 'ORIGINAL_ONLY'),
+  });
+  const [applyingDubConfig, setApplyingDubConfig] = useState(false);
+  const [isDubConfigExpanded, setIsDubConfigExpanded] = useState(false);
+  const [isDubConfigHidden, setIsDubConfigHidden] = useState(false);
+
+  useEffect(() => {
+    if (!project?.params) return;
+    const p = project.params || {};
+    const ed = p.enableDubbing ?? p.enable_dubbing ?? false;
+    setDubConfig({
+      enableDubbing: Boolean(ed),
+      voiceProvider: p.voiceProvider || p.voice_provider || 'edge_tts',
+      voiceId: p.voiceId || p.voice_id || '',
+      voiceName: p.voiceName || p.voice_name || '',
+      audioMode: p.audioMode || p.audio_mode || (ed ? 'DUB_MIX' : 'ORIGINAL_ONLY'),
+    });
+  }, [project?.params]);
+
   const stages = useMemo(() => {
     if (isDub) {
       return DUB_STAGES_ALL.filter((s) => {
@@ -177,12 +200,17 @@ export default function ProjectDetail() {
     return map;
   }, [jobs, sseEvents]);
 
-  // Nhận biết stage lỗi ngay lập tức
+  // 1. Nhận biết stage lỗi ngay lập tức
   const hasFailedStage = useMemo(() => {
     return stages.some((s) => ['failed', 'error', 'timeout'].includes(jobByStage[s]?.status));
   }, [stages, jobByStage]);
 
-  // Trạng thái tổng quát: ưu tiên failed nếu có stage failed; phản ánh nhanh terminal SSE
+  // 2. Nhận diện stage đang thực sự chạy mã nguồn
+  const activeRunningStage = useMemo(() => {
+    return stages.find((s) => jobByStage[s]?.status === 'running') || null;
+  }, [stages, jobByStage]);
+
+  // 3. Trạng thái tổng quát: ưu tiên failed nếu có stage failed; phản ánh nhanh terminal SSE
   const effectiveStatus = useMemo(() => {
     if (hasFailedStage) return 'failed';
     if (lastEvent?.stage === '__project__' && lastEvent.status) {
@@ -191,12 +219,41 @@ export default function ProjectDetail() {
     return project?.status;
   }, [hasFailedStage, lastEvent, project?.status]);
 
-  // Pipeline chỉ active khi đang trong ACTIVE_STATUSES và KHÔNG có stage nào bị failed
+  // 4. Pipeline THỰC SỰ ĐANG CHẠY (chỉ khi có stage running hoặc status là running/generating và chưa fail/complete/cancel)
+  const isPipelineActivelyRunning = Boolean(
+    (activeRunningStage || effectiveStatus === 'running' || effectiveStatus === 'generating') &&
+    !hasFailedStage &&
+    effectiveStatus !== 'completed' &&
+    effectiveStatus !== 'failed' &&
+    effectiveStatus !== 'cancelled'
+  );
+
+  // Pipeline active tổng quát (giữ tương thích các luồng polling & cancel)
   const isActive = Boolean(
     effectiveStatus &&
     ACTIVE_STATUSES.includes(effectiveStatus) &&
     !hasFailedStage
   );
+
+  // 5. Khóa cấu hình lồng tiếng CHỈ khi pipeline thực sự đang chạy hoặc đang apply/rerun
+  const isDubbingLocked = isPipelineActivelyRunning || regenerating || applyingDubConfig;
+
+  // 6. Tính toán tiến trình chuẩn xác (computedProgress)
+  const computedProgress = useMemo(() => {
+    if (effectiveStatus === 'completed') return 100;
+    if (!stages.length) return project?.progress || 0;
+
+    const completedCount = stages.filter((s) => {
+      const status = jobByStage[s]?.status;
+      return status === 'success' || status === 'completed' || status === 'skipped';
+    }).length;
+
+    const runningJob = activeRunningStage ? jobByStage[activeRunningStage] : null;
+    const currentStageFraction = runningJob?.progress ? Math.min(99, Math.max(0, runningJob.progress)) / 100 : 0;
+
+    const calculated = Math.round(((completedCount + currentStageFraction) / stages.length) * 100);
+    return Math.min(99, Math.max(project?.progress || 0, calculated));
+  }, [effectiveStatus, stages, jobByStage, activeRunningStage, project?.progress]);
 
   // §1: output chỉ available khi pipeline COMPLETED + output success + artifact hợp lệ.
   // Lúc pending/queued/running/generating (hoặc failed) KHÔNG hiển thị output cũ.
@@ -410,11 +467,9 @@ export default function ProjectDetail() {
         const nr = new Date(retryJob.next_retry_at || retryJob.nextRetryAt).getTime();
         if (!isNaN(nr) && nr > Date.now()) {
           quotaBackoffUntilRef.current = nr;
-          setQuotaCountdown(Math.ceil((nr - Date.now()) / 1000));
         }
       } else if (quotaBackoffUntilRef.current <= Date.now()) {
         quotaBackoffUntilRef.current = 0;
-        setQuotaCountdown(0);
       }
 
       if (['completed', 'failed', 'cancelled'].includes(p.status)) {
@@ -431,7 +486,6 @@ export default function ProjectDetail() {
       if (e?.response?.status === 429) {
         const waitSec = Number(e?.response?.data?.retryAfterSec || e?.response?.headers?.['retry-after'] || 60);
         quotaBackoffUntilRef.current = Date.now() + waitSec * 1000;
-        setQuotaCountdown(waitSec);
       }
       // Phân biệt 404/403/500 — render ErrorState + nút Tải lại, không gộp error=empty.
       setLoadError(e);
@@ -519,18 +573,7 @@ export default function ProjectDetail() {
 
 
 
-  // Quota Countdown realtime timer (cập nhật 1s)
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (quotaBackoffUntilRef.current > Date.now()) {
-        setQuotaCountdown(Math.ceil((quotaBackoffUntilRef.current - Date.now()) / 1000));
-      } else if (quotaCountdown > 0) {
-        setQuotaCountdown(0);
-        quotaBackoffUntilRef.current = 0;
-      }
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [quotaCountdown]);
+
 
 
   useEffect(() => {
@@ -680,6 +723,47 @@ export default function ProjectDetail() {
       setError('Không thể chạy lại pipeline: ' + (e?.response?.data?.message || e?.response?.data?.error?.message || e.message));
     } finally {
       setRegenerating(false);
+    }
+  };
+
+  const handleApplyDubConfig = async () => {
+    if (isDubbingLocked) return;
+    setApplyingDubConfig(true);
+    setError('');
+    try {
+      const body = {
+        enableDubbing: Boolean(dubConfig.enableDubbing),
+        voiceProvider: dubConfig.voiceProvider,
+        voiceId: dubConfig.voiceId || null,
+        voiceName: dubConfig.voiceName || null,
+        audioMode: dubConfig.audioMode,
+      };
+      await projectsApi.updateDubbing(id, body);
+      await load();
+      const nextStage = dubConfig.enableDubbing ? 'dub.ttsAlign' : 'dub.render';
+      try {
+        await projectsApi.regenerate(id, nextStage);
+      } catch (e) {
+        if (e?.response?.status !== 409) console.warn('Regenerate after dubbing update note:', e);
+      }
+      await load();
+      toast({ title: 'Đã cập nhật lồng tiếng', description: dubConfig.enableDubbing ? 'Đang chạy lại bước khớp thời gian...' : 'Đang render với tiếng gốc...' });
+      setIsDubConfigExpanded(false);
+    } catch (e) {
+      const httpStatus = e?.response?.status;
+      const code = e?.response?.data?.code || e?.response?.data?.error?.code;
+      if (httpStatus === 409 && code === 'PIPELINE_RUNNING') {
+        toast({ title: 'Pipeline đang chạy', description: 'Đợi bước hiện tại kết thúc rồi thử lại.' });
+        await load();
+        return;
+      }
+      toast({
+        variant: 'destructive',
+        title: 'Không thể cập nhật lồng tiếng',
+        description: e?.response?.data?.message || e?.response?.data?.error?.message || e.message,
+      });
+    } finally {
+      setApplyingDubConfig(false);
     }
   };
 
@@ -1114,7 +1198,7 @@ export default function ProjectDetail() {
       <Layout>
         <div className="p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
           <ProjectHeader project={project} canCancel={canCancel} canRegenerate={canRegenerate} onCancel={handleCancel} onRegenerate={handleRegenerate} onPublishYoutube={() => setShowYoutubeModal(true)} />
-          <PipelineStatus progress={project.progress} isActive={isActive} sseAvailable={sseAvailable} stages={stages} jobByStage={jobByStage} onRetry={handleRetryStage} redisStatus={redisStatus} />
+          <PipelineStatus progress={computedProgress} isActive={isPipelineActivelyRunning} sseAvailable={sseAvailable} stages={stages} jobByStage={jobByStage} onRetry={handleRetryStage} redisStatus={redisStatus} />
 
           <div className="rounded-2xl bg-amber-500/10 border border-amber-500/20 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
@@ -1226,12 +1310,17 @@ export default function ProjectDetail() {
             onCancel={handleCancel}
             onRegenerate={handleRegenerate}
             onPublishYoutube={() => setShowYoutubeModal(true)}
+            onToggleDubConfig={() => {
+              setIsDubConfigHidden(false);
+              setIsDubConfigExpanded(true);
+            }}
+            isDubConfigHidden={isDubConfigHidden}
           />
 
           {/* 2. Pipeline Progress */}
           <PipelineStatus
-            progress={project.progress}
-            isActive={isActive}
+            progress={computedProgress}
+            isActive={isPipelineActivelyRunning}
             sseAvailable={sseAvailable}
             stages={stages}
             jobByStage={jobByStage}
@@ -1240,30 +1329,199 @@ export default function ProjectDetail() {
             redisStatus={redisStatus}
           />
 
-          {/* Banner Cảnh báo Quota & Countdown Timer trực quan */}
-          {quotaCountdown > 0 && (
-            <div className="shrink-0 bg-amber-500/15 border-b border-amber-500/30 px-4 py-2.5 text-xs text-amber-900 dark:text-amber-200">
-              <div className="flex items-center justify-between gap-3 max-w-7xl mx-auto flex-wrap">
-                <div className="flex items-center gap-2.5">
-                  <Clock className="w-4 h-4 text-amber-500 animate-pulse shrink-0" />
-                  <div>
-                    <span className="font-bold">Đang tạm dừng bảo vệ hạn ngạch API (Rate Limit 429)</span>
-                    <span className="ml-2 text-amber-800 dark:text-amber-300">
-                      Hệ thống tự động hoãn polling để tránh bão request và sẽ tiếp tục sau khi hết thời gian chờ.
-                    </span>
+          {/* Panel Lồng tiếng & khớp thời gian (Collapsible & Hideable - AC-04, AC-05) */}
+          {!isDubConfigHidden && (
+            !isDubConfigExpanded ? (
+              /* Trạng thái thu gọn (Default/Collapsed) ~34px: không che khuất video hay transcript */
+              <div className="shrink-0 bg-card border-b border-border/80 px-4 py-2 transition-all">
+                <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <AudioLines className="w-4 h-4 text-primary shrink-0" />
+                    <span className="font-semibold text-foreground shrink-0">Lồng tiếng AI:</span>
+                    {dubConfig.enableDubbing ? (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25 font-medium truncate">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                        <span className="truncate">
+                          Đang bật: {VOICE_PROVIDER_LABELS[dubConfig.voiceProvider] || dubConfig.voiceProvider}
+                          {dubConfig.voiceName ? ` (${dubConfig.voiceName})` : ''} • {AUDIO_MODE_LABELS[dubConfig.audioMode] || dubConfig.audioMode}
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-muted text-muted-foreground border border-border/60 font-medium truncate">
+                        <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/60 shrink-0" />
+                        <span className="truncate">Đã xoá khỏi pipeline (Chỉ giữ âm thanh gốc & phụ đề)</span>
+                      </span>
+                    )}
                   </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-muted-foreground">Tự động tiếp tục sau:</span>
-                  <div className="px-2.5 py-0.5 rounded-md bg-amber-500/25 border border-amber-500/40 font-mono font-bold text-xs text-amber-950 dark:text-amber-100">
-                    {quotaCountdown}s
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setIsDubConfigExpanded(true)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-muted/60 hover:bg-muted text-foreground border border-border/70 text-xs font-medium transition"
+                      title="Mở rộng cài đặt"
+                    >
+                      <SlidersHorizontal className="w-3.5 h-3.5 text-primary" />
+                      <span>Đổi model / Cài đặt</span>
+                      <ChevronDown className="w-3.5 h-3.5 opacity-70" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsDubConfigHidden(true)}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground text-xs transition"
+                      title="Ẩn thanh lồng tiếng để mở rộng không gian"
+                    >
+                      <EyeOff className="w-3.5 h-3.5" />
+                      <span>Ẩn</span>
+                    </button>
                   </div>
                 </div>
               </div>
-            </div>
+            ) : (
+              /* Trạng thái mở rộng chi tiết (Expanded) */
+              <div className="shrink-0 bg-card border-b border-border px-4 py-3 shadow-xs">
+                <div className="max-w-7xl mx-auto space-y-3">
+                  <div className="flex items-center justify-between pb-1 border-b border-border/40">
+                    <div className="flex items-center gap-2">
+                      <AudioLines className="w-4 h-4 text-primary" />
+                      <h3 className="text-sm font-bold text-foreground">Lồng tiếng & khớp thời gian</h3>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setIsDubConfigExpanded(false)}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground text-xs font-medium transition"
+                        title="Thu gọn lại thành thanh mỏng"
+                      >
+                        <ChevronUp className="w-3.5 h-3.5" />
+                        <span>Thu gọn</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsDubConfigExpanded(false);
+                          setIsDubConfigHidden(true);
+                        }}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground text-xs font-medium transition"
+                        title="Ẩn hoàn toàn thanh lồng tiếng"
+                      >
+                        <EyeOff className="w-3.5 h-3.5" />
+                        <span>Ẩn</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-2 text-xs font-medium cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        className="rounded border-input text-primary focus:ring-primary w-4 h-4"
+                        checked={dubConfig.enableDubbing}
+                        disabled={isDubbingLocked}
+                        onChange={(e) => setDubConfig((c) => ({ ...c, enableDubbing: e.target.checked }))}
+                      />
+                      <span className="font-semibold text-foreground">Bật lồng tiếng AI</span>
+                    </label>
+                    <span className="text-[11px] text-muted-foreground">
+                      (Bỏ chọn để xoá khỏi pipeline, chỉ tạo video với âm thanh gốc và phụ đề)
+                    </span>
+                  </div>
+
+                  {dubConfig.enableDubbing && (
+                    <div className="space-y-3 pt-1">
+                      <div>
+                        <label className="text-xs font-semibold text-foreground mb-1.5 block">Nhà cung cấp TTS</label>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2">
+                          {Object.entries(VOICE_PROVIDER_LABELS).map(([code, label]) => (
+                            <button
+                              key={code}
+                              type="button"
+                              disabled={isDubbingLocked}
+                              onClick={() => setDubConfig((c) => ({ ...c, voiceProvider: code }))}
+                              className={`px-2.5 py-1.5 text-xs rounded-md border transition-all ${
+                                dubConfig.voiceProvider === code
+                                  ? 'bg-primary text-primary-foreground border-primary font-medium shadow-xs'
+                                  : 'bg-muted/40 hover:bg-muted text-muted-foreground hover:text-foreground border-border'
+                              } disabled:opacity-50 disabled:cursor-not-allowed`}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-xs font-semibold text-foreground mb-1.5 block">Tên giọng / Voice ID (tuỳ chọn)</label>
+                          <input
+                            value={dubConfig.voiceName}
+                            disabled={isDubbingLocked}
+                            onChange={(e) => setDubConfig((c) => ({ ...c, voiceName: e.target.value }))}
+                            placeholder="VD: vi-VN-HoaiMyNeural, Rachel, Adam..."
+                            className="w-full px-3 py-1.5 rounded-md bg-background border border-input text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs font-semibold text-foreground mb-1.5 block">Chế độ âm thanh</label>
+                          <div className="flex gap-2">
+                            {['DUB_MIX', 'DUB_REPLACE'].map((m) => (
+                              <button
+                                key={m}
+                                type="button"
+                                disabled={isDubbingLocked}
+                                onClick={() => setDubConfig((c) => ({ ...c, audioMode: m }))}
+                                className={`flex-1 px-2.5 py-1.5 text-xs rounded-md border transition-all ${
+                                  dubConfig.audioMode === m
+                                    ? 'bg-primary text-primary-foreground border-primary font-medium shadow-xs'
+                                    : 'bg-muted/40 hover:bg-muted text-muted-foreground hover:text-foreground border-border'
+                                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                              >
+                                {AUDIO_MODE_LABELS[m]}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between pt-1">
+                    <div className="text-[11px] text-muted-foreground">
+                      {isPipelineActivelyRunning ? 'Đang thực thi pipeline — vui lòng đợi để chỉnh sửa' : 'Nhấn Áp dụng để lưu cấu hình và tự động chạy lại pipeline.'}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsDubConfigExpanded(false)}
+                        className="px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-foreground text-xs font-medium transition"
+                      >
+                        Thu gọn
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isDubbingLocked}
+                        onClick={handleApplyDubConfig}
+                        className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold shadow-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {applyingDubConfig ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Đang áp dụng...</span>
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle className="w-3.5 h-3.5" />
+                            <span>Áp dụng & chạy lại</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )
           )}
 
-          {/* Section preview & Confirm preview (FR-J2) */}
+          {/* Section preview & Confirm preview */}
           {isDub && isTranslateSuccess && (
             <div className="shrink-0 bg-card border-b border-border px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap shadow-xs">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -1272,7 +1530,7 @@ export default function ProjectDetail() {
                 </div>
                 <div className="min-w-0">
                   <div className="text-xs font-bold text-foreground flex items-center gap-2">
-                    <span>Xem trước & Xác nhận (FR-J2)</span>
+                    <span>Xem trước Video & Phụ đề Dịch</span>
                     {isPreviewConfirmed && (
                       <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 text-[10px] font-semibold border border-emerald-500/20 flex items-center gap-1">
                         <CheckCircle className="w-3 h-3" /> Đã xác nhận
@@ -1380,7 +1638,7 @@ export default function ProjectDetail() {
 
             {/* Right Panel: Tabs (Video thành phẩm / Che chữ / Thông số) */}
             <div className="w-[42%] max-md:w-full flex flex-col min-h-0 bg-card border-l border-border max-md:border-l-0">
-              {/* Tab Navigation — numbered workflow tabs (TransFlow-inspired IA) */}
+              {/* Tab Navigation — clean studio workflow tabs */}
               <div className="shrink-0 flex items-center justify-between border-b border-border bg-muted/20 px-3 py-2">
                 <div className="flex items-center gap-1">
                   <button
@@ -1392,10 +1650,9 @@ export default function ProjectDetail() {
                         : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
                     }`}
                   >
-                    <span className="font-mono font-bold opacity-60">1</span>
                     <Video className="w-3.5 h-3.5 text-primary" />
                     <span>Xem video</span>
-                    <span className={`w-1.5 h-1.5 rounded-full ${outputUrl ? 'bg-emerald-500' : isActive ? 'bg-primary animate-pulse' : 'bg-muted-foreground/40'}`} />
+                    <span className={`w-1.5 h-1.5 rounded-full ${outputUrl ? 'bg-emerald-500' : isPipelineActivelyRunning ? 'bg-primary animate-pulse' : 'bg-muted-foreground/40'}`} />
                   </button>
                   <button
                     type="button"
@@ -1406,7 +1663,6 @@ export default function ProjectDetail() {
                         : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
                     }`}
                   >
-                    <span className="font-mono font-bold opacity-60">2</span>
                     <Scissors className="w-3.5 h-3.5 text-primary" />
                     <span>Che chữ (Mask)</span>
                     {outputStale && <span className="w-1.5 h-1.5 rounded-full bg-amber-500" title="Mask đổi chưa render lại" />}
@@ -1420,7 +1676,6 @@ export default function ProjectDetail() {
                         : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
                     }`}
                   >
-                    <span className="font-mono font-bold opacity-60">3</span>
                     <Info className="w-3.5 h-3.5 text-primary" />
                     <span>Thông số</span>
                   </button>
@@ -1436,17 +1691,16 @@ export default function ProjectDetail() {
               <div className="flex-1 min-h-0 overflow-y-auto">
                 {activeRightTab === 'video' && (
                   <div className="h-full flex flex-col p-3">
-                    {isActive ? (
+                    {isPipelineActivelyRunning ? (
                       <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
                         <Loader2 className="w-8 h-8 animate-spin text-primary" />
                         <div className="text-sm font-semibold text-foreground">
-                          Đang xử lý{typeof project.progress === 'number' ? ` — ${project.progress}%` : ''}
+                          Đang xử lý — {computedProgress}%
                         </div>
                         <div className="text-xs text-muted-foreground">
                           {(() => {
-                            const cur = stages.map((k) => ({ key: k, job: jobByStage[k] })).find((s) => s.job?.status === 'running');
-                            const label = cur ? (STAGE_LABELS[cur.key]?.label || cur.key) : 'Chuẩn bị pipeline';
-                            return `Stage hiện tại: ${label}`;
+                            const label = activeRunningStage ? (STAGE_LABELS[activeRunningStage]?.label || activeRunningStage) : 'Chuẩn bị pipeline';
+                            return `Bước hiện tại: ${label}`;
                           })()}
                         </div>
                         <div className="text-[11px] text-muted-foreground/70 max-w-[260px]">
@@ -1462,7 +1716,7 @@ export default function ProjectDetail() {
                           />
                         )}
                         {/* Video Container */}
-                        <div className="relative flex-1 min-h-[220px] bg-black rounded-xl overflow-hidden group">
+                        <div className="relative flex-1 min-h-[220px] bg-black rounded-xl overflow-hidden group border border-border/40 shadow-xs">
                           <video
                             ref={videoRef}
                             id="output-video"
@@ -1481,7 +1735,7 @@ export default function ProjectDetail() {
                                 onClick={handlePlayPause}
                                 className="absolute inset-0 flex items-center justify-center z-10"
                               >
-                                <div className="w-14 h-14 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/10 hover:bg-white/30 transition-colors">
+                                <div className="w-14 h-14 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/10 hover:bg-white/30 transition-colors shadow-lg">
                                   <Play className="w-6 h-6 text-white fill-white ml-1" />
                                 </div>
                               </motion.button>
@@ -1498,7 +1752,7 @@ export default function ProjectDetail() {
                                 onClick={handlePlayPause}
                                 className="absolute inset-0 flex items-center justify-center z-10"
                               >
-                                <div className="w-14 h-14 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center border border-white/10">
+                                <div className="w-14 h-14 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center border border-white/10 shadow-lg">
                                   <Pause className="w-6 h-6 text-white" />
                                 </div>
                               </motion.button>
@@ -1514,7 +1768,7 @@ export default function ProjectDetail() {
                     ) : sourceUrl && isTranslateSuccess ? (
                       <div className="flex-1 flex flex-col min-h-0 gap-2">
                         {/* Video Container (Source video for preview) */}
-                        <div className="relative flex-1 min-h-[220px] bg-black rounded-xl overflow-hidden group">
+                        <div className="relative flex-1 min-h-[220px] bg-black rounded-xl overflow-hidden group border border-border/40 shadow-xs">
                           <video
                             ref={videoRef}
                             id="output-video"
@@ -1541,7 +1795,7 @@ export default function ProjectDetail() {
                                 onClick={handlePlayPause}
                                 className="absolute inset-0 flex items-center justify-center z-10"
                               >
-                                <div className="w-14 h-14 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/10 hover:bg-white/30 transition-colors">
+                                <div className="w-14 h-14 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center border border-white/10 hover:bg-white/30 transition-colors shadow-lg">
                                   <Play className="w-6 h-6 text-white fill-white ml-1" />
                                 </div>
                               </motion.button>
@@ -1558,7 +1812,7 @@ export default function ProjectDetail() {
                                 onClick={handlePlayPause}
                                 className="absolute inset-0 flex items-center justify-center z-10"
                               >
-                                <div className="w-14 h-14 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center border border-white/10">
+                                <div className="w-14 h-14 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center border border-white/10 shadow-lg">
                                   <Pause className="w-6 h-6 text-white" />
                                 </div>
                               </motion.button>
@@ -1573,11 +1827,57 @@ export default function ProjectDetail() {
                           </span>
                         </div>
                       </div>
+                    ) : effectiveStatus === 'queued' || effectiveStatus === 'pending' ? (
+                      <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center text-muted-foreground">
+                        <div className="w-12 h-12 rounded-2xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center mb-1">
+                          <Clock className="w-6 h-6" />
+                        </div>
+                        <div className="text-sm font-semibold text-foreground">
+                          {effectiveStatus === 'queued' ? 'Dự án đang trong hàng đợi chờ xử lý' : 'Dự án sẵn sàng khởi chạy'}
+                        </div>
+                        <p className="text-xs max-w-xs text-muted-foreground">
+                          {effectiveStatus === 'queued'
+                            ? 'Worker sẽ tự động tiếp nhận và thực thi khi tài nguyên sẵn sàng.'
+                            : 'Nhấn Chạy lại ở thanh công cụ phía trên để bắt đầu tiến trình.'}
+                        </p>
+                        {canRegenerate && (
+                          <button
+                            type="button"
+                            onClick={() => handleRegenerate()}
+                            disabled={regenerating}
+                            className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold shadow-xs transition"
+                          >
+                            <Play className="w-3.5 h-3.5 fill-current" /> Bắt đầu ngay
+                          </button>
+                        )}
+                      </div>
+                    ) : effectiveStatus === 'failed' ? (
+                      <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center text-muted-foreground">
+                        <div className="w-12 h-12 rounded-2xl bg-destructive/10 text-destructive flex items-center justify-center mb-1">
+                          <AlertCircle className="w-6 h-6" />
+                        </div>
+                        <div className="text-sm font-semibold text-foreground">
+                          Tiến trình tạm dừng do có bước gặp sự cố
+                        </div>
+                        <p className="text-xs max-w-xs text-muted-foreground">
+                          Xem chi tiết lỗi trên thanh tiến trình hoặc nhấn nút bên dưới để thử lại.
+                        </p>
+                        {canRegenerate && (
+                          <button
+                            type="button"
+                            onClick={() => handleRegenerate()}
+                            disabled={regenerating}
+                            className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-destructive/30 text-destructive hover:bg-destructive/10 text-xs font-semibold transition"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" /> Chạy lại
+                          </button>
+                        )}
+                      </div>
                     ) : (
                       <div className="flex-1 flex flex-col items-center justify-center gap-2 p-6 text-center text-muted-foreground">
                         <Video className="w-10 h-10 text-muted-foreground/30 mb-1" />
                         <span className="text-sm font-medium text-foreground">Chưa có video output</span>
-                        <span className="text-xs max-w-xs">Nhấn "Chạy lại" hoặc "Lồng tiếng lại" từ bảng bên trái để xuất video thành phẩm.</span>
+                        <span className="text-xs max-w-xs">Nhấn "Chạy lại" từ thanh công cụ để bắt đầu xuất bản video thành phẩm.</span>
                       </div>
                     )}
                   </div>
@@ -1598,7 +1898,7 @@ export default function ProjectDetail() {
                 {activeRightTab === 'info' && (
                   <div className="p-4 space-y-4">
                     <div className="rounded-xl bg-card border border-border p-4 space-y-3">
-                      <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Thông tin dự án</h4>
+                      <h4 className="text-xs font-semibold text-foreground">Thông tin dự án</h4>
                       <div className="space-y-2 text-xs">
                         <div className="flex justify-between items-center py-1.5 border-b border-border/40">
                           <span className="text-muted-foreground">Chế độ</span>
@@ -1667,7 +1967,7 @@ export default function ProjectDetail() {
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
                               <Zap className="w-4 h-4 text-emerald-500" />
-                              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                              <span className="text-xs font-semibold text-foreground">
                                 Lồng tiếng & Tối ưu Cache (TTS)
                               </span>
                             </div>
@@ -1715,7 +2015,7 @@ export default function ProjectDetail() {
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <BookOpen className="w-4 h-4 text-primary" />
-                          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                          <span className="text-xs font-semibold text-foreground">
                             Bảng thuật ngữ cố định (Glossary)
                           </span>
                         </div>

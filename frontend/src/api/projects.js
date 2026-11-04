@@ -7,6 +7,7 @@ export const projectsApi = {
   // GET /projects/:id đã kèm timeline — endpoint timeline rời không có call-site → gỡ.
   regenerate: (id, fromStage) =>
     api.post(`/projects/${id}/regenerate`, fromStage ? { fromStage } : {}).then((r) => r.data),
+  updateDubbing: (id, body) => api.patch(`/projects/${id}/dubbing`, body).then((r) => r.data),
   remove: (id) => api.delete(`/projects/${id}`).then((r) => r.data),
   // Pipeline tự chạy sau POST /projects; chạy lại dùng regenerate()/retryJob()/redub().
   // Hai endpoint start thủ công của backend không có nút UI nào gọi → gỡ khỏi client.

@@ -1,4 +1,3 @@
-import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import {
   FileText, Scissors, Sparkles, Combine, Mic, Captions, Video, FileAudio,
@@ -44,54 +43,6 @@ export default function PipelineStatus({
   retryingStage = null,
   redisStatus = null, // 'connected' | 'disconnected' | null (từ GET /health)
 }) {
-  // Find any stage that is in retry status awaiting quota recovery
-  const activeRetryStageKey = stages.find((s) => jobByStage[s]?.status === 'retry');
-  const activeRetryJob = activeRetryStageKey ? jobByStage[activeRetryStageKey] : null;
-  const nextRetryTimestamp = activeRetryJob?.next_retry_at || activeRetryJob?.nextRetryAt;
-
-  // Realtime countdown timer (cập nhật từng giây)
-  const [retryCountdownSec, setRetryCountdownSec] = useState(0);
-
-  useEffect(() => {
-    if (!nextRetryTimestamp) {
-      setRetryCountdownSec(0);
-      return;
-    }
-    const targetMs = new Date(nextRetryTimestamp).getTime();
-    if (isNaN(targetMs)) {
-      setRetryCountdownSec(0);
-      return;
-    }
-
-    const updateTimer = () => {
-      const now = Date.now();
-      const diffSec = Math.max(0, Math.ceil((targetMs - now) / 1000));
-      setRetryCountdownSec(diffSec);
-    };
-
-    updateTimer();
-    const interval = setInterval(updateTimer, 1000);
-    return () => clearInterval(interval);
-  }, [nextRetryTimestamp]);
-
-  let activeRetryMessage = null;
-  if (activeRetryStageKey) {
-    let timeStr = '';
-    if (nextRetryTimestamp) {
-      try {
-        const d = new Date(nextRetryTimestamp);
-        if (!isNaN(d.getTime())) {
-          timeStr = d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        }
-      } catch {}
-    }
-    const stageLabel = STAGE_LABELS[activeRetryStageKey]?.label || activeRetryStageKey;
-    const countdownText = retryCountdownSec > 0 ? ` (còn ${retryCountdownSec}s)` : '';
-    activeRetryMessage = timeStr
-      ? `Stage ${stageLabel}: Đang chờ Quota hồi phục${countdownText} lúc ${timeStr}`
-      : `Stage ${stageLabel}: Đang chờ Quota hồi phục`;
-  }
-
   // Find any failed/error stage to surface friendly error and quick retry
   const failedStageKey = stages.find((s) => ['failed', 'error', 'timeout'].includes(jobByStage[s]?.status));
   let failedStageMessage = null;
@@ -249,31 +200,7 @@ export default function PipelineStatus({
           })}
         </div>
       </div>
-      {redisStatus === 'disconnected' && (
-        <div className="mt-2 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-xs text-amber-700 dark:text-amber-300 font-medium">
-          <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-          <span>Redis disconnected — project có thể nằm ở trạng thái chờ cho tới khi Redis sẵn sàng. Kiểm tra <span className="font-mono">docker compose up -d redis</span> / GET /health.</span>
-        </div>
-      )}
-      {activeRetryMessage && (
-        <div className="mt-2 flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-800 dark:text-amber-200 font-medium">
-          <div className="flex items-center gap-2 min-w-0">
-            <Clock className="w-4 h-4 text-amber-500 shrink-0 animate-pulse" />
-            <div className="min-w-0">
-              <div className="font-semibold truncate">{activeRetryMessage}</div>
-              <div className="text-[11px] text-amber-700/90 dark:text-amber-300/90 mt-0.5">
-                Nhà cung cấp AI tạm thời chạm giới hạn (Rate Limit 429). Hệ thống tự động backoff tránh bão request và tiếp tục xử lý khi hết thời gian chờ.
-              </div>
-            </div>
-          </div>
-          {retryCountdownSec > 0 && (
-            <div className="shrink-0 px-2.5 py-1 rounded-md bg-amber-500/20 border border-amber-500/30 text-amber-900 dark:text-amber-200 font-mono font-bold text-xs">
-              {retryCountdownSec}s
-            </div>
-          )}
-        </div>
-      )}
-      {failedStageMessage && !activeRetryMessage && (
+      {failedStageMessage && (
         <div
           title={failedStageMessage}
           className="mt-2 flex items-center justify-between gap-2 px-3 py-1.5 rounded-lg bg-destructive/10 border border-destructive/25 text-xs text-destructive font-medium"
