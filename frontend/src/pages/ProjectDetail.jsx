@@ -177,14 +177,15 @@ export default function ProjectDetail() {
 
   const stages = useMemo(() => {
     if (isDub) {
+      const activeDub = dubConfig.enableDubbing ?? enableDubbing;
       return DUB_STAGES_ALL.filter((s) => {
-        if (s === 'dub.ttsAlign' && !enableDubbing) return false;
+        if (s === 'dub.ttsAlign' && !activeDub) return false;
         return true;
       });
     }
     if (isScript) return SCRIPT_STAGES;
     return SUMMARY_STAGES;
-  }, [isDub, enableDubbing, isScript]);
+  }, [isDub, dubConfig.enableDubbing, enableDubbing, isScript]);
 
   // Gộp trạng thái job từ polling DB + SSE realtime
   const jobByStage = useMemo(() => {
@@ -674,6 +675,43 @@ export default function ProjectDetail() {
   const handleRegenerate = async (stageArg) => {
     if (regenerating || !canRegenerate) return;
     let fromStage = typeof stageArg === 'string' ? stageArg : undefined;
+
+    // Tự động lưu cấu hình lồng tiếng nếu người dùng đã thay đổi trên form cục bộ
+    if (isDub && (
+      Boolean(dubConfig.enableDubbing) !== Boolean(params.enableDubbing ?? params.enable_dubbing ?? false) ||
+      dubConfig.voiceProvider !== (params.voiceProvider || params.voice_provider || 'edge_tts') ||
+      (dubConfig.voiceName || '') !== (params.voiceName || params.voice_name || '') ||
+      (dubConfig.voiceId || '') !== (params.voiceId || params.voice_id || '') ||
+      dubConfig.audioMode !== (params.audioMode || params.audio_mode || (dubConfig.enableDubbing ? 'DUB_MIX' : 'ORIGINAL_ONLY'))
+    )) {
+      try {
+        await projectsApi.updateDubbing(id, {
+          enableDubbing: Boolean(dubConfig.enableDubbing),
+          voiceProvider: dubConfig.voiceProvider,
+          voiceId: dubConfig.voiceId || null,
+          voiceName: dubConfig.voiceName || null,
+          audioMode: dubConfig.audioMode,
+        });
+      } catch (e) {
+        console.warn('Auto-sync dubbing config before regenerate error:', e);
+      }
+    }
+
+    // Nếu người dùng không chỉ định stage, kiểm tra nếu tất cả các bước trước dub.render
+    // đã hoàn tất (success/completed), tự động tiếp tục từ 'dub.render' thay vì chạy lại từ đầu.
+    if (!fromStage && isDub) {
+      const dubStagesBeforeRender = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.mask'];
+      if (dubConfig.enableDubbing) dubStagesBeforeRender.push('dub.ttsAlign');
+      const allPredecessorsDone = dubStagesBeforeRender.every((st) => {
+        const j = jobByStage?.[st];
+        return ['success', 'completed'].includes(j?.status);
+      });
+      const hasManualTranslation = transcript.some((s) => s.isTranslationManuallyEdited);
+      if (allPredecessorsDone && !hasManualTranslation) {
+        fromStage = 'dub.render';
+      }
+    }
+
     // Nếu người dùng đã sửa tay bản dịch, bỏ qua bước Dịch theo phong cách
     // (dub.translate) và chạy từ bước Che chữ (dub.mask) trở đi.
     if (!fromStage && isDub && transcript.some((s) => s.isTranslationManuallyEdited)) {
@@ -740,7 +778,14 @@ export default function ProjectDetail() {
       };
       await projectsApi.updateDubbing(id, body);
       await load();
-      const nextStage = dubConfig.enableDubbing ? 'dub.ttsAlign' : 'dub.render';
+      let nextStage = dubConfig.enableDubbing ? 'dub.ttsAlign' : 'dub.render';
+      if (!dubConfig.enableDubbing) {
+        const maskJob = jobByStage?.['dub.mask'];
+        const maskDone = ['success', 'completed'].includes(maskJob?.status);
+        if (!maskDone) {
+          nextStage = undefined;
+        }
+      }
       try {
         await projectsApi.regenerate(id, nextStage);
       } catch (e) {

@@ -150,9 +150,13 @@ router.post('/:id/jobs/:type/retry', requireProjectOwner, async (req, res) => {
   }
   const job = await queryOne('SELECT * FROM generation_jobs WHERE project_id = ? AND type = ?', [req.project.id, type])
   if (!job) return sendError(res, 404, 'NOT_FOUND', 'Job not found')
-  if (!['failed', 'error', 'timeout'].includes(job.status)) {
-    return sendError(res, 409, ERR.JOB_NOT_RETRYABLE, `Job is ${job.status}; only failed jobs can be retried`)
+  if (!['failed', 'error', 'timeout', 'running'].includes(job.status)) {
+    return sendError(res, 409, ERR.JOB_NOT_RETRYABLE, `Job is ${job.status}; only failed or stalled jobs can be retried`)
   }
+  await run(
+    "UPDATE generation_jobs SET status = 'pending', step = 'init', progress = 0, error_message = NULL, result = NULL, next_retry_at = NULL WHERE id = ?",
+    [job.id]
+  )
   const jobs = await query('SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?', [req.project.id])
   const r = firstRunnableStage(stagesForProject(req.project), jobs)
   if (r.waiting) {

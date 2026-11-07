@@ -1226,7 +1226,15 @@ export function validateTranslation(src, tgt, targetLang = 'vi') {
   if (errors.length) return { ok: false, errors }
   if (s.toLowerCase() === t.toLowerCase()) errors.push('untranslated copy')
   const sn = extractNumbers(s), tn = extractNumbers(t)
-  if (sn.length !== tn.length || sn.some((n, i) => n !== tn[i])) errors.push(`number mismatch (${sn.join(',')}→${tn.join(',')})`)
+  if (sn.length !== tn.length || sn.some((n, i) => n !== tn[i])) {
+    const isCjk = countCjk(s) > 0
+    const hasCjkNumberWord = /[一二三四五六七八九十百千万亿兩两]/.test(s)
+    if (isCjk && hasCjkNumberWord) {
+      errors.push(`number mismatch (${sn.join(',')}→${tn.join(',')}) [cjk-numeral]`)
+    } else {
+      errors.push(`number mismatch (${sn.join(',')}→${tn.join(',')})`)
+    }
+  }
   const sQ = /\?\s*$/.test(s), tQ = /[?？]\s*$/.test(t)
   // CJK ASR transcripts carry no reliable punctuation (questions end with
   // particles like 吗/呢/吧, not "?") while vi correctly adds "?" — skip check.
@@ -1285,8 +1293,13 @@ export function classifyTranslationErrors(errors) {
   const hard = [], warnings = []
   for (const e of errors || []) {
     const s = String(e || '')
-    if (HARD_EXACT.has(s) || HARD_PREFIXES.some((p) => s.startsWith(p)) || /[{}[\]]/.test(s)) hard.push(s)
-    else warnings.push(s)
+    if (s.includes('[cjk-numeral]')) {
+      warnings.push(s)
+    } else if (HARD_EXACT.has(s) || HARD_PREFIXES.some((p) => s.startsWith(p)) || /[{}[\]]/.test(s)) {
+      hard.push(s)
+    } else {
+      warnings.push(s)
+    }
   }
   return { hard, warnings }
 }

@@ -49,7 +49,10 @@ export async function validateForRender(projectId) {
   const params = parseParams(project?.params)
   const targetLanguage = params.targetLanguage || 'vi'
   const sourceLanguage = params.sourceLanguage || 'unknown'
-  const enableDubbing = !!params.enableDubbing
+  const rawEnable = params.enableDubbing ?? params.enable_dubbing
+  const enableDubbing = Boolean(rawEnable && rawEnable !== 'false')
+  const audioMode = params.audioMode || params.audio_mode || (enableDubbing ? 'DUB_MIX' : 'ORIGINAL_ONLY')
+  const shouldDub = enableDubbing && audioMode !== 'ORIGINAL_ONLY'
 
   const isRequired = (s) => s.text && String(s.text).trim() !== ''
   const hasTranslation = (s) => s.translation && String(s.translation).trim() !== ''
@@ -59,7 +62,7 @@ export async function validateForRender(projectId) {
   const untranslated = required.filter((s) => !hasTranslation(s))
   if (untranslated.length > 0) {
     const idxList = untranslated.map((s) => `segment #${s.index_num}`).join(', ')
-    if (enableDubbing) {
+    if (shouldDub) {
       errors.push({
         code: 'UNTRANSLATED_SEGMENTS',
         message: `${untranslated.length} segment chưa có translation: ${idxList}`,
@@ -116,12 +119,13 @@ export async function validateForRender(projectId) {
   const semanticSoftDetails = []
   for (const s of required) {
     if (!hasTranslation(s)) continue
+    const isManual = Number(s.is_translation_manually_edited) === 1 || Boolean(s.is_translation_manually_edited)
     const r = hasHardTranslationError(s.text, s.translation, targetLanguage)
-    if (r.hard) {
+    if (r.hard && !isManual) {
       semanticHard.push(s)
       semanticHardDetails.push({ id: s.id, index: s.index_num, errors: r.errors, sourceLanguage, targetLanguage })
       console.log(`[RenderValidation] segment #${s.index_num} BLOCK: errors=${r.errors.join('|')} sourceLanguage=${sourceLanguage} targetLanguage=${targetLanguage}`)
-    } else if (r.errors.length > 0) {
+    } else if (r.errors.length > 0 || (r.hard && isManual)) {
       semanticSoft.push(s)
       semanticSoftDetails.push({ id: s.id, index: s.index_num, errors: r.errors, sourceLanguage, targetLanguage })
       console.warn(`[RenderValidation] segment #${s.index_num} warning: errors=${r.errors.join('|')} sourceLanguage=${sourceLanguage} targetLanguage=${targetLanguage}`)
@@ -147,11 +151,10 @@ export async function validateForRender(projectId) {
     })
   }
 
-  // Kiểm tra 6: Nếu enableDubbing, kiểm tra TTS audio 1:1 + file + duration + mapping
+  // Kiểm tra 6: Nếu shouldDub, kiểm tra TTS audio 1:1 + file + duration + mapping
   // Strict trên required CÓ translation (policy A).
-  if (project) {
-    if (params.enableDubbing) {
-      const ttsTargets = required.filter(hasTranslation)
+  if (project && shouldDub) {
+    const ttsTargets = required.filter(hasTranslation)
       const noTtsAudio = ttsTargets.filter(s => !s.tts_audio_id)
       if (noTtsAudio.length > 0) {
         errors.push({
@@ -204,7 +207,6 @@ export async function validateForRender(projectId) {
       const nov = validateNoOverlap(tl)
       if (!nov.ok) errors.push({ code: 'TIMELINE_OVERLAP', message: nov.errors.join('; ') })
     }
-  }
 
   return { valid: errors.length === 0, errors, warnings }
 }

@@ -39,12 +39,17 @@ const ROLES_4_SKILLS = {
       'writing-plans',
       'agency-product-manager',
       'agency-sprint-prioritizer',
-      'brainstorming'
+      'brainstorming',
+      'cross-platform-contract-propagation-audit',
+      'agency-multi-agent-systems-architect',
+      'agency-sre-site-reliability-engineer'
     ],
     rules: [
       'TỰ ĐỘNG KÍCH HOẠT VÀ SỬ DỤNG KỸ NĂNG: Bạn được trang bị các kỹ năng chuyên môn trên. Khi nhận nhiệm vụ từ User, bạn PHẢI tự động chọn và áp dụng phương pháp của các kỹ năng này mà không cần User yêu cầu hay gọi tên skill.',
       'Khảo sát & Kiến trúc (agency-software-architect, spec-driven-loop): Quét toàn bộ codebase, thiết kế module boundaries, schema dữ liệu, API contracts và shell invariants trước khi lên kế hoạch.',
       'Phân tích yêu cầu & Phạm vi (agency-product-manager, brainstorming): Bóc tách User Stories, Acceptance Criteria (AC), lường trước các edge cases và rủi ro tiềm ẩn.',
+      'API & Contract Consistency (cross-platform-contract-propagation-audit): Đảm bảo các thay đổi về model, database field và route endpoint được ánh xạ nhất quán sang frontend client.',
+      'Multi-agent & SRE Architecture (agency-multi-agent-systems-architect, agency-sre-site-reliability-engineer): Phân rã nhiệm vụ rõ ràng, thiết lập các chốt chặn SLO, phòng ngừa nghẽn hàng đợi BullMQ.',
       'Kế hoạch hành động khả thi (writing-plans, agency-sprint-prioritizer): Lập checklist từng bước chi tiết (đường dẫn file cụ thể, phương pháp sửa) cho CODER và ma trận kiểm thử cho TESTER.',
       'Ghi toàn bộ vào file .team/PLAN.md.'
     ]
@@ -59,7 +64,11 @@ const ROLES_4_SKILLS = {
       'design-taste-frontend',
       'anti-ui-slop',
       'karpathy-guidelines',
-      'bug-hunter'
+      'bug-hunter',
+      'agency-video-streaming-engineer',
+      'agency-ai-engineer',
+      'performance-optimizer',
+      'graceful-shutdown'
     ],
     rules: [
       'TỰ ĐỘNG KÍCH HOẠT VÀ SỬ DỤNG KỸ NĂNG: Bạn được trang bị các kỹ năng chuyên môn trên. Khi đọc .team/PLAN.md, bạn PHẢI tự động chọn và áp dụng phương pháp của các kỹ năng này mà không cần User yêu cầu hay gọi tên skill.',
@@ -67,6 +76,8 @@ const ROLES_4_SKILLS = {
       'Frontend Craft (agency-frontend-developer, design-taste-frontend, anti-ui-slop): Giao diện đẹp mắt, khoảng cách/typography chuẩn, loại bỏ mọi UI generic, cẩu thả.',
       'Backend & API (agency-backend-architect, api-endpoint-builder): Xây dựng REST API endpoints chuẩn, schema validation, error handling và HTTP status code rõ ràng.',
       'Database Optimization (agency-database-optimizer): Tối ưu hóa câu lệnh query, transaction an toàn, indexing đúng cách.',
+      'Video Pipeline & Media Streaming (agency-video-streaming-engineer, agency-ai-engineer): Xử lý chuẩn xác các luồng FFmpeg, audio/video synchronization, prompt và streaming AI pipelines.',
+      'Performance & Graceful Exit (performance-optimizer, graceful-shutdown): Tối ưu tài nguyên CPU/RAM trong xử lý đa phương tiện, đóng kết nối sạch sẽ khi shutdown.',
       'Bug Hunting (bug-hunter): Truy vết tận gốc nguyên nhân lỗi nếu đang sửa bug, tránh gây lỗi hồi quy.',
       'Ghi tóm tắt toàn bộ file đã sửa và lý do vào .team/CODE_CHANGES.md.'
     ]
@@ -80,13 +91,19 @@ const ROLES_4_SKILLS = {
       'agency-test-automation-engineer',
       'agency-test-results-analyzer',
       'test-driven-development',
-      'playwright-cli'
+      'playwright-cli',
+      'verification-before-completion',
+      'agent-harness-fault-injection',
+      'api-rate-limit-handler',
+      'agency-accessibility-auditor'
     ],
     rules: [
       'TỰ ĐỘNG KÍCH HOẠT VÀ SỬ DỤNG KỸ NĂNG: Bạn được trang bị các kỹ năng chuyên môn trên. Khi nhận bàn giao từ CODER, bạn PHẢI tự động chọn và áp dụng phương pháp của các kỹ năng này mà không cần User yêu cầu hay gọi tên skill.',
       'Reality Checker (agency-reality-checker): ĐỘC LẬP 100% với CODER. TUYỆT ĐỐI KHÔNG TIN OUTPUT CỦA CODER. Mặc định ở trạng thái nghi ngờ ("NEEDS WORK") cho đến khi có bằng chứng chạy thực tế chứng minh pass.',
-      'Evidence Collector (agency-evidence-collector): Luôn thu thập bằng chứng thực tế từ terminal (stdout, exit codes, test outputs, trace logs). Không chấp nhận phán đoán suông.',
+      'Evidence Collector & Verification (agency-evidence-collector, verification-before-completion): Luôn thu thập bằng chứng thực tế từ terminal (stdout, exit codes, test outputs, trace logs). Không chấp nhận phán đoán suông.',
       'Test Automation & Edge Cases (agency-api-tester, agency-test-automation-engineer): Chạy test thực tế trong terminal (npm test, build, lint, pytest, v.v.), kiểm tra cả happy path và edge cases (dữ liệu rỗng, timeout, input sai định dạng).',
+      'Fault Injection & Boundary Resilience (agent-harness-fault-injection, api-rate-limit-handler): Giả lập lỗi tài nguyên (Redis, FFmpeg, API quota), kiểm tra xử lý rate limit và recovery.',
+      'Accessibility Audit (agency-accessibility-auditor): Kiểm tra khả năng tiếp cận WCAG/A11y cho giao diện web.',
       'Test Result Synthesis (agency-test-results-analyzer): Tổng hợp bảng kết quả test, tỷ lệ pass/fail và phân loại lỗi vào .team/TEST_RESULTS.md.'
     ]
   },
@@ -98,14 +115,19 @@ const ROLES_4_SKILLS = {
       'brooks-lint',
       'diagnosing-bugs',
       'agency-application-security-engineer',
-      'agency-technical-writer'
+      'agency-technical-writer',
+      'codebase-audit-pre-push',
+      'logic-lens',
+      'poka-yoke',
+      'agency-secrets-credential-hygiene-engineer'
     ],
     rules: [
       'TỰ ĐỘNG KÍCH HOẠT VÀ SỬ DỤNG KỸ NĂNG: Bạn được trang bị các kỹ năng chuyên môn trên. Khi thẩm định, bạn PHẢI tự động chọn và áp dụng phương pháp của các kỹ năng này mà không cần User yêu cầu hay gọi tên skill.',
       'READ-ONLY TUYỆT ĐỐI: KHÔNG ĐƯỢC CHỈNH SỬA BẤT KỲ FILE CODE NÀO CỦA DỰ ÁN. Bạn chỉ được ghi vào .team/REVIEW.md và REPORT.md.',
       'Diff Inspection & Karpathy Guidelines (agency-code-reviewer, karpathy-guidelines): Soi từng dòng git status và git diff, đảm bảo thay đổi là tối giản, đúng yêu cầu trong PLAN.md, không sửa lan man ngoài scope.',
+      'Deep Audit & Poka-Yoke (codebase-audit-pre-push, poka-yoke): Quét sâu toàn diện trước khi chốt, dọn dẹp artifacts thừa, áp dụng nguyên tắc thiết kế ngăn ngừa sai sót từ gốc.',
       'Architecture & Smell Detection (brooks-lint): Phát hiện bad architectural smells, tight coupling, rò rỉ abstraction, vi phạm clean code.',
-      'Formal Logic & Security Audit (diagnosing-bugs, agency-application-security-engineer): Phát hiện race condition, unhandled exceptions, rò rỉ secrets/token, XSS, injection, thiếu auth.',
+      'Formal Logic & Security Audit (diagnosing-bugs, logic-lens, agency-application-security-engineer, agency-secrets-credential-hygiene-engineer): Phát hiện race condition, unhandled exceptions, rò rỉ secrets/token, XSS, injection, thiếu auth.',
       'Phán quyết rõ ràng trong .team/REVIEW.md: "DECISION: APPROVED" hoặc "DECISION: CHANGES_REQUESTED" kèm checklist sửa chi tiết.',
       'Tổng kết toàn diện (agency-technical-writer): Nếu APPROVED, xuất bản báo cáo hoàn chỉnh vào REPORT.md cho User.'
     ]

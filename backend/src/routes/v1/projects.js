@@ -965,6 +965,13 @@ router.post('/:id/regenerate', requireProjectOwner, async (req, res) => {
     return sendError(res, 400, ERR.VALIDATION, `Giai đoạn yêu cầu không hợp lệ: ${requestedStage}. Các giai đoạn hợp lệ: ${validStages.join(', ')}`)
   }
 
+  if (requestedStage) {
+    await run(
+      `UPDATE generation_jobs SET status = 'pending', step = 'init', progress = 0, error_message = NULL, result = NULL, next_retry_at = NULL WHERE project_id = ? AND type = ?`,
+      [project.id, requestedStage]
+    )
+  }
+
   const jobs = await query(
     `SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?`,
     [project.id]
@@ -1082,6 +1089,18 @@ router.patch('/:id/dubbing', requireProjectOwner, async (req, res) => {
 
     if (providerChanged || !newEnable) {
       await run('UPDATE transcript_segments SET tts_audio_id = NULL, tts_clip_key = NULL WHERE project_id = ?', [project.id])
+    }
+
+    if (!newEnable) {
+      // Xoá bỏ job dub.ttsAlign để không còn tồn tại trong danh sách jobs kiểm tra
+      await run('DELETE FROM generation_jobs WHERE project_id = ? AND type = ?', [project.id, 'dub.ttsAlign'])
+      // Xoá bỏ các tệp audio liên quan trong DB
+      await run('DELETE FROM audios WHERE project_id = ?', [project.id])
+      // Reset job dub.render nếu đã có để sẵn sàng render lại với tiếng gốc
+      await run(
+        `UPDATE generation_jobs SET status = 'pending', step = 'init', progress = 0, error_message = NULL, result = NULL, next_retry_at = NULL WHERE project_id = ? AND type = 'dub.render'`,
+        [project.id]
+      )
     }
 
     const state = await getOutputState(project.id)

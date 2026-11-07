@@ -35,12 +35,15 @@ export default function ProjectHeader({
   const isDubMode = project?.mode === 'TRANSLATE_DUB';
   const isScriptMode = project?.mode === 'SCRIPT_TO_VIDEO';
   const stagePickerEnabled = project?.status !== 'queued';
-  const enableDub = project?.params?.enableDubbing !== false && project?.params?.enable_dubbing !== false;
+  const projectParams = typeof project?.params === 'string'
+    ? (() => { try { return JSON.parse(project.params) } catch { return {} } })()
+    : (project?.params || {});
+  const enableDub = projectParams.enableDubbing !== false && projectParams.enable_dubbing !== false;
   const stageOptions = isDubMode ? [
     { label: 'Tự động (tiếp tục theo tiến độ)', stage: null },
     { label: 'Từ bước Dịch thuật', stage: 'dub.translate' },
     ...(enableDub ? [{ label: 'Từ bước Lồng tiếng (TTS)', stage: 'dub.ttsAlign' }] : []),
-    { label: 'Từ bước Render video', stage: 'dub.render' },
+    { label: 'Từ bước Xuất video & phụ đề (Render)', stage: 'dub.render' },
   ] : isScriptMode ? [
     { label: 'Tự động (tiếp tục theo tiến độ)', stage: null },
     { label: 'Từ bước Tạo ảnh slide', stage: 'script.image' },

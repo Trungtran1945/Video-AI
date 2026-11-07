@@ -276,28 +276,41 @@ export function stagesForProject(projectOrMode) {
   const project = typeof projectOrMode === 'string' ? { mode: projectOrMode, params: '{}' } : (projectOrMode || {})
   const mode = String(project.mode || '').toUpperCase().replace('-', '_')
   if (mode !== 'TRANSLATE_DUB') return (STAGES[mode] || []).flat()
-  return [
+
+  const params = typeof project.params === 'string' ? parseJsonSafe(project.params, {}) : (project.params || {})
+  const rawEnable = params.enableDubbing ?? params.enable_dubbing
+  const enableDubbing = rawEnable !== undefined ? Boolean(rawEnable && rawEnable !== 'false') : true
+  const audioMode = params.audioMode || params.audio_mode || (enableDubbing ? 'DUB_MIX' : 'ORIGINAL_ONLY')
+  const shouldDub = Boolean(enableDubbing) && audioMode !== 'ORIGINAL_ONLY'
+
+  const stages = [
     'dub.ingest',
     'dub.stt',
     'dub.merge',
     'dub.translate',
     'dub.mask',
-    'dub.ttsAlign',
-    'dub.render',
   ]
+  if (shouldDub) {
+    stages.push('dub.ttsAlign')
+  }
+  stages.push('dub.render')
+  return stages
 }
 
-function groupedStagesForProject(project) {
+export function groupedStagesForProject(project) {
   const order = stagesForProject(project)
   if (String(project?.mode || '').toUpperCase().replace('-', '_') !== 'TRANSLATE_DUB') return order.map((stage) => [stage])
-  return [
+  const groups = [
     ['dub.ingest'],
     ['dub.stt', 'dub.merge'],
     ['dub.translate'],
     ['dub.mask'],
-    ['dub.ttsAlign'],
-    ['dub.render'],
   ]
+  if (order.includes('dub.ttsAlign')) {
+    groups.push(['dub.ttsAlign'])
+  }
+  groups.push(['dub.render'])
+  return groups
 }
 
 export function flatStages(projectOrMode) {
@@ -482,6 +495,9 @@ async function clearArtifacts(projectId, kinds, runToken = null) {
       try { fs.unlinkSync(path.join(dir, 'subtitles.srt')) } catch (_) {}
       try { fs.unlinkSync(path.join(dir, 'subtitles.ass')) } catch (_) {}
     } else if (kind === 'outputs') {
+      for (const tempName of ['masked.mp4', 'burned.mp4', 'final.mp4', 'final.mkv', 'dub_track.wav', 'thumb.jpg']) {
+        try { fs.unlinkSync(path.join(dir, tempName)) } catch (_) {}
+      }
       await runOwnedSql(
         projectId,
         runToken,
@@ -724,17 +740,39 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       // Fenced with the GENERATION snapshot: if the transcript moved on since
       // the audio was synthesized, the conflict is surfaced instead of merging
       // rows this generation never produced audio for.
+      let revisionChanged = false
       try {
         const dedupeRes = await dedupeTranscriptSegments(projectId, generation.transcriptVersionSnapshot, { runToken })
         if (dedupeRes?.changed && Number.isInteger(dedupeRes.revision)) {
           generation.transcriptVersionSnapshot = dedupeRes.revision
+          revisionChanged = true
         }
         const sanitizeRes = await sanitizeTranscriptOverlaps(projectId, generation.transcriptVersionSnapshot, { runToken })
         if (sanitizeRes?.changed && Number.isInteger(sanitizeRes.revision)) {
           generation.transcriptVersionSnapshot = sanitizeRes.revision
+          revisionChanged = true
         }
       } catch (e) {
         console.warn(`[RenderValidation] auto-merge bỏ qua: ${String(e?.message || e).slice(0, 160)}`)
+      }
+
+      // ĐỒNG BỘ PROVENANCE: Nếu auto-sanitize cập nhật transcript_version mới,
+      // đồng thời cập nhật transcriptVersionSnapshot trong job dub.ttsAlign để assertOutputProvenance không bị lỗi mismatch.
+      if (revisionChanged && generation.transcriptVersionSnapshot !== null) {
+        const ttsJob = await queryOne(
+          "SELECT id, result FROM generation_jobs WHERE project_id = ? AND type = 'dub.ttsAlign'",
+          [projectId]
+        )
+        if (ttsJob && ttsJob.result) {
+          const parsed = parseJsonSafe(ttsJob.result, {})
+          parsed.transcriptVersionSnapshot = generation.transcriptVersionSnapshot
+          await runProjectOwned(
+            projectId,
+            runToken,
+            "UPDATE generation_jobs SET result = ? WHERE id = ?",
+            [JSON.stringify(parsed), ttsJob.id]
+          )
+        }
       }
       const validation = await validateForRender(projectId)
       for (const w of validation.warnings || []) {
@@ -998,8 +1036,13 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
           return
         }
         if (r.type && r.type !== effectiveFrom) {
-          console.warn(`[Pipeline] Clamped resume ${effectiveFrom} → ${r.type} (earliest incomplete) for ${projectId}`)
-          effectiveFrom = r.type
+          const order = stagesForProject(project)
+          const effIdx = order.indexOf(effectiveFrom)
+          const rIdx = order.indexOf(r.type)
+          if (rIdx < effIdx) {
+            console.warn(`[Pipeline] Clamped resume ${effectiveFrom} → ${r.type} (earliest incomplete) for ${projectId}`)
+            effectiveFrom = r.type
+          }
         }
       } catch (_) {}
     }
@@ -1194,4 +1237,4 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
   }
 }
 
-export default { runPipeline, STAGES, flatStages, stagesForProject }
+export default { runPipeline, STAGES, flatStages, stagesForProject, groupedStagesForProject }

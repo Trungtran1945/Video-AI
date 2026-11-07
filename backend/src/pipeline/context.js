@@ -4,6 +4,7 @@ import { config } from '../config.js'
 import { getDb, captureMemorySnapshot, persistOrRollback } from '../db.js'
 import { queryOne, run, withWriteLock } from '../db/query.js'
 import { resolveSafePath, isPathInside, UnsafeStoragePathError } from '../lib/safePath.js'
+import { normalizeJobStatus } from '../lib/projectStatus.js'
 
 // Storage sub-paths are always storage/<bucket>/<single-segment-id>.
 // Rejecting separators/'..' here keeps every helper below (projectDir,
@@ -174,7 +175,7 @@ export function firstRunnableStage(order, jobs, now = Date.now()) {
   for (const type of flat) {
     const job = byType.get(type)
     if (!job) return { type, waiting: false, nextRetryAt: null }
-    if (job.status === 'success') continue
+    if (normalizeJobStatus(job.status) === 'success') continue
     if (job.status === 'retry' && job.next_retry_at && new Date(job.next_retry_at).getTime() > now) {
       return { type, waiting: true, nextRetryAt: job.next_retry_at }
     }
