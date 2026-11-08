@@ -63,3 +63,17 @@ Lớp bọc `callProvider()` trong `backend/src/lib/callProvider.js` tự độn
 3. **Môi trường Giả lập Mock cho Kiểm thử (Dev & CI)**:
    - Cung cấp sẵn các mock provider (`mockAsr`, `mockLlm`, `mockTts`, `mockVision`) kích hoạt qua biến môi trường `DEFAULT_PROVIDER_MODE=mock`.
    - Toàn bộ bộ kiểm thử tự động của backend (`npm test`) và CI pipeline chạy hoàn toàn trên các provider mock, đảm bảo luôn xanh 100% mà không phụ thuộc vào kết nối mạng hay hạn mức API bên ngoài.
+
+---
+
+## 5. Chiến lược Bộ nhớ đệm 2 tầng (2-Tier Cache) trong Media Composer
+
+Chế độ `MEDIA_COMPOSER` xử lý nhiều hình ảnh tải lên, trích xuất văn bản (OCR) và dịch thuật song ngữ. Nhằm đảm bảo người dùng gói Free Tier không bị cạn hạn mức API khi thử nghiệm hoặc mở lại các modal nhiều lần, hệ thống áp dụng chiến lược cache 2 tầng:
+
+1. **Tầng 1: Asset-level Cache (Cơ sở dữ liệu cục bộ)**:
+   - Khi thực hiện OCR hoặc Dịch thuật cho một asset, kết quả được lưu trực tiếp vào các cột `ocr_text` và `translated_text` của bảng `assets`.
+   - Khi người dùng mở lại modal `OcrTranslateModal` hoặc yêu cầu thao tác trên cùng một asset mà không thay đổi, hệ thống trả về ngay kết quả từ DB mà hoàn toàn không thực hiện bất kỳ lời gọi API nào.
+2. **Tầng 2: Provider-level Cache (`provider_cache`)**:
+   - Khi người dùng gửi yêu cầu OCR hoặc Dịch thuật cho một asset mới, lời gọi AI đi qua `callProvider()` với mã băm SHA-256 từ nội dung hình ảnh hoặc văn bản cần dịch.
+   - Nếu trong vòng 90 ngày (TTL mặc định), đã từng có bất kỳ asset nào khác có cùng nội dung ảnh hoặc cùng câu văn bản được xử lý, kết quả được nạp ngay lập tức từ `provider_cache`.
+   - Kết quả: Giảm đến 95% số lượng cuộc gọi trùng lặp ra bên ngoài, duy trì trạng thái hoạt động liên tục ngay cả với hạn mức khắt khe của Gemini Free Tier (10 RPM / 250 RPD).

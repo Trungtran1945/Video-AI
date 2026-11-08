@@ -3,11 +3,15 @@
 # Current Implementation (CURRENT)
 
 - **Cấu trúc Repository**: Bố cục phẳng `backend/` và `frontend/` (JavaScript ESM, không `apps/` + `packages/`).
-- **Cơ sở dữ liệu**: `sql.js` (WebAssembly SQLite) ghi tệp `backend/data.db` với 29 bảng định nghĩa tại `backend/src/db/schema.js`. Cơ chế lưu trữ: atomic in-memory snapshot sang đĩa, single-writer lock (`data.db.writer.lock`), hàng đợi tuần tự hóa các truy vấn ghi (`query.js`), giám sát trạng thái `HEALTHY` / `DEGRADED` / `WRITE_BLOCKED`.
-- **Pipeline điều phối (`backend/src/pipeline/runner.js`)**: Hỗ trợ **3 chế độ** chạy tuần tự:
-  - `SUMMARY` (8 stages): `summary.transcribe → summary.sceneDetect → summary.analyze → summary.script → summary.align → summary.tts → summary.subtitle → summary.render`.
+- **Cơ sở dữ liệu**: `sql.js` (WebAssembly SQLite) ghi tệp `backend/data.db` với **30 bảng** định nghĩa tại `backend/src/db/schema.js` (bao gồm bảng `timeline_tracks` và các trường mở rộng của `timeline_clips` và `assets`). Cơ chế lưu trữ: atomic in-memory snapshot sang đĩa, single-writer lock (`data.db.writer.lock`), hàng đợi tuần tự hóa các truy vấn ghi (`query.js`), giám sát trạng thái `HEALTHY` / `DEGRADED` / `WRITE_BLOCKED`.
+- **Pipeline điều phối (`backend/src/pipeline/runner.js`)**: Hỗ trợ **4 chế độ** (3 mode tạo mới chính thức + 1 mode legacy):
+  - `MEDIA_COMPOSER` (3 stages - Flagship mới): `composer.ingest → composer.prepare → composer.render`. Tự động kiểm tra & dàn xếp timeline khớp voiceover (`composerIngest`), chuẩn hóa kích thước/tỷ lệ khung hình ảnh và sinh phụ đề ASS UTF-8 (`composerPrepare`), kết hợp visual 2 lớp (Background + Slideshow motion 1.05x), lặp vô hạn BGM (`aloop`), dynamic sidechain ducking (-12dB khi có giọng nói) và xuất video MP4 Full HD (`composerRender`).
   - `TRANSLATE_DUB` (7 stages): `dub.ingest → dub.stt → dub.merge → dub.translate → dub.mask → dub.ttsAlign → dub.render`. STT-only (Whisper ASR + 15s overlap stitching), 13 StylePreset, Masking (tự động hoặc thủ công), Forced Alignment TTS (`TEMPO_MAX = 1.35`), Dynamic Sidechain Ducking (-12dB).
   - `SCRIPT_TO_VIDEO` (7 stages): `script.ingest → script.analyze → script.tts → script.image → script.align → script.subtitle → script.render`. Phân đoạn kịch bản qua LLM/quy tắc, review gate (`script_review_required = 1`), TTS phân đoạn, tạo slide ảnh minh họa, căn chỉnh timeline và render MP4.
+  - `SUMMARY` (8 stages - Legacy): `summary.transcribe → summary.sceneDetect → summary.analyze → summary.script → summary.align → summary.tts → summary.subtitle → summary.render`.
+- **Dịch vụ & Module AI Media Composer**:
+  - Backend: `backend/src/services/composerService.js` (quản lý 5 rãnh timeline, tải lên tài nguyên, OCR 2-tier cache, dịch thuật 2-tier cache, AI voiceover TTS, dàn dựng autoArrangeTimeline, lưu trữ an toàn saveTimeline), `backend/src/routes/v1/composerAssets.js` (8 REST endpoints).
+  - Frontend: `frontend/src/components/composer/` (`MediaLibrary.jsx`, `ComposerPreview.jsx`, `ClipInspector.jsx`, `OcrTranslateModal.jsx`, `TtsModal.jsx`), tích hợp Multi-track Timeline 5 rãnh với dual-handle trim trong `ProjectDetail.jsx`.
 - **Hàng đợi & Worker (BullMQ + Redis 7)**: Điều phối `projectQueue`, `notifyQueue`, `cleanupQueue`, `drainQueue` với các workers `drainQueued`, `notifyWorker`, `cleanupWorker`, `youtubeUploadWorker`. Redis được thăm dò sẵn sàng tại `/health` và `npm run check:redis`, backend có cơ chế chạy degraded an toàn khi Redis chưa bật.
 - **Sidecar ZeroTTS**: Tự động kích hoạt sidecar Python (`scripts/zerotts_service.py`) trong môi trường phát triển (`npm run dev`), backend chuyển đổi WAV sang MP3 bằng FFmpeg.
 - **Mặt cắt API & SSE**: API REST tiền tố `/api/v1/`, Upload resumable kiểu TUS chunk 8MB (giới hạn 2GB), SSE realtime tiến trình `/projects/:id/events` dùng vé ngắn hạn một lần (`sse-ticket`), tĩnh bảo mật tại `/storage/<key>`.
@@ -76,9 +80,20 @@ Lớp trên không được import implementation cụ thể của lớp dưới
 
 ---
 
-## 3. Ba luồng pipeline
+## 3. Các luồng pipeline
 
-### 3.1. Mode `SUMMARY` (Review phim & Video tóm tắt)
+### 3.1. Mode `MEDIA_COMPOSER` (AI Media Composer — Flagship)
+
+```
+Kho tư liệu (Images, Background, BGM, Voiceover) + Kịch bản
+   │
+   ▼  [composer.ingest]      Kiểm tra timeline & tài nguyên; nếu trống gọi autoArrangeTimeline; tính duration
+   ▼  [composer.prepare]     Scale & pad ảnh theo tỷ lệ khung hình; chuẩn hoá audio 48kHz; sinh phụ đề ASS UTF-8 (\fn, \c, \fs)
+   ▼  [composer.render]      FFmpeg multi-layer (Background + Slideshow motion 1.05x), BGM loop (aloop), dynamic ducking (-12dB), burn-in ASS → MP4
+   ▼  [upload?]              YouTube (tuỳ chọn)
+```
+
+### 3.2. Mode `SUMMARY` (Review phim & Video tóm tắt — Legacy)
 
 ```
 Phim (2–3h)
@@ -94,7 +109,7 @@ Phim (2–3h)
    ▼  [upload?]              YouTube (tuỳ chọn)
 ```
 
-### 3.2. Mode `TRANSLATE_DUB` (Dịch thuật & Lồng tiếng)
+### 3.3. Mode `TRANSLATE_DUB` (Dịch thuật & Lồng tiếng)
 
 ```
 Video nước ngoài (≤ 2GB)
@@ -109,7 +124,7 @@ Video nước ngoài (≤ 2GB)
    ▼  [upload?]              YouTube (tuỳ chọn)
 ```
 
-### 3.3. Mode `SCRIPT_TO_VIDEO` (Tạo video từ kịch bản)
+### 3.4. Mode `SCRIPT_TO_VIDEO` (Tạo video từ kịch bản)
 
 ```
 Kịch bản văn bản (.txt)
@@ -126,9 +141,10 @@ Kịch bản văn bản (.txt)
 ```
 
 **So sánh cốt lõi:**
-- `SUMMARY`: Cắt từ **1 video nguồn duy nhất** (phim dài), thuật toán `align` gói các Scene lại để khớp thời lượng lời review; kết quả là video dựng mới.
+- `MEDIA_COMPOSER`: **Dựng đa phương tiện tự do**, hỗ trợ tải lên đa tài nguyên (ảnh, nền, BGM, voiceover), dàn xếp thông minh qua timeline 5 rãnh độc lập, kết hợp đa lớp visual và dynamic audio ducking.
 - `TRANSLATE_DUB`: **Giữ nguyên nhịp hình ảnh gốc**, chỉ thay lớp ngôn ngữ (phụ đề dịch + giọng lồng tiếng ép khớp slot thời gian gốc).
 - `SCRIPT_TO_VIDEO`: Bắt đầu từ **văn bản thuần túy**, sinh ra toàn bộ âm thanh và hình ảnh slide tương ứng, tự động dựng thành video.
+- `SUMMARY`: Cắt từ **1 video nguồn duy nhất** (phim dài), thuật toán `align` gói các Scene lại để khớp thời lượng lời review; kết quả là video dựng mới (Legacy).
 
 ---
 

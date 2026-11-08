@@ -61,8 +61,30 @@ export const useTimelineStore = create((set, get) => ({
 
   setClips: (clips) => set({ clips: Array.isArray(clips) ? clips : [] }),
 
-  initTimeline: ({ clips, currentTime }) => {
+  setTracks: (tracks) => set({ tracks: Array.isArray(tracks) ? tracks : [] }),
+  addTrack: (track) => set((state) => ({ tracks: [...state.tracks, track] })),
+  updateTrack: (id, updates) =>
     set((state) => ({
+      tracks: state.tracks.map((t) => (t.id === id ? { ...t, ...updates } : t)),
+    })),
+  toggleTrackMute: (id) =>
+    set((state) => ({
+      tracks: state.tracks.map((t) =>
+        t.id === id ? { ...t, isMuted: !t.isMuted, muted: !t.muted } : t
+      ),
+    })),
+  setTrackVolume: (id, volume) =>
+    set((state) => ({
+      tracks: state.tracks.map((t) =>
+        t.id === id ? { ...t, volume: Math.max(0, Math.min(1, volume)) } : t
+      ),
+    })),
+  addClip: (clip) => set((state) => ({ clips: [...state.clips, clip] })),
+  clearClips: () => set({ clips: [], selectedClipId: null }),
+
+  initTimeline: ({ clips, currentTime, tracks }) => {
+    set((state) => ({
+      tracks: tracks !== undefined ? tracks : state.tracks,
       clips: clips !== undefined ? clips : state.clips,
       currentTime: currentTime !== undefined ? currentTime : state.currentTime,
     }));

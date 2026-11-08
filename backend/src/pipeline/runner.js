@@ -116,6 +116,10 @@ import scriptAlign from './stages/scriptAlign.js'
 import scriptSubtitle from './stages/scriptSubtitle.js'
 import scriptRender from './stages/scriptRender.js'
 
+import composerIngest from './stages/composerIngest.js'
+import composerPrepare from './stages/composerPrepare.js'
+import composerRender from './stages/composerRender.js'
+
 function isDubProject(project) {
   return String(project?.mode || '').toUpperCase().replace('-', '_') === 'TRANSLATE_DUB'
 }
@@ -270,6 +274,11 @@ export const STAGES = {
     'script.subtitle',
     'script.render',
   ],
+  MEDIA_COMPOSER: [
+    'composer.ingest',
+    'composer.prepare',
+    'composer.render',
+  ],
 }
 
 export function stagesForProject(projectOrMode) {
@@ -317,6 +326,11 @@ export function flatStages(projectOrMode) {
   return stagesForProject(projectOrMode)
 }
 
+export function isComposerMode(mode) {
+  const m = String(typeof mode === 'object' ? mode?.mode : mode || '').toUpperCase().replace('-', '_')
+  return m === 'MEDIA_COMPOSER'
+}
+
 const STAGE_IMPL = {
   'summary.transcribe': summaryTranscribe,
   'summary.sceneDetect': summarySceneDetect,
@@ -341,6 +355,9 @@ const STAGE_IMPL = {
   'script.align': scriptAlign,
   'script.subtitle': scriptSubtitle,
   'script.render': scriptRender,
+  'composer.ingest': composerIngest,
+  'composer.prepare': composerPrepare,
+  'composer.render': composerRender,
 }
 
 // Test seam: regression test thay stage impl bằng fake (không chạy provider/
@@ -373,6 +390,9 @@ const STAGE_PROVIDER = {
   'script.align': 'core',
   'script.subtitle': 'core',
   'script.render': 'ffmpeg',
+  'composer.ingest': 'core',
+  'composer.prepare': 'ffmpeg',
+  'composer.render': 'ffmpeg',
 }
 
 const RESETS = {
@@ -402,6 +422,9 @@ const RESETS = {
   'script.align': ['clips', 'subtitles', 'outputs'],
   'script.subtitle': ['subtitles', 'outputs'],
   'script.render': ['outputs'],
+  'composer.ingest': ['outputs'],
+  'composer.prepare': ['outputs'],
+  'composer.render': ['outputs'],
 }
 
 // Stages whose impl calls an AI provider (registry capability names).

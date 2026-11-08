@@ -58,13 +58,26 @@
   - Tự động nhận diện NVENC GPU (`h264_nvenc -preset p4 -cq 23`), fallback về CPU `libx264 -preset veryfast -crf 20`.
 - **`muxStream(inVideo, inAudio, out, opts)`**: Ghép luồng video và luồng audio thành phẩm bằng `-c:v copy` và `-c:a aac 192k` mà không cần re-encode hình ảnh lần thứ hai.
 
+### 2.5. Xử lý Đa Lớp & Biên tập Đa Phương tiện (MEDIA_COMPOSER)
+- **Visual Multi-layer Filtergraph**:
+  - *Track BACKGROUND*: Nền video/ảnh được scale kín khung hình, áp dụng `boxblur=luma_radius=min(h\,w)/20:luma_power=1` tạo chiều sâu trường ảnh.
+  - *Track MAIN_VIDEO / SLIDESHOW*: Các slide ảnh được scale & pad chuẩn theo tỷ lệ dự án (`16:9` hoặc `9:16`), kết hợp hiệu ứng chuyển động phóng to nhẹ 1.05x (`zoompan`) mượt mà.
+  - *Track OVERLAY*: Căn giữa hoặc neo toạ độ các layer nhãn dán, watermark, huy hiệu.
+- **Audio Multi-track & Dynamic Ducking**:
+  - *BGM Loop*: Lặp vô tận bài nhạc nền với bộ lọc `aloop=loop=-1:size=2e+09` để phủ kín toàn bộ thời lượng video.
+  - *Dynamic Sidechain Ducking*: Bộ lọc `sidechaincompress=threshold=0.03:ratio=6:attack=50:release=300:volume=0.25` tự động nén âm lượng nhạc nền BGM xuống -12dB khi có giọng voiceover và hồi phục về mức âm lượng ban đầu khi kết thúc câu nói.
+- **Burn-in Phụ đề ASS UTF-8 Unicode-Safe**:
+  - Bộ lọc `ass=subtitles.ass` burn trực tiếp phụ đề tiếng Việt có dấu (`\fnArial`, `\c&HFFFFFF&`, `\fs`, `\an2`) bảo đảm hiển thị sắc nét trên mọi thiết bị mà không phụ thuộc font máy khách.
+
 ---
 
 ## 3. Quy trình Render Hoàn chỉnh theo Chế độ
 
-1. **SUMMARY**:
-   Transcode cảnh ➔ Ghép concat xfade ➔ Tạo voice track tổng ➔ Hòa trộn nhạc nền ➔ Burn phụ đề ASS ➔ Xuất file MP4.
+1. **MEDIA_COMPOSER** (Flagship):
+   Chuẩn hoá assets (ảnh, audio) ➔ Dựng filtergraph đa lớp visual (Background blur + Main Slideshow 1.05x + Overlay) ➔ Hòa trộn audio đa rãnh (Voiceover + BGM loop vô tận + Sidechain ducking -12dB) ➔ Burn-in phụ đề ASS UTF-8 ➔ Xuất file MP4 H.264 (NVENC/x264) ➔ Probe thông số và tạo thumbnail.
 2. **TRANSLATE_DUB**:
    Nạp mask `APPROVED` ➔ Áp dụng filter làm mờ/che chữ gốc (`applySubtitleMasks`) ➔ Burn phụ đề ASS dịch mới (`burnSubtitlesStyled`) ➔ Tạo dub track âm thanh với ducking (`buildDubTrack`) ➔ Đóng gói mux stream cuối cùng (`muxStream`).
 3. **SCRIPT_TO_VIDEO**:
    Chuyển ảnh slide thành video clip có hiệu ứng Ken-Burns ➔ Concat theo thứ tự kịch bản ➔ Ghép âm thanh thuyết minh và nhạc nền ➔ Burn phụ đề ASS ➔ Xuất file MP4.
+4. **SUMMARY** (Legacy):
+   Transcode cảnh ➔ Ghép concat xfade ➔ Tạo voice track tổng ➔ Hòa trộn nhạc nền ➔ Burn phụ đề ASS ➔ Xuất file MP4.

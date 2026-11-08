@@ -50,6 +50,17 @@ export const projectsApi = {
     `/api/v1/projects/${id}/script/segments/${segmentId}/image?size=${size}`,
   // Group 1: Confirm preview (FR-J2)
   confirmPreview: (id) => api.post(`/projects/${id}/translate-dub/confirm-preview`).then((r) => r.data),
+  // MEDIA_COMPOSER APIs
+  getAssets: (id) => api.get(`/projects/${id}/assets`).then((r) => r.data),
+  uploadAssets: (id, formData) =>
+    api.post(`/projects/${id}/assets`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then((r) => r.data),
+  deleteAsset: (id, assetId) => api.delete(`/projects/${id}/assets/${assetId}`).then((r) => r.data),
+  reorderAssets: (id, assetIds) => api.put(`/projects/${id}/assets/reorder`, { assetIds }).then((r) => r.data),
+  runOcr: (id, assetId) => api.post(`/projects/${id}/assets/${assetId}/ocr`).then((r) => r.data),
+  runTranslate: (id, assetId, body) => api.post(`/projects/${id}/assets/${assetId}/translate`, body).then((r) => r.data),
+  generateTts: (id, body) => api.post(`/projects/${id}/tts`, body).then((r) => r.data),
+  autoArrangeTimeline: (id, options = {}) => api.post(`/projects/${id}/auto-arrange`, options).then((r) => r.data),
+  saveTimeline: (id, body) => api.put(`/projects/${id}/timeline`, body).then((r) => r.data),
   // SSE ticket single-use TTL 60s (không để JWT dài hạn trong URL)
   sseTicket: (id) => api.post(`/projects/${id}/sse-ticket`).then((r) => r.data),
   stylePresets: () =>

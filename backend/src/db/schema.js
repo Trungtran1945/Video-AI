@@ -166,6 +166,23 @@ export async function initSchema() {
     duration_sec REAL
   )`)
 
+  // Additive columns for assets (MEDIA_COMPOSER media library & OCR)
+  for (const col of [
+    `ALTER TABLE assets ADD COLUMN user_id TEXT`,
+    `ALTER TABLE assets ADD COLUMN name TEXT`,
+    `ALTER TABLE assets ADD COLUMN mime_type TEXT`,
+    `ALTER TABLE assets ADD COLUMN byte_size INTEGER`,
+    `ALTER TABLE assets ADD COLUMN thumbnail_key TEXT`,
+    `ALTER TABLE assets ADD COLUMN ocr_text TEXT`,
+    `ALTER TABLE assets ADD COLUMN ocr_data TEXT`,
+    `ALTER TABLE assets ADD COLUMN translation_text TEXT`,
+    `ALTER TABLE assets ADD COLUMN translation_target_lang TEXT`,
+    `ALTER TABLE assets ADD COLUMN order_index INTEGER DEFAULT 0`,
+    `ALTER TABLE assets ADD COLUMN created_date TEXT DEFAULT (datetime('now'))`,
+  ]) {
+    try { db.run(col) } catch (_) {}
+  }
+
   db.run(`CREATE TABLE IF NOT EXISTS generation_jobs (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -231,6 +248,35 @@ export async function initSchema() {
     voice_audio_id TEXT,
     start_at_sec REAL
   )`)
+
+  // Additive columns for timeline_clips (MEDIA_COMPOSER multi-track)
+  for (const col of [
+    `ALTER TABLE timeline_clips ADD COLUMN track_id TEXT`,
+    `ALTER TABLE timeline_clips ADD COLUMN clip_type TEXT`,
+    `ALTER TABLE timeline_clips ADD COLUMN asset_id TEXT`,
+    `ALTER TABLE timeline_clips ADD COLUMN text_content TEXT`,
+    `ALTER TABLE timeline_clips ADD COLUMN style_json TEXT`,
+    `ALTER TABLE timeline_clips ADD COLUMN volume REAL DEFAULT 1.0`,
+    `ALTER TABLE timeline_clips ADD COLUMN fade_in_sec REAL DEFAULT 0`,
+    `ALTER TABLE timeline_clips ADD COLUMN fade_out_sec REAL DEFAULT 0`,
+    `ALTER TABLE timeline_clips ADD COLUMN meta TEXT`,
+  ]) {
+    try { db.run(col) } catch (_) {}
+  }
+
+  // timeline_tracks: rãnh của timeline đa lớp (MEDIA_COMPOSER & multi-track)
+  db.run(`CREATE TABLE IF NOT EXISTS timeline_tracks (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    track_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    order_index INTEGER DEFAULT 0,
+    muted INTEGER DEFAULT 0,
+    volume REAL DEFAULT 1.0,
+    locked INTEGER DEFAULT 0,
+    created_date TEXT DEFAULT (datetime('now'))
+  )`)
+  try { db.run(`CREATE INDEX IF NOT EXISTS idx_timeline_tracks_project ON timeline_tracks(project_id, order_index)`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS audios (
     id TEXT PRIMARY KEY,

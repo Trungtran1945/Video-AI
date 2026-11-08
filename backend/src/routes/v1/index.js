@@ -17,6 +17,7 @@ import eventsRouter from './events.js'
 import confirmPreviewRouter from './confirmPreview.js'
 import scriptUploadsRouter from './scriptUploads.js'
 import youtubeRouter from './youtube.js'
+import composerAssetsRouter from './composerAssets.js'
 
 const router = Router()
 
@@ -24,6 +25,7 @@ router.use('/auth', authRouter)
 router.use('/projects', projectsRouter)
 router.use('/projects', generationRouter)
 router.use('/projects', confirmPreviewRouter) // FR-J2: POST /projects/:id/translate-dub/confirm-preview
+router.use('/projects', composerAssetsRouter) // MEDIA_COMPOSER media library & timeline routes
 router.use('/script-uploads', scriptUploadsRouter)
 router.use('/youtube', youtubeRouter)
 router.use('/', dubDataRouter) // /style-presets + /projects/:id/transcript

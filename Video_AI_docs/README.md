@@ -9,15 +9,16 @@
 
 ## 1. Tầm nhìn sản phẩm
 
-Hệ thống cung cấp **ba chế độ sản xuất video tự động** (người dùng không cần tự dựng timeline thủ công):
+Hệ thống cung cấp **các chế độ sản xuất video tự động bằng AI** kết hợp công cụ Studio trực quan:
 
-| Mode | Mô tả | Đầu vào | Quy trình & Đầu ra |
-| --- | --- | --- | --- |
-| `SUMMARY` | **Review phim & Tóm tắt video** | 1 bộ phim / video dài **2–3 tiếng** | Video **review phim 20–30 phút** có giọng đọc thuyết minh AI, cảnh cắt từ phim gốc khớp chuẩn xác với lời bình qua thuật toán Align. |
-| `TRANSLATE_DUB` | **Dịch thuật & Lồng tiếng** | 1 video nước ngoài ≤ 2GB, chọn 1 trong **13 phong cách dịch** | Video giữ nguyên nhịp hình ảnh gốc, **dịch phụ đề tiếng Việt** theo phong cách + **lồng tiếng AI ép khớp slot thời gian (Forced Alignment TTS)**, tự động che hardsub gốc (Masking). |
-| `SCRIPT_TO_VIDEO` | **Tạo video từ kịch bản** | Kịch bản văn bản (upload file `.txt` / paste nội dung) | Video tự động phân đoạn kịch bản, sinh giọng lồng tiếng AI, tạo hình ảnh slide minh hoạ, căn chỉnh thời lượng và render thành phẩm hoàn chỉnh. |
+| Mode | Loại | Mô tả | Đầu vào | Quy trình & Đầu ra |
+| --- | --- | --- | --- | --- |
+| `MEDIA_COMPOSER` | **Flagship (Mới)** | **AI Media Composer** — Dựng video từ kho ảnh, kịch bản & giọng đọc AI | Kho ảnh slide, ảnh/video nền, nhạc nền BGM, nội dung kịch bản | Timeline 5 rãnh độc lập (`background`, `image`, `voiceover`, `music`, `text`), quét chữ OCR & dịch thuật 2 tầng có cache, lồng tiếng AI, tự động dàn dựng (Auto-Arrange), ghép đa lớp FFmpeg, audio ducking -12dB và phụ đề ASS UTF-8. |
+| `TRANSLATE_DUB` | **Chính thức** | **Dịch thuật & Lồng tiếng** | 1 video nước ngoài ≤ 2GB, chọn 1 trong **13 phong cách dịch** | Video giữ nguyên nhịp hình ảnh gốc, **dịch phụ đề tiếng Việt** theo phong cách + **lồng tiếng AI ép khớp slot thời gian (Forced Alignment TTS)**, tự động che hardsub gốc (Masking). |
+| `SCRIPT_TO_VIDEO` | **Chính thức** | **Tạo video từ kịch bản** | Kịch bản văn bản (upload file `.txt` / paste nội dung) | Video tự động phân đoạn kịch bản, sinh giọng lồng tiếng AI, tạo hình ảnh slide minh hoạ, căn chỉnh thời lượng và render thành phẩm hoàn chỉnh. |
+| `SUMMARY` | **Legacy (Read-only)** | **Review phim & Tóm tắt video** | 1 bộ phim / video dài 2–3 tiếng (dự án cũ) | Duy trì khả năng xem lại các dự án cũ đã tạo. Video review phim có giọng đọc thuyết minh AI, cảnh cắt từ phim gốc khớp lời bình qua thuật toán Align. |
 
-Cả ba chế độ tuân thủ nguyên tắc: **user cấu hình đầu vào → AI thực thi pipeline đa tầng → user xem kết quả và tinh chỉnh**.
+Nguyên tắc thiết kế: **User cấu hình đầu vào → AI thực thi pipeline đa tầng hoặc tự động xếp timeline → User xem trước thời gian thực (Dual Preview) và tinh chỉnh linh hoạt**.
 
 ---
 
@@ -25,29 +26,29 @@ Cả ba chế độ tuân thủ nguyên tắc: **user cấu hình đầu vào �
 
 | File | Nội dung |
 | --- | --- |
-| [`docs/00_TAM_NHIN_VA_YEU_CAU.md`](docs/00_TAM_NHIN_VA_YEU_CAU.md) | Tầm nhìn, phạm vi, yêu cầu chức năng & phi chức năng cho 3 chế độ |
-| [`docs/01_KIEN_TRUC_TONG_THE.md`](docs/01_KIEN_TRUC_TONG_THE.md) | Kiến trúc tổng thể, layout thực tế `backend/` + `frontend/`, luồng 3 pipeline, Provider Pattern, Queue |
-| [`docs/02_THIET_KE_CO_SO_DU_LIEU.md`](docs/02_THIET_KE_CO_SO_DU_LIEU.md) | Thiết kế cơ sở dữ liệu (`sql.js` SQLite 29 bảng), schema, quan hệ, snapshot & writer lock |
-| [`docs/03_THIET_KE_BACKEND.md`](docs/03_THIET_KE_BACKEND.md) | Backend Express ESM: Clean Architecture, DI, services, auth, quota guard, recovery |
-| [`docs/04_THIET_KE_FRONTEND.md`](docs/04_THIET_KE_FRONTEND.md) | Frontend React 18 + Vite 6: wizard 3 mode, timeline, bilingual transcript editor, mask canvas editor, SSE realtime |
-| [`docs/05_THIET_KE_PIPELINE_CHI_TIET.md`](docs/05_THIET_KE_PIPELINE_CHI_TIET.md) | Chi tiết thuật toán từng stage của 3 pipeline: Align giọng ↔ cảnh, Forced Alignment TTS, 13 StylePreset, Masking, Script-to-Video |
-| [`docs/06_API.md`](docs/06_API.md) | REST API v1, Resumable Upload (TUS-like 2GB), SSE progress (`sse-ticket`), schema request/response |
-| [`docs/07_MODULE_FFMPEG.md`](docs/07_MODULE_FFMPEG.md) | Module media/ffmpeg: transcode, scene-detect, speed stretch, dynamic sidechain ducking, burn-in subtitle & mask |
-| [`docs/08_TRIEN_KHAI_VA_VAN_HANH.md`](docs/08_TRIEN_KHAI_VA_VAN_HANH.md) | Triển khai Docker, docker-compose (Redis, API, Web Nginx), ZeroTTS sidecar, biến môi trường, bảo mật |
-| [`docs/09_DONG_GOP.md`](docs/09_DONG_GOP.md) | Quy trình đóng góp, kiểm thử hồi quy (`node scripts/run-tests.mjs`), lint, typecheck |
-| [`docs/10_TASKS.md`](docs/10_TASKS.md) | Lộ trình và trạng thái các tính năng đã hoàn thiện ([DONE]), đang phát triển |
-| [`docs/11_RATE_LIMIT_VA_FREE_TIER.md`](docs/11_RATE_LIMIT_VA_FREE_TIER.md) | Chiến lược Rate Limiting (Token Bucket, Sliding Window), QuotaGuard, cache provider, chạy ổn định với API Free Tier |
+| [`docs/00_TAM_NHIN_VA_YEU_CAU.md`](docs/00_TAM_NHIN_VA_YEU_CAU.md) | Tầm nhìn, phạm vi, yêu cầu chức năng & phi chức năng cho 4 chế độ (FR-MC1 đến FR-MC16 cho Composer) |
+| [`docs/01_KIEN_TRUC_TONG_THE.md`](docs/01_KIEN_TRUC_TONG_THE.md) | Kiến trúc tổng thể, layout thực tế `backend/` + `frontend/`, luồng 4 pipeline, Provider Pattern, Queue |
+| [`docs/02_THIET_KE_CO_SO_DU_LIEU.md`](docs/02_THIET_KE_CO_SO_DU_LIEU.md) | Thiết kế cơ sở dữ liệu (`sql.js` SQLite 30 bảng), schema `timeline_tracks`, quan hệ, snapshot & writer lock |
+| [`docs/03_THIET_KE_BACKEND.md`](docs/03_THIET_KE_BACKEND.md) | Backend Express ESM: Clean Architecture, `composerService.js`, `composerAssets.js`, auth, quota guard |
+| [`docs/04_THIET_KE_FRONTEND.md`](docs/04_THIET_KE_FRONTEND.md) | Frontend React 18 + Vite 6: Media Composer Studio 4 pane, timeline 5 rãnh, dual preview, dual trim |
+| [`docs/05_THIET_KE_PIPELINE_CHI_TIET.md`](docs/05_THIET_KE_PIPELINE_CHI_TIET.md) | Chi tiết thuật toán từng stage của các pipeline: Composer (ingest, prepare, render), Dubbing, Summary, Script-to-Video |
+| [`docs/06_API.md`](docs/06_API.md) | REST API v1, Resumable Upload (2GB), SSE progress, 8 API endpoints của Composer (/assets, /timeline, /auto-arrange) |
+| [`docs/07_MODULE_FFMPEG.md`](docs/07_MODULE_FFMPEG.md) | Module media/ffmpeg: transcode, multi-layer visual composition, dynamic sidechain ducking (-12dB), aloop, ASS burn-in |
+| [`docs/08_TRIEN_KHAI_VA_VAN_HANH.md`](docs/08_TRIEN_KHAI_VA_VAN_HANH.md) | Triển khai Docker, docker-compose, volume storage projects/:id/assets, ZeroTTS sidecar, bảo mật |
+| [`docs/09_DONG_GOP.md`](docs/09_DONG_GOP.md) | Quy trình đóng góp, kiểm thử hồi quy 176 test files (`npm test`), Playwright UI test, lint, typecheck |
+| [`docs/10_TASKS.md`](docs/10_TASKS.md) | Lộ trình và trạng thái các tính năng đã hoàn thiện ([DONE]), bao gồm Giai đoạn 5 (AI Media Composer) |
+| [`docs/11_RATE_LIMIT_VA_FREE_TIER.md`](docs/11_RATE_LIMIT_VA_FREE_TIER.md) | Chiến lược Rate Limiting, 2-tier cache cho OCR & Dịch thuật của Media Composer, chạy ổn định với API Free Tier |
 
 ---
 
 ## 3. Công nghệ thực tế (Current Stack)
 
 - **Cấu trúc Repository:** Phẳng hai thành phần `backend/` và `frontend/` (JavaScript ESM).
-- **Backend:** Node.js >=18 (ESM), Express 4, `sql.js` (WebAssembly SQLite với atomic snapshot memory-disk và file `backend/data.db`, single-writer lock `data.db.writer.lock`), BullMQ 5 + Redis 7, JWT auth (access token + HttpOnly refresh cookie), SSE event bus.
-- **Frontend:** React 18, Vite 6, TailwindCSS, Radix UI / shadcn/ui, TanStack Query v5, Framer Motion, Lucide icons.
-- **Media Engine:** FFmpeg & FFprobe (quản lý qua `backend/src/media/ffmpeg.js` và `mediaService.js`, có cơ chế serialize tiến trình trên Windows).
+- **Backend:** Node.js >=18 (ESM), Express 4, `sql.js` (WebAssembly SQLite 30 bảng với atomic snapshot memory-disk và file `backend/data.db`, single-writer lock `data.db.writer.lock`), BullMQ 5 + Redis 7, JWT auth (access token + HttpOnly refresh cookie), SSE event bus.
+- **Frontend:** React 18, Vite 6, TailwindCSS, Radix UI / shadcn/ui, TanStack Query v5, Framer Motion, Lucide icons, Zustand (quản lý timeline state).
+- **Media Engine:** FFmpeg & FFprobe (quản lý qua `backend/src/media/ffmpeg.js` và `mediaService.js`, hỗ trợ multi-layer visual composition và dynamic sidechain ducking).
 - **TTS Engine:** Hỗ trợ đa nhà cung cấp: Microsoft Edge-TTS, Google TTS, ElevenLabs, OpenAI TTS và ZeroTTS (Python local sidecar chạy qua `npm run dev`).
-- **AI/Provider Pattern:** Quản lý tập trung qua `backend/src/providers/registry.js` và `callProvider.js` cho ASR (Whisper), LLM (Gemini, OpenAI), Vision (Gemini Vision), Translate (Google Translate, LLM direct), Image (SlideImage).
+- **AI/Provider Pattern:** Quản lý tập trung qua `backend/src/providers/registry.js` và `callProvider.js` cho ASR (Whisper), LLM (Gemini, OpenAI), Vision (Gemini Vision), Translate (Google Translate, LLM direct), Image (SlideImage), OCR (Tesseract / Gemini OCR).
 
 ---
 

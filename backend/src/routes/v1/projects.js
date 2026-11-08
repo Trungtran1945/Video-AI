@@ -35,7 +35,7 @@ router.use(authMiddleware)
 // cancelProjectUseCase). Production không đổi hành vi; test thay bằng fake.
 export const createProjectPostDeps = { copyTranscript, runPipeline }
 
-const MODES = ['SUMMARY', 'TRANSLATE_DUB', 'SCRIPT_TO_VIDEO']
+const MODES = ['SUMMARY', 'TRANSLATE_DUB', 'SCRIPT_TO_VIDEO', 'MEDIA_COMPOSER']
 
 // Canonical SCRIPT_TO_VIDEO mode; accept the product/legacy aliases at the API
 // boundary but always persist the canonical value.
@@ -103,7 +103,7 @@ router.post('/', async (req, res) => {
     // Chuẩn hoá mode về UPPERCASE, chấp nhận alias SCRIPT_TO_VIDEO từ client.
     const mode = normalizeMode(b.mode)
     if (!MODES.includes(mode)) {
-      return sendError(res, 400, ERR.VALIDATION, 'mode must be SUMMARY, TRANSLATE_DUB or SCRIPT_TO_VIDEO', { field: 'mode' })
+      return sendError(res, 400, ERR.VALIDATION, 'mode must be SUMMARY, TRANSLATE_DUB, SCRIPT_TO_VIDEO or MEDIA_COMPOSER', { field: 'mode' })
     }
     if (!b.title || !b.title.trim()) {
       return sendError(res, 400, ERR.VALIDATION, 'title is required', { field: 'title' })
@@ -111,7 +111,7 @@ router.post('/', async (req, res) => {
     if (b.title.trim().length > 200) {
       return sendError(res, 400, ERR.VALIDATION, 'title must be at most 200 characters', { field: 'title' })
     }
-    if (mode !== 'SCRIPT_TO_VIDEO' && !b.sourceVideoKey) {
+    if (mode !== 'SCRIPT_TO_VIDEO' && mode !== 'MEDIA_COMPOSER' && !b.sourceVideoKey) {
       return sendError(res, 400, ERR.VALIDATION, 'sourceVideoKey is required', { field: 'sourceVideoKey' })
     }
 
@@ -196,6 +196,14 @@ router.post('/', async (req, res) => {
     let params = b.params && typeof b.params === 'object' ? { ...b.params } : {}
     if (mode === 'SCRIPT_TO_VIDEO') {
       params = scriptParams
+    } else if (mode === 'MEDIA_COMPOSER') {
+      params = {
+        resolution: b.params?.resolution || '1080p',
+        fps: Number(b.params?.fps) || 30,
+        outputFormat: b.params?.outputFormat || 'mp4',
+        defaultBackground: b.params?.defaultBackground || '#0F1117',
+        ...(b.params && typeof b.params === 'object' ? b.params : {}),
+      }
     } else if (mode === 'TRANSLATE_DUB') {
 
       const presetSlug = b.stylePreset || params.stylePreset
@@ -253,8 +261,8 @@ router.post('/', async (req, res) => {
         targetDurationSec: Number(b.targetDurationSec) || (mode === 'SUMMARY' ? 1500 : 60),
         aspectRatio: b.aspectRatio || '16:9',
         params,
-        sourceVideoKey: scriptMode ? null : (b.sourceVideoKey || null),
-        videoHash: scriptMode ? null : (b.videoHash || null),
+        sourceVideoKey: scriptMode || mode === 'MEDIA_COMPOSER' ? null : (b.sourceVideoKey || null),
+        videoHash: scriptMode || mode === 'MEDIA_COMPOSER' ? null : (b.videoHash || null),
         copyrightAcknowledged: true,
         scriptUploadId: scriptMode ? scriptUpload.id : null,
         scriptKey: scriptMode ? scriptUpload.storage_key : null,
@@ -292,6 +300,28 @@ router.post('/', async (req, res) => {
     const project = admission.project
     createdProjectId = project.id
     const status = project.status
+
+    if (mode === 'MEDIA_COMPOSER') {
+      const defaultTracks = [
+        { type: 'background', name: 'Nền (Background)', order: 0 },
+        { type: 'image', name: 'Hình ảnh (Images)', order: 1 },
+        { type: 'voiceover', name: 'Lồng tiếng (Voiceover)', order: 2 },
+        { type: 'music', name: 'Nhạc nền (BGM & SFX)', order: 3 },
+        { type: 'text', name: 'Chữ & Phụ đề (Text)', order: 4 },
+      ]
+      for (const t of defaultTracks) {
+        await insert('timeline_tracks', {
+          id: uuidv4(),
+          project_id: project.id,
+          track_type: t.type,
+          name: t.name,
+          order_index: t.order,
+          muted: 0,
+          volume: 1.0,
+          locked: 0,
+        })
+      }
+    }
 
     // Cache lookup (Task 1 fix): SAU insert, TRƯỚC runPipeline.
     // Query completed TRANSLATE_DUB cùng user + video_hash, lọc bằng
@@ -364,8 +394,9 @@ router.post('/', async (req, res) => {
     // Kick off the real pipeline asynchronously — LUÔN CUỐI CÙNG, sau khi
     // copy cache xong (tránh race: stage skip-if-exists đọc nhầm bảng rỗng
     // hoặc ghi đè song song với copy). Bỏ qua khi copy lỗi (project đã về
-    // queued, drainQueued nhận chạy lại khi có slot).
-    if (status === 'pending' && !transcriptCopyFailed) {
+    // queued, drainQueued nhận chạy lại khi có slot). MEDIA_COMPOSER bắt đầu từ pending,
+    // người dùng chuẩn bị tư liệu xong mới render thủ công.
+    if (status === 'pending' && !transcriptCopyFailed && mode !== 'MEDIA_COMPOSER') {
       createProjectPostDeps.runPipeline(project.id, null, admission.runToken, { parkAfterAnalysis: scriptMode })
         .catch((e) => console.error('[Pipeline] start failed', e))
     }
@@ -450,6 +481,9 @@ router.get('/:id', async (req, res) => {
       await addScriptExtras(extras, project)
     } else if (isDubMode(project.mode)) {
       // TRANSLATE_DUB mode - no extra data needed
+    } else if (project.mode === 'MEDIA_COMPOSER') {
+      extras.tracks = await query('SELECT * FROM timeline_tracks WHERE project_id = ? ORDER BY order_index ASC', [project.id])
+      extras.assets = await query('SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC, created_date ASC', [project.id])
     }
     const publicProject = { ...project }
     delete publicProject.script_key

@@ -9,13 +9,14 @@ import MaskEditor from '@/components/MaskEditor';
 import { useTimelineStore } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, AlertTriangle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap, Save, Youtube, ExternalLink, Pencil, Copy, ChevronDown, ChevronUp, EyeOff, SlidersHorizontal } from 'lucide-react';
-import { STAGE_LABELS, SCRIPT_STAGES, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, AUDIO_MODE_LABELS, ACTIVE_STATUSES as SHARED_ACTIVE_STATUSES, isCompletedStatus } from '@/lib/constants';
+import { STAGE_LABELS, SCRIPT_STAGES, COMPOSER_STAGES, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, AUDIO_MODE_LABELS, ACTIVE_STATUSES as SHARED_ACTIVE_STATUSES, isCompletedStatus } from '@/lib/constants';
 import { friendlyJobError } from '@/lib/providerErrorMessage';
 import { resolveStorageUrl } from '@/lib/apiBase';
 import { useJobEvents } from '@/hooks/useJobEvents';
 import ProjectHeader from '@/components/project/ProjectHeader';
 import PipelineStatus from '@/components/project/PipelineStatus';
 import ErrorState from '@/components/ErrorState';
+import { MediaLibrary, ComposerPreview, ClipInspector } from '@/components/composer';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,6 +45,9 @@ const stageIcons = {
   'dub.mask': Scissors,
   'dub.ttsAlign': AudioLines,
   'dub.render': Video,
+  'composer.ingest': Sparkles,
+  'composer.prepare': SlidersHorizontal,
+  'composer.render': Video,
 };
 
 const SUMMARY_STAGES = ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'];
@@ -128,6 +132,26 @@ export default function ProjectDetail() {
   const [savingAllSegments, setSavingAllSegments] = useState(false);
   const [showYoutubeModal, setShowYoutubeModal] = useState(false);
   const [redisStatus, setRedisStatus] = useState(null); // 'connected' | 'disconnected' | null (từ GET /health)
+  // AI Media Composer state
+  const [composerAssets, setComposerAssets] = useState([]);
+  const [composerTracks, setComposerTracks] = useState([]);
+  const [composerClips, setComposerClips] = useState([]);
+  const [savingComposerTimeline, setSavingComposerTimeline] = useState(false);
+  const [arrangingTimeline, setArrangingTimeline] = useState(false);
+  const [confirmResetTimeline, setConfirmResetTimeline] = useState(false);
+  const [resettingTimeline, setResettingTimeline] = useState(false);
+  const composerInitialLoadedRef = useRef(false);
+
+  // Zustand timeline store selectors for Media Composer
+  const storeTracks = useTimelineStore((s) => s.tracks);
+  const storeClips = useTimelineStore((s) => s.clips);
+  const storeSelectedClipId = useTimelineStore((s) => s.selectedClipId);
+  const setStoreClips = useTimelineStore((s) => s.setClips);
+  const setStoreTracks = useTimelineStore((s) => s.setTracks);
+  const setSelectedClipId = useTimelineStore((s) => s.setSelectedClipId);
+  const addStoreClip = useTimelineStore((s) => s.addClip);
+  const updateStoreClip = useTimelineStore((s) => s.updateClip);
+  const deleteStoreClip = useTimelineStore((s) => s.deleteClip);
   const videoRef = useRef(null);
   // Optimistic concurrency (§4.6): revision server cấp, seq chống stale response.
   const transcriptRevisionRef = useRef(null);
@@ -148,6 +172,7 @@ export default function ProjectDetail() {
 
   const isDub = project?.mode === 'TRANSLATE_DUB' || project?.mode === 'translate_dub';
   const isScript = project?.mode === 'SCRIPT_TO_VIDEO' || project?.mode === 'AI_VIDEO' || project?.mode === 'script_to_video';
+  const isComposer = project?.mode === 'MEDIA_COMPOSER' || project?.mode === 'media_composer';
   const params = project?.params || {};
   const enableDubbing = params.enableDubbing ?? params.enable_dubbing ?? false;
 
@@ -176,6 +201,7 @@ export default function ProjectDetail() {
   }, [project?.params]);
 
   const stages = useMemo(() => {
+    if (isComposer) return COMPOSER_STAGES;
     if (isDub) {
       const activeDub = dubConfig.enableDubbing ?? enableDubbing;
       return DUB_STAGES_ALL.filter((s) => {
@@ -185,7 +211,21 @@ export default function ProjectDetail() {
     }
     if (isScript) return SCRIPT_STAGES;
     return SUMMARY_STAGES;
-  }, [isDub, dubConfig.enableDubbing, enableDubbing, isScript]);
+  }, [isComposer, isDub, dubConfig.enableDubbing, enableDubbing, isScript]);
+
+  const selectedComposerClip = useMemo(() => {
+    return (storeClips || []).find((c) => c.id === storeSelectedClipId) || null;
+  }, [storeClips, storeSelectedClipId]);
+
+  const composerDuration = useMemo(() => {
+    if (!storeClips || storeClips.length === 0) return 10;
+    let maxEnd = 0;
+    for (const c of storeClips) {
+      const end = (Number(c.start ?? c.start_at_sec ?? 0) + Number(c.duration ?? c.out_sec ?? 4));
+      if (end > maxEnd) maxEnd = end;
+    }
+    return Math.max(10, Math.ceil(maxEnd));
+  }, [storeClips]);
 
   // Gộp trạng thái job từ polling DB + SSE realtime
   const jobByStage = useMemo(() => {
@@ -477,6 +517,44 @@ export default function ProjectDetail() {
         if (p.mode === 'TRANSLATE_DUB' || p.mode === 'translate_dub') {
           loadDubData();
         }
+      }
+
+      if (p.mode === 'MEDIA_COMPOSER') {
+        const rawTracks = p.tracks || [];
+        const normTracks = rawTracks.map((t) => ({
+          id: t.id,
+          type: t.track_type || t.type,
+          name: t.name,
+          isMuted: Boolean(t.muted),
+          muted: Boolean(t.muted),
+          volume: Number(t.volume ?? 1),
+          isLocked: Boolean(t.locked),
+          locked: Boolean(t.locked),
+        }));
+        setComposerTracks(normTracks);
+
+        const rawClips = p.timeline || [];
+        const normClips = rawClips.map((c, idx) => ({
+          id: c.id,
+          trackId: c.track_id || c.trackId,
+          type: c.clip_type || c.type || 'image',
+          clip_type: c.clip_type || c.type || 'image',
+          assetId: c.asset_id || c.assetId,
+          start: Number(c.start_at_sec ?? c.start_sec ?? c.start ?? 0),
+          duration: Math.max(0.1, Number((c.out_sec != null && c.in_sec != null ? c.out_sec - c.in_sec : null) ?? c.duration_sec ?? c.duration ?? 4)),
+          content: c.text_content || c.content || c.name || '',
+          style: typeof c.style_json === 'string' ? JSON.parse(c.style_json) : (c.style || {}),
+          volume: Number(c.volume ?? 1),
+          order_index: c.order_index ?? idx,
+        }));
+
+        if (!composerInitialLoadedRef.current || isCompletedStatus(p.status)) {
+          composerInitialLoadedRef.current = true;
+          setComposerClips(normClips);
+          if (normTracks.length > 0) setStoreTracks(normTracks);
+          setStoreClips(normClips);
+        }
+        setComposerAssets(p.assets || []);
       }
 
       // Best-effort cùng nhịp load (không vòng poll riêng — giữ single interval).
@@ -860,6 +938,147 @@ export default function ProjectDetail() {
     }
   };
 
+  const handleAutoArrangeComposer = async () => {
+    try {
+      setArrangingTimeline(true);
+      const res = await projectsApi.autoArrangeTimeline(id, {
+        imageDurationSec: 4.0,
+        enableBgmDucking: true,
+      });
+      toast({
+        title: 'Tự động sắp xếp thành công',
+        description: `Đã xếp ${res?.clips?.length || 0} clip lên timeline khớp giọng đọc và nhạc nền.`,
+      });
+      composerInitialLoadedRef.current = false;
+      await load();
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Lỗi sắp xếp timeline',
+        description: err?.response?.data?.message || err.message,
+      });
+    } finally {
+      setArrangingTimeline(false);
+    }
+  };
+
+  const handleResetTimeline = async () => {
+    try {
+      setResettingTimeline(true);
+      setStoreClips([]);
+      setSelectedClipId(null);
+      await projectsApi.saveTimeline(id, {
+        tracks: storeTracks && storeTracks.length > 0 ? storeTracks : composerTracks,
+        clips: [],
+      });
+      setResettingTimeline(false);
+      setConfirmResetTimeline(false);
+      toast({
+        title: 'Đã đặt lại Timeline',
+        description: 'Dòng thời gian đã được dọn sạch. Bạn có thể thêm clip mới hoặc bấm Tự động sắp xếp.',
+      });
+    } catch (err) {
+      setResettingTimeline(false);
+      toast({
+        variant: 'destructive',
+        title: 'Lỗi đặt lại Timeline',
+        description: err?.response?.data?.message || err.message,
+      });
+    }
+  };
+
+  const handleSaveComposerTimeline = async () => {
+    try {
+      setSavingComposerTimeline(true);
+      await projectsApi.saveTimeline(id, {
+        tracks: storeTracks && storeTracks.length > 0 ? storeTracks : composerTracks,
+        clips: storeClips,
+      });
+      toast({
+        title: 'Đã lưu Timeline',
+        description: 'Tất cả thay đổi trên các track và clip đã được đồng bộ.',
+      });
+      await load();
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Lỗi lưu timeline',
+        description: err?.response?.data?.message || err.message,
+      });
+    } finally {
+      setSavingComposerTimeline(false);
+    }
+  };
+
+  const handleRenderComposerVideo = async () => {
+    try {
+      setSavingComposerTimeline(true);
+      await projectsApi.saveTimeline(id, {
+        tracks: storeTracks && storeTracks.length > 0 ? storeTracks : composerTracks,
+        clips: storeClips,
+      });
+      setSavingComposerTimeline(false);
+      await handleRegenerate();
+    } catch (err) {
+      setSavingComposerTimeline(false);
+      toast({
+        variant: 'destructive',
+        title: 'Lỗi xuất video',
+        description: err?.response?.data?.message || err.message,
+      });
+    }
+  };
+
+  const handleAddComposerClip = (newClipData) => {
+    const trackType = newClipData.trackType || newClipData.clip_type || 'image';
+    const targetTrack = composerTracks.find((t) => (t.track_type || t.type) === trackType) || composerTracks[0];
+
+    let startTime = Number(newClipData.start ?? newClipData.start_at_sec ?? -1);
+    if (startTime < 0) {
+      if (trackType === 'text' && newClipData.assetId) {
+        const matchingImg = storeClips.find((c) => (c.assetId || c.asset_id) === newClipData.assetId);
+        startTime = matchingImg ? Number(matchingImg.start ?? matchingImg.start_at_sec ?? 0) : currentTime;
+      } else {
+        startTime = currentTime;
+      }
+    }
+    startTime = Math.max(0, Number(startTime.toFixed(2)));
+
+    const newClip = {
+      id: `clip-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      trackId: targetTrack?.id || 'track-1',
+      type: trackType,
+      clip_type: trackType,
+      assetId: newClipData.assetId || null,
+      voice_audio_id: newClipData.audioId || null,
+      start: startTime,
+      start_at_sec: startTime,
+      duration: Math.max(0.5, Number(newClipData.duration || 4)),
+      out_sec: Math.max(0.5, Number(newClipData.duration || 4)),
+      content: newClipData.textContent || newClipData.content || '',
+      textContent: newClipData.textContent || newClipData.content || '',
+      style: newClipData.style || { fontSize: 28, color: '#FFFFFF', bg: 'rgba(0,0,0,0.65)', position: 'bottom' },
+      style_json: JSON.stringify(newClipData.style || { fontSize: 28, color: '#FFFFFF', bg: 'rgba(0,0,0,0.65)', position: 'bottom' }),
+      volume: 1.0,
+    };
+
+    addStoreClip(newClip);
+    setComposerClips((prev) => [...prev, newClip]);
+    toast({
+      title: 'Đã thêm Clip vào Timeline',
+      description: `Đã thêm lớp ${trackType} tại mốc ${startTime.toFixed(1)}s`,
+    });
+  };
+
+  const handleRefreshAssets = async () => {
+    try {
+      const res = await projectsApi.getAssets(id);
+      setComposerAssets(res || []);
+    } catch (err) {
+      console.error('Refresh assets error:', err);
+    }
+  };
+
   const handleSaveAllSegments = async () => {
     if (savingAllSegments || !project?.scriptSegments) return true;
     setSavingAllSegments(true);
@@ -1236,6 +1455,233 @@ export default function ProjectDetail() {
   const isTranslateSuccess = ['success', 'completed'].includes(translateJob?.status);
   const isTranslateFailed = ['failed', 'error', 'timeout'].includes(translateJob?.status);
   const isPreviewConfirmed = Boolean(params.previewConfirmed);
+
+  // MEDIA_COMPOSER: AI Media Composer Studio Layout
+  if (isComposer) {
+    const isCompleted = isCompletedStatus(effectiveStatus || project.status);
+    return (
+      <Layout>
+        <div className="h-screen max-md:h-auto flex flex-col bg-background text-foreground overflow-hidden">
+          {/* 1. Header */}
+          <div className="shrink-0 px-4 py-2 border-b border-border bg-card/60 backdrop-blur-sm">
+            <ProjectHeader
+              project={project ? { ...project, status: effectiveStatus || project.status } : project}
+              canCancel={canCancel}
+              canRegenerate={canRegenerate}
+              regenerating={regenerating || savingComposerTimeline}
+              outputUrl={outputUrl}
+              error={error}
+              onConfirmDelete={() => setConfirmDelete(true)}
+              onCancel={handleCancel}
+              onRegenerate={handleRenderComposerVideo}
+              onPublishYoutube={() => setShowYoutubeModal(true)}
+            />
+          </div>
+
+          {/* 2. Pipeline Status Bar */}
+          <div className="shrink-0 px-4 py-2 border-b border-border/80 bg-muted/20">
+            <PipelineStatus
+              progress={computedProgress}
+              isActive={isPipelineActivelyRunning}
+              sseAvailable={sseAvailable}
+              stages={stages}
+              jobByStage={jobByStage}
+              onRetry={handleRetryStage}
+              redisStatus={redisStatus}
+            />
+          </div>
+
+          {/* 3. Studio Toolbar */}
+          <div className="shrink-0 px-4 py-2 bg-card border-b border-border flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 text-primary font-semibold border border-primary/20">
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>AI Media Composer</span>
+              </span>
+              <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground font-mono text-[11px]">
+                {params.resolution || '1080p'} • {params.aspectRatio || '16:9'} • {params.fps || 30}fps
+              </span>
+              <span className="text-muted-foreground hidden sm:inline">
+                ({composerAssets.length} assets • {storeClips.length} clips)
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleAutoArrangeComposer}
+                disabled={arrangingTimeline || isPipelineActivelyRunning}
+                className="px-3 py-1.5 rounded-lg border border-primary/30 bg-primary/5 hover:bg-primary/10 text-primary text-xs font-semibold transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-xs"
+                title="Tự động xếp hình ảnh, khớp giọng đọc và nhạc nền"
+              >
+                {arrangingTimeline ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                <span>Tự động sắp xếp</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setConfirmResetTimeline(true)}
+                disabled={resettingTimeline || arrangingTimeline || isPipelineActivelyRunning}
+                className="px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-muted text-foreground text-xs font-semibold transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-xs"
+                title="Dọn sạch toàn bộ clip trên dòng thời gian"
+              >
+                {resettingTimeline ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                <span>Đặt lại Timeline</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSaveComposerTimeline}
+                disabled={savingComposerTimeline || isPipelineActivelyRunning}
+                className="px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-muted text-foreground text-xs font-semibold transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-xs"
+              >
+                {savingComposerTimeline ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                <span>Lưu Timeline</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleRenderComposerVideo}
+                disabled={isPipelineActivelyRunning || savingComposerTimeline}
+                className="px-4 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-xs"
+              >
+                {isPipelineActivelyRunning ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Đang render...</span>
+                  </>
+                ) : (
+                  <>
+                    <Video className="w-3.5 h-3.5" />
+                    <span>Xuất Video</span>
+                  </>
+                )}
+              </button>
+
+              {outputUrl && isCompleted && (
+                <a
+                  href={outputUrl}
+                  download
+                  className="px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-xs font-semibold transition flex items-center gap-1.5 shadow-xs"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Tải Video MP4</span>
+                </a>
+              )}
+            </div>
+          </div>
+
+          {/* 4. Upper Workspace: 3 Columns (Media Library, Canvas/Video Preview, Clip Inspector) */}
+          <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden bg-background/50">
+            {/* Left: Media Library */}
+            <div className="w-full md:w-80 shrink-0 border-r border-border h-full overflow-hidden bg-card/40">
+              <MediaLibrary
+                projectId={project.id}
+                assets={composerAssets}
+                onRefresh={handleRefreshAssets}
+                onAddClipToTimeline={handleAddComposerClip}
+              />
+            </div>
+
+            {/* Center: Realtime Canvas Preview or Output Video */}
+            <div className="flex-1 min-w-0 h-full flex flex-col overflow-hidden bg-black/30">
+              <ComposerPreview
+                project={project}
+                clips={storeClips}
+                assets={composerAssets}
+                currentTime={currentTime}
+                duration={composerDuration}
+                isPlaying={isPlaying}
+                outputUrl={outputUrl}
+                onTogglePlay={() => setIsPlaying(!isPlaying)}
+                onSeek={(t) => {
+                  setCurrentTime(t);
+                  setStoreCurrentTime(t);
+                }}
+              />
+            </div>
+
+            {/* Right: Clip Inspector */}
+            <div className="w-full md:w-72 shrink-0 border-l border-border h-full overflow-hidden bg-card/40">
+              <ClipInspector
+                selectedClip={selectedComposerClip}
+                onUpdateClip={(id, upd) => updateStoreClip(id, upd)}
+                onDeleteClip={(id) => deleteStoreClip(id)}
+              />
+            </div>
+          </div>
+
+          {/* 5. Lower Workspace: Multi-track Timeline */}
+          <div className="shrink-0 border-t border-border bg-card">
+            <VideoTimeline
+              currentTime={currentTime}
+              duration={composerDuration}
+              isPlaying={isPlaying}
+              onSeek={(t) => {
+                setCurrentTime(t);
+                setStoreCurrentTime(t);
+              }}
+              onPlayPause={() => setIsPlaying(!isPlaying)}
+              customTracks={composerTracks}
+              project={project}
+            />
+          </div>
+
+          {/* Reset Timeline Dialog */}
+          <AlertDialog open={confirmResetTimeline} onOpenChange={setConfirmResetTimeline}>
+            <AlertDialogContent className="bg-card border-border text-foreground">
+              <AlertDialogHeader>
+                <AlertDialogTitle className="text-foreground">Đặt lại toàn bộ Timeline?</AlertDialogTitle>
+                <AlertDialogDescription className="text-muted-foreground">
+                  Mọi clip hình ảnh, âm thanh và phụ đề trên dòng thời gian hiện tại sẽ bị xoá để bạn có thể sắp đặt lại từ đầu. Hành động này không thể hoàn tác.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel className="border-border text-foreground hover:bg-muted">Huỷ</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={(e) => {
+                    e.preventDefault();
+                    handleResetTimeline();
+                  }}
+                  disabled={resettingTimeline}
+                  className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold"
+                >
+                  {resettingTimeline ? 'Đang đặt lại...' : 'Xác nhận đặt lại'}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+
+          {/* Delete Dialog */}
+          <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+            <AlertDialogContent className="bg-card border-border text-foreground">
+              <AlertDialogHeader>
+                <AlertDialogTitle className="text-foreground">Xoá dự án này?</AlertDialogTitle>
+                <AlertDialogDescription className="text-muted-foreground">
+                  Dự án &ldquo;{project.title}&rdquo; cùng toàn bộ tài nguyên (hình ảnh, âm thanh, video render) sẽ bị xoá vĩnh viễn. Hành động này không thể hoàn tác.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel className="border-border text-foreground hover:bg-muted">
+                  Huỷ
+                </AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={(e) => {
+                    e.preventDefault();
+                    handleDelete();
+                  }}
+                  disabled={deleting}
+                  className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-semibold"
+                >
+                  {deleting ? 'Đang xoá...' : 'Xoá vĩnh viễn'}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+      </Layout>
+    );
+  }
 
   // TRANSLATE_DUB: Subtitle sync editor layout
   if (isScript && project.scriptReviewRequired) {

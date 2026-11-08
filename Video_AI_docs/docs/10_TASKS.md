@@ -10,7 +10,7 @@ Tài liệu theo dõi trạng thái cài đặt thực tế của các tính nă
 ---
 
 ## Giai đoạn 1 — Nền tảng Kiến trúc Cốt lõi
-- `[DONE]` Hệ thống cơ sở dữ liệu `sql.js` (WebAssembly SQLite) 29 bảng, lưu tệp `backend/data.db`, atomic snapshot memory-disk và single-writer lock (`data.db.writer.lock`).
+- `[DONE]` Hệ thống cơ sở dữ liệu `sql.js` (WebAssembly SQLite) 30 bảng (bao gồm bảng `timeline_tracks` và các trường mở rộng của `timeline_clips`, `assets`), lưu tệp `backend/data.db`, atomic snapshot memory-disk và single-writer lock (`data.db.writer.lock`).
 - `[DONE]` Hệ thống xác thực JWT (Access token ngắn hạn + HttpOnly cookie `refresh_token` xoay vòng CAS, phân quyền USER / ADMIN).
 - `[DONE]` Quên mật khẩu & xác thực mã OTP qua email (`reset_tokens`, `email_otps`, Nodemailer SMTP).
 - `[DONE]` Kiến trúc Provider Pattern (`backend/src/providers/registry.js`, `callProvider.js`) hỗ trợ LLM, ASR, TTS, Vision, Image.
@@ -61,7 +61,22 @@ Tài liệu theo dõi trạng thái cài đặt thực tế của các tính nă
 
 ---
 
-## Giai đoạn 5 — Vận hành, Giám sát & Mở rộng
+## Giai đoạn 5 — AI Media Composer (Flagship Studio & Multi-Track Pipeline)
+- `[DONE]` Schema DDL: Bổ sung bảng `timeline_tracks` và các trường mở rộng của `timeline_clips` (layer, visual/audio attributes) và `assets` (ocr_text, translated_text, audio_key, metadata).
+- `[DONE]` Dịch vụ lõi `composerService.js`: Quản lý 5 rãnh timeline, tải lên và sắp xếp assets, OCR 2-tier cache, translate 2-tier cache, sinh TTS voiceover, auto-arrange timeline và lưu cấu trúc timeline tracks/clips.
+- `[DONE]` Bộ định tuyến REST `composerAssets.js`: 8 endpoints quản lý assets (`POST /assets`, `GET /assets`, `POST /reorder`, `POST /ocr`, `POST /translate`, `POST /tts`, `POST /auto-arrange`, `PUT /timeline`).
+- `[DONE]` Pipeline Media Composer 3 stages (`composer.ingest`, `composer.prepare`, `composer.render`) trong `runner.js`.
+- `[DONE]` Xử lý FFmpeg đa lớp và âm thanh: Visual multi-layer composition (Background blur + Main Slideshow 1.05x + Overlay), lặp vô tận BGM (`aloop`), dynamic sidechain ducking (-12dB khi có voiceover), burn-in phụ đề ASS UTF-8 Unicode-safe.
+- `[DONE]` Chiến lược bộ nhớ đệm 2 tầng (2-Tier Cache): Tầng 1 tại trường asset của SQLite, Tầng 2 tại bảng `provider_cache` với khoá băm SHA-256 (TTL 90 ngày) giúp tiết kiệm tối đa quota API khi thao tác OCR và Dịch thuật.
+- `[DONE]` Media Composer Studio 4 pane trong `ProjectDetail.jsx`: MediaLibrary kéo thả, ComposerPreview (Canvas vs MP4 Video), ClipInspector chỉnh sửa thuộc tính, và Multi-track Timeline 5 rãnh.
+- `[DONE]` Tương tác Multi-track Timeline chuyên nghiệp: Hỗ trợ 5 rãnh độc lập (`BACKGROUND`, `MAIN_VIDEO`, `OVERLAY`, `VOICE`, `BGM`), cắt xén hai đầu (Dual-handle trimming), snap-to-grid và zoom timeline.
+- `[DONE]` Modal thao tác nhanh trên Asset: `OcrTranslateModal.jsx` (trích xuất và dịch chữ song ngữ có cache), `TtsModal.jsx` (sinh âm thanh giọng đọc AI).
+- `[DONE]` Khởi tạo dự án Media Composer trong `CreateProject.jsx`: Tải lên hàng loạt ảnh, chọn tỉ lệ khung hình `16:9` hoặc `9:16`, chọn giọng đọc AI và tự động đưa vào Studio.
+- `[DONE]` Bộ kiểm thử tự động toàn diện: `composerService.test.mjs`, `composerAssets.test.mjs`, `composerPipeline.test.mjs`, `composerBrowserE2e.test.mjs`, `composerPlaywrightUi.test.mjs`, `timelineUtils.test.mjs`.
+
+---
+
+## Giai đoạn 6 — Vận hành, Giám sát & Mở rộng
 - `[DONE]` Cập nhật tiến độ realtime qua Server-Sent Events (SSE) dùng vé xác thực một lần ngắn hạn (`sse-ticket`).
 - `[DONE]` Huỷ an toàn pipeline (`POST /projects/:id/cancel` via `AbortController`, chuyển status `cancelled`).
 - `[DONE]` Chạy lại pipeline linh hoạt (`POST /projects/:id/regenerate` từ `firstRunnableStage` hoặc từ `fromStage` chọn lọc).

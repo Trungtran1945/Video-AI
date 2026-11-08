@@ -8,9 +8,13 @@ Hệ thống được thiết kế để triển khai production tinh gọn bằ
 
 - **Ngôn ngữ & Runtime**: JavaScript (ES modules) trên Node.js 22 LTS (không dùng TypeScript/dist).
 - **Quy trình chạy**:
-  - Local Dev: Khởi động backend (`cd backend && npm run dev` chạy `scripts/dev.mjs`, tự động khởi tạo sidecar ZeroTTS Python nếu cấu hình bật), sau đó khởi động frontend (`cd frontend && npm run dev`).
+  - Local Dev: Khởi động backend (`cd backend && npm run dev` chạy `scripts/dev.mjs`, tự động khởi tạo sidecar ZeroTTS Python nếu cấu hình bật), sau đó khởi động frontend (`cd frontend && npm run dev`). ZeroTTS trả về byte WAV và backend dùng FFmpeg cục bộ để chuyển đổi sang MP3 (cần kiểm tra `ffmpeg -version` và `ffprobe -version`).
   - Production: Backend chạy bằng lệnh `node server.js` (hoặc `npm start`). Tuyệt đối không tự động spawn tiến trình Python trong production.
 - **Cơ sở dữ liệu**: `sql.js` (SQLite in-memory) lưu tệp tại `/app/data/data.db` (mount qua volume Docker `db_data`). Yêu cầu biến môi trường `INSTANCE_MODE=single` để bảo toàn nguyên tắc duy nhất một tiến trình sở hữu quyền ghi.
+- **Lưu trữ Tệp Media (`storage_data`)**: Mount volume lưu trữ tại `/app/storage`, phân lập theo dự án:
+  - `storage/projects/:id/assets/`: Chứa các tài nguyên ảnh, âm thanh tải lên của Media Composer.
+  - `storage/projects/:id/outputs/`: Chứa video MP4 thành phẩm và thumbnail đại diện.
+  - `storage/projects/:id/script/`: Chứa kịch bản nguồn và các slide ảnh.
 - **Hàng đợi & Worker**: Redis 7 và BullMQ. Tất cả worker (drain, notify, cleanup, youtube) chạy in-process bên trong tiến trình API chính; profile `scale` trong Compose được vô hiệu hóa để bảo vệ tính toàn vẹn của sql.js.
 
 ---

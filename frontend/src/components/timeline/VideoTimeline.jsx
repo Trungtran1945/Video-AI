@@ -42,6 +42,8 @@ export default function VideoTimeline({
   // F2 Option B (view-only): timeline drag/trim chỉ xem thử, không persist.
   // Sửa timing thật ở TranscriptEditor → Lưu (PUT /projects/:id/transcript).
   readOnly = false,
+  customTracks = null,
+  customClips = null,
 }) {
   const {
     currentTime: storeCurrentTime,
@@ -49,6 +51,7 @@ export default function VideoTimeline({
     zoomLevel,
     setZoomLevel,
     tracks,
+    setTracks,
     clips,
     setClips,
     selectedClipId,
@@ -128,8 +131,20 @@ export default function VideoTimeline({
   const activeCurrentTime = propCurrentTime;
   const activeIsPlaying = isControlledPlayback ? propIsPlaying : storeIsPlaying;
 
-  // Sync transcript and video duration into clips
+  // Sync custom tracks for MEDIA_COMPOSER (only when IDs or count change)
   useEffect(() => {
+    if (customTracks && Array.isArray(customTracks) && customTracks.length > 0) {
+      const currentTrackIds = (tracks || []).map((t) => t.id).join(',');
+      const newTrackIds = customTracks.map((t) => t.id).join(',');
+      if (currentTrackIds !== newTrackIds) {
+        setTracks(customTracks);
+      }
+    }
+  }, [customTracks, tracks, setTracks]);
+
+  // Sync transcript and video duration into clips (for TRANSLATE_DUB / SUMMARY)
+  useEffect(() => {
+    if (project?.mode === 'MEDIA_COMPOSER' || customTracks !== null || customClips !== null) return;
     if (transcript === null && !outputUrl && propDuration === 0) return;
 
     const newClips = [];

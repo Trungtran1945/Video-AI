@@ -18,12 +18,12 @@ Tài liệu này định nghĩa quy chuẩn đóng góp mã nguồn, tiêu chu�
 | Thành phần | Lệnh thực thi | Mục đích & Tiêu chuẩn |
 | --- | --- | --- |
 | **Backend Lint** | `cd backend && npm run lint` | Kiểm tra cú pháp ESLint toàn bộ thư mục `src/`, `tests/`, `scripts/` |
-| **Backend Test** | `cd backend && npm test` | Chạy toàn bộ bộ kiểm thử hồi quy `node scripts/run-tests.mjs` (kiểm tra toàn bộ các file `tests/*.test.mjs`) |
+| **Backend Test** | `cd backend && npm test` | Chạy toàn bộ 176 test files hồi quy `node scripts/run-tests.mjs` (kiểm tra toàn bộ các file `tests/*.test.mjs`) |
 | **Frontend Lint** | `cd frontend && npm run lint` | Kiểm tra cú pháp và quy chuẩn React/JSX |
 | **Frontend Typecheck** | `cd frontend && npm run typecheck` | Kiểm tra kiểu dữ liệu nhẹ qua `tsc -p ./jsconfig.json` |
 | **Frontend Build** | `cd frontend && npm run build` | Kiểm tra tính sẵn sàng của gói build Vite SPA |
 
-> ⚠️ **Lưu ý Quan trọng**: Frontend không có lệnh `npm test` — không tự ý tạo thêm script test ở frontend. Cổng kiểm tra hồi quy chính của dự án là bộ test của backend (`cd backend && npm test`).
+> ⚠️ **Lưu ý Quan trọng**: Frontend không có lệnh `npm test` — không tự ý tạo thêm script test ở frontend. Cổng kiểm tra hồi quy chính của dự án là bộ test của backend (`cd backend && npm test`). Toàn bộ logic frontend/timeline được kiểm thử tập trung tại `backend/tests/timelineUtils.test.mjs`.
 
 ---
 
@@ -45,6 +45,12 @@ Tài liệu này định nghĩa quy chuẩn đóng góp mã nguồn, tiêu chu�
 
 Mọi tính năng hoặc sửa lỗi mới đều cần đi kèm bài kiểm tra tương ứng trong `backend/tests/`:
 
+- **Kiểm thử Pipeline MEDIA_COMPOSER (Flagship)**:
+  - `composerService.test.mjs`: Kiểm thử nghiệp vụ lõi (auto-arrange 5 rãnh, timeline tracks/clips, OCR và Translate 2-tier cache, TTS voiceover).
+  - `composerAssets.test.mjs`: Kiểm thử 8 REST endpoints quản lý assets và timeline.
+  - `composerPipeline.test.mjs`: Kiểm thử 3 stages `composer.ingest`, `composer.prepare`, `composer.render`.
+  - `composerBrowserE2e.test.mjs` & `composerPlaywrightUi.test.mjs`: Kiểm thử giao diện Media Composer Studio, tương tác kéo thả asset, preview canvas, modal OCR/TTS.
+  - `timelineUtils.test.mjs`: Kiểm thử thuật toán tính toán tọa độ, snap-to-grid và dual-handle trimming trên timeline.
 - **Kiểm thử Provider AI**: Sử dụng mock HTTP hoặc `mockAsr`, `mockLlm`, `mockTts`, `mockVision` với biến môi trường `DEFAULT_PROVIDER_MODE=mock` để không tốn quota API thật.
 - **Kiểm thử Pipeline SUMMARY**: Kiểm tra thuật toán `AlignService`, đảm bảo bất biến tổng thời lượng clip khớp với thời lượng giọng đọc review (`sai lệch < 1s`).
 - **Kiểm thử Pipeline TRANSLATE_DUB**:

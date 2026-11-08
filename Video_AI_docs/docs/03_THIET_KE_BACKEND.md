@@ -16,14 +16,14 @@ backend/
 │   ├── config.js             # Quản lý biến môi trường tập trung, CORS origin allowlist
 │   ├── db.js                 # sql.js wrapper, atomic snapshot, single-writer lock, persistence health
 │   ├── db/
-│   │   ├── schema.js         # Khởi tạo 29 bảng SQLite (DDL)
+│   │   ├── schema.js         # Khởi tạo 30 bảng SQLite (DDL)
 │   │   ├── seed.js           # Dữ liệu khởi tạo (Admin, Settings, 13 StylePresets, RateLimits)
 │   │   └── query.js          # Hàng đợi tuần tự hoá truy vấn ghi, query/queryOne/run
 │   ├── lib/                  # httpError, safePath, callProvider, providerFailover, rateLimiter
 │   ├── media/                # ffmpeg.js (serialize Windows process), mediaService.js
 │   ├── middleware/           # auth, projectAccess, safeMediaStatic, sseAuth
-│   ├── pipeline/             # runner.js (3 mode), context.js, forcedAlignService.js, eventBus.js
-│   │   └── stages/           # dub* (7 stages), summary* (8 stages), script* (7 stages)
+│   ├── pipeline/             # runner.js (4 mode), context.js, forcedAlignService.js, eventBus.js
+│   │   └── stages/           # dub* (7 stages), summary* (8 stages), script* (7 stages), composer* (3 stages)
 │   ├── providers/            # registry.js, tracked.js, rateLimit.js
 │   │   ├── asr/              # openaiWhisper.js, mockAsr.js
 │   │   ├── image/            # slideImage.js
@@ -32,8 +32,8 @@ backend/
 │   │   ├── tts/              # edgeTts.js, elevenlabs.js, googleTts.js, openaiTts.js, zeroTts.js, mockTts.js
 │   │   └── vision/           # geminiVision.js, mockVision.js
 │   ├── queue/                # BullMQ queues & workers (projectQueue, notifyQueue, cleanupQueue, drainQueue)
-│   ├── routes/v1/            # Các route API REST v1
-│   ├── services/             # resumableUpload, scriptService, projectAdmission, quotaGuard, zeroTtsSupervisor...
+│   ├── routes/v1/            # Các route API REST v1 (projects, uploads, outputs, composerAssets...)
+│   ├── services/             # resumableUpload, scriptService, composerService, projectAdmission, quotaGuard...
 │   └── usecases/             # confirmPreviewUseCase, cancelProjectUseCase
 ├── server.js                 # Điểm khởi chạy Express server, health check, recovery at boot
 └── package.json
@@ -55,15 +55,19 @@ Tất cả các dịch vụ AI và phương thức ngoại vi được trừu t�
 
 ## 3. Các Luồng Pipeline (Application Layer — `runner.js`)
 
-`backend/src/pipeline/runner.js` điều phối 3 pipeline theo chế độ:
+`backend/src/pipeline/runner.js` điều phối 4 pipeline theo chế độ:
 
-### 3.1. `SUMMARY` (Review phim & Video tóm tắt)
-Gồm 8 công đoạn tuần tự:
+### 3.1. `MEDIA_COMPOSER` (Flagship — Biên tập Video Đa phương tiện & Đa rãnh)
+Gồm 3 công đoạn tối ưu:
 ```
-summary.transcribe ➔ summary.sceneDetect ➔ summary.analyze ➔ summary.script ➔ summary.align ➔ summary.tts ➔ summary.subtitle ➔ summary.render
+composer.ingest ➔ composer.prepare ➔ composer.render
 ```
-- **AlignService**: Lấy thời lượng đọc chính xác `durationSec` của lời review từ TTS làm chuẩn, đóng gói các cảnh quay (`scenes`) thành các `timeline_clips` có thời lượng tương ứng (sai lệch < 1s).
-- **FFmpeg Concat & Ducking**: Ghép các clip cảnh, chèn hiệu ứng chuyển cảnh, lồng tiếng review và xuất video MP4.
+- **`composer.ingest`**: Kiểm tra tính hợp lệ của tài nguyên ảnh, audio tải lên. Nếu timeline chưa có clip, tự động kích hoạt `autoArrangeTimeline` để xếp đặt các phân đoạn vào rãnh `MAIN_VIDEO`, tính toán `target_duration_sec`.
+- **`composer.prepare`**: Chuẩn hoá hình ảnh (scale/pad theo aspect ratio `16:9` hoặc `9:16`), chuẩn hoá âm thanh (resample 48kHz stereo), và biên dịch phụ đề sang file ASS UTF-8 Unicode-safe (`\fn`, `\c`, `\fs`).
+- **`composer.render`**: Dựng video đa lớp qua FFmpeg filtergraph:
+  - Lớp hình ảnh: Background làm mờ + Slideshow zoom nhẹ 1.05x + Lớp overlay.
+  - Lớp âm thanh: Lặp vô tận nhạc nền BGM (`aloop`), áp dụng dynamic sidechain ducking (-12dB) khi có tiếng voiceover.
+  - Phụ đề: Burn-in phụ đề ASS chất lượng cao, probe ffprobe và lưu trữ output.
 
 ### 3.2. `TRANSLATE_DUB` (Dịch thuật & Lồng tiếng)
 Gồm 7 công đoạn:
@@ -90,12 +94,21 @@ script.ingest ➔ script.analyze ➔ script.tts ➔ script.image ➔ script.alig
 - **TTS & SlideImage**: Sinh audio giọng đọc cho từng phân đoạn và tạo ảnh slide minh họa tương ứng.
 - **Align & Render**: Căn thời lượng ảnh khớp chính xác với giọng đọc và render video MP4 hoàn chỉnh.
 
+### 3.4. `SUMMARY` (Legacy — Review phim & Video tóm tắt)
+Gồm 8 công đoạn tuần tự:
+```
+summary.transcribe ➔ summary.sceneDetect ➔ summary.analyze ➔ summary.script ➔ summary.align ➔ summary.tts ➔ summary.subtitle ➔ summary.render
+```
+- **AlignService**: Lấy thời lượng đọc chính xác `durationSec` của lời review từ TTS làm chuẩn, đóng gói các cảnh quay (`scenes`) thành các `timeline_clips` có thời lượng tương ứng (sai lệch < 1s).
+- **FFmpeg Concat & Ducking**: Ghép các clip cảnh, chèn hiệu ứng chuyển cảnh, lồng tiếng review và xuất video MP4.
+
 ---
 
 ## 4. Các Dịch vụ Cốt lõi (Core Services)
 
 | Service | Vai trò |
 | --- | --- |
+| `composerService.js` | Quản lý 5 rãnh timeline, tải lên/sắp xếp assets, OCR 2-tier cache, translate 2-tier cache, sinh TTS voiceover, auto-arrange timeline và lưu cấu trúc timeline |
 | `resumableUploadService.js` | Quản lý tải lên phân đoạn TUS-like (chunk 8MB, limit 2GB), tự phục hồi session khi khởi động lại máy chủ |
 | `scriptService.js` / `scriptUploadService.js` | Chuẩn hoá văn bản kịch bản, chunking, phân đoạn LLM, kiểm tra băm SHA-256 |
 | `projectAdmission.js` | Quản lý quyền sở hữu phiên chạy (`run_token`), lease timeout, kiểm tra giới hạn concurrency (`MAX_CONCURRENT_PROJECTS_PER_USER`) |
@@ -105,6 +118,10 @@ script.ingest ➔ script.analyze ➔ script.tts ➔ script.image ➔ script.alig
 | `projectCleanup.js` | Quản lý tác vụ dọn dẹp ổ đĩa qua outbox durable tasks (`project_cleanup_tasks`) |
 | `youtubeOAuthService.js` & `youtubePublishService.js` | Xử lý xác thực PKCE OAuth với Google và tải video lên YouTube |
 | `emailService.js` | Gửi email thông báo hoàn thành dự án và mã xác thực OTP qua SMTP Nodemailer |
+
+### 4.1. Router & Lưu trữ Media Composer
+- **Router REST `backend/src/routes/v1/composerAssets.js`**: Cung cấp 8 endpoints chuyên biệt cho tải lên asset, reorder, OCR, translate, TTS, auto-arrange và lưu timeline tracks/clips.
+- **Cấu trúc lưu trữ Asset**: Toàn bộ tài nguyên ảnh và âm thanh được lưu trữ phân lập theo dự án tại thư mục `storage/projects/:id/assets/` với đường dẫn an toàn qua `createSafeMediaStatic`.
 
 ---
 

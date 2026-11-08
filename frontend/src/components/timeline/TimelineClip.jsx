@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Type, GripVertical, Film, Zap, Sparkles, AlertTriangle, Loader2 } from 'lucide-react';
+import { Type, GripVertical, Film, Zap, Sparkles, AlertTriangle, Loader2, Image as ImageIcon, Layers, Mic, Music } from 'lucide-react';
 import { useTimelineStore } from './timelineStore';
 import { getMagneticSnap, getHandleSnap } from './timelineUtils';
 import FloatingToolbar from './FloatingToolbar';
@@ -24,7 +24,8 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
   const leftPx = clip.start * zoomLevel;
   const widthPx = Math.max(20, clip.duration * zoomLevel);
 
-  const isEditable = clip.type === 'translated';
+  const clipType = clip.clip_type || clip.type;
+  const isEditable = clipType === 'translated' || clip.editable === true || ['background', 'image', 'voiceover', 'music', 'text'].includes(clipType);
 
   // Get clips on the same track for snapping (only same-layer snapping)
   const sameTrackClips = clips.filter((c) => c.trackId === clip.trackId && c.id !== clip.id);
@@ -94,8 +95,10 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
 
   const handleLeftTrimPointerDown = (e) => {
     e.stopPropagation();
+    e.preventDefault();
     if (!isEditable || isTrackLocked) return;
 
+    setSelectedClipId(clip.id);
     setIsTrimming(true);
     const startX = e.clientX;
     const initialStart = clip.start;
@@ -145,8 +148,10 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
 
   const handleRightTrimPointerDown = (e) => {
     e.stopPropagation();
+    e.preventDefault();
     if (!isEditable || isTrackLocked) return;
 
+    setSelectedClipId(clip.id);
     setIsTrimming(true);
     const startX = e.clientX;
     const fixedStart = clip.start;
@@ -210,25 +215,58 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
     );
   }
 
-  // Subtitle track (original or translated)
-  const bgColor = clip.type === 'original'
-    ? 'bg-amber-50 dark:bg-[#3b2308]'
-    : 'bg-emerald-50 dark:bg-[#063321]';
-  const borderColor = clip.type === 'original'
-    ? 'border-amber-300 dark:border-amber-500/30'
-    : 'border-emerald-300 dark:border-emerald-500/30';
-  const textColor = clip.type === 'original'
-    ? 'text-amber-900 dark:text-amber-200'
-    : 'text-emerald-900 dark:text-emerald-200';
-  const badgeColor = clip.type === 'original'
-    ? 'text-amber-800 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/80 border-amber-300 dark:border-amber-500/20'
-    : 'text-emerald-800 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/80 border-emerald-300 dark:border-emerald-500/20';
-  const iconBg = clip.type === 'original'
-    ? 'bg-amber-100 dark:bg-amber-500/20 border-amber-300 dark:border-amber-500/40'
-    : 'bg-emerald-100 dark:bg-emerald-500/20 border-emerald-300 dark:border-emerald-500/40';
-  const iconColor = clip.type === 'original'
-    ? 'text-amber-700 dark:text-amber-300'
-    : 'text-emerald-700 dark:text-emerald-300';
+  // Color & Icon Configuration based on Clip Type
+  let bgColor = 'bg-emerald-50 dark:bg-[#063321]';
+  let borderColor = 'border-emerald-300 dark:border-emerald-500/30';
+  let textColor = 'text-emerald-900 dark:text-emerald-200';
+  let badgeColor = 'text-emerald-800 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/80 border-emerald-300 dark:border-emerald-500/20';
+  let iconBg = 'bg-emerald-100 dark:bg-emerald-500/20 border-emerald-300 dark:border-emerald-500/40';
+  let iconColor = 'text-emerald-700 dark:text-emerald-300';
+  let ClipIcon = Type;
+
+  if (clipType === 'original') {
+    bgColor = 'bg-amber-50 dark:bg-[#3b2308]';
+    borderColor = 'border-amber-300 dark:border-amber-500/30';
+    textColor = 'text-amber-900 dark:text-amber-200';
+    badgeColor = 'text-amber-800 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/80 border-amber-300 dark:border-amber-500/20';
+    iconBg = 'bg-amber-100 dark:bg-amber-500/20 border-amber-300 dark:border-amber-500/40';
+    iconColor = 'text-amber-700 dark:text-amber-300';
+    ClipIcon = Type;
+  } else if (clipType === 'background') {
+    bgColor = 'bg-purple-50 dark:bg-[#27173e]';
+    borderColor = 'border-purple-300 dark:border-purple-500/30';
+    textColor = 'text-purple-900 dark:text-purple-200';
+    badgeColor = 'text-purple-800 dark:text-purple-400 bg-purple-100 dark:bg-purple-950/80 border-purple-300 dark:border-purple-500/20';
+    iconBg = 'bg-purple-100 dark:bg-purple-500/20 border-purple-300 dark:border-purple-500/40';
+    iconColor = 'text-purple-700 dark:text-purple-300';
+    ClipIcon = Layers;
+  } else if (clipType === 'image') {
+    bgColor = 'bg-cyan-50 dark:bg-[#0c2e35]';
+    borderColor = 'border-cyan-300 dark:border-cyan-500/30';
+    textColor = 'text-cyan-900 dark:text-cyan-200';
+    badgeColor = 'text-cyan-800 dark:text-cyan-400 bg-cyan-100 dark:bg-cyan-950/80 border-cyan-300 dark:border-cyan-500/20';
+    iconBg = 'bg-cyan-100 dark:bg-cyan-500/20 border-cyan-300 dark:border-cyan-500/40';
+    iconColor = 'text-cyan-700 dark:text-cyan-300';
+    ClipIcon = ImageIcon;
+  } else if (clipType === 'voiceover') {
+    bgColor = 'bg-rose-50 dark:bg-[#38141f]';
+    borderColor = 'border-rose-300 dark:border-rose-500/30';
+    textColor = 'text-rose-900 dark:text-rose-200';
+    badgeColor = 'text-rose-800 dark:text-rose-400 bg-rose-100 dark:bg-rose-950/80 border-rose-300 dark:border-rose-500/20';
+    iconBg = 'bg-rose-100 dark:bg-rose-500/20 border-rose-300 dark:border-rose-500/40';
+    iconColor = 'text-rose-700 dark:text-rose-300';
+    ClipIcon = Mic;
+  } else if (clipType === 'music') {
+    bgColor = 'bg-amber-50 dark:bg-[#342409]';
+    borderColor = 'border-amber-300 dark:border-amber-500/30';
+    textColor = 'text-amber-900 dark:text-amber-200';
+    badgeColor = 'text-amber-800 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/80 border-amber-300 dark:border-amber-500/20';
+    iconBg = 'bg-amber-100 dark:bg-amber-500/20 border-amber-300 dark:border-amber-500/40';
+    iconColor = 'text-amber-700 dark:text-amber-300';
+    ClipIcon = Music;
+  }
+
+  const displayContent = clip.textContent || clip.text_content || clip.content || (clip.meta && typeof clip.meta === 'object' ? clip.meta.name : '') || clip.name || clipType;
 
   return (
     <div
@@ -254,11 +292,19 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
 
       <div className={`w-full h-full rounded overflow-hidden relative flex items-center justify-between px-2.5 ${bgColor}`}>
         <div className="flex items-center gap-2 truncate">
-          <div className={`w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 ${iconBg}`}>
-            <Type size={12} className={`font-bold ${iconColor}`} />
-          </div>
+          {clip.thumbnailUrl ? (
+            <img
+              src={clip.thumbnailUrl}
+              alt=""
+              className="w-5 h-5 rounded object-cover border border-border shrink-0"
+            />
+          ) : (
+            <div className={`w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 ${iconBg}`}>
+              <ClipIcon size={12} className={`font-bold ${iconColor}`} />
+            </div>
+          )}
           <span className={`text-[11px] font-semibold truncate ${textColor}`}>
-            {clip.content ? `"${clip.content}"` : ''}
+            {displayContent}
           </span>
         </div>
         <div className="flex items-center gap-1 shrink-0 ml-1">
@@ -288,23 +334,31 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
         </div>
       </div>
 
-      {isSelected && isEditable && !isTrackLocked && (
+      {isEditable && !isTrackLocked && (
         <div
           onPointerDown={handleLeftTrimPointerDown}
-          className="trim-handle absolute left-0 top-0 bottom-0 w-4 sm:w-2.5 bg-card hover:bg-accent border border-border dark:bg-zinc-200 dark:hover:bg-white dark:border-zinc-400 cursor-ew-resize rounded-l flex items-center justify-center shadow-md transition-colors z-30"
-          title="Drag to trim start"
+          className={`trim-handle absolute left-0 top-0 bottom-0 w-3 cursor-ew-resize rounded-l items-center justify-center shadow-xs transition-all z-30 ${
+            isSelected || isTrimming
+              ? 'flex bg-primary border-r border-primary/50 text-primary-foreground'
+              : 'hidden group-hover:flex bg-card/90 hover:bg-primary/20 border border-border text-foreground'
+          }`}
+          title="Kéo để chỉnh thời điểm bắt đầu (Trim start)"
         >
-          <GripVertical size={10} className="text-foreground dark:text-zinc-800" />
+          <GripVertical size={10} className={isSelected || isTrimming ? 'text-white' : 'text-primary'} />
         </div>
       )}
 
-      {isSelected && isEditable && !isTrackLocked && (
+      {isEditable && !isTrackLocked && (
         <div
           onPointerDown={handleRightTrimPointerDown}
-          className="trim-handle absolute right-0 top-0 bottom-0 w-4 sm:w-2.5 bg-card hover:bg-accent border border-border dark:bg-zinc-200 dark:hover:bg-white dark:border-zinc-400 cursor-ew-resize rounded-r flex items-center justify-center shadow-md transition-colors z-30"
-          title="Drag to trim end"
+          className={`trim-handle absolute right-0 top-0 bottom-0 w-3 cursor-ew-resize rounded-r items-center justify-center shadow-xs transition-all z-30 ${
+            isSelected || isTrimming
+              ? 'flex bg-primary border-l border-primary/50 text-primary-foreground'
+              : 'hidden group-hover:flex bg-card/90 hover:bg-primary/20 border border-border text-foreground'
+          }`}
+          title="Kéo để chỉnh thời lượng (Trim end)"
         >
-          <GripVertical size={10} className="text-foreground dark:text-zinc-800" />
+          <GripVertical size={10} className={isSelected || isTrimming ? 'text-white' : 'text-primary'} />
         </div>
       )}
     </div>

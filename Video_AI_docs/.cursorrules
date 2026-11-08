@@ -1,4 +1,4 @@
 Always prefer reusable components.
 Never duplicate logic.
-Use TypeScript strict.
+JavaScript ESM (Node >=18, React 18 JSX, no TypeScript).
 Follow docs before coding.

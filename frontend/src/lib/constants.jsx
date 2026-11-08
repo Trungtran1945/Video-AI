@@ -43,6 +43,10 @@ export const STATUS_LABELS = {
     'script.align': { label: 'Căn chỉnh thời gian', icon: 'Combine' },
     'script.subtitle': { label: 'Tạo phụ đề SRT/ASS', icon: 'Captions' },
     'script.render': { label: 'Kết xuất video MP4', icon: 'Video' },
+    // MEDIA_COMPOSER pipeline
+    'composer.ingest': { label: 'Kiểm tra tư liệu', icon: 'FileCheck' },
+    'composer.prepare': { label: 'Chuẩn bị media', icon: 'Sliders' },
+    'composer.render': { label: 'Kết xuất video MP4', icon: 'Video' },
   };
 
   export const AUDIO_MODE_LABELS = {
@@ -61,10 +65,17 @@ export const STATUS_LABELS = {
     'script.render',
   ];
 
+  export const COMPOSER_STAGES = [
+    'composer.ingest',
+    'composer.prepare',
+    'composer.render',
+  ];
+
   export const STAGE_ORDER = [
     ...['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'],
     ...['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.mask', 'dub.ttsAlign', 'dub.render'],
     ...SCRIPT_STAGES,
+    ...COMPOSER_STAGES,
   ];
 
   export const MODE_LABELS = {
@@ -74,6 +85,8 @@ export const STATUS_LABELS = {
     AI_VIDEO: 'Tạo Video từ kịch bản',
     script_to_video: 'Tạo Video từ kịch bản',
     ai_video: 'Tạo Video từ kịch bản',
+    MEDIA_COMPOSER: 'AI Media Composer',
+    media_composer: 'AI Media Composer',
     // bản lowercase do backend MVP lưu
     summary: 'Review phim',
     translate_dub: 'Dịch & Lồng tiếng',

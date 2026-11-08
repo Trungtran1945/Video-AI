@@ -26,19 +26,17 @@
 ## 2. Quản lý Dự án (`/projects`)
 
 ### 2.1. POST `/projects` — Tạo & Khởi động Dự án
-Body mẫu theo 3 chế độ:
+Body mẫu theo 4 chế độ:
 
 ```jsonc
-// 1. Chế độ SUMMARY (Review phim & Tóm tắt)
+// 1. Chế độ MEDIA_COMPOSER (Flagship — Biên tập Video Đa phương tiện & Đa rãnh)
 {
-  "mode": "SUMMARY",
-  "title": "Review Phim Dune 2",
-  "language": "vi",
-  "style": "cinematic",
-  "targetDurationSec": 1500,
-  "sourceVideoKey": "uploads/dune2.mp4",
-  "copyrightAcknowledged": true, // Bắt buộc
-  "params": { "tone": "kịch tính", "spoilerAllowed": false }
+  "mode": "MEDIA_COMPOSER",
+  "title": "Video Quảng bá Du lịch",
+  "aspectRatio": "16:9", // '16:9' | '9:16'
+  "bgmPrompt": "Nhạc nền acoustic nhẹ nhàng thư thái",
+  "voiceId": "vi-female-1",
+  "copyrightAcknowledged": true // Bắt buộc
 }
 
 // 2. Chế độ TRANSLATE_DUB (Dịch thuật & Lồng tiếng)
@@ -63,6 +61,18 @@ Body mẫu theo 3 chế độ:
   "aspectRatio": "16:9", // '16:9' | '9:16'
   "scriptUploadId": "uuid-script-upload",
   "copyrightAcknowledged": true
+}
+
+// 4. Chế độ SUMMARY (Legacy — Review phim & Tóm tắt)
+{
+  "mode": "SUMMARY",
+  "title": "Review Phim Dune 2",
+  "language": "vi",
+  "style": "cinematic",
+  "targetDurationSec": 1500,
+  "sourceVideoKey": "uploads/dune2.mp4",
+  "copyrightAcknowledged": true,
+  "params": { "tone": "kịch tính", "spoilerAllowed": false }
 }
 ```
 → `202 Accepted` + `Project` (status: `pending`, hoặc `queued` nếu vượt quá giới hạn 2 project running / user).
@@ -99,7 +109,20 @@ Body mẫu theo 3 chế độ:
 | PATCH | `/projects/:id/masks/:maskId` | Bearer | Sửa mask (Mask `APPROVED` bị khoá sửa toạ độ `409 MASK_APPROVED_IMMUTABLE`) |
 | DELETE | `/projects/:id/masks/:maskId` | Bearer | Xoá mask |
 
-### 2.4. Real-time Progress qua SSE
+### 2.4. Quản lý Tài nguyên & Biên tập Media Composer (`composerAssets.js`)
+
+| Method | Path | Auth | Mô tả |
+| --- | --- | --- | --- |
+| POST | `/projects/:id/assets` | Bearer | Tải lên tài nguyên ảnh hoặc âm thanh cho Media Composer (`multipart/form-data`) |
+| GET | `/projects/:id/assets` | Bearer | Lấy danh sách các tài nguyên `AssetItem[]` của dự án |
+| POST | `/projects/:id/assets/reorder` | Bearer | Sắp xếp lại thứ tự hiển thị của các assets `{ assetIds: string[] }` |
+| POST | `/projects/:id/assets/:assetId/ocr` | Bearer | Trích xuất chữ trên ảnh qua OCR Vision (hỗ trợ 2-tier cache) |
+| POST | `/projects/:id/assets/:assetId/translate` | Bearer | Dịch văn bản OCR sang ngôn ngữ đích (hỗ trợ 2-tier cache) |
+| POST | `/projects/:id/assets/:assetId/tts` | Bearer | Sinh file âm thanh lồng tiếng từ văn bản đã dịch qua TTS |
+| POST | `/projects/:id/auto-arrange` | Bearer | Tự động tính toán và xếp đặt 5 rãnh timeline dựa trên danh sách assets |
+| PUT | `/projects/:id/timeline` | Bearer | Lưu cấu trúc toàn bộ 5 rãnh timeline tracks và clips `{ tracks: [...], clips: [...] }` |
+
+### 2.5. Real-time Progress qua SSE
 
 | Method | Path | Auth | Mô tả |
 | --- | --- | --- | --- |
