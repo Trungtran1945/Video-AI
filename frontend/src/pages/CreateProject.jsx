@@ -111,10 +111,6 @@ export default function CreateProject() {
 
   const update = (key, val) => setForm((f) => ({ ...f, [key]: val }));
 
-  const composerSteps = [
-    { key: 'config', label: 'Cấu hình Media Composer', icon: Palette },
-    { key: 'generate', label: 'Xác nhận & Tạo', icon: Wand2 },
-  ];
   const summarySteps = [
     { key: 'movie', label: 'Phim', icon: Film },
     { key: 'language', label: 'Ngôn ngữ', icon: Globe },
@@ -137,8 +133,13 @@ export default function CreateProject() {
   ];
   const isDub = form.mode === 'TRANSLATE_DUB';
   const isScript = form.mode === 'SCRIPT_TO_VIDEO' || form.mode === 'AI_VIDEO';
-  const isComposer = form.mode === 'MEDIA_COMPOSER';
-  const steps = isComposer ? composerSteps : form.mode === 'SUMMARY' ? summarySteps : isScript ? scriptSteps : dubSteps;
+  const steps = form.mode === 'SUMMARY' ? summarySteps : isScript ? scriptSteps : dubSteps;
+
+  useEffect(() => {
+    if (form.mode === 'MEDIA_COMPOSER') {
+      navigate('/composer', { replace: true });
+    }
+  }, [form.mode, navigate]);
 
   useEffect(() => {
     if (form.mode !== 'TRANSLATE_DUB') return;
@@ -313,11 +314,6 @@ export default function CreateProject() {
   };
 
   const canNext = () => {
-    if (isComposer) {
-      if (step === 0) return true;
-      if (step === 1) return copyrightAck;
-      return true;
-    }
     if (isScript) {
       if (step === 0) return !!form.scriptUploadId && !scriptUploading;
       if (step === 1) return !!form.aspectRatio && !!form.voiceProvider;
@@ -353,20 +349,7 @@ export default function CreateProject() {
         return;
       }
       let payload;
-      if (form.mode === 'MEDIA_COMPOSER') {
-        payload = {
-          mode: 'MEDIA_COMPOSER',
-          title: form.title.trim() || 'Dự án AI Media Composer mới',
-          aspectRatio: form.aspectRatio || '16:9',
-          copyrightAcknowledged: copyrightAck,
-          params: {
-            resolution: form.resolution || '1080p',
-            fps: Number(form.fps) || 30,
-            outputFormat: 'mp4',
-            defaultBackground: form.defaultBackground || '#0F1117',
-          },
-        };
-      } else if (isScript) {
+      if (isScript) {
         payload = {
           mode: 'SCRIPT_TO_VIDEO',
           title: form.title.trim() || form.scriptFileName?.replace(/\.[^/.]+$/, '') || 'Video từ kịch bản',
@@ -462,16 +445,10 @@ export default function CreateProject() {
               desc="Tải kịch bản TXT/MD, AI tự động phân đoạn ngữ nghĩa, sinh giọng đọc và tạo slide video hoàn chỉnh."
             />
             <ModeCard
-              onClick={() => {
-                update('mode', 'MEDIA_COMPOSER');
-                update('aspectRatio', '16:9');
-                update('resolution', '1080p');
-                update('fps', 30);
-                update('defaultBackground', '#0F1117');
-              }}
+              onClick={() => navigate('/composer')}
               icon={Clapperboard}
               title="AI Media Composer"
-              desc="Tải ảnh nền, bộ ảnh nhiều tệp, nhạc nền, OCR & dịch chữ trên ảnh, lồng giọng AI và tự động dàn dựng video đa rãnh."
+              desc="Mở ngay không gian biên tập video Studio: tải ảnh, nhạc, video nền, quét OCR, lồng giọng AI và kéo thả timeline đa rãnh."
             />
             <ModeCard
               onClick={() => update('mode', 'TRANSLATE_DUB')}
@@ -508,166 +485,6 @@ export default function CreateProject() {
               exit={{ opacity: 0, x: -16 }}
               transition={{ duration: 0.18 }}
             >
-              {isComposer && step === 0 && (
-                <div className="space-y-5 text-left">
-                  <div>
-                    <label className="text-sm font-semibold text-foreground mb-1.5 block">
-                      Tên dự án Video
-                    </label>
-                    <input
-                      type="text"
-                      value={form.title}
-                      onChange={(e) => update('title', e.target.value)}
-                      placeholder="Ví dụ: Video giới thiệu sản phẩm mới..."
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-semibold text-foreground mb-2 block">
-                      1. Tỉ lệ khung hình (Aspect Ratio)
-                    </label>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <OptionCard
-                        selected={form.aspectRatio === '16:9'}
-                        onClick={() => update('aspectRatio', '16:9')}
-                        title="16:9 (Ngang)"
-                        desc="YouTube, Facebook, Website"
-                      />
-                      <OptionCard
-                        selected={form.aspectRatio === '9:16'}
-                        onClick={() => update('aspectRatio', '9:16')}
-                        title="9:16 (Dọc)"
-                        desc="TikTok, Reels, Shorts"
-                      />
-                      <OptionCard
-                        selected={form.aspectRatio === '1:1'}
-                        onClick={() => update('aspectRatio', '1:1')}
-                        title="1:1 (Vuông)"
-                        desc="Instagram Feed, Carousel"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-sm font-semibold text-foreground mb-2 block">
-                        2. Độ phân giải xuất
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
-                        <OptionCard
-                          selected={form.resolution === '1080p'}
-                          onClick={() => update('resolution', '1080p')}
-                          title="1080p"
-                          desc="Full HD sắc nét"
-                        />
-                        <OptionCard
-                          selected={form.resolution === '720p'}
-                          onClick={() => update('resolution', '720p')}
-                          title="720p"
-                          desc="HD gọn nhẹ"
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="text-sm font-semibold text-foreground mb-2 block">
-                        3. Tốc độ khung hình (FPS)
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
-                        <OptionCard
-                          selected={form.fps === 30}
-                          onClick={() => update('fps', 30)}
-                          title="30 FPS"
-                          desc="Tiêu chuẩn video"
-                        />
-                        <OptionCard
-                          selected={form.fps === 60}
-                          onClick={() => update('fps', 60)}
-                          title="60 FPS"
-                          desc="Chuyển động mượt"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-semibold text-foreground mb-2 block">
-                      4. Màu nền mặc định
-                    </label>
-                    <div className="flex flex-wrap items-center gap-3">
-                      {[
-                        { color: '#0F1117', label: 'Tối chuẩn' },
-                        { color: '#000000', label: 'Đen tuyền' },
-                        { color: '#1E1E2E', label: 'Xám than' },
-                        { color: '#0B192C', label: 'Xanh đậm' },
-                      ].map((c) => (
-                        <button
-                          key={c.color}
-                          type="button"
-                          onClick={() => update('defaultBackground', c.color)}
-                          className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-medium transition-all ${
-                            form.defaultBackground === c.color
-                              ? 'border-primary ring-2 ring-primary/30 bg-primary/10 text-foreground'
-                              : 'border-border bg-muted/40 text-muted-foreground hover:bg-muted'
-                          }`}
-                        >
-                          <span
-                            className="w-3.5 h-3.5 rounded-full border border-white/20 shrink-0"
-                            style={{ backgroundColor: c.color }}
-                          />
-                          <span>{c.label}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {isComposer && step === 1 && (
-                <div className="space-y-5 text-left">
-                  <div>
-                    <label className="flex items-start gap-3 p-3.5 rounded-xl bg-muted/50 border border-border cursor-pointer hover:border-primary/40 transition-colors">
-                      <input
-                        type="checkbox"
-                        checked={copyrightAck}
-                        onChange={(e) => setCopyrightAck(e.target.checked)}
-                        className="mt-0.5 w-4 h-4 rounded border-input text-primary focus:ring-primary accent-primary"
-                      />
-                      <span className="text-xs sm:text-sm text-foreground leading-relaxed">
-                        Tôi xác nhận quyền sở hữu hoặc quyền sử dụng hợp pháp đối với toàn bộ hình ảnh, âm thanh, nhạc nền tải lên dự án này.
-                      </span>
-                    </label>
-                  </div>
-
-                  <div className="rounded-xl bg-muted/40 border border-border p-4 space-y-2.5 text-xs sm:text-sm">
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Chế độ</span>
-                      <span className="text-foreground font-semibold">AI Media Composer</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Tên dự án</span>
-                      <span className="text-foreground font-semibold">{form.title.trim() || 'Dự án AI Media Composer mới'}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Tỉ lệ khung hình</span>
-                      <span className="text-foreground font-semibold">{form.aspectRatio}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Độ phân giải / FPS</span>
-                      <span className="text-foreground font-semibold">{form.resolution} @ {form.fps}fps</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-muted-foreground">Màu nền mặc định</span>
-                      <span className="flex items-center gap-1.5 text-foreground font-mono font-medium">
-                        <span className="w-3 h-3 rounded-full border border-white/20" style={{ backgroundColor: form.defaultBackground }} />
-                        {form.defaultBackground}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
               {isScript && step === 0 && (
                 <div className="space-y-4">
                   <input

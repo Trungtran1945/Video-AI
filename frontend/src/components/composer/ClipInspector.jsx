@@ -19,7 +19,7 @@ export default function ClipInspector({ selectedClip, onUpdateClip, onDeleteClip
 
   const clipType = selectedClip.clip_type || selectedClip.type || 'image';
   const isTextClip = clipType === 'text';
-  const isAudioClip = clipType === 'voiceover' || clipType === 'music';
+  const isAudioClip = clipType === 'voiceover' || clipType === 'music' || clipType === 'sfx';
 
   // Parse style_json if available
   let textStyle = { fontSize: 28, color: '#FFFFFF', bg: 'rgba(0,0,0,0.6)', position: 'bottom' };

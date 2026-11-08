@@ -304,10 +304,12 @@ router.post('/', async (req, res) => {
     if (mode === 'MEDIA_COMPOSER') {
       const defaultTracks = [
         { type: 'background', name: 'Nền (Background)', order: 0 },
-        { type: 'image', name: 'Hình ảnh (Images)', order: 1 },
-        { type: 'voiceover', name: 'Lồng tiếng (Voiceover)', order: 2 },
-        { type: 'music', name: 'Nhạc nền (BGM & SFX)', order: 3 },
-        { type: 'text', name: 'Chữ & Phụ đề (Text)', order: 4 },
+        { type: 'video', name: 'Video bổ sung', order: 1 },
+        { type: 'image', name: 'Hình ảnh (Images)', order: 2 },
+        { type: 'text', name: 'Chữ & Phụ đề (Text)', order: 3 },
+        { type: 'voiceover', name: 'Lồng tiếng (Voiceover)', order: 4 },
+        { type: 'music', name: 'Nhạc nền (BGM)', order: 5 },
+        { type: 'sfx', name: 'Hiệu ứng âm thanh (SFX)', order: 6 },
       ]
       for (const t of defaultTracks) {
         await insert('timeline_tracks', {

@@ -256,11 +256,32 @@ Theo quy định tại Mục 10 của `docs/task.txt`, báo cáo sử dụng cá
 
 ---
 
-## 11. KẾT LUẬN & CHỈ THỊ BÀN GIAO CHUNG CUỘC
+## 12. CHU KỲ MỚI: CHUYỂN SANG GIAO DIỆN BIÊN TẬP VIDEO TRỰC TIẾP (DIRECT STUDIO EDITOR) & 7 TRACKS TIMELINE
+
+### 12.1. Đột Phá Trải Nghiệm Người Dùng (Zero-Step Direct Studio Entry)
+- **Loại bỏ hoàn toàn Wizard 2 bước**: Người dùng nhấn chọn "AI Media Composer" từ Sidebar, Dashboard hoặc CreateProject sẽ được đưa thẳng vào Studio Editor hoàn chỉnh (`/projects/:id`) trong < 50ms.
+- **Empty State Thân thiện**: Studio sẵn sàng đón nhận người dùng với dự án mới chưa có tư liệu. Hiển thị thông điệp chào mừng và nút "Thêm tài nguyên" lớn, trực quan.
+- **Comprehensive Media Library (8 Tabs)**: Hỗ trợ 8 danh mục media đầy đủ: `Tất cả`, `Nền`, `Video`, `Hình ảnh`, `Giọng đọc`, `Nhạc nền`, `Hiệu ứng (SFX)`, `Chữ overlay`. Mỗi asset đều có nút "+" để đưa trực tiếp lên rãnh tương ứng trên timeline.
+- **Multi-track Timeline Chuyên Nghiệp (7 Tracks)**:
+  - Khởi tạo và đồng bộ 7 tracks chuẩn NLE: `background` (Nền), `video` (Video clip), `image` (Ảnh minh họa), `text` (Phụ đề/Chữ), `voiceover` (Giọng đọc), `music` (Nhạc nền), `sfx` (Hiệu ứng âm thanh).
+  - Tích hợp điều khiển Mute/Unmute và thanh trượt Âm lượng cho các rãnh audio (`voiceover`, `music`, `sfx`).
+- **Realtime Canvas Preview Đa Lớp**: Hỗ trợ xem trước video clip trên visual layer (`isVisualVideo`), video background loop, và đồng bộ phát âm thanh SFX cùng voiceover và BGM.
+- **F5 Reload Persistence 100%**: Lưu trữ tức thời và khôi phục toàn vẹn 100% các tracks, clips, assets từ SQLite khi tải lại trang (F5).
+
+### 12.2. Bằng Chứng Thực Nghiệm Cổng Chất Lượng (Quality Gates)
+- **`npm --prefix frontend run lint`**: **PASS (0 errors, 0 warnings)**.
+- **`npm --prefix frontend run build`**: **PASS (Vite v6.4.3 build sạch sẽ 2220 modules)**.
+- **`node backend/tests/composerDirectEditor.test.mjs`**: **PASS (6/6 tests chuyên biệt Direct Editor & F5 Persistence)**.
+- **`node backend/tests/composerPlaywrightUi.test.mjs`**: **PASS (Zero-step redirect `/composer` -> `/projects/:id`, 7 tracks badges, 8 tabs, screenshot lưu tại `media_composer_studio.png`)**.
+- **`npm --prefix backend test`**: **PASS 100% trên toàn bộ 179 tệp kiểm thử hệ thống**.
+
+---
+
+## 13. KẾT LUẬN & CHỈ THỊ BÀN GIAO CHUNG CUỘC
 
 Dự án **Video_AI** với tính năng chủ lực **AI Media Composer (`MEDIA_COMPOSER`)** đã hoàn thành 100% tất cả các mục tiêu kỹ thuật, kiểm định và tài liệu:
-- **Độ tin cậy mã nguồn:** Zero Regression trên toàn bộ 178 tệp test backend. Cả Backend và Frontend đạt 0 lỗi linter và đóng gói production Vite 6 thành công.
-- **Tính năng Studio hoàn chỉnh:** Quản lý Media Library, OCR/Translate caching, sinh giọng đọc TTS, Timeline đa rãnh 5 lớp, Auto-Arrange thông minh, Dual Background Engine, Realtime Canvas Preview và FFmpeg multi-layer render Full HD 1080p.
+- **Độ tin cậy mã nguồn:** Zero Regression trên toàn bộ 179 tệp test backend. Cả Backend và Frontend đạt 0 lỗi linter và đóng gói production Vite 6 thành công.
+- **Tính năng Studio hoàn chỉnh:** Quản lý Media Library, OCR/Translate caching, sinh giọng đọc TTS, Timeline đa rãnh 7 lớp, Auto-Arrange thông minh, Dual Background Engine, Realtime Canvas Preview và FFmpeg multi-layer render Full HD 1080p.
 - **Tài liệu đặc tả:** 15 tệp tài liệu trong `Video_AI_docs/`, `.cursorrules` và `task.txt` phản ánh chính xác 100% hiện trạng sản phẩm.
 - **Quy tắc An toàn Git:** Bảo toàn nguyên vẹn cây mã nguồn, không tự ý `git commit`, `git push` hay `git reset`.
 

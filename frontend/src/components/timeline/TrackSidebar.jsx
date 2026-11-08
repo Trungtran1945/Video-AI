@@ -10,6 +10,7 @@ const TRACK_CONFIG = {
   image: { icon: ImageIcon, tag: 'IMG', color: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 border-cyan-500/30' },
   voiceover: { icon: Mic, tag: 'VOX', color: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30' },
   music: { icon: Music, tag: 'BGM', color: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30' },
+  sfx: { icon: Music, tag: 'SFX', color: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border-indigo-500/30' },
   text: { icon: Type, tag: 'TXT', color: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30' },
 };
 
@@ -28,7 +29,7 @@ export default function TrackSidebar() {
           const config = TRACK_CONFIG[typeKey] || TRACK_CONFIG.video;
           const Icon = config.icon;
           const isMuted = track.muted === 1 || track.isMuted;
-          const isAudioTrack = ['voiceover', 'music', 'video'].includes(typeKey);
+          const isAudioTrack = ['voiceover', 'music', 'sfx', 'video'].includes(typeKey);
 
           return (
             <div

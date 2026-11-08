@@ -38,10 +38,12 @@ const mockProject = {
   },
   tracks: [
     { id: 'tr-bg', track_type: 'background', name: 'Rãnh Nền', order_index: 0, muted: 0, volume: 1.0, locked: 0 },
-    { id: 'tr-img', track_type: 'image', name: 'Rãnh Ảnh', order_index: 1, muted: 0, volume: 1.0, locked: 0 },
-    { id: 'tr-vo', track_type: 'voiceover', name: 'Rãnh Giọng đọc', order_index: 2, muted: 0, volume: 1.0, locked: 0 },
-    { id: 'tr-bgm', track_type: 'music', name: 'Rãnh Nhạc nền', order_index: 3, muted: 0, volume: 0.8, locked: 0 },
-    { id: 'tr-txt', track_type: 'text', name: 'Rãnh Phụ đề / Chữ', order_index: 4, muted: 0, volume: 1.0, locked: 0 },
+    { id: 'tr-vid', track_type: 'video', name: 'Rãnh Video', order_index: 1, muted: 0, volume: 1.0, locked: 0 },
+    { id: 'tr-img', track_type: 'image', name: 'Rãnh Ảnh', order_index: 2, muted: 0, volume: 1.0, locked: 0 },
+    { id: 'tr-txt', track_type: 'text', name: 'Rãnh Phụ đề / Chữ', order_index: 3, muted: 0, volume: 1.0, locked: 0 },
+    { id: 'tr-vo', track_type: 'voiceover', name: 'Rãnh Giọng đọc', order_index: 4, muted: 0, volume: 1.0, locked: 0 },
+    { id: 'tr-bgm', track_type: 'music', name: 'Rãnh Nhạc nền', order_index: 5, muted: 0, volume: 0.8, locked: 0 },
+    { id: 'tr-sfx', track_type: 'sfx', name: 'Rãnh SFX', order_index: 6, muted: 0, volume: 1.0, locked: 0 },
   ],
   assets: [
     { id: 'asset-1', kind: 'image', name: 'slide1.jpg', url: '/placeholder.png', order_index: 0 },
@@ -79,10 +81,21 @@ app.get('/api/v1/system/public-settings', (req, res) => {
   res.json({ registrationEnabled: true, maintenanceMode: false })
 })
 
-// Mock Project APIs
+// Mock Project Creation (Direct Entry via /composer)
+app.post('/api/v1/projects', (req, res) => {
+  res.status(202).json({
+    ...mockProject,
+    id: 'test-direct-launch-proj',
+    title: req.body?.title || 'Dự án AI Media Composer mới',
+    mode: req.body?.mode || 'MEDIA_COMPOSER',
+  })
+})
+
+// Mock Project Detail APIs
 app.get('/api/v1/projects/:id', (req, res) => {
   res.json({
     ...mockProject,
+    id: req.params.id,
     clips: currentClips,
     extras: {
       tracks: mockProject.tracks,
@@ -169,11 +182,14 @@ try {
   })
   const page = await context.newPage()
 
-  console.log(`Navigating to ${baseUrl}/projects/test-composer-proj ...`)
-  await page.goto(`${baseUrl}/projects/test-composer-proj`, { waitUntil: 'networkidle', timeout: 15000 })
+  // STEP 1: Verify Zero-Step Direct Entry Launcher (/composer -> /projects/:id)
+  console.log(`\n--- Step 1: Testing Zero-Step Direct Entry via ${baseUrl}/composer ---`)
+  await page.goto(`${baseUrl}/composer`, { waitUntil: 'networkidle', timeout: 15000 })
+  await page.waitForURL(/\/projects\//, { timeout: 8000 })
+  console.log(`PASS: /composer automatically launched and redirected to studio: ${page.url()}`)
 
-  // Verify Studio elements
-  console.log('--- Verifying Studio Toolbar ---')
+  // STEP 2: Verify Studio Elements & 7 Tracks
+  console.log('\n--- Step 2: Verifying Studio Toolbar & Multi-track Timeline ---')
   await page.waitForSelector('text=AI Media Composer', { timeout: 8000 })
   console.log('PASS: Header badge "AI Media Composer" visible')
 
@@ -193,14 +209,23 @@ try {
   assert.ok(hasExportVideo, 'Toolbar has "Xuất Video" button')
   console.log('PASS: "Xuất Video" button present')
 
-  // Verify Media Library Tabs
-  console.log('--- Verifying Media Library Panels ---')
-  const hasImagesTab = await page.locator('button:has-text("Hình ảnh")').first().isVisible()
-  assert.ok(hasImagesTab, 'Media library has "Hình ảnh" tab')
-  console.log('PASS: Media library tabs rendered')
+  // Check 7 Timeline Layer Badges (BG, V, IMG, TXT, VOX, BGM, SFX)
+  for (const tag of ['BG', 'V', 'IMG', 'TXT', 'VOX', 'BGM', 'SFX']) {
+    const hasBadge = await page.locator(`span:has-text("${tag}")`).first().isVisible()
+    assert.ok(hasBadge, `Timeline layer badge "${tag}" visible`)
+  }
+  console.log('PASS: All 7 timeline track layer badges (BG, V, IMG, TXT, VOX, BGM, SFX) visible')
 
-  // Test Reset Timeline Dialog
-  console.log('--- Testing Reset Timeline Confirmation Dialog ---')
+  // STEP 3: Verify Media Library 8 Tabs
+  console.log('\n--- Step 3: Verifying Media Library 8 Tabs ---')
+  for (const tabLabel of ['Tất cả', 'Nền', 'Video', 'Hình ảnh', 'Giọng đọc', 'Nhạc nền', 'Hiệu ứng (SFX)', 'Chữ overlay']) {
+    const hasTab = await page.locator(`button:has-text("${tabLabel}")`).first().isVisible()
+    assert.ok(hasTab, `Media Library tab "${tabLabel}" visible`)
+  }
+  console.log('PASS: All 8 Media Library tabs rendered successfully')
+
+  // STEP 4: Test Reset Timeline Dialog
+  console.log('\n--- Step 4: Testing Reset Timeline Confirmation Dialog ---')
   await page.locator('button:has-text("Đặt lại Timeline")').click()
   await page.waitForSelector('text=Đặt lại toàn bộ Timeline?', { timeout: 5000 })
   console.log('PASS: AlertDialog "Đặt lại toàn bộ Timeline?" opened')
@@ -209,7 +234,8 @@ try {
   await page.locator('[role="alertdialog"] button:has-text("Huỷ")').click()
   console.log('PASS: AlertDialog cancelled gracefully')
 
-  // Take full screenshot for review evidence
+  // STEP 5: Take full screenshot for review evidence
+  console.log('\n--- Step 5: Capture Studio Screenshot Evidence ---')
   const screenshotPath = path.join(rootDir, 'media_composer_studio.png')
   await page.screenshot({ path: screenshotPath, fullPage: true })
   console.log(`PASS: Studio screenshot saved to: ${screenshotPath}`)
@@ -217,6 +243,13 @@ try {
   assert.ok(fs.existsSync(screenshotPath), 'Screenshot file exists on disk')
   const stats = fs.statSync(screenshotPath)
   assert.ok(stats.size > 10000, `Screenshot file has valid image size (${stats.size} bytes)`)
+
+  // Also copy to artifact directory if it exists
+  const artifactDir = path.resolve(rootDir, '../../Users/Tran Huu Trung/.gemini/antigravity-cli/brain/996561fd-9318-4ea2-84b0-cc68d16329cc')
+  if (fs.existsSync(artifactDir)) {
+    fs.copyFileSync(screenshotPath, path.join(artifactDir, 'media_composer_studio.png'))
+    console.log(`PASS: Copied screenshot to artifact directory: ${artifactDir}`)
+  }
 
   console.log('\n=================================================')
   console.log('ALL PLAYWRIGHT UI CHECKS & SCREENSHOT COMPLETED!')

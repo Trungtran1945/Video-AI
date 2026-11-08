@@ -56,9 +56,9 @@ await insert('projects', {
 })
 
 const defaultTracks = await ensureDefaultTracks(projectId)
-assert.equal(defaultTracks.length, 5, 'Step 1 PASS: 5 default tracks created')
+assert.equal(defaultTracks.length, 7, 'Step 1 PASS: 7 default tracks created')
 const trackTypes = defaultTracks.map((t) => t.track_type)
-assert.deepEqual(trackTypes, ['background', 'image', 'voiceover', 'music', 'text'], 'Step 1 PASS: Track types order')
+assert.deepEqual(trackTypes, ['background', 'video', 'image', 'text', 'voiceover', 'music', 'sfx'], 'Step 1 PASS: Track types order')
 
 // Helper to create test image via ffmpeg
 function createTestImage(filename, colorHex = '#1E1E2E') {

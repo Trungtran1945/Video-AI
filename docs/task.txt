@@ -1,349 +1,185 @@
-# MASTER TASK: AI MEDIA COMPOSER – POST-IMPLEMENTATION CODE REVIEW & BUG FIX
+# FIX AI MEDIA COMPOSER – CHUYỂN SANG GIAO DIỆN BIÊN TẬP VIDEO TRỰC TIẾP
 
-You are a Senior Software Engineer specializing in Full-stack development, FFmpeg, video editing systems, database integrity and software testing.
+Bạn là Senior Full-stack Engineer chuyên phát triển ứng dụng chỉnh sửa video bằng React, Node.js và FFmpeg.
 
-Repository: https://github.com/Trungtran1945/Video-AI
+## 1. MỤC TIÊU
 
-Local project: D:\E\Video_AI
+Hiện tại, AI Media Composer đang yêu cầu người dùng hoàn thành 2 bước trước khi có thể tiến hành làm video. Cách hoạt động này không phù hợp với yêu cầu sản phẩm và đang gây ra lỗi trong quá trình sử dụng.
 
-TASK:
-Perform a focused code review and fix the confirmed implementation issues in the newly implemented MEDIA_COMPOSER feature.
+**Yêu cầu thay đổi hoàn toàn cách tiếp cận giao diện:**
 
-IMPORTANT:
-The feature has already been implemented and pushed to GitHub.
+Khi người dùng chọn AI Media Composer, hệ thống phải mở thẳng vào một trang biên tập video hoàn chỉnh, cho phép thêm tài nguyên và bắt đầu xây dựng video ngay lập tức.
 
-Do NOT rebuild the feature.
-Do NOT rewrite the architecture.
-Do NOT remove existing functionality.
+Không được bắt người dùng hoàn thành 2 bước hoặc một quy trình thiết lập bắt buộc nào trước khi vào giao diện biên tập.
 
-Your objective is to make the actual rendered MP4 accurately reflect the user's timeline and prevent false OCR/translation success.
+## 2. GIAO DIỆN AI MEDIA COMPOSER MỚI
 
-## 1. CRITICAL BUGS
+Thiết kế giao diện theo mô hình của một phần mềm chỉnh sửa video chuyên nghiệp.
 
-### BUG 1 – OCR returns fake content
+Các khu vực chính:
 
-File:
-backend/src/services/composerService.js
+### A. Media Library – Quản lý tài nguyên
 
-Current behavior:
-When Vision OCR fails or returns no text, the service generates placeholder text:
+Cho phép người dùng thêm và quản lý trực tiếp:
 
-`Text from ${asset.name || 'image'}`
+- Video nền (Background Video).
+- Hình nền (Background Image).
+- Hình ảnh minh họa.
+- Video bổ sung.
+- Âm thanh (Sound Effects).
+- Nhạc nền (Background Music).
+- Giọng đọc/Voiceover.
+- Các tài nguyên khác.
 
-It then saves this fake result to provider_cache and assets.
+Mỗi loại tài nguyên cần có khu vực quản lý phù hợp, hỗ trợ upload, xem trước, xóa và thêm vào Timeline.
 
-Required changes:
-- Remove fake OCR fallback.
-- Distinguish successful OCR, no text detected and provider failure.
-- Do not cache failed OCR results.
-- Do not save placeholder content.
-- Return meaningful status and error information.
-- Preserve legitimate OCR caching.
+Không bắt buộc người dùng phải tải lên đầy đủ tất cả loại tài nguyên. Có thể bắt đầu với bất kỳ loại tài nguyên nào.
 
-### BUG 2 – Translation reports success when providers fail
+### B. Preview – Màn hình xem trước
 
-File:
-backend/src/services/composerService.js
+- Hiển thị video theo tỷ lệ khung hình đã chọn.
+- Phát và tạm dừng video.
+- Điều khiển playhead.
+- Đồng bộ thời gian phát với Timeline.
+- Hiển thị các lớp hình ảnh, video, âm thanh và text overlay theo đúng thời điểm.
+- Cho phép xem trước kết quả sau khi chỉnh sửa.
 
-Current behavior:
-When Translation Provider and LLM fallback both fail, the service returns the original text as translated text and caches it.
+### C. Timeline – Khu vực biên tập
 
-Required changes:
-- Never return original text as a successful translation.
-- Never cache failed translations.
-- Return a clear provider failure response.
-- Preserve fallback behavior when providers are available.
-- Fix asset-level cache validation.
+Thiết kế Timeline đa track, hỗ trợ:
 
-Translation cache identity must include:
-- Source text hash.
-- Source language.
-- Target language.
-- Relevant provider/configuration version.
+- Background Track.
+- Video Track.
+- Image Track.
+- Text Overlay Track.
+- Voiceover Track.
+- Background Music Track.
+- Sound Effects Track.
 
-When users edit OCR text and translate again, the service must not return an outdated translation.
+Các chức năng cần có:
 
-## 2. CRITICAL TIMELINE AND RENDERING FIXES
+- Kéo thả tài nguyên từ Media Library vào Timeline.
+- Di chuyển clip đến vị trí mong muốn.
+- Thay đổi thời lượng clip.
+- Cắt và xóa clip.
+- Điều chỉnh thứ tự các track.
+- Điều chỉnh âm lượng, mute/unmute.
+- Thiết lập thời điểm bắt đầu và kết thúc.
+- Hỗ trợ khoảng trống và các clip chồng lấp.
+- Zoom Timeline.
+- Đồng bộ Timeline với Preview.
 
-Files:
-- backend/src/pipeline/stages/composerPrepare.js
-- backend/src/pipeline/stages/composerRender.js
-- backend/src/media/mediaService.js
+Background phải có khả năng phủ toàn bộ thời lượng video nếu người dùng chọn chế độ background xuyên suốt.
 
-The current renderer concatenates images sequentially instead of faithfully respecting their timeline positions.
+### D. AI Tools – Công cụ xử lý AI
 
-Required changes:
+Các chức năng AI phải được tích hợp trực tiếp vào giao diện Composer, không phải những bước bắt buộc để được sử dụng Timeline.
 
-### Timeline accuracy
+Bao gồm:
 
-The rendering engine must respect:
-- start_at_sec.
-- in_sec.
-- out_sec.
-- duration.
-- Clip ordering.
-- Gaps between clips.
-- Overlapping clips.
-- Background duration.
-- Total composition duration.
+1. OCR: Nhận diện văn bản trong hình ảnh.
+2. Translation: Dịch văn bản được nhận diện sang ngôn ngữ đích.
+3. Text Overlay: Tạo lớp văn bản từ kết quả OCR hoặc nội dung người dùng nhập.
+4. TTS: Chuyển văn bản thành giọng đọc.
+5. Auto Arrange: Tự động sắp xếp tài nguyên lên Timeline.
+6. AI Assist: Hỗ trợ xử lý và tối ưu nội dung video.
 
-Moving an image to second 20 in the timeline must place it at second 20 in the exported MP4.
+Người dùng có thể sử dụng từng chức năng riêng biệt khi cần.
 
-Do not simply concatenate clips and ignore their actual positions.
+Ví dụ:
+- Upload một hình ảnh → chọn OCR → nhận diện văn bản.
+- Chọn Dịch thuật → dịch nội dung sang ngôn ngữ mong muốn.
+- Chọn Tạo Text Overlay → đưa bản dịch vào một track riêng.
+- Upload voiceover → thêm trực tiếp vào Voiceover Track.
 
-### Background handling
+**Không được tự động coi OCR hoặc Translation là thành công khi API thất bại. Không được tạo dữ liệu giả để thay thế kết quả AI.**
 
-The frontend accepts both images and videos as backgrounds.
+## 3. WORKFLOW MỚI
 
-Implement separate FFmpeg handling:
-- Image background: static or animated image treatment.
-- Video background: preserve actual video frames and audio policy.
-- Support looping or trimming video backgrounds.
-- Respect configured background duration.
-- Avoid black frames and unintended truncation.
+Luồng sử dụng phải đơn giản như sau:
 
-Investigate the current use of `applyMotionImage()` before changing it.
-
-### Audio mixing
-
-Respect actual timeline and track settings:
-- Track mute.
-- Track volume.
-- Clip volume.
-- Clip start time.
-- Multiple voiceover clips.
-- Multiple music clips where supported.
-- Sound effects.
-- Fade-in and fade-out.
-- Optional audio ducking.
-
-Do not assume that saving a track's volume means FFmpeg automatically applies it.
-
-### Text overlays
-
-Ensure:
-- Text uses actual timeline start and end times.
-- Text position and styling are respected.
-- Vietnamese Unicode renders correctly.
-- Special ASS characters are safely escaped.
-- Removing all text clips removes old subtitle content from subsequent renders.
-
-If text rendering fails, do not silently copy the unmodified video and report success.
-
-Return a clear rendering failure with actionable diagnostic information.
-
-## 3. DATABASE AND TIMELINE VALIDATION
-
-Files:
-- backend/src/services/composerService.js
-- backend/src/routes/v1/composerAssets.js
-- backend/src/db/schema.js
-
-Improve `saveTimeline()`:
-
-- Validate every track ID belongs to the current project.
-- Validate asset IDs belong to the current project.
-- Validate audio references.
-- Reject invalid clip types.
-- Validate finite, non-negative start times and valid durations.
-- Validate volume ranges.
-- Prevent invalid timeline records from being persisted.
-
-Keep updates transactional.
-
-Do not introduce destructive migrations.
-
-## 4. UPLOAD SECURITY AND RESOURCE MANAGEMENT
-
-File:
-backend/src/routes/v1/composerAssets.js
-
-Current implementation uses Multer memoryStorage with:
-- 100MB per file.
-- Up to 50 files per request.
-
-Required changes:
-- Introduce a reasonable total request-size limit.
-- Avoid loading excessively large batches into memory.
-- Consider disk-backed or streaming upload using existing storage conventions.
-- Validate MIME type and actual file signature.
-- Reject unsupported formats.
-- Prevent path traversal.
-- Clean temporary files after failed uploads.
-- Preserve project ownership validation.
-
-Do not unnecessarily reduce legitimate supported media formats.
-
-## 5. AUTOMATIC ARRANGEMENT
-
-File:
-backend/src/services/composerService.js
-
-Review Auto Arrange.
-
-Ensure:
-- Background covers the intended composition duration.
-- Image allocation matches voiceover duration.
-- Multiple voiceover clips have deterministic ordering.
-- Music and SFX are not silently ignored.
-- Existing manually edited timeline data is not unexpectedly overwritten without an explicit user action.
-- All generated clip references are valid.
-- Text overlays are generated only when valid text exists.
-
-## 6. FRONTEND AND PREVIEW CONSISTENCY
-
-Inspect:
-- ProjectDetail.jsx
-- ComposerPreview.jsx
-- ClipInspector.jsx
-- MediaLibrary.jsx
-- VideoTimeline.jsx
-- timelineStore.js
-
-Ensure preview and final rendering use consistent:
-- Clip positions.
-- Durations.
-- Background.
-- Text.
-- Audio.
-- Track mute/volume.
-
-The preview must not show a composition that differs significantly from the final rendered MP4.
-
-Do not replace existing components with mock implementations.
-
-## 7. TESTING
-
-Add regression tests for the confirmed issues.
-
-Required scenarios:
-
-OCR:
-- OCR success.
-- No text detected.
-- Provider failure.
-- Failed OCR must not enter cache.
-
-Translation:
-- Successful translation.
-- Translation provider failure.
-- LLM fallback failure.
-- Edited source text produces a fresh translation.
-- Failed translation must not enter cache.
-
-Timeline:
-- Image starts at a non-zero timestamp.
-- Image gap.
-- Overlapping image clips.
-- Multiple voiceover clips.
-- Background longer than slideshow.
-- Background video.
-- Multiple audio clips.
-- Muted track.
-- Track volume adjustment.
-
-Text:
-- Add text overlay.
-- Edit text.
-- Delete text.
-- Render without text after a previous render containing text.
-- Vietnamese Unicode.
-- Special characters.
-
-Upload:
-- Valid image.
-- Valid audio.
-- Valid video.
-- Unsupported file.
-- Excessive total upload size.
-- Cross-project asset reference.
-
-Rendering:
-- Verify duration.
-- Verify resolution.
-- Verify video stream.
-- Verify audio stream.
-- Verify text overlay presence.
-- Verify synchronization with timeline.
-
-Use mocked providers for automated tests.
-
-For real FFmpeg integration tests, use small local media fixtures.
-
-Run:
-Backend:
-- npm test
-- npm run lint
-
-Frontend:
-- npm run lint
-- npm run build
-- npm run typecheck
-
-Only report commands that actually exist and were executed.
-
-## 8. IMPLEMENTATION RULES
-
-- Read existing code before editing.
-- Fix confirmed root causes.
-- Make minimal, focused changes.
-- Preserve the current architecture.
-- Do not duplicate existing media functions.
-- Do not introduce unnecessary dependencies.
-- Do not hard-code secrets.
-- Do not disable authentication.
-- Do not bypass quota management.
-- Do not break SUMMARY legacy projects.
-- Do not break TRANSLATE_DUB.
-- Do not break SCRIPT_TO_VIDEO.
-- Do not remove existing tests to make the suite pass.
-- Do not silently ignore rendering failures.
-
-## 9. FINAL VERIFICATION
-
-Run a real end-to-end test:
-
-1. Create a MEDIA_COMPOSER project.
-2. Upload an image background.
-3. Upload a video background.
-4. Upload at least five images.
-5. Upload voiceover.
-6. Upload background music.
-7. Add text overlay.
-8. Arrange clips at different timestamps.
-9. Create a gap between two clips.
-10. Adjust track volume.
-11. Render the video.
-12. Verify the final MP4 with FFprobe.
-13. Compare actual video timestamps with timeline timestamps.
-14. Verify audio and text synchronization.
-15. Verify that removing text does not leave old subtitles.
-16. Verify OCR/translation failure is correctly reported.
-
-## 10. FINAL REPORT
-
-Return:
-
-1. Confirmed bugs.
-2. Root causes.
-3. Files modified.
-4. Changes implemented.
-5. Database migrations.
-6. Tests executed.
-7. Actual test results.
-8. FFmpeg integration results.
-9. Remaining limitations.
-
-Use:
-- PASS
-- FAIL
-- BLOCKED
-- NOT TESTED
-
-Do not claim production readiness without real verification.
-
-Do not automatically commit, push or deploy.
-
-FINAL OBJECTIVE:
-
-Make AI Media Composer a reliable video composition system where the final MP4 accurately represents the user's editable timeline, OCR and translation results are trustworthy, and FFmpeg correctly combines all supported visual and audio elements.
+1. Người dùng chọn AI Media Composer.
+2. Hệ thống mở thẳng giao diện biên tập video.
+3. Người dùng thêm background, hình ảnh, video, nhạc nền, âm thanh hoặc voiceover.
+4. Người dùng kéo thả tài nguyên vào Timeline hoặc sử dụng Auto Arrange.
+5. Người dùng chỉnh sửa, sử dụng OCR/Translation/TTS nếu cần.
+6. Xem trước video.
+7. Nhấn Render để xuất MP4.
+
+Người dùng có thể quay lại thêm, xóa hoặc thay thế tài nguyên ở bất kỳ thời điểm nào.
+
+Không được bắt buộc phải hoàn thành từng bước tuần tự mới được chuyển sang bước tiếp theo.
+
+## 4. YÊU CẦU VỀ KIẾN TRÚC VÀ BACKEND
+
+- Tái sử dụng hệ thống Media Library, Composer Assets, Timeline và các API hiện có nếu phù hợp.
+- Không tạo thêm một hệ thống Composer thứ hai gây trùng lặp dữ liệu.
+- Khi mở Composer, nếu chưa có project thì tạo một draft project với cấu hình mặc định hợp lý hoặc khởi tạo trạng thái làm việc tương đương.
+- Không yêu cầu upload tài nguyên trước khi mở trang.
+- Lưu trạng thái Timeline và tài nguyên theo project.
+- Khi tải lại trang, dữ liệu và cấu hình biên tập phải được khôi phục.
+- Đảm bảo backend nhận đúng thứ tự, thời điểm bắt đầu, thời lượng và các thuộc tính của từng clip.
+- Renderer phải xử lý đúng timeline thực tế, không chỉ nối các clip tuần tự.
+- Hỗ trợ background dạng ảnh và video.
+- Xử lý đầy đủ nhiều track âm thanh, âm lượng và thời điểm phát.
+- Chỉ xuất video thành công khi các thành phần được yêu cầu đã render thành công.
+
+## 5. YÊU CẦU UI/UX
+
+- Giao diện hiện đại, chuyên nghiệp, phù hợp với phần mềm chỉnh sửa video.
+- Không sử dụng giao diện dạng wizard hoặc biểu mẫu nhiều bước.
+- Các khu vực Media Library, Preview và Timeline phải dễ quan sát.
+- Có trạng thái trống (Empty State) thân thiện khi chưa có tài nguyên.
+- Có nút Add Media rõ ràng.
+- Có tiến trình upload, xử lý AI và render.
+- Thông báo lỗi cụ thể, không âm thầm bỏ qua lỗi.
+- Hỗ trợ responsive ở mức hợp lý, ưu tiên trải nghiệm desktop.
+
+## 6. QUY TRÌNH TRIỂN KHAI
+
+Trước khi chỉnh sửa:
+
+1. Đọc cấu trúc frontend và backend hiện tại.
+2. Xác định chính xác thành phần đang điều khiển quy trình 2 bước.
+3. Xác định các route, component, state và API liên quan.
+4. Tìm nguyên nhân khiến người dùng bị chặn trước khi vào Composer.
+5. Đưa ra phương án chỉnh sửa dựa trên kiến trúc hiện tại.
+
+Sau đó tiến hành:
+
+- Loại bỏ luồng bắt buộc 2 bước.
+- Chuyển entry point AI Media Composer sang giao diện biên tập trực tiếp.
+- Tích hợp Media Library, Preview, Timeline và AI Tools.
+- Kết nối đầy đủ frontend với backend.
+- Đảm bảo upload, lưu project, khôi phục dữ liệu và render hoạt động chính xác.
+
+## 7. KIỂM THỬ BẮT BUỘC
+
+Kiểm tra các trường hợp:
+
+- Mở Composer khi chưa có tài nguyên.
+- Mở Composer và upload riêng một hình ảnh.
+- Upload video nền.
+- Upload nhiều hình ảnh, video và âm thanh.
+- Thêm nhiều clip vào các track khác nhau.
+- Di chuyển và thay đổi thời lượng clip.
+- Tải lại trang và kiểm tra khả năng khôi phục Timeline.
+- Sử dụng OCR, Translation và TTS độc lập.
+- Render video khi có đầy đủ các loại tài nguyên.
+- Render video khi chỉ có một vài loại tài nguyên.
+- Kiểm tra lỗi upload, lỗi AI và lỗi FFmpeg.
+
+Không được chỉ chỉnh sửa giao diện để tạo cảm giác đã hoàn thành. Phải đảm bảo dữ liệu thực sự được lưu và quá trình render sử dụng đúng cấu hình Timeline.
+
+## 8. GIỚI HẠN PHẠM VI
+
+- Không viết lại toàn bộ ứng dụng.
+- Không phá vỡ chức năng SUMMARY/Review phim cũ.
+- Không xóa các API hoặc component hiện có nếu chúng vẫn có thể tái sử dụng.
+- Không tạo dữ liệu giả để vượt qua lỗi.
+- Không bỏ qua lỗi backend hoặc FFmpeg.
+- Không tự ý thay đổi các chức năng ngoài phạm vi AI Media Composer.
+
+**KẾT QUẢ MONG MUỐN:**
+
+AI Media Composer phải trở thành một trang biên tập video độc lập và hoàn chỉnh. Người dùng chỉ cần mở Composer là có thể thêm background, hình ảnh, video, âm thanh, nhạc nền, voiceover và bắt đầu dựng video ngay trên cùng một giao diện. Không còn quy trình bắt buộc 2 bước như hiện tại.

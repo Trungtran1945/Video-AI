@@ -38,13 +38,13 @@ await insert('users', {
   })
 
   const tracks1 = await ensureDefaultTracks(projectId)
-  assert.equal(tracks1.length, 5, 'Creates exactly 5 default tracks')
+  assert.equal(tracks1.length, 7, 'Creates exactly 7 default tracks')
   const trackTypes = tracks1.map((t) => t.track_type)
-  assert.deepEqual(trackTypes, ['background', 'image', 'voiceover', 'music', 'text'], 'Default tracks order')
+  assert.deepEqual(trackTypes, ['background', 'video', 'image', 'text', 'voiceover', 'music', 'sfx'], 'Default tracks order')
 
   // Repeat call must not duplicate tracks
   const tracks2 = await ensureDefaultTracks(projectId)
-  assert.equal(tracks2.length, 5, 'Idempotent: does not duplicate tracks')
+  assert.equal(tracks2.length, 7, 'Idempotent: does not duplicate tracks')
 }
 
 // 2. autoArrangeTimeline with only images

@@ -16,8 +16,10 @@ export default function ComposerPreview({
   const containerRef = useRef(null);
   const audioRef = useRef(null);
   const bgmAudioRef = useRef(null);
+  const sfxAudioRef = useRef(null);
   const videoRef = useRef(null);
   const bgVideoRef = useRef(null);
+  const visualVideoRef = useRef(null);
   const [muted, setMuted] = useState(false);
   const [previewMode, setPreviewMode] = useState(outputUrl ? 'video' : 'canvas');
 
@@ -31,10 +33,13 @@ export default function ComposerPreview({
 
   const voiceTrack = (tracks || []).find((t) => t.track_type === 'voiceover');
   const musicTrack = (tracks || []).find((t) => t.track_type === 'music');
+  const sfxTrack = (tracks || []).find((t) => t.track_type === 'sfx');
   const isVoiceMuted = Boolean(voiceTrack?.muted);
   const isMusicMuted = Boolean(musicTrack?.muted);
+  const isSfxMuted = Boolean(sfxTrack?.muted);
   const voiceTrackVol = Number.isFinite(Number(voiceTrack?.volume)) ? Number(voiceTrack.volume) : 1.0;
   const musicTrackVol = Number.isFinite(Number(musicTrack?.volume)) ? Number(musicTrack.volume) : 1.0;
+  const sfxTrackVol = Number.isFinite(Number(sfxTrack?.volume)) ? Number(sfxTrack.volume) : 1.0;
 
   // Find active clips at currentTime
   const activeClips = clips.filter((c) => {
@@ -43,8 +48,8 @@ export default function ComposerPreview({
     return currentTime >= start && currentTime < start + dur;
   });
 
-  const activeImageClip = activeClips.find(
-    (c) => c.clip_type === 'image' || (!c.clip_type && c.type === 'image')
+  const activeVisualClip = activeClips.find(
+    (c) => c.clip_type === 'video' || c.clip_type === 'image' || (!c.clip_type && (c.type === 'video' || c.type === 'image'))
   );
   const activeBgClip = activeClips.find(
     (c) => c.clip_type === 'background' || (!c.clip_type && c.type === 'background')
@@ -57,6 +62,9 @@ export default function ComposerPreview({
   );
   const activeBgmClip = activeClips.find(
     (c) => c.clip_type === 'music' || (!c.clip_type && c.type === 'music')
+  );
+  const activeSfxClip = activeClips.find(
+    (c) => c.clip_type === 'sfx' || (!c.clip_type && c.type === 'sfx')
   );
 
   // Determine Background visual
@@ -89,11 +97,35 @@ export default function ComposerPreview({
     }
   }, [currentTime, isBgVideo]);
 
-  // Determine Image visual
-  const imgAsset = activeImageClip
-    ? assetMap.get(activeImageClip.asset_id || activeImageClip.assetId)
+  // Determine Visual (Image or Video)
+  const visualAsset = activeVisualClip
+    ? assetMap.get(activeVisualClip.asset_id || activeVisualClip.assetId)
     : null;
-  const imgUrl = activeImageClip?.thumbnailUrl || imgAsset?.thumbnailUrl || imgAsset?.url;
+  const visualUrl = visualAsset?.url || activeVisualClip?.thumbnailUrl || visualAsset?.thumbnailUrl;
+  const isVisualVideo = Boolean(
+    activeVisualClip?.clip_type === 'video' ||
+    activeVisualClip?.type === 'video' ||
+    visualAsset?.mime_type?.startsWith('video/') ||
+    (visualUrl && /\.(mp4|webm|mov|mkv)(\?.*)?$/i.test(visualUrl))
+  );
+
+  useEffect(() => {
+    if (!visualVideoRef.current || !isVisualVideo) return;
+    if (isPlaying) {
+      visualVideoRef.current.play().catch(() => {});
+    } else {
+      visualVideoRef.current.pause();
+    }
+  }, [isPlaying, isVisualVideo]);
+
+  useEffect(() => {
+    if (!visualVideoRef.current || !isVisualVideo || !activeVisualClip) return;
+    const clipStart = Number(activeVisualClip.start ?? activeVisualClip.start_at_sec ?? 0);
+    const offset = Math.max(0, currentTime - clipStart);
+    if (Math.abs(visualVideoRef.current.currentTime - offset) > 0.3) {
+      visualVideoRef.current.currentTime = offset;
+    }
+  }, [currentTime, isVisualVideo, activeVisualClip]);
 
   // Determine Text Overlay
   const textContent = activeTextClip
@@ -168,6 +200,31 @@ export default function ComposerPreview({
     }
   }, [currentTime, isPlaying, activeBgmClip, activeVoiceClip, assetMap, isMusicMuted, musicTrackVol]);
 
+  // SFX audio sync with track mute & volume
+  useEffect(() => {
+    if (!sfxAudioRef.current) return;
+    const sfxAsset = activeSfxClip
+      ? assetMap.get(activeSfxClip.audio_id || activeSfxClip.asset_id)
+      : null;
+    const sfxUrl = sfxAsset?.url;
+
+    if (sfxUrl && isPlaying && !isSfxMuted && sfxTrackVol > 0) {
+      if (sfxAudioRef.current.src !== window.location.origin + sfxUrl && !sfxAudioRef.current.src.endsWith(sfxUrl)) {
+        sfxAudioRef.current.src = sfxUrl;
+      }
+      const clipStart = Number(activeSfxClip.start ?? activeSfxClip.start_at_sec ?? 0);
+      const offset = Math.max(0, currentTime - clipStart);
+      if (Math.abs(sfxAudioRef.current.currentTime - offset) > 0.3) {
+        sfxAudioRef.current.currentTime = offset;
+      }
+      const clipVol = Number.isFinite(Number(activeSfxClip.volume)) ? Number(activeSfxClip.volume) : 1.0;
+      sfxAudioRef.current.volume = Math.max(0, Math.min(1.0, clipVol * sfxTrackVol));
+      sfxAudioRef.current.play().catch(() => {});
+    } else {
+      sfxAudioRef.current.pause();
+    }
+  }, [currentTime, isPlaying, activeSfxClip, assetMap, isSfxMuted, sfxTrackVol]);
+
   const fmtTime = (s) => {
     const sec = Math.max(0, Math.floor(s || 0));
     const m = Math.floor(sec / 60);
@@ -179,6 +236,7 @@ export default function ComposerPreview({
     <div className="flex flex-col h-full bg-background items-center justify-between p-4 select-none">
       <audio ref={audioRef} muted={muted} className="hidden" />
       <audio ref={bgmAudioRef} muted={muted} className="hidden" />
+      <audio ref={sfxAudioRef} muted={muted} className="hidden" />
 
       {/* Top Info Bar */}
       <div className="w-full max-w-2xl flex items-center justify-between text-xs text-muted-foreground px-2 py-1 mb-2">
@@ -262,14 +320,24 @@ export default function ComposerPreview({
               )
             )}
 
-            {/* Active Image Layer */}
-            {imgUrl ? (
+            {/* Active Visual (Image or Video) Layer */}
+            {visualUrl ? (
               <div className="relative z-10 w-full h-full flex items-center justify-center p-4">
-                <img
-                  src={imgUrl}
-                  alt="Active Slide"
-                  className="max-w-full max-h-full object-contain rounded-lg shadow-md transition-all duration-300"
-                />
+                {isVisualVideo ? (
+                  <video
+                    ref={visualVideoRef}
+                    src={visualUrl}
+                    autoPlay={isPlaying}
+                    playsInline
+                    className="max-w-full max-h-full object-contain rounded-lg shadow-md"
+                  />
+                ) : (
+                  <img
+                    src={visualUrl}
+                    alt="Active Visual"
+                    className="max-w-full max-h-full object-contain rounded-lg shadow-md transition-all duration-300"
+                  />
+                )}
               </div>
             ) : (
               <div className="relative z-10 text-center p-6 text-muted-foreground/60">
@@ -294,6 +362,7 @@ export default function ComposerPreview({
                     fontSize: `${Math.max(14, Math.min(36, textStyle.fontSize || 24))}px`,
                     color: textStyle.color || '#FFFFFF',
                     backgroundColor: textStyle.bg || 'rgba(0,0,0,0.65)',
+                    fontFamily: textStyle.fontFamily || 'inherit',
                   }}
                   className="px-4 py-2 rounded-xl backdrop-blur-xs text-center font-semibold leading-relaxed shadow-lg max-w-[85%] whitespace-pre-wrap"
                 >

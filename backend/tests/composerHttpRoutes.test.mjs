@@ -74,8 +74,8 @@ try {
 
   // Verify tracks created in DB
   const tracks = await query('SELECT * FROM timeline_tracks WHERE project_id = ? ORDER BY order_index ASC', [projectId])
-  assert.equal(tracks.length, 5, 'Creates 5 tracks: background, image, voiceover, music, text')
-  assert.deepEqual(tracks.map((t) => t.track_type), ['background', 'image', 'voiceover', 'music', 'text'])
+  assert.equal(tracks.length, 7, 'Creates 7 tracks: background, video, image, text, voiceover, music, sfx')
+  assert.deepEqual(tracks.map((t) => t.track_type), ['background', 'video', 'image', 'text', 'voiceover', 'music', 'sfx'])
 
   // 2. GET /api/v1/projects/:id returns extras.tracks and extras.assets
   console.log('--- 2. GET /projects/:id returns extras.tracks and extras.assets ---')
@@ -85,7 +85,7 @@ try {
   assert.equal(getRes.status, 200, 'Returns HTTP 200')
   const projectDetail = await getRes.json()
   assert.ok(Array.isArray(projectDetail.tracks), 'Exposes tracks array')
-  assert.equal(projectDetail.tracks.length, 5, 'Exposes 5 tracks')
+  assert.equal(projectDetail.tracks.length, 7, 'Exposes 7 tracks')
   assert.ok(Array.isArray(projectDetail.assets), 'Exposes assets array')
 
   // 3. Permission checks (User 2 cannot access User 1 project)

@@ -27,6 +27,7 @@ import ApiKeys from '@/pages/ApiKeys';
 import Logs from '@/pages/Logs';
 import Admin from '@/pages/Admin';
 import TimelineDemo from '@/pages/TimelineDemo';
+import ComposerLauncher from '@/pages/ComposerLauncher';
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -63,6 +64,7 @@ const AuthenticatedApp = () => {
       <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} />}>
         {/* F8: /timeline là demo mock (0 API, MOCK_DEMO_CLIPS) — guard login, không public. */}
         <Route path="/timeline" element={<TimelineDemo />} />
+        <Route path="/composer" element={<ComposerLauncher />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/projects" element={<Projects />} />
         <Route path="/projects/new" element={<CreateProject />} />

@@ -7,7 +7,7 @@ import StatCard from '@/components/StatCard';
 import Loading from '@/components/Loading';
 import ErrorState from '@/components/ErrorState';
 import { Link } from 'react-router-dom';
-import { Video, Layers, ListOrdered, HardDrive, Cpu, Clock, ArrowRight, Plus, CheckCircle2, Film } from 'lucide-react';
+import { Video, Layers, ListOrdered, HardDrive, Cpu, Clock, ArrowRight, Plus, CheckCircle2, Film, Clapperboard } from 'lucide-react';
 import { STAGE_LABELS, formatDate, isCompletedStatus } from '@/lib/constants';
 
 export default function Dashboard() {
@@ -65,13 +65,22 @@ export default function Dashboard() {
           title="Bảng Điều Khiển"
           subtitle="Tổng quan hoạt động sản xuất video, tiến trình pipeline và trạng thái dịch vụ AI"
           action={
-            <Link
-              to="/projects/new"
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Tạo Dự Án Mới</span>
-            </Link>
+            <div className="flex items-center gap-2">
+              <Link
+                to="/composer"
+                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs sm:text-sm font-semibold transition-colors shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+              >
+                <Clapperboard className="w-4 h-4" />
+                <span>Mở AI Media Composer</span>
+              </Link>
+              <Link
+                to="/projects/new"
+                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Tạo Dự Án Mới</span>
+              </Link>
+            </div>
           }
         />
 

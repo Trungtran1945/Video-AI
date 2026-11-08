@@ -139,8 +139,8 @@ export async function composerRender(ctx = {}) {
     ])
   }
 
-  // 2. Build Visual Track (Timeline Absolute Positioning for Image Clips)
-  const imageClips = clips.filter((c) => c.clip_type === 'image' || (!c.clip_type && c.source_type === 'ASSET'))
+  // 2. Build Visual Track (Timeline Absolute Positioning for Image & Video Clips)
+  const imageClips = clips.filter((c) => c.clip_type === 'image' || c.clip_type === 'video' || (!c.clip_type && c.source_type === 'ASSET'))
   let visualTrackFile = bgVideoPath
 
   if (imageClips.length > 0) {
@@ -151,20 +151,38 @@ export async function composerRender(ctx = {}) {
       const asset = assetById.get(clip.asset_id)
       const srcImg = fs.existsSync(prepImg) ? prepImg : (asset ? resolveStorageKey(asset.storage_key) : null)
       if (!srcImg || !fs.existsSync(srcImg)) {
-        throw new Error(`File ảnh cho clip #${clip.order_index} không tồn tại`)
+        throw new Error(`File phương tiện cho clip #${clip.order_index} không tồn tại`)
       }
 
       const durationSec = Math.max(0.5, Number(clip.out_sec) - Number(clip.in_sec || 0))
       const startAt = Math.max(0, Number(clip.start_at_sec) || 0)
       const out = path.join(segDir, `seg_${String(idx).padStart(3, '0')}.mp4`)
-      const rendered = await applyMotionImage({
-        src: srcImg,
-        out,
-        durationSec,
-        width,
-        height,
-        zoomMax: 1.05,
-      })
+      let rendered
+      const isVid = clip.clip_type === 'video' || asset?.mime_type?.startsWith('video/') || /\.(mp4|webm|mov|mkv)$/i.test(srcImg)
+      if (isVid) {
+        await ffmpeg([
+          '-y',
+          '-ss', String(Math.max(0, Number(clip.in_sec || 0))),
+          '-i', srcImg,
+          '-t', String(durationSec),
+          '-vf', `scale=w=${width}:h=${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`,
+          '-c:v', 'libx264',
+          '-preset', 'veryfast',
+          '-pix_fmt', 'yuv420p',
+          '-an',
+          out,
+        ])
+        rendered = { file: out, durationSec }
+      } else {
+        rendered = await applyMotionImage({
+          src: srcImg,
+          out,
+          durationSec,
+          width,
+          height,
+          zoomMax: 1.05,
+        })
+      }
       return {
         file: rendered.file,
         durationSec: rendered.durationSec,

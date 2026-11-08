@@ -7,11 +7,12 @@ import QuotaBanner from '@/components/QuotaBanner';
 import {
   LayoutDashboard, FolderPlus, FolderKanban, ListOrdered, Film,
   Settings, KeyRound, ScrollText, BarChart3, ShieldCheck, Sparkles,
-  LogOut, Menu, Cpu, X, User
+  LogOut, Menu, Cpu, X, User, Clapperboard
 } from 'lucide-react';
 
 const navItems = [
   { label: 'Bảng Điều Khiển', path: '/dashboard', icon: LayoutDashboard },
+  { label: 'AI Media Composer', path: '/composer', icon: Clapperboard },
   { label: 'Tạo Dự Án', path: '/projects/new', icon: FolderPlus },
   { label: 'Dự Án', path: '/projects', icon: FolderKanban },
   { label: 'Hàng Đợi Tạo', path: '/queue', icon: ListOrdered },

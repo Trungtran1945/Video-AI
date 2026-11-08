@@ -16,10 +16,12 @@ export async function ensureDefaultTracks(projectId) {
   if (tracks.length === 0) {
     const defaultTracks = [
       { type: 'background', name: 'Nền (Background)', order: 0 },
-      { type: 'image', name: 'Hình ảnh (Images)', order: 1 },
-      { type: 'voiceover', name: 'Lồng tiếng (Voiceover)', order: 2 },
-      { type: 'music', name: 'Nhạc nền (BGM & SFX)', order: 3 },
-      { type: 'text', name: 'Chữ & Phụ đề (Text)', order: 4 },
+      { type: 'video', name: 'Video bổ sung', order: 1 },
+      { type: 'image', name: 'Hình ảnh (Images)', order: 2 },
+      { type: 'text', name: 'Chữ & Phụ đề (Text)', order: 3 },
+      { type: 'voiceover', name: 'Lồng tiếng (Voiceover)', order: 4 },
+      { type: 'music', name: 'Nhạc nền (BGM)', order: 5 },
+      { type: 'sfx', name: 'Hiệu ứng âm thanh (SFX)', order: 6 },
     ]
     for (const t of defaultTracks) {
       const id = uuidv4()
@@ -70,8 +72,20 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
     }
   } catch (_) {}
 
-  // Generate thumbnail for images
+  const isVideo = file.mimetype?.startsWith('video/') || ['.mp4', '.mov', '.webm', '.avi', '.mkv'].includes(ext)
+  const isAudio = file.mimetype?.startsWith('audio/') || ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac'].includes(ext)
   const isImage = file.mimetype?.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.webp'].includes(ext)
+
+  let assetKind = kind
+  if (assetKind === 'all' || !assetKind) {
+    if (isVideo) assetKind = 'video'
+    else if (isAudio) assetKind = 'music'
+    else assetKind = 'image'
+  } else if (assetKind === 'image' && isVideo) {
+    assetKind = 'video'
+  }
+
+  // Generate thumbnail for images and videos
   if (isImage) {
     try {
       const thumbFilename = `${assetId}_thumb.jpg`
@@ -83,17 +97,28 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
     } catch (e) {
       console.warn(`[composerService] Thumbnail generation failed: ${e.message}`)
     }
+  } else if (isVideo) {
+    try {
+      const thumbFilename = `${assetId}_thumb.jpg`
+      const thumbAbsPath = path.join(assetsDir, thumbFilename)
+      await ffmpeg(['-y', '-ss', '0.5', '-i', targetAbsPath, '-frames:v', '1', '-vf', 'scale=320:-1', '-q:v', '3', thumbAbsPath])
+      if (fs.existsSync(thumbAbsPath)) {
+        thumbnailKey = toStorageKey(thumbAbsPath)
+      }
+    } catch (e) {
+      console.warn(`[composerService] Video thumbnail generation failed: ${e.message}`)
+    }
   }
 
   const byteSize = fs.existsSync(targetAbsPath) ? fs.statSync(targetAbsPath).size : (file.size || 0)
-  const mimeType = file.mimetype || (isImage ? 'image/jpeg' : 'application/octet-stream')
+  const mimeType = file.mimetype || (isImage ? 'image/jpeg' : isVideo ? 'video/mp4' : isAudio ? 'audio/mpeg' : 'application/octet-stream')
   const originalName = file.originalname || file.name || safeFilename
 
   await insert('assets', {
     id: assetId,
     project_id: projectId,
     user_id: userId,
-    kind,
+    kind: assetKind,
     name: originalName,
     storage_key: storageKey,
     mime_type: mimeType,
@@ -104,12 +129,12 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
   })
 
   // If kind is audio, also register in audios table for unified playback
-  if (kind === 'voiceover' || kind === 'music' || kind === 'sfx') {
+  if (assetKind === 'voiceover' || assetKind === 'music' || assetKind === 'sfx') {
     try {
       await insert('audios', {
         id: assetId,
         project_id: projectId,
-        kind,
+        kind: assetKind,
         storage_key: storageKey,
         duration_sec: durationSec || 0,
         provider: 'upload',
@@ -121,7 +146,7 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
     id: assetId,
     projectId,
     userId,
-    kind,
+    kind: assetKind,
     name: originalName,
     storageKey,
     url: `/storage/${storageKey}`,
@@ -664,7 +689,7 @@ export async function saveTimeline({ projectId, tracks = [], clips = [] }) {
   const projectAudios = await query('SELECT id FROM audios WHERE project_id = ?', [projectId])
   const validAudioIds = new Set(projectAudios.map((a) => a.id))
 
-  const ALLOWED_CLIP_TYPES = new Set(['image', 'background', 'voiceover', 'music', 'text', 'sfx'])
+  const ALLOWED_CLIP_TYPES = new Set(['image', 'background', 'voiceover', 'music', 'text', 'sfx', 'video'])
 
   // Validate tracks
   if (Array.isArray(tracks) && tracks.length > 0) {
