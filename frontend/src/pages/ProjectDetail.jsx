@@ -1589,6 +1589,7 @@ export default function ProjectDetail() {
                 project={project}
                 clips={storeClips}
                 assets={composerAssets}
+                tracks={storeTracks && storeTracks.length > 0 ? storeTracks : composerTracks}
                 currentTime={currentTime}
                 duration={composerDuration}
                 isPlaying={isPlaying}

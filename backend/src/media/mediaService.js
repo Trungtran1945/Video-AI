@@ -190,11 +190,13 @@ export async function buildVoiceTrack(entries, totalSec, out) {
   const labels = []
   entries.forEach((e, i) => {
     const delayMs = Math.max(0, Math.round((e.offsetSec || 0) * 1000))
-    filters.push(`[${i}:a]aresample=48000,adelay=${delayMs}:all=1[a${i}]`)
+    const volFilter = Number.isFinite(e.volume) ? `,volume=${e.volume}` : ''
+    filters.push(`[${i}:a]aresample=48000${volFilter},adelay=${delayMs}:all=1[a${i}]`)
     labels.push(`[a${i}]`)
   })
   filters.push(`${labels.join('')}amix=inputs=${entries.length}:duration=longest:normalize=0,apad,atrim=0:${round3(totalSec)},loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000[out]`)
   await ffmpeg([
+    '-y',
     ...inputs,
     '-filter_complex', filters.join(';'),
     '-map', '[out]',

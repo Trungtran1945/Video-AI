@@ -4,7 +4,6 @@ import { v4 as uuidv4 } from 'uuid'
 import { query } from '../../db/query.js'
 import {
   applyMotionImage,
-  concatClips,
   buildVoiceTrack,
   burnSubtitlesStyled,
   makeThumbnail,
@@ -56,6 +55,12 @@ export async function composerRender(ctx = {}) {
   )
   if (!clips.length) throw new Error('Không có clip nào trên timeline để kết xuất')
 
+  const tracks = await query(
+    'SELECT * FROM timeline_tracks WHERE project_id = ? ORDER BY order_index ASC',
+    [project.id]
+  )
+  const trackByType = new Map(tracks.map((t) => [t.track_type, t]))
+
   const assets = await query('SELECT * FROM assets WHERE project_id = ?', [project.id])
   const assetById = new Map(assets.map((a) => [a.id, a]))
 
@@ -67,7 +72,7 @@ export async function composerRender(ctx = {}) {
   const prepDir = ensureDir(path.join(tmp, 'prepared'))
   const { width, height } = dimsForAspect(project.aspect_ratio || '16:9')
 
-  // Calculate total duration
+  // Calculate total duration from timeline clips
   let maxEnd = 0
   for (const c of clips) {
     const end = (Number(c.start_at_sec) || 0) + Math.max(0, Number(c.out_sec) - Number(c.in_sec || 0))
@@ -75,15 +80,68 @@ export async function composerRender(ctx = {}) {
   }
   const totalDuration = round2(Math.max(1, maxEnd))
 
-  // 1. Build Visual Track (Multi-layer: Background + Slideshow)
+  // 1. Build Background Layer Video (Respect Video Background vs Image Background vs Solid Color)
   const bgClips = clips.filter((c) => c.clip_type === 'background')
   const bgAsset = bgClips[0] ? assetById.get(bgClips[0].asset_id) : null
   const bgFile = bgAsset ? resolveStorageKey(bgAsset.storage_key) : null
   const defaultBgColor = project?.params?.defaultBackground || '#0F1117'
+  const bgVideoPath = path.join(tmp, 'bg_layer.mp4')
 
+  if (bgFile && fs.existsSync(bgFile)) {
+    let isVideoBg = false
+    let bgDuration = 0
+    try {
+      const info = await probe(bgFile)
+      bgDuration = info.durationSec || 0
+      const ext = path.extname(bgFile).toLowerCase()
+      if (
+        ['.mp4', '.webm', '.mov', '.mkv', '.m4v'].includes(ext) ||
+        bgAsset?.mime_type?.startsWith('video/')
+      ) {
+        isVideoBg = true
+      }
+    } catch (_) {}
+
+    if (isVideoBg) {
+      // Video Background: Loop or trim, preserve video frames, fit canvas aspect ratio
+      const loopArg = bgDuration > 0 && bgDuration < totalDuration ? ['-stream_loop', '-1'] : []
+      await ffmpeg([
+        '-y',
+        ...loopArg,
+        '-i', bgFile,
+        '-t', String(totalDuration),
+        '-vf', `scale=w=${width}:h=${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`,
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '20',
+        '-pix_fmt', 'yuv420p',
+        '-an',
+        bgVideoPath,
+      ])
+    } else {
+      // Image Background: Apply subtle cinematic motion across total duration
+      await applyMotionImage({
+        src: bgFile,
+        out: bgVideoPath,
+        durationSec: totalDuration,
+        width,
+        height,
+        zoomMax: 1.02,
+      })
+    }
+  } else {
+    // Solid background fallback
+    await ffmpeg([
+      '-y', '-f', 'lavfi',
+      '-i', `color=c=${defaultBgColor}:s=${width}x${height}:d=${round2(totalDuration)}:r=30`,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
+      bgVideoPath,
+    ])
+  }
+
+  // 2. Build Visual Track (Timeline Absolute Positioning for Image Clips)
   const imageClips = clips.filter((c) => c.clip_type === 'image' || (!c.clip_type && c.source_type === 'ASSET'))
-  let concatFile = path.join(tmp, 'concat.mp4')
-  let rawSlideshow = path.join(tmp, 'raw_slideshow.mp4')
+  let visualTrackFile = bgVideoPath
 
   if (imageClips.length > 0) {
     setProgress(15)
@@ -97,6 +155,7 @@ export async function composerRender(ctx = {}) {
       }
 
       const durationSec = Math.max(0.5, Number(clip.out_sec) - Number(clip.in_sec || 0))
+      const startAt = Math.max(0, Number(clip.start_at_sec) || 0)
       const out = path.join(segDir, `seg_${String(idx).padStart(3, '0')}.mp4`)
       const rendered = await applyMotionImage({
         src: srcImg,
@@ -106,79 +165,84 @@ export async function composerRender(ctx = {}) {
         height,
         zoomMax: 1.05,
       })
-      return { file: rendered.file, durationSec: rendered.durationSec, transitionOut: null }
+      return {
+        file: rendered.file,
+        durationSec: rendered.durationSec,
+        startAt,
+        endAt: round2(startAt + durationSec),
+      }
     })
 
     await assertRunOwner(project.id, runToken)
-    setProgress(45)
+    setProgress(50)
 
-    if (bgFile && fs.existsSync(bgFile)) {
-      // Step A: Concat image slideshow
-      await concatClips(slices, rawSlideshow, { transitionDuration: 0 })
-
-      // Step B: Render background layer video
-      const bgVideo = path.join(tmp, 'bg_layer.mp4')
-      await applyMotionImage({
-        src: bgFile,
-        out: bgVideo,
-        durationSec: totalDuration,
-        width,
-        height,
-        zoomMax: 1.02,
-      })
-
-      // Step C: Multi-layer Composite: Background on layer 0, Slideshow on layer 1
-      await ffmpeg([
-        '-y',
-        '-i', bgVideo,
-        '-i', rawSlideshow,
-        '-filter_complex', '[0:v][1:v]overlay=(W-w)/2:(H-h)/2:shortest=1[v]',
-        '-map', '[v]',
-        '-c:v', 'libx264',
-        '-preset', 'veryfast',
-        '-crf', '20',
-        '-pix_fmt', 'yuv420p',
-        concatFile,
-      ])
-    } else {
-      await concatClips(slices, concatFile, { transitionDuration: 0 })
+    // Multi-layer Composite: Background on layer 0, Image segments time-shifted and overlaid at exact timeline start_at_sec
+    const compositeFile = path.join(tmp, 'visual_composite.mp4')
+    const inputs = ['-y', '-i', bgVideoPath]
+    for (const slice of slices) {
+      inputs.push('-i', slice.file)
     }
-  } else if (bgFile && fs.existsSync(bgFile)) {
-    // Only background, no images
-    await applyMotionImage({
-      src: bgFile,
-      out: concatFile,
-      durationSec: totalDuration,
-      width,
-      height,
-      zoomMax: 1.02,
-    })
-  } else {
-    // Fallback: generate solid background video
+
+    const filterLines = []
+    for (let i = 0; i < slices.length; i++) {
+      const slice = slices[i]
+      const inputIdx = i + 1
+      filterLines.push(`[${inputIdx}:v]setpts=PTS-STARTPTS+${slice.startAt}/TB[v${inputIdx}_timed]`)
+    }
+
+    let prevLayer = '0:v'
+    for (let i = 0; i < slices.length; i++) {
+      const slice = slices[i]
+      const inputIdx = i + 1
+      const nextLayer = i === slices.length - 1 ? 'v_comp' : `l_${inputIdx}`
+      filterLines.push(
+        `[${prevLayer}][v${inputIdx}_timed]overlay=(W-w)/2:(H-h)/2:enable='between(t,${slice.startAt},${slice.endAt})':eof_action=pass[${nextLayer}]`
+      )
+      prevLayer = nextLayer
+    }
+
     await ffmpeg([
-      '-y', '-f', 'lavfi',
-      '-i', `color=c=${defaultBgColor}:s=${width}x${height}:d=${round2(totalDuration)}:r=30`,
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
-      concatFile,
+      ...inputs,
+      '-filter_complex', filterLines.join(';'),
+      '-map', '[v_comp]',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '20',
+      '-pix_fmt', 'yuv420p',
+      compositeFile,
     ])
+
+    visualTrackFile = compositeFile
   }
 
   await assertRunOwner(project.id, runToken)
   setProgress(65)
 
-  // 2. Build Audio Track (Voiceover + Music with Ducking & Looping)
+  // 3. Build Audio Track (Voiceover + Music respecting Track Mute, Track Volume & Ducking)
+  const voiceTrackConfig = trackByType.get('voiceover')
+  const isVoiceMuted = voiceTrackConfig ? Boolean(voiceTrackConfig.muted) : false
+  const voiceTrackVolume = voiceTrackConfig && Number.isFinite(Number(voiceTrackConfig.volume))
+    ? Math.max(0, Math.min(2.0, Number(voiceTrackConfig.volume)))
+    : 1.0
+
   const voiceClips = clips.filter((c) => c.clip_type === 'voiceover' || c.voice_audio_id || c.audio_id)
   const voiceEntries = []
-  for (const vc of voiceClips) {
-    const audioId = vc.audio_id || vc.voice_audio_id
-    const aud = audioById.get(audioId)
-    const prepWav = path.join(prepDir, `voice_${vc.id}.wav`)
-    const absAudio = fs.existsSync(prepWav) ? prepWav : (aud ? resolveStorageKey(aud.storage_key) : null)
-    if (absAudio && fs.existsSync(absAudio)) {
-      voiceEntries.push({
-        file: absAudio,
-        offsetSec: Number(vc.start_at_sec) || 0,
-      })
+
+  if (!isVoiceMuted && voiceTrackVolume > 0) {
+    for (const vc of voiceClips) {
+      const audioId = vc.audio_id || vc.voice_audio_id
+      const aud = audioById.get(audioId)
+      const prepWav = path.join(prepDir, `voice_${vc.id}.wav`)
+      const absAudio = fs.existsSync(prepWav) ? prepWav : (aud ? resolveStorageKey(aud.storage_key) : null)
+      if (absAudio && fs.existsSync(absAudio)) {
+        const clipVol = Number.isFinite(Number(vc.volume)) ? Number(vc.volume) : 1.0
+        const effectiveVol = Math.max(0, Math.min(2.0, clipVol * voiceTrackVolume))
+        voiceEntries.push({
+          file: absAudio,
+          offsetSec: Number(vc.start_at_sec) || 0,
+          volume: effectiveVol,
+        })
+      }
     }
   }
 
@@ -196,14 +260,22 @@ export async function composerRender(ctx = {}) {
     ])
   }
 
-  // Find BGM Music
+  // Find BGM Music (Respect track mute & volume)
+  const musicTrackConfig = trackByType.get('music')
+  const isMusicMuted = musicTrackConfig ? Boolean(musicTrackConfig.muted) : false
+  const musicTrackVolume = musicTrackConfig && Number.isFinite(Number(musicTrackConfig.volume))
+    ? Math.max(0, Math.min(2.0, Number(musicTrackConfig.volume)))
+    : 1.0
+
   const musicClips = clips.filter((c) => c.clip_type === 'music')
   let musicFile = null
   let targetBgmVolume = 0.35
   let isDuckingEnabled = true
-  if (musicClips.length > 0) {
+
+  if (!isMusicMuted && musicTrackVolume > 0 && musicClips.length > 0) {
     const mc = musicClips[0]
-    targetBgmVolume = Number(mc.volume ?? 0.35)
+    const clipVol = Number.isFinite(Number(mc.volume)) ? Number(mc.volume) : 0.8
+    targetBgmVolume = Math.max(0, Math.min(2.0, clipVol * musicTrackVolume))
     if (mc.meta) {
       try {
         const parsedMeta = typeof mc.meta === 'string' ? JSON.parse(mc.meta) : mc.meta
@@ -245,7 +317,7 @@ export async function composerRender(ctx = {}) {
     }
     await ffmpeg([
       '-y',
-      '-i', concatFile,
+      '-i', visualTrackFile,
       '-i', voiceTrack,
       '-i', musicFile,
       '-filter_complex', audioFilter,
@@ -262,7 +334,7 @@ export async function composerRender(ctx = {}) {
     const audioFilter = `[1:a]aresample=48000,aloop=loop=-1:size=2e+09,atrim=0:${roundDuration},volume=${targetBgmVolume},${tail}`
     await ffmpeg([
       '-y',
-      '-i', concatFile,
+      '-i', visualTrackFile,
       '-i', musicFile,
       '-filter_complex', audioFilter,
       '-map', '0:v',
@@ -278,7 +350,7 @@ export async function composerRender(ctx = {}) {
     const audioFilter = `[1:a]${tail}`
     await ffmpeg([
       '-y',
-      '-i', concatFile,
+      '-i', visualTrackFile,
       '-i', voiceTrack,
       '-filter_complex', audioFilter,
       '-map', '0:v',
@@ -294,7 +366,7 @@ export async function composerRender(ctx = {}) {
     // No voice, no music: add silent audio track
     await ffmpeg([
       '-y',
-      '-i', concatFile,
+      '-i', visualTrackFile,
       '-f', 'lavfi',
       '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
       '-c:v', 'copy',
@@ -309,13 +381,14 @@ export async function composerRender(ctx = {}) {
   setProgress(85)
   await assertRunOwner(project.id, runToken)
 
-  // 3. Burn Text Overlays
+  // 4. Burn Text Overlays (Strict: Do not burn if 0 text clips, throw on burn failure)
   const assRow = await query(
     `SELECT storage_key FROM subtitles WHERE project_id = ? AND format = 'ass' ORDER BY rowid DESC LIMIT 1`,
     [project.id]
   )
   const assAbs = assRow[0] ? resolveStorageKey(assRow[0].storage_key) : path.join(prepDir, 'subtitles.ass')
-  const burnSubtitles = Boolean(assAbs && fs.existsSync(assAbs) && fs.statSync(assAbs).size > 200)
+  const textClips = clips.filter((c) => c.clip_type === 'text' || Boolean(c.text_content))
+  const burnSubtitles = Boolean(textClips.length > 0 && assAbs && fs.existsSync(assAbs) && fs.statSync(assAbs).size > 200)
 
   const outId = uuidv4()
   const outputsAbs = ensureDir(path.join(config.storageDir, 'outputs'))
@@ -325,8 +398,10 @@ export async function composerRender(ctx = {}) {
     try {
       await burnSubtitlesStyled(mixed, assAbs, finalPath)
     } catch (burnErr) {
-      console.warn(`[composerRender] Subtitle burn failed, using raw mixed video: ${burnErr.message}`)
-      fs.copyFileSync(mixed, finalPath)
+      console.error(`[composerRender] Subtitle burn failed: ${burnErr.message}`)
+      const err = new Error(`Lỗi kết xuất phụ đề văn bản: ${burnErr.message}`)
+      err.code = 'COMPOSER_SUBTITLE_RENDER_FAILED'
+      throw err
     }
   } else {
     fs.copyFileSync(mixed, finalPath)

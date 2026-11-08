@@ -1,20 +1,41 @@
 import { Router } from 'express'
 import multer from 'multer'
 import fs from 'node:fs'
+import path from 'path'
+import { v4 as uuidv4 } from 'uuid'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { sendError, ERR } from '../../lib/httpError.js'
 import { query, queryOne, run } from '../../db/query.js'
-import { resolveStorageKey } from '../../pipeline/context.js'
+import { resolveStorageKey, ensureDir } from '../../pipeline/context.js'
+import { config } from '../../config.js'
 import composerService from '../../services/composerService.js'
 
 const router = Router()
 router.use(authMiddleware)
 
+const tmpUploadsDir = ensureDir(path.join(config.storageDir, 'tmp_uploads'))
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, tmpUploadsDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase()
+    cb(null, `${uuidv4()}${ext}`)
+  },
+})
+
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage,
   limits: { fileSize: 100 * 1024 * 1024, files: 50 }, // 100MB per file, up to 50 files
 })
+
+function totalSizeLimit(req, res, next) {
+  const len = Number(req.headers['content-length'] || 0)
+  if (len > 200 * 1024 * 1024) {
+    return sendError(res, 413, 'BATCH_TOO_LARGE', 'Tổng dung lượng tệp tải lên vượt quá giới hạn 200MB')
+  }
+  next()
+}
 
 function uploadHandler(req, res, next) {
   upload.fields([{ name: 'files', maxCount: 50 }, { name: 'file', maxCount: 1 }])(req, res, (err) => {
@@ -24,6 +45,47 @@ function uploadHandler(req, res, next) {
     }
     return sendError(res, 400, 'UPLOAD_ERROR', err.message || 'Lỗi tải lên tệp')
   })
+}
+
+function checkMediaSignature(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return false
+  let fd
+  try {
+    fd = fs.openSync(filePath, 'r')
+    const buf = Buffer.alloc(16)
+    const bytesRead = fs.readSync(fd, buf, 0, 16, 0)
+    if (bytesRead < 4) return false
+
+    // JPEG: FF D8 FF
+    if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true
+    // PNG: 89 50 4E 47
+    if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return true
+    // RIFF (WEBP / WAV / AVI)
+    if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) {
+      if (bytesRead >= 12) {
+        const typeStr = buf.toString('ascii', 8, 12)
+        if (typeStr === 'WEBP' || typeStr === 'WAVE' || typeStr === 'AVI ') return true
+      }
+      return true
+    }
+    // MP3: ID3 or sync frame FF FB / FF F3 / FF F2 / FF E0
+    if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) return true
+    if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return true
+    // MP4 / QuickTime (MOV, M4A, MP4): ftyp or moov at offset 4
+    if (bytesRead >= 8 && (buf.toString('ascii', 4, 8) === 'ftyp' || buf.toString('ascii', 4, 8) === 'moov')) return true
+    // OGG: OggS
+    if (buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) return true
+    // EBML (WebM / MKV): 1A 45 DF A3
+    if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return true
+
+    return false
+  } catch (_) {
+    return false
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd) } catch (_) {}
+    }
+  }
 }
 
 // GET /api/v1/projects/:id/assets
@@ -61,11 +123,33 @@ router.get('/:id/assets', requireProjectOwner, async (req, res) => {
 })
 
 // POST /api/v1/projects/:id/assets
-router.post('/:id/assets', requireProjectOwner, uploadHandler, async (req, res) => {
+router.post('/:id/assets', requireProjectOwner, totalSizeLimit, uploadHandler, async (req, res) => {
+  const files = req.files?.files || (req.files?.file ? [req.files.file[0]] : [])
+  const cleanupFiles = () => {
+    for (const f of files) {
+      if (f.path && fs.existsSync(f.path)) {
+        try { fs.unlinkSync(f.path) } catch (_) {}
+      }
+    }
+  }
+
   try {
-    const files = req.files?.files || (req.files?.file ? [req.files.file[0]] : [])
     if (!files || files.length === 0) {
       return sendError(res, 400, ERR.VALIDATION, 'Cần ít nhất một file để tải lên', { field: 'files' })
+    }
+
+    // Validate MIME types and Magic Bytes
+    for (const file of files) {
+      const isValidSig = checkMediaSignature(file.path)
+      if (!isValidSig) {
+        cleanupFiles()
+        return sendError(
+          res,
+          400,
+          'UNSUPPORTED_MEDIA_TYPE',
+          `Tệp "${file.originalname}" không phải định dạng media hợp lệ hoặc chứa nội dung không an toàn`
+        )
+      }
     }
 
     const kind = req.body?.kind || 'image'
@@ -86,6 +170,7 @@ router.post('/:id/assets', requireProjectOwner, uploadHandler, async (req, res) 
 
     res.status(200).json({ assets: savedAssets })
   } catch (err) {
+    cleanupFiles()
     console.error('Upload assets error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', err.message || 'Lỗi lưu trữ tệp')
   }
@@ -150,7 +235,7 @@ router.post('/:id/assets/:assetId/ocr', requireProjectOwner, async (req, res) =>
     res.json(result)
   } catch (err) {
     console.error('OCR error:', err)
-    sendError(res, 500, 'OCR_FAILED', err.message || 'Không thể nhận diện chữ từ hình ảnh')
+    sendError(res, err.statusCode || 500, err.code || 'OCR_FAILED', err.message || 'Không thể nhận diện chữ từ hình ảnh')
   }
 })
 
@@ -174,7 +259,7 @@ router.post('/:id/assets/:assetId/translate', requireProjectOwner, async (req, r
     res.json(result)
   } catch (err) {
     console.error('Translate error:', err)
-    sendError(res, 500, 'TRANSLATE_FAILED', err.message || 'Lỗi dịch thuật văn bản')
+    sendError(res, err.statusCode || 500, err.code || 'TRANSLATE_FAILED', err.message || 'Lỗi dịch thuật văn bản')
   }
 })
 
@@ -236,7 +321,8 @@ router.put('/:id/timeline', requireProjectOwner, async (req, res) => {
     res.json(result)
   } catch (err) {
     console.error('Save timeline error:', err)
-    sendError(res, 500, 'INTERNAL_ERROR', err.message || 'Lỗi lưu trạng thái timeline')
+    const status = err.statusCode || (err.code === 'INVALID_TIMELINE_DATA' ? 400 : 500)
+    sendError(res, status, err.code || 'INTERNAL_ERROR', err.message || 'Lỗi lưu trạng thái timeline')
   }
 })
 

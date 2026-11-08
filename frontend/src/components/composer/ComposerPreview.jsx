@@ -5,6 +5,7 @@ export default function ComposerPreview({
   project,
   clips = [],
   assets = [],
+  tracks = [],
   currentTime = 0,
   duration = 10,
   isPlaying = false,
@@ -16,6 +17,7 @@ export default function ComposerPreview({
   const audioRef = useRef(null);
   const bgmAudioRef = useRef(null);
   const videoRef = useRef(null);
+  const bgVideoRef = useRef(null);
   const [muted, setMuted] = useState(false);
   const [previewMode, setPreviewMode] = useState(outputUrl ? 'video' : 'canvas');
 
@@ -26,6 +28,13 @@ export default function ComposerPreview({
   }, [outputUrl]);
 
   const assetMap = new Map(assets.map((a) => [a.id, a]));
+
+  const voiceTrack = (tracks || []).find((t) => t.track_type === 'voiceover');
+  const musicTrack = (tracks || []).find((t) => t.track_type === 'music');
+  const isVoiceMuted = Boolean(voiceTrack?.muted);
+  const isMusicMuted = Boolean(musicTrack?.muted);
+  const voiceTrackVol = Number.isFinite(Number(voiceTrack?.volume)) ? Number(voiceTrack.volume) : 1.0;
+  const musicTrackVol = Number.isFinite(Number(musicTrack?.volume)) ? Number(musicTrack.volume) : 1.0;
 
   // Find active clips at currentTime
   const activeClips = clips.filter((c) => {
@@ -53,6 +62,32 @@ export default function ComposerPreview({
   // Determine Background visual
   const bgAsset = activeBgClip ? assetMap.get(activeBgClip.asset_id || activeBgClip.assetId) : null;
   const defaultBgColor = project?.params?.defaultBackground || '#0F1117';
+  const bgUrl = bgAsset?.url || activeBgClip?.url || bgAsset?.thumbnailUrl;
+  const isBgVideo = Boolean(
+    bgAsset?.mime_type?.startsWith('video/') ||
+    activeBgClip?.mime_type?.startsWith('video/') ||
+    (bgUrl && /\.(mp4|webm|mov|mkv)(\?.*)?$/i.test(bgUrl))
+  );
+
+  useEffect(() => {
+    if (!bgVideoRef.current || !isBgVideo) return;
+    if (isPlaying) {
+      bgVideoRef.current.play().catch(() => {});
+    } else {
+      bgVideoRef.current.pause();
+    }
+  }, [isPlaying, isBgVideo]);
+
+  useEffect(() => {
+    if (!bgVideoRef.current || !isBgVideo) return;
+    const dur = bgVideoRef.current.duration;
+    if (Number.isFinite(dur) && dur > 0) {
+      const loopedTime = currentTime % dur;
+      if (Math.abs(bgVideoRef.current.currentTime - loopedTime) > 0.3) {
+        bgVideoRef.current.currentTime = loopedTime;
+      }
+    }
+  }, [currentTime, isBgVideo]);
 
   // Determine Image visual
   const imgAsset = activeImageClip
@@ -82,7 +117,7 @@ export default function ComposerPreview({
       ? 'aspect-square max-h-[460px]'
       : 'aspect-[16/9] max-h-[460px]';
 
-  // Audio sync
+  // Audio sync with track mute & volume
   useEffect(() => {
     if (!audioRef.current) return;
     const voiceAsset = activeVoiceClip
@@ -90,7 +125,7 @@ export default function ComposerPreview({
       : null;
     const audioUrl = voiceAsset?.url;
 
-    if (audioUrl && isPlaying) {
+    if (audioUrl && isPlaying && !isVoiceMuted && voiceTrackVol > 0) {
       if (audioRef.current.src !== window.location.origin + audioUrl && !audioRef.current.src.endsWith(audioUrl)) {
         audioRef.current.src = audioUrl;
       }
@@ -99,13 +134,15 @@ export default function ComposerPreview({
       if (Math.abs(audioRef.current.currentTime - offset) > 0.3) {
         audioRef.current.currentTime = offset;
       }
+      const clipVol = Number.isFinite(Number(activeVoiceClip.volume)) ? Number(activeVoiceClip.volume) : 1.0;
+      audioRef.current.volume = Math.max(0, Math.min(1.0, clipVol * voiceTrackVol));
       audioRef.current.play().catch(() => {});
     } else {
       audioRef.current.pause();
     }
-  }, [currentTime, isPlaying, activeVoiceClip, assetMap]);
+  }, [currentTime, isPlaying, activeVoiceClip, assetMap, isVoiceMuted, voiceTrackVol]);
 
-  // BGM audio sync & dynamic ducking
+  // BGM audio sync & dynamic ducking with track mute & volume
   useEffect(() => {
     if (!bgmAudioRef.current) return;
     const bgmAsset = activeBgmClip
@@ -113,7 +150,7 @@ export default function ComposerPreview({
       : null;
     const bgmUrl = bgmAsset?.url;
 
-    if (bgmUrl && isPlaying) {
+    if (bgmUrl && isPlaying && !isMusicMuted && musicTrackVol > 0) {
       if (bgmAudioRef.current.src !== window.location.origin + bgmUrl && !bgmAudioRef.current.src.endsWith(bgmUrl)) {
         bgmAudioRef.current.src = bgmUrl;
       }
@@ -122,12 +159,14 @@ export default function ComposerPreview({
       if (Math.abs(bgmAudioRef.current.currentTime - offset) > 0.3) {
         bgmAudioRef.current.currentTime = offset;
       }
-      bgmAudioRef.current.volume = activeVoiceClip ? 0.25 : 0.8;
+      const duckedBase = activeVoiceClip ? 0.25 : 0.8;
+      const clipVol = Number.isFinite(Number(activeBgmClip.volume)) ? Number(activeBgmClip.volume) : 0.8;
+      bgmAudioRef.current.volume = Math.max(0, Math.min(1.0, duckedBase * clipVol * musicTrackVol));
       bgmAudioRef.current.play().catch(() => {});
     } else {
       bgmAudioRef.current.pause();
     }
-  }, [currentTime, isPlaying, activeBgmClip, activeVoiceClip, assetMap]);
+  }, [currentTime, isPlaying, activeBgmClip, activeVoiceClip, assetMap, isMusicMuted, musicTrackVol]);
 
   const fmtTime = (s) => {
     const sec = Math.max(0, Math.floor(s || 0));
@@ -203,12 +242,24 @@ export default function ComposerPreview({
             className={`relative rounded-2xl overflow-hidden shadow-2xl border border-border/80 flex items-center justify-center transition-all ${aspectClass} w-auto max-w-full`}
           >
             {/* Background Layer */}
-            {bgAsset && (
-              <img
-                src={bgAsset.thumbnailUrl || bgAsset.url}
-                alt="Background"
-                className="absolute inset-0 w-full h-full object-cover opacity-60"
-              />
+            {bgUrl && (
+              isBgVideo ? (
+                <video
+                  ref={bgVideoRef}
+                  src={bgUrl}
+                  autoPlay={isPlaying}
+                  loop
+                  muted
+                  playsInline
+                  className="absolute inset-0 w-full h-full object-cover opacity-60 pointer-events-none"
+                />
+              ) : (
+                <img
+                  src={bgAsset?.thumbnailUrl || bgUrl}
+                  alt="Background"
+                  className="absolute inset-0 w-full h-full object-cover opacity-60"
+                />
+              )
             )}
 
             {/* Active Image Layer */}

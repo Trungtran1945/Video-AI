@@ -134,16 +134,23 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
   }
 }
 
-export async function processOcr({ assetId, projectId, userId }) {
-  const asset = await queryOne('SELECT * FROM assets WHERE id = ? AND project_id = ?', [assetId, projectId])
+export async function processOcr({ assetId, projectId, userId, force = false, visionProvider = null }) {
+  const asset = projectId
+    ? await queryOne('SELECT * FROM assets WHERE id = ? AND project_id = ?', [assetId, projectId])
+    : await queryOne('SELECT * FROM assets WHERE id = ?', [assetId])
   if (!asset) throw new Error('Asset not found')
 
-  // 1. Check existing OCR on asset
-  if (asset.ocr_text && asset.ocr_text.trim()) {
+  // 1. Check existing OCR on asset (unless forced)
+  if (!force && asset.ocr_text && asset.ocr_text.trim()) {
+    let boxes = []
+    try {
+      boxes = asset.ocr_data ? JSON.parse(asset.ocr_data) : []
+    } catch (_) {}
     return {
       assetId: asset.id,
       text: asset.ocr_text,
-      boxes: asset.ocr_data ? JSON.parse(asset.ocr_data) : [],
+      boxes,
+      status: 'SUCCESS',
       cached: true,
     }
   }
@@ -154,33 +161,41 @@ export async function processOcr({ assetId, projectId, userId }) {
   const fileBytes = fs.readFileSync(absPath)
   const inputHash = computeHash(fileBytes)
 
-  // 2. Check provider_cache
-  const cachedRow = await queryOne(
-    `SELECT result FROM provider_cache WHERE provider = 'vision' AND type = 'ocr' AND input_hash = ?`,
-    [inputHash]
-  )
-  if (cachedRow?.result) {
-    try {
-      const parsed = JSON.parse(cachedRow.result)
-      await run('UPDATE assets SET ocr_text = ?, ocr_data = ? WHERE id = ?', [
-        parsed.text || '',
-        JSON.stringify(parsed.boxes || []),
-        assetId,
-      ])
-      return {
-        assetId: asset.id,
-        text: parsed.text || '',
-        boxes: parsed.boxes || [],
-        cached: true,
-      }
-    } catch (_) {}
+  // 2. Check provider_cache (only valid OCR results with text are cached)
+  if (!force) {
+    const cachedRow = await queryOne(
+      `SELECT result FROM provider_cache WHERE provider = 'vision' AND type = 'ocr' AND input_hash = ?`,
+      [inputHash]
+    )
+    if (cachedRow?.result) {
+      try {
+        const parsed = JSON.parse(cachedRow.result)
+        const cachedText = (parsed.text || '').trim()
+        if (cachedText) {
+          await run('UPDATE assets SET ocr_text = ?, ocr_data = ? WHERE id = ?', [
+            cachedText,
+            JSON.stringify(parsed.boxes || []),
+            assetId,
+          ])
+          return {
+            assetId: asset.id,
+            text: cachedText,
+            boxes: parsed.boxes || [],
+            status: 'SUCCESS',
+            cached: true,
+          }
+        }
+      } catch (_) {}
+    }
   }
 
   // 3. Call Vision Provider
   let extractedText = ''
   let boxes = []
+  let providerError = null
+
   try {
-    const vp = await getProvider(userId, 'vision')
+    const vp = await getProvider(userId, 'vision', visionProvider ? { id: visionProvider } : {})
     if (vp?.provider?.detectSubtitle) {
       const info = await probe(absPath).catch(() => ({ width: 1280, height: 720 }))
       const res = await vp.provider.detectSubtitle({
@@ -191,23 +206,44 @@ export async function processOcr({ assetId, projectId, userId }) {
       })
       if (Array.isArray(res?.boxes) && res.boxes.length > 0) {
         boxes = res.boxes
-        extractedText = res.boxes.map((b) => b.text).filter(Boolean).join(' ')
+        extractedText = res.boxes.map((b) => b.text).filter(Boolean).join(' ').trim()
       }
     } else if (vp?.provider?.describeImage) {
       const prompt = 'Trích xuất toàn bộ văn bản xuất hiện trong hình ảnh này. Chỉ trả về văn bản được viết trong ảnh, không giải thích.'
       const res = await vp.provider.describeImage({ imagePath: absPath, prompt })
       extractedText = (res?.text || '').trim()
+    } else {
+      throw new Error('Không tìm thấy nhà cung cấp Vision OCR phù hợp')
     }
   } catch (err) {
     console.warn(`[composerService] Vision OCR call failed: ${err.message}`)
+    providerError = err
   }
 
-  // Fallback if no text extracted (e.g. mock or clean image)
+  if (providerError) {
+    const err = new Error(`Vision OCR thất bại: ${providerError.message}`)
+    err.code = 'VISION_OCR_FAILED'
+    throw err
+  }
+
+  // Distinguish SUCCESS vs NO_TEXT
   if (!extractedText) {
-    extractedText = `Text from ${asset.name || 'image'}`
+    // Vision OCR ran successfully but found no text in image
+    await run('UPDATE assets SET ocr_text = ?, ocr_data = ? WHERE id = ?', [
+      '',
+      JSON.stringify([]),
+      assetId,
+    ])
+    return {
+      assetId: asset.id,
+      text: '',
+      boxes: [],
+      status: 'NO_TEXT',
+      cached: false,
+    }
   }
 
-  // Save to cache
+  // Save successful OCR to provider_cache
   const cachePayload = JSON.stringify({ text: extractedText, boxes })
   try {
     await insert('provider_cache', {
@@ -230,23 +266,30 @@ export async function processOcr({ assetId, projectId, userId }) {
     assetId: asset.id,
     text: extractedText,
     boxes,
+    status: 'SUCCESS',
     cached: false,
   }
 }
 
-export async function processTranslation({ text, targetLanguage = 'vi', sourceLanguage = 'auto', assetId = null, userId = null }) {
+export async function processTranslation({ text, targetLanguage = 'vi', sourceLanguage = 'auto', assetId = null, userId = null, translateProvider = null }) {
   const cleanText = String(text || '').trim()
   if (!cleanText) throw new Error('Text to translate is required')
 
   // Check asset-level translation if assetId given
+  // Cache invalidation rule: Only hit cache if targetLanguage matches AND asset's ocr_text matches cleanText
   if (assetId) {
-    const asset = await queryOne('SELECT translation_text, translation_target_lang FROM assets WHERE id = ?', [assetId])
-    if (asset?.translation_text && asset.translation_target_lang === targetLanguage) {
+    const asset = await queryOne('SELECT ocr_text, translation_text, translation_target_lang FROM assets WHERE id = ?', [assetId])
+    if (
+      asset?.translation_text &&
+      asset.translation_target_lang === targetLanguage &&
+      (asset.ocr_text || '').trim() === cleanText
+    ) {
       return {
         assetId,
         originalText: cleanText,
         translatedText: asset.translation_text,
         targetLanguage,
+        status: 'SUCCESS',
         cached: true,
       }
     }
@@ -264,26 +307,32 @@ export async function processTranslation({ text, targetLanguage = 'vi', sourceLa
       const parsed = JSON.parse(cachedRow.result)
       if (parsed?.translatedText) trText = parsed.translatedText
     } catch (_) {}
-    if (assetId) {
-      await run('UPDATE assets SET translation_text = ?, translation_target_lang = ? WHERE id = ?', [
-        trText,
-        targetLanguage,
+    if (trText && trText.trim()) {
+      if (assetId) {
+        await run('UPDATE assets SET translation_text = ?, translation_target_lang = ?, ocr_text = ? WHERE id = ?', [
+          trText,
+          targetLanguage,
+          cleanText,
+          assetId,
+        ])
+      }
+      return {
         assetId,
-      ])
-    }
-    return {
-      assetId,
-      originalText: cleanText,
-      translatedText: trText,
-      targetLanguage,
-      cached: true,
+        originalText: cleanText,
+        translatedText: trText,
+        targetLanguage,
+        status: 'SUCCESS',
+        cached: true,
+      }
     }
   }
 
   let translated = ''
+  let lastError = null
+
   // 1. Try GoogleTranslate
   try {
-    const tp = await getProvider(userId, 'translate')
+    const tp = await getProvider(userId, 'translate', translateProvider ? { id: translateProvider } : {})
     if (tp?.provider?.translate) {
       const out = await tp.provider.translate(cleanText, sourceLanguage, targetLanguage)
       if (out && typeof out === 'string' && out.trim()) {
@@ -292,6 +341,7 @@ export async function processTranslation({ text, targetLanguage = 'vi', sourceLa
     }
   } catch (err) {
     console.warn(`[composerService] Translate provider error: ${err.message}`)
+    lastError = err
   }
 
   // 2. Fallback to LLM
@@ -306,18 +356,26 @@ export async function processTranslation({ text, targetLanguage = 'vi', sourceLa
           temperature: 0.3,
           maxTokens: 500,
         })
-        translated = String(out?.text || out || '').trim().replace(/^["']|["']$/g, '')
+        const candidate = String(out?.text || out || '').trim().replace(/^["']|["']$/g, '')
+        if (candidate) {
+          translated = candidate
+        }
       }
     } catch (err) {
       console.warn(`[composerService] LLM Translate fallback error: ${err.message}`)
+      lastError = err
     }
   }
 
   if (!translated) {
-    translated = cleanText
+    const err = new Error(
+      `Không thể dịch thuật văn bản qua bất kỳ nhà cung cấp nào${lastError ? `: ${lastError.message}` : ''}`
+    )
+    err.code = 'TRANSLATION_FAILED'
+    throw err
   }
 
-  // Save to provider_cache
+  // Save to provider_cache ONLY when translation actually succeeds
   try {
     await insert('provider_cache', {
       id: uuidv4(),
@@ -328,10 +386,12 @@ export async function processTranslation({ text, targetLanguage = 'vi', sourceLa
     })
   } catch (_) {}
 
+  // Update asset row
   if (assetId) {
-    await run('UPDATE assets SET translation_text = ?, translation_target_lang = ? WHERE id = ?', [
+    await run('UPDATE assets SET translation_text = ?, translation_target_lang = ?, ocr_text = ? WHERE id = ?', [
       translated,
       targetLanguage,
+      cleanText,
       assetId,
     ])
   }
@@ -341,6 +401,7 @@ export async function processTranslation({ text, targetLanguage = 'vi', sourceLa
     originalText: cleanText,
     translatedText: translated,
     targetLanguage,
+    status: 'SUCCESS',
     cached: false,
   }
 }
@@ -578,6 +639,144 @@ export async function autoArrangeTimeline({ projectId, options = {}, ...rest }) 
 }
 
 export async function saveTimeline({ projectId, tracks = [], clips = [] }) {
+  if (!projectId) {
+    const err = new Error('projectId is required')
+    err.code = 'INVALID_TIMELINE_DATA'
+    err.statusCode = 400
+    throw err
+  }
+
+  const project = await queryOne('SELECT id FROM projects WHERE id = ?', [projectId])
+  if (!project) {
+    const err = new Error(`Dự án "${projectId}" không tồn tại`)
+    err.code = 'PROJECT_NOT_FOUND'
+    err.statusCode = 404
+    throw err
+  }
+
+  // Ensure default tracks exist for this project
+  const existingTracks = await ensureDefaultTracks(projectId)
+  const validTrackIds = new Set(existingTracks.map((t) => t.id))
+
+  // Fetch valid asset IDs and audio IDs for this project
+  const projectAssets = await query('SELECT id FROM assets WHERE project_id = ?', [projectId])
+  const validAssetIds = new Set(projectAssets.map((a) => a.id))
+  const projectAudios = await query('SELECT id FROM audios WHERE project_id = ?', [projectId])
+  const validAudioIds = new Set(projectAudios.map((a) => a.id))
+
+  const ALLOWED_CLIP_TYPES = new Set(['image', 'background', 'voiceover', 'music', 'text', 'sfx'])
+
+  // Validate tracks
+  if (Array.isArray(tracks) && tracks.length > 0) {
+    for (const t of tracks) {
+      if (!t?.id) continue
+      if (!validTrackIds.has(t.id)) {
+        const err = new Error(`Track ID "${t.id}" không thuộc dự án "${projectId}"`)
+        err.code = 'INVALID_TIMELINE_DATA'
+        err.statusCode = 400
+        throw err
+      }
+      if (t.volume != null) {
+        const v = Number(t.volume)
+        if (!Number.isFinite(v) || v < 0 || v > 2.0) {
+          const err = new Error(`Track volume (${t.volume}) phải là số trong khoảng [0, 2.0]`)
+          err.code = 'INVALID_TIMELINE_DATA'
+          err.statusCode = 400
+          throw err
+        }
+      }
+    }
+  }
+
+  // Validate clips
+  if (Array.isArray(clips)) {
+    for (let i = 0; i < clips.length; i++) {
+      const c = clips[i]
+      if (!c) continue
+
+      const clipType = c.clip_type || c.type || 'image'
+      if (!ALLOWED_CLIP_TYPES.has(clipType)) {
+        const err = new Error(`Loại clip không hợp lệ: "${clipType}". Chỉ chấp nhận: image, background, voiceover, music, text, sfx`)
+        err.code = 'INVALID_TIMELINE_DATA'
+        err.statusCode = 400
+        throw err
+      }
+
+      const trackId = c.track_id || c.trackId || null
+      if (trackId && !validTrackIds.has(trackId)) {
+        const err = new Error(`Clip #${i}: Track ID "${trackId}" không thuộc dự án "${projectId}"`)
+        err.code = 'INVALID_TIMELINE_DATA'
+        err.statusCode = 400
+        throw err
+      }
+
+      const assetId = c.asset_id || c.assetId || null
+      if (assetId && !validAssetIds.has(assetId)) {
+        const err = new Error(`Clip #${i}: Asset ID "${assetId}" không thuộc dự án "${projectId}"`)
+        err.code = 'INVALID_TIMELINE_DATA'
+        err.statusCode = 400
+        throw err
+      }
+
+      const voiceAudioId = c.voice_audio_id || c.audio_id || c.audioId || null
+      if (voiceAudioId && !validAudioIds.has(voiceAudioId) && !validAssetIds.has(voiceAudioId)) {
+        const err = new Error(`Clip #${i}: Audio ID "${voiceAudioId}" không thuộc dự án "${projectId}"`)
+        err.code = 'INVALID_TIMELINE_DATA'
+        err.statusCode = 400
+        throw err
+      }
+
+      const startAtSec = Number(c.start_at_sec ?? c.start ?? 0)
+      if (!Number.isFinite(startAtSec) || startAtSec < 0) {
+        const err = new Error(`Clip #${i}: start_at_sec (${startAtSec}) phải là số hữu hạn >= 0`)
+        err.code = 'INVALID_TIMELINE_DATA'
+        err.statusCode = 400
+        throw err
+      }
+
+      const inSec = Number(c.in_sec ?? 0)
+      if (!Number.isFinite(inSec) || inSec < 0) {
+        const err = new Error(`Clip #${i}: in_sec (${inSec}) phải là số hữu hạn >= 0`)
+        err.code = 'INVALID_TIMELINE_DATA'
+        err.statusCode = 400
+        throw err
+      }
+
+      const outSec = c.out_sec != null ? Number(c.out_sec) : (c.duration != null ? inSec + Number(c.duration) : inSec + 4)
+      if (!Number.isFinite(outSec) || outSec <= inSec) {
+        const err = new Error(`Clip #${i}: out_sec (${outSec}) phải là số hữu hạn và lớn hơn in_sec (${inSec})`)
+        err.code = 'INVALID_TIMELINE_DATA'
+        err.statusCode = 400
+        throw err
+      }
+
+      const volume = Number(c.volume ?? 1.0)
+      if (!Number.isFinite(volume) || volume < 0 || volume > 2.0) {
+        const err = new Error(`Clip #${i}: volume (${volume}) phải nằm trong khoảng [0, 2.0]`)
+        err.code = 'INVALID_TIMELINE_DATA'
+        err.statusCode = 400
+        throw err
+      }
+
+      const speed = Number(c.speed ?? 1.0)
+      if (!Number.isFinite(speed) || speed <= 0 || speed > 10.0) {
+        const err = new Error(`Clip #${i}: speed (${speed}) phải nằm trong khoảng (0, 10.0]`)
+        err.code = 'INVALID_TIMELINE_DATA'
+        err.statusCode = 400
+        throw err
+      }
+
+      const fadeIn = Number(c.fade_in_sec ?? 0)
+      const fadeOut = Number(c.fade_out_sec ?? 0)
+      if (!Number.isFinite(fadeIn) || fadeIn < 0 || !Number.isFinite(fadeOut) || fadeOut < 0) {
+        const err = new Error(`Clip #${i}: fade_in_sec và fade_out_sec phải là số hữu hạn >= 0`)
+        err.code = 'INVALID_TIMELINE_DATA'
+        err.statusCode = 400
+        throw err
+      }
+    }
+  }
+
   await withTransaction(async (tx) => {
     // Update tracks if provided
     if (Array.isArray(tracks) && tracks.length > 0) {
@@ -595,6 +794,9 @@ export async function saveTimeline({ projectId, tracks = [], clips = [] }) {
       await tx.run('DELETE FROM timeline_clips WHERE project_id = ?', [projectId])
       for (let i = 0; i < clips.length; i++) {
         const c = clips[i]
+        const inSec = Number(c.in_sec ?? 0)
+        const outSec = c.out_sec != null ? Number(c.out_sec) : (c.duration != null ? inSec + Number(c.duration) : inSec + 4)
+
         await tx.insert('timeline_clips', {
           id: c.id || uuidv4(),
           project_id: projectId,
@@ -606,8 +808,8 @@ export async function saveTimeline({ projectId, tracks = [], clips = [] }) {
           style_json: typeof c.style_json === 'string' ? c.style_json : (c.style ? JSON.stringify(c.style) : null),
           order_index: c.order_index ?? i,
           start_at_sec: Number(c.start_at_sec ?? c.start ?? 0),
-          in_sec: Number(c.in_sec ?? 0),
-          out_sec: Number(c.out_sec ?? c.duration ?? 4),
+          in_sec: inSec,
+          out_sec: outSec,
           speed: Number(c.speed ?? 1.0),
           volume: Number(c.volume ?? 1.0),
           fade_in_sec: Number(c.fade_in_sec ?? 0),

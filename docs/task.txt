@@ -1,561 +1,349 @@
-# MASTER TASK: REPLACE SUMMARY MOVIE REVIEW WITH AI MEDIA COMPOSER
+# MASTER TASK: AI MEDIA COMPOSER – POST-IMPLEMENTATION CODE REVIEW & BUG FIX
 
-You are a Senior Full-stack Engineer, Video Processing Engineer and Software Architect.
-
-Your task is to transform the existing Video-AI project by replacing the new-project Movie Review (SUMMARY) experience with a new feature called **AI MEDIA COMPOSER**.
+You are a Senior Software Engineer specializing in Full-stack development, FFmpeg, video editing systems, database integrity and software testing.
 
 Repository: https://github.com/Trungtran1945/Video-AI
 
-Local project: `D:\E\Video_AI`
+Local project: D:\E\Video_AI
 
-Tech stack:
-- Frontend: React 18, Vite 6, TailwindCSS, Zustand, TanStack Query.
-- Backend: Node.js, Express, ESM.
-- Database: SQLite using sql.js.
-- Queue: Redis + BullMQ.
-- Media processing: FFmpeg + FFprobe.
-- AI: Existing Provider Pattern (Gemini, OpenAI, TTS, OCR, Translation).
-
-## 1. TASK
-
-Remove the Movie Review automatic creation experience and replace it with an AI-powered media composition workflow.
-
-The new system allows users to upload their own:
-- Background images or videos.
-- Multiple images.
-- Background music.
-- Audio files.
-- Voiceover recordings.
-- Optional scripts and text content.
-
-The system automatically organizes these resources into a multi-track timeline and renders a complete video.
-
-The goal is to create a practical automated video editor, not merely a file upload page or a mock timeline.
-
-## 2. IMPORTANT ARCHITECTURAL RULES
-
-Before coding:
-
-1. Read `AGENTS.md`.
-2. Inspect the actual frontend and backend implementation.
-3. Trace the existing SUMMARY creation, ProjectDetail, timeline, asset storage, database schema, pipeline runner and FFmpeg rendering.
-4. Inspect existing OCR, Translation and TTS providers.
-5. Identify reusable functionality and missing capabilities.
-6. Check existing API contracts and tests.
-
-Use the existing architecture wherever possible.
-
-Introduce a new canonical project mode:
-
-`MEDIA_COMPOSER`
-
-Do not simply reuse SUMMARY or SCRIPT_TO_VIDEO for unrelated business logic.
+TASK:
+Perform a focused code review and fix the confirmed implementation issues in the newly implemented MEDIA_COMPOSER feature.
 
 IMPORTANT:
-- Replace SUMMARY in the new-project creation interface.
-- Preserve the ability to access existing SUMMARY projects.
-- Do not delete legacy SUMMARY pipeline stages while existing projects may still depend on them.
-- TRANSLATE_DUB must continue working.
-- SCRIPT_TO_VIDEO must continue working.
-- Add explicit MEDIA_COMPOSER handling wherever project mode is dispatched. Never allow the new mode to fall through to legacy SUMMARY behavior.
+The feature has already been implemented and pushed to GitHub.
 
-## 3. NEW USER WORKFLOW
+Do NOT rebuild the feature.
+Do NOT rewrite the architecture.
+Do NOT remove existing functionality.
 
-Design the following workflow:
+Your objective is to make the actual rendered MP4 accurately reflect the user's timeline and prevent false OCR/translation success.
 
-### Step 1: Create Project
+## 1. CRITICAL BUGS
 
-Allow users to configure:
-- Project name.
-- Aspect ratio: 16:9, 9:16, 1:1.
-- Resolution.
-- FPS.
-- Output format (MP4).
-- Optional default background.
+### BUG 1 – OCR returns fake content
 
-### Step 2: Upload Media Assets
+File:
+backend/src/services/composerService.js
 
-Create a Media Library inside the project.
+Current behavior:
+When Vision OCR fails or returns no text, the service generates placeholder text:
 
-Support:
+`Text from ${asset.name || 'image'}`
 
-**Background**
-- Upload background image.
-- Upload background video.
-- Set background duration and fit mode.
+It then saves this fake result to provider_cache and assets.
 
-**Images**
-- Upload multiple images simultaneously.
-- Preview thumbnails.
-- Reorder images.
-- Delete or replace images.
-- Add images to timeline.
+Required changes:
+- Remove fake OCR fallback.
+- Distinguish successful OCR, no text detected and provider failure.
+- Do not cache failed OCR results.
+- Do not save placeholder content.
+- Return meaningful status and error information.
+- Preserve legitimate OCR caching.
 
-**Audio**
-- Upload background music.
-- Upload sound effects.
-- Upload voiceover audio.
-- Preview audio and display duration.
+### BUG 2 – Translation reports success when providers fail
 
-**Voiceover**
-- Upload an existing voice recording.
-- Alternatively, enter text and generate speech using existing TTS providers.
-- Allow voice provider and voice selection.
-- Reuse existing TTS infrastructure.
+File:
+backend/src/services/composerService.js
 
-**Text**
-- Allow users to manually enter text.
-- Allow translated image text to be added as text overlays.
+Current behavior:
+When Translation Provider and LLM fallback both fail, the service returns the original text as translated text and caches it.
 
-All uploaded assets must belong to the authenticated user and project.
+Required changes:
+- Never return original text as a successful translation.
+- Never cache failed translations.
+- Return a clear provider failure response.
+- Preserve fallback behavior when providers are available.
+- Fix asset-level cache validation.
 
-Use secure storage keys and existing storage conventions.
+Translation cache identity must include:
+- Source text hash.
+- Source language.
+- Target language.
+- Relevant provider/configuration version.
 
-Do not store media binaries directly in SQLite.
+When users edit OCR text and translate again, the service must not return an outdated translation.
 
-### Step 3: Image OCR & Translation
+## 2. CRITICAL TIMELINE AND RENDERING FIXES
 
-Every image should have an optional `Dịch thuật` action.
+Files:
+- backend/src/pipeline/stages/composerPrepare.js
+- backend/src/pipeline/stages/composerRender.js
+- backend/src/media/mediaService.js
 
-Workflow:
+The current renderer concatenates images sequentially instead of faithfully respecting their timeline positions.
 
-`Image → OCR → Original Text → Translation → Editable Text → Add to Timeline`
+Required changes:
 
-Requirements:
+### Timeline accuracy
 
-1. Detect text inside the selected image.
-2. Display recognized original text.
-3. Allow target-language selection.
-4. Translate using the existing Translation Provider architecture.
-5. Display the translation in an editable text field.
-6. Allow users to correct the translation.
-7. Provide an `Add to Video` action.
-8. Create an independent text overlay clip on the timeline.
+The rendering engine must respect:
+- start_at_sec.
+- in_sec.
+- out_sec.
+- duration.
+- Clip ordering.
+- Gaps between clips.
+- Overlapping clips.
+- Background duration.
+- Total composition duration.
 
-OCR and translation must be separate operations.
+Moving an image to second 20 in the timeline must place it at second 20 in the exported MP4.
 
-Prefer existing local OCR capabilities such as Tesseract when appropriate, reducing unnecessary external API calls.
+Do not simply concatenate clips and ignore their actual positions.
 
-Implement caching:
-- Reuse OCR results when image content and OCR configuration are unchanged.
-- Reuse translation results when source text, target language and translation configuration are unchanged.
-- Do not call AI repeatedly when displaying existing results.
-- Do not translate automatically unless the user requests it.
+### Background handling
 
-Never modify the original image when adding translated text.
+The frontend accepts both images and videos as backgrounds.
 
-### Step 4: Automatic Timeline Generation
+Implement separate FFmpeg handling:
+- Image background: static or animated image treatment.
+- Video background: preserve actual video frames and audio policy.
+- Support looping or trimming video backgrounds.
+- Respect configured background duration.
+- Avoid black frames and unintended truncation.
 
-This is the core functionality.
+Investigate the current use of `applyMotionImage()` before changing it.
 
-Build a real multi-track timeline.
+### Audio mixing
 
-Required tracks:
+Respect actual timeline and track settings:
+- Track mute.
+- Track volume.
+- Clip volume.
+- Clip start time.
+- Multiple voiceover clips.
+- Multiple music clips where supported.
+- Sound effects.
+- Fade-in and fade-out.
+- Optional audio ducking.
 
-1. Video / Background
-2. Images
-3. Voiceover
-4. Background Music / Sound Effects
-5. Text / Subtitles
+Do not assume that saving a track's volume means FFmpeg automatically applies it.
 
-Each track must support appropriate operations:
-- Add clips.
-- Remove clips.
-- Reorder clips.
-- Adjust start time.
-- Adjust duration.
-- Select and mute/unmute tracks.
-- Adjust audio volume.
-- Preview content.
-- Update clip properties.
+### Text overlays
 
-Automatic arrangement rules:
+Ensure:
+- Text uses actual timeline start and end times.
+- Text position and styling are respected.
+- Vietnamese Unicode renders correctly.
+- Special ASS characters are safely escaped.
+- Removing all text clips removes old subtitle content from subsequent renders.
 
-**Background**
-- Starts at 0.
-- Covers the complete output duration.
-- Supports image or video backgrounds.
+If text rendering fails, do not silently copy the unmodified video and report success.
 
-**Images**
-- Follow the user's selected order.
-- If narration segments exist, distribute images across the corresponding narration segments.
-- If only one voiceover audio file exists without timestamps, distribute images sequentially across its duration.
-- If no voiceover exists, use a configurable default image duration.
-- Avoid unintended gaps or overlaps.
+Return a clear rendering failure with actionable diagnostic information.
 
-**Voiceover**
-- Starts at the configured position, default 0.
-- Use the actual probed audio duration.
-- Support uploaded audio and generated TTS audio.
+## 3. DATABASE AND TIMELINE VALIDATION
 
-**Background Music**
-- Starts at 0 by default.
-- Support looping or trimming to the final video duration.
-- Allow volume adjustment.
-- Support fade-in and fade-out.
-- Implement optional audio ducking when voiceover is present.
+Files:
+- backend/src/services/composerService.js
+- backend/src/routes/v1/composerAssets.js
+- backend/src/db/schema.js
 
-**Text**
-- Place text overlays at their configured start/end timestamps.
-- Support independent editing.
-- Keep text rendering separate from original image assets.
+Improve `saveTimeline()`:
 
-Provide an `Auto Arrange` button that generates a valid timeline from the selected resources.
+- Validate every track ID belongs to the current project.
+- Validate asset IDs belong to the current project.
+- Validate audio references.
+- Reject invalid clip types.
+- Validate finite, non-negative start times and valid durations.
+- Validate volume ranges.
+- Prevent invalid timeline records from being persisted.
 
-Provide a `Reset Timeline` action with confirmation.
+Keep updates transactional.
 
-Do not require users to manually create every clip.
+Do not introduce destructive migrations.
 
-### Step 5: Timeline Editor
+## 4. UPLOAD SECURITY AND RESOURCE MANAGEMENT
 
-Extend the existing VideoTimeline implementation instead of creating an unrelated mock editor.
+File:
+backend/src/routes/v1/composerAssets.js
 
-Inspect and reuse:
+Current implementation uses Multer memoryStorage with:
+- 100MB per file.
+- Up to 50 files per request.
+
+Required changes:
+- Introduce a reasonable total request-size limit.
+- Avoid loading excessively large batches into memory.
+- Consider disk-backed or streaming upload using existing storage conventions.
+- Validate MIME type and actual file signature.
+- Reject unsupported formats.
+- Prevent path traversal.
+- Clean temporary files after failed uploads.
+- Preserve project ownership validation.
+
+Do not unnecessarily reduce legitimate supported media formats.
+
+## 5. AUTOMATIC ARRANGEMENT
+
+File:
+backend/src/services/composerService.js
+
+Review Auto Arrange.
+
+Ensure:
+- Background covers the intended composition duration.
+- Image allocation matches voiceover duration.
+- Multiple voiceover clips have deterministic ordering.
+- Music and SFX are not silently ignored.
+- Existing manually edited timeline data is not unexpectedly overwritten without an explicit user action.
+- All generated clip references are valid.
+- Text overlays are generated only when valid text exists.
+
+## 6. FRONTEND AND PREVIEW CONSISTENCY
+
+Inspect:
+- ProjectDetail.jsx
+- ComposerPreview.jsx
+- ClipInspector.jsx
+- MediaLibrary.jsx
 - VideoTimeline.jsx
-- TimelineClip.jsx
-- TrackSidebar.jsx
-- TimeRuler.jsx
-- Playhead.jsx
 - timelineStore.js
 
-However, the current timeline is designed around subtitle-oriented tracks.
-
-Extend the underlying model to support generic media tracks.
-
-Support:
-- Multiple video/image clips.
-- Multiple audio clips.
-- Text overlays.
-- Clip selection.
-- Drag and drop.
-- Trim handles.
-- Timeline zoom.
-- Playhead synchronization.
-- Playback controls.
-- Clip property editing.
-- Track mute/unmute.
-- Audio volume.
-- Snapping.
-
-Do not break existing TRANSLATE_DUB timeline functionality.
-
-The preview must reflect the actual timeline state, not static sample data.
-
-### Step 6: Preview and Rendering
-
-Create a preview player that displays the composition.
-
-The rendering engine must combine:
-
+Ensure preview and final rendering use consistent:
+- Clip positions.
+- Durations.
 - Background.
-- Images and video clips.
-- Image transitions.
-- Text overlays.
-- Subtitles.
-- Voiceover.
-- Background music.
-- Sound effects.
-
-Use FFmpeg.
-
-Reuse existing functions from `mediaService.js` where applicable.
-
-Add new functions only when required.
-
-Requirements:
-- Normalize output dimensions.
-- Normalize frame rate.
-- Handle audio/video duration correctly.
-- Avoid unexpected black frames.
-- Avoid missing media references.
-- Mix voiceover and background music correctly.
-- Support optional audio ducking.
-- Render text with appropriate fonts and Vietnamese Unicode support.
-- Export valid MP4 using H.264/AAC.
-- Generate output thumbnail.
-- Save output metadata.
-
-Do not run heavy rendering operations directly inside HTTP requests.
-
-Use BullMQ and existing worker infrastructure.
-
-Send rendering progress through existing SSE infrastructure.
-
-Support cancellation, retry and error reporting.
-
-## 4. BACKEND ARCHITECTURE
-
-Implement a new project mode:
-
-`MEDIA_COMPOSER`
-
-Register it properly in:
-- Project creation validation.
-- Project mode normalization.
-- Pipeline stage registration.
-- Stage dispatch.
-- Project detail response.
-- Project status handling.
-
-Suggested pipeline:
-
-`composer.ingest → composer.prepare → composer.render`
-
-Use existing project lifecycle and queue mechanisms.
-
-Create the necessary API endpoints for:
-
-**Media assets**
-- Upload assets.
-- List assets.
-- Get asset metadata.
-- Delete assets.
-- Generate image thumbnails.
-- Retrieve OCR results.
-
-**Translation**
-- OCR an image.
-- Translate recognized text.
-- Save edited translated text.
-
-**Timeline**
-- Get timeline.
-- Save timeline.
-- Add/update/delete clips.
-- Add/update/delete tracks.
-- Trigger Auto Arrange.
-
-**Rendering**
-- Start rendering.
-- Get rendering status.
-- Cancel rendering.
-- Retrieve final output.
-
-Use existing authentication and project ownership middleware.
-
-Validate every referenced asset belongs to the current project and authenticated user.
-
-Do not expose arbitrary filesystem paths.
-
-Use existing upload/storage conventions where possible. If the current resumable upload endpoint only supports video, extend it safely or implement an appropriate asset-upload flow rather than assuming it supports all file types.
-
-## 5. DATABASE DESIGN
-
-Inspect the existing tables:
-
-- projects
-- assets
-- audios
-- timeline_clips
-- outputs
-- generation_jobs
-
-Reuse existing structures where appropriate.
-
-The current `timeline_clips` table is specialized and does not fully represent generic tracks.
-
-Implement additive migrations if necessary.
-
-Consider introducing:
-- `timeline_tracks`
-- Additional clip metadata and asset/audio references.
-- Text overlay content and styling metadata.
-- Track ordering and audio settings.
-
-Ensure old SUMMARY, SCRIPT_TO_VIDEO and TRANSLATE_DUB records remain compatible.
-
-Do not delete or destructively rewrite existing data.
-
-Use existing database query abstractions and migration conventions.
-
-## 6. FRONTEND DESIGN
-
-Replace the Movie Review option in CreateProject with:
-
-**AI Media Composer**
-
-Description:
-"Upload your images, backgrounds, music and voiceovers. AI automatically arranges everything into a complete video."
-
-Build a professional editing workspace.
-
-Suggested layout:
-
-LEFT:
-- Media Library.
-- Upload resources.
-- Asset categories.
-- OCR and Translation actions.
-
-CENTER:
-- Video preview.
-- Playback controls.
-- Composition preview.
-
-RIGHT:
-- Selected asset/clip properties.
-- Text styling.
-- Audio settings.
-- Background settings.
-
-BOTTOM:
-- Multi-track timeline.
-- Playhead.
-- Zoom controls.
-- Track controls.
-
-Provide:
-- Upload progress.
-- Processing status.
-- Empty states.
-- Error states.
-- Loading states.
-- Confirmation dialogs.
-- Responsive layout.
-
-Follow the design rules in AGENTS.md.
-
-Avoid generic AI dashboard design.
-
-Use existing components and theme conventions.
-
-Do not build a disconnected standalone HTML page.
-
-## 7. PERFORMANCE AND QUOTA CONTROL
-
-The system should not consume AI quota unnecessarily.
-
-Requirements:
-- Prefer deterministic processing over LLM calls.
-- OCR locally when possible.
-- Cache OCR and translation results.
-- Do not regenerate existing TTS audio unnecessarily.
-- Do not re-render until the user requests it.
-- Do not repeatedly process unchanged assets.
-- Use FFmpeg for deterministic media operations.
-- Use existing provider rate-limit and quota mechanisms.
-- Avoid excessive concurrent FFmpeg processes.
-
-Do not introduce unnecessary AI steps into automatic timeline arrangement.
-
-## 8. IMPLEMENTATION PHASES
-
-Implement in the following order:
-
-Phase 1: Repository analysis and architecture plan.
-
-Phase 2: New MEDIA_COMPOSER project mode and creation wizard.
-
-Phase 3: Media Library and secure asset upload APIs.
-
-Phase 4: OCR, translation and text overlay.
-
-Phase 5: Generic multi-track timeline model and editor.
-
-Phase 6: Automatic timeline arrangement.
-
-Phase 7: FFmpeg composition and rendering pipeline.
-
-Phase 8: Preview, output management and progress reporting.
-
-Phase 9: Integration tests and regression verification.
-
-After each phase, verify the implementation before continuing.
-
-Do not stop after creating UI components. Complete the frontend-backend-database-rendering integration.
-
-## 9. DO NOT
-
-- Do not remove legacy SUMMARY support for existing projects.
-- Do not break TRANSLATE_DUB or SCRIPT_TO_VIDEO.
-- Do not replace real API functionality with mock data.
-- Do not create a fake timeline.
-- Do not store media binaries in SQLite.
-- Do not hard-code API keys or secrets.
-- Do not disable authentication or authorization.
-- Do not bypass quota management.
-- Do not add unnecessary dependencies.
-- Do not duplicate existing providers or media functions.
-- Do not rewrite unrelated modules.
-- Do not introduce destructive database migrations.
-- Do not automatically commit, push or deploy.
-- Do not use Claude Code as a required dependency.
-
-## 10. TESTING
-
+- Text.
+- Audio.
+- Track mute/volume.
+
+The preview must not show a composition that differs significantly from the final rendered MP4.
+
+Do not replace existing components with mock implementations.
+
+## 7. TESTING
+
+Add regression tests for the confirmed issues.
+
+Required scenarios:
+
+OCR:
+- OCR success.
+- No text detected.
+- Provider failure.
+- Failed OCR must not enter cache.
+
+Translation:
+- Successful translation.
+- Translation provider failure.
+- LLM fallback failure.
+- Edited source text produces a fresh translation.
+- Failed translation must not enter cache.
+
+Timeline:
+- Image starts at a non-zero timestamp.
+- Image gap.
+- Overlapping image clips.
+- Multiple voiceover clips.
+- Background longer than slideshow.
+- Background video.
+- Multiple audio clips.
+- Muted track.
+- Track volume adjustment.
+
+Text:
+- Add text overlay.
+- Edit text.
+- Delete text.
+- Render without text after a previous render containing text.
+- Vietnamese Unicode.
+- Special characters.
+
+Upload:
+- Valid image.
+- Valid audio.
+- Valid video.
+- Unsupported file.
+- Excessive total upload size.
+- Cross-project asset reference.
+
+Rendering:
+- Verify duration.
+- Verify resolution.
+- Verify video stream.
+- Verify audio stream.
+- Verify text overlay presence.
+- Verify synchronization with timeline.
+
+Use mocked providers for automated tests.
+
+For real FFmpeg integration tests, use small local media fixtures.
+
+Run:
 Backend:
-- `cd backend`
-- `npm test`
-- `npm run lint`
+- npm test
+- npm run lint
 
 Frontend:
-- `cd frontend`
-- `npm run lint`
-- `npm run build`
-- `npm run typecheck`
+- npm run lint
+- npm run build
+- npm run typecheck
 
-Add tests for:
-- Asset upload and ownership validation.
-- OCR and translation.
-- Translation cache.
-- Timeline persistence.
-- Auto Arrange.
-- Timeline duration calculation.
-- Text overlay rendering.
-- Background music mixing.
-- Voiceover synchronization.
-- Rendering cancellation and retry.
-- Invalid/missing assets.
-- Legacy project compatibility.
+Only report commands that actually exist and were executed.
 
-Use mocked AI providers in automated tests to avoid consuming real API quota.
+## 8. IMPLEMENTATION RULES
 
-## 11. END-TO-END VERIFICATION
+- Read existing code before editing.
+- Fix confirmed root causes.
+- Make minimal, focused changes.
+- Preserve the current architecture.
+- Do not duplicate existing media functions.
+- Do not introduce unnecessary dependencies.
+- Do not hard-code secrets.
+- Do not disable authentication.
+- Do not bypass quota management.
+- Do not break SUMMARY legacy projects.
+- Do not break TRANSLATE_DUB.
+- Do not break SCRIPT_TO_VIDEO.
+- Do not remove existing tests to make the suite pass.
+- Do not silently ignore rendering failures.
 
-Test the following scenario:
+## 9. FINAL VERIFICATION
+
+Run a real end-to-end test:
 
 1. Create a MEDIA_COMPOSER project.
-2. Upload one background image.
-3. Upload at least five images.
-4. Upload background music.
-5. Upload one voiceover audio file.
-6. Use OCR and Translation on one image.
-7. Edit the translated text.
-8. Add the translated text to the timeline.
-9. Click Auto Arrange.
-10. Verify all resources are correctly assigned to their tracks.
-11. Preview the composition.
-12. Adjust an image duration.
-13. Render the final video.
-14. Verify the MP4 file using FFprobe.
-15. Verify audio, video, background and text overlay synchronization.
-16. Verify the project output is saved and downloadable.
+2. Upload an image background.
+3. Upload a video background.
+4. Upload at least five images.
+5. Upload voiceover.
+6. Upload background music.
+7. Add text overlay.
+8. Arrange clips at different timestamps.
+9. Create a gap between two clips.
+10. Adjust track volume.
+11. Render the video.
+12. Verify the final MP4 with FFprobe.
+13. Compare actual video timestamps with timeline timestamps.
+14. Verify audio and text synchronization.
+15. Verify that removing text does not leave old subtitles.
+16. Verify OCR/translation failure is correctly reported.
 
-Also test a composition without voiceover and a composition using generated TTS.
+## 10. FINAL REPORT
 
-Verify existing SUMMARY, TRANSLATE_DUB and SCRIPT_TO_VIDEO projects still work.
+Return:
 
-## 12. FINAL REPORT
-
-After implementation, provide:
-
-1. Architecture changes.
-2. Features implemented.
-3. Files created.
-4. Files modified.
+1. Confirmed bugs.
+2. Root causes.
+3. Files modified.
+4. Changes implemented.
 5. Database migrations.
-6. API endpoints added or modified.
-7. Pipeline stages implemented.
-8. Tests executed and their actual results.
-9. End-to-end verification results.
-10. Known limitations and remaining tasks.
+6. Tests executed.
+7. Actual test results.
+8. FFmpeg integration results.
+9. Remaining limitations.
 
-Clearly distinguish PASS, FAIL, BLOCKED and NOT TESTED.
+Use:
+- PASS
+- FAIL
+- BLOCKED
+- NOT TESTED
 
-Do not claim successful implementation without actual verification.
+Do not claim production readiness without real verification.
 
-**FINAL OBJECTIVE:**
+Do not automatically commit, push or deploy.
 
-Transform Video-AI into an automated media composition tool where users provide their own media assets, optionally translate image text or generate voiceovers, and the system automatically builds a complete editable multi-track timeline and renders a finished video.
+FINAL OBJECTIVE:
 
-The result must be a real working feature integrated into the existing Video-AI architecture, not a prototype or UI-only demonstration.
+Make AI Media Composer a reliable video composition system where the final MP4 accurately represents the user's editable timeline, OCR and translation results are trustworthy, and FFmpeg correctly combines all supported visual and audio elements.

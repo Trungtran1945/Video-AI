@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
-import { query, insert } from '../../db/query.js'
+import { query, insert, run } from '../../db/query.js'
 import { isProjectRunOwned } from '../../services/projectAdmission.js'
 import { ffmpeg } from '../../media/ffmpeg.js'
 import {
@@ -95,8 +95,19 @@ export async function composerPrepare(ctx = {}) {
   // 2. Prepare ASS Subtitle File for Text Overlays (Unicode Vietnamese Safe)
   let assPath = null
   let assStorageKey = null
-  if (textClips.length > 0) {
-    const assFile = path.join(prepDir, 'subtitles.ass')
+  const assFile = path.join(prepDir, 'subtitles.ass')
+
+  if (textClips.length === 0) {
+    // If no text overlays on timeline, ensure stale subtitle files and DB records are completely wiped
+    if (fs.existsSync(assFile)) {
+      try { fs.unlinkSync(assFile) } catch (_) {}
+    }
+    try {
+      await run("DELETE FROM subtitles WHERE project_id = ? AND format = 'ass'", [project.id])
+    } catch (_) {}
+    assPath = null
+    assStorageKey = null
+  } else {
     const assLines = [
       '[Script Info]',
       'Title: Composer Text Overlays',
@@ -117,7 +128,9 @@ export async function composerPrepare(ctx = {}) {
     ]
 
     for (const tc of textClips) {
-      const text = (tc.text_content || '').trim().replace(/\r?\n/g, '\\N')
+      // Escape special ASS curly braces to preserve Unicode text safely
+      const rawText = (tc.text_content || '').trim().replace(/[{}]/g, '')
+      const text = rawText.replace(/\r?\n/g, '\\N')
       if (!text) continue
 
       let styleName = 'Bottom'
@@ -154,8 +167,9 @@ export async function composerPrepare(ctx = {}) {
     assPath = assFile
     assStorageKey = toStorageKey(assFile)
 
-    // Save into subtitles table
+    // Wipe stale rows and save fresh record into subtitles table
     try {
+      await run("DELETE FROM subtitles WHERE project_id = ? AND format = 'ass'", [project.id])
       await insert('subtitles', {
         id: uuidv4(),
         project_id: project.id,
