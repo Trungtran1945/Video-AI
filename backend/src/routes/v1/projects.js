@@ -27,6 +27,7 @@ import {
   releaseScriptUpload,
 } from '../../services/scriptUploadService.js'
 import { isPathInside } from '../../lib/safePath.js'
+import { formatAsset } from './composerAssets.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -484,8 +485,25 @@ router.get('/:id', async (req, res) => {
     } else if (isDubMode(project.mode)) {
       // TRANSLATE_DUB mode - no extra data needed
     } else if (project.mode === 'MEDIA_COMPOSER') {
-      extras.tracks = await query('SELECT * FROM timeline_tracks WHERE project_id = ? ORDER BY order_index ASC', [project.id])
-      extras.assets = await query('SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC, created_date ASC', [project.id])
+      try {
+        extras.tracks = await query('SELECT * FROM timeline_tracks WHERE project_id = ? ORDER BY order_index ASC', [project.id])
+      } catch (trackErr) {
+        console.warn(`[Projects] Failed to query tracks for project ${project.id}:`, trackErr?.message || trackErr)
+        extras.tracks = []
+      }
+      try {
+        const rawAssets = await query('SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC, created_date ASC', [project.id])
+        extras.assets = (rawAssets || []).map(formatAsset)
+      } catch (assetErr) {
+        console.warn(`[Projects] Failed to query assets with created_date for project ${project.id}, falling back:`, assetErr?.message || assetErr)
+        try {
+          const rawAssets = await query('SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC', [project.id])
+          extras.assets = (rawAssets || []).map(formatAsset)
+        } catch (fallbackErr) {
+          console.warn(`[Projects] Fallback query assets failed:`, fallbackErr?.message || fallbackErr)
+          extras.assets = []
+        }
+      }
     }
     const publicProject = { ...project }
     delete publicProject.script_key

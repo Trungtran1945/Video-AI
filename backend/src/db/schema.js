@@ -163,7 +163,18 @@ export async function initSchema() {
     kind TEXT NOT NULL,
     storage_key TEXT NOT NULL,
     meta TEXT,
-    duration_sec REAL
+    duration_sec REAL,
+    user_id TEXT,
+    name TEXT,
+    mime_type TEXT,
+    byte_size INTEGER,
+    thumbnail_key TEXT,
+    ocr_text TEXT,
+    ocr_data TEXT,
+    translation_text TEXT,
+    translation_target_lang TEXT,
+    order_index INTEGER DEFAULT 0,
+    created_date TEXT DEFAULT (datetime('now'))
   )`)
 
   // Additive columns for assets (MEDIA_COMPOSER media library & OCR)
@@ -178,10 +189,11 @@ export async function initSchema() {
     `ALTER TABLE assets ADD COLUMN translation_text TEXT`,
     `ALTER TABLE assets ADD COLUMN translation_target_lang TEXT`,
     `ALTER TABLE assets ADD COLUMN order_index INTEGER DEFAULT 0`,
-    `ALTER TABLE assets ADD COLUMN created_date TEXT DEFAULT (datetime('now'))`,
+    `ALTER TABLE assets ADD COLUMN created_date TEXT`,
   ]) {
     try { db.run(col) } catch (_) {}
   }
+  try { db.run(`UPDATE assets SET created_date = datetime('now') WHERE created_date IS NULL`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS generation_jobs (
     id TEXT PRIMARY KEY,

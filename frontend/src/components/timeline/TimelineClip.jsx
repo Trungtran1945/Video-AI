@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Type, GripVertical, Film, Zap, Sparkles, AlertTriangle, Loader2, Image as ImageIcon, Layers, Mic, Music } from 'lucide-react';
+import { Type, GripVertical, Film, Video, Zap, Sparkles, AlertTriangle, Loader2, Image as ImageIcon, Layers, Mic, Music } from 'lucide-react';
 import { useTimelineStore } from './timelineStore';
 import { getMagneticSnap, getHandleSnap } from './timelineUtils';
 import FloatingToolbar from './FloatingToolbar';
@@ -25,7 +25,7 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
   const widthPx = Math.max(20, clip.duration * zoomLevel);
 
   const clipType = clip.clip_type || clip.type;
-  const isEditable = clipType === 'translated' || clip.editable === true || ['background', 'image', 'voiceover', 'music', 'text'].includes(clipType);
+  const isEditable = clipType === 'translated' || clip.editable === true || ['background', 'video', 'image', 'voiceover', 'music', 'text'].includes(clipType);
 
   // Get clips on the same track for snapping (only same-layer snapping)
   const sameTrackClips = clips.filter((c) => c.trackId === clip.trackId && c.id !== clip.id);
@@ -196,8 +196,8 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
     window.addEventListener('pointercancel', onPointerUp);
   };
 
-  // Video track: simple reference bar
-  if (clip.type === 'video') {
+  // Video track: simple reference bar (legacy TRANSLATE_DUB read-only track)
+  if (clip.type === 'video' && !clip.trackId && !clip.track_id && !clip.assetId && !clip.asset_id && !clip.editable && !clip.clip_type) {
     return (
       <div
         ref={clipRef}
@@ -240,6 +240,14 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
     iconBg = 'bg-purple-100 dark:bg-purple-500/20 border-purple-300 dark:border-purple-500/40';
     iconColor = 'text-purple-700 dark:text-purple-300';
     ClipIcon = Layers;
+  } else if (clipType === 'video') {
+    bgColor = 'bg-blue-50 dark:bg-[#0c2340]';
+    borderColor = 'border-blue-300 dark:border-blue-500/30';
+    textColor = 'text-blue-900 dark:text-blue-200';
+    badgeColor = 'text-blue-800 dark:text-blue-400 bg-blue-100 dark:bg-blue-950/80 border-blue-300 dark:border-blue-500/20';
+    iconBg = 'bg-blue-100 dark:bg-blue-500/20 border-blue-300 dark:border-blue-500/40';
+    iconColor = 'text-blue-700 dark:text-blue-300';
+    ClipIcon = Video;
   } else if (clipType === 'image') {
     bgColor = 'bg-cyan-50 dark:bg-[#0c2e35]';
     borderColor = 'border-cyan-300 dark:border-cyan-500/30';

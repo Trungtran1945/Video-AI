@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { sendError, ERR } from '../../lib/httpError.js'
-import { query, queryOne, run } from '../../db/query.js'
+import { query, queryOne, run, withTransaction } from '../../db/query.js'
 import { resolveStorageKey, ensureDir } from '../../pipeline/context.js'
 import { config } from '../../config.js'
 import composerService from '../../services/composerService.js'
@@ -88,34 +88,68 @@ function checkMediaSignature(filePath) {
   }
 }
 
+// Format an asset row / object into standardized dual-compatibility ComposerAssetDTO
+export function formatAsset(a) {
+  if (!a) return null
+  const storageKey = a.storage_key || a.storageKey || null
+  const thumbnailKey = a.thumbnail_key || a.thumbnailKey || null
+  const mimeType = a.mime_type || a.mimeType || null
+  const isImg = mimeType?.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(storageKey || '')
+
+  return {
+    id: a.id,
+    projectId: a.project_id || a.projectId,
+    project_id: a.project_id || a.projectId,
+    userId: a.user_id ?? a.userId ?? null,
+    user_id: a.user_id ?? a.userId ?? null,
+    kind: a.kind,
+    name: a.name || 'Untitled',
+    storageKey,
+    storage_key: storageKey,
+    url: storageKey ? `/storage/${storageKey}` : null,
+    thumbnailKey: thumbnailKey || null,
+    thumbnail_key: thumbnailKey || null,
+    thumbnailUrl: thumbnailKey
+      ? `/storage/${thumbnailKey}`
+      : (isImg && storageKey ? `/storage/${storageKey}` : null),
+    durationSec: a.duration_sec != null ? Number(a.duration_sec) : (a.durationSec != null ? Number(a.durationSec) : null),
+    duration_sec: a.duration_sec != null ? Number(a.duration_sec) : (a.durationSec != null ? Number(a.durationSec) : null),
+    byteSize: a.byte_size != null ? Number(a.byte_size) : (a.byteSize != null ? Number(a.byteSize) : null),
+    byte_size: a.byte_size != null ? Number(a.byte_size) : (a.byteSize != null ? Number(a.byteSize) : null),
+    mimeType: mimeType || null,
+    mime_type: mimeType || null,
+    ocrText: a.ocr_text || a.ocrText || null,
+    ocr_text: a.ocr_text || a.ocrText || null,
+    ocrData: a.ocr_data ? (typeof a.ocr_data === 'string' ? JSON.parse(a.ocr_data) : a.ocr_data) : (a.ocrData || null),
+    ocr_data: typeof a.ocr_data === 'string' ? a.ocr_data : (a.ocrData ? JSON.stringify(a.ocrData) : null),
+    translationText: a.translation_text || a.translationText || null,
+    translation_text: a.translation_text || a.translationText || null,
+    translationTargetLang: a.translation_target_lang || a.translationTargetLang || null,
+    translation_target_lang: a.translation_target_lang || a.translationTargetLang || null,
+    orderIndex: Number(a.order_index ?? a.orderIndex ?? 0),
+    order_index: Number(a.order_index ?? a.orderIndex ?? 0),
+    createdDate: a.created_date || a.createdDate || null,
+    created_date: a.created_date || a.createdDate || null,
+  }
+}
+
 // GET /api/v1/projects/:id/assets
 router.get('/:id/assets', requireProjectOwner, async (req, res) => {
   try {
-    const assets = await query(
-      'SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC, created_date ASC',
-      [req.project.id]
-    )
-    const formatted = assets.map((a) => ({
-      id: a.id,
-      projectId: a.project_id,
-      userId: a.user_id,
-      kind: a.kind,
-      name: a.name,
-      storageKey: a.storage_key,
-      url: `/storage/${a.storage_key}`,
-      thumbnailKey: a.thumbnail_key,
-      thumbnailUrl: a.thumbnail_key ? `/storage/${a.thumbnail_key}` : (a.mime_type?.startsWith('image/') ? `/storage/${a.storage_key}` : null),
-      durationSec: a.duration_sec,
-      byteSize: a.byte_size,
-      mimeType: a.mime_type,
-      ocrText: a.ocr_text,
-      ocrData: a.ocr_data ? JSON.parse(a.ocr_data) : null,
-      translationText: a.translation_text,
-      translationTargetLang: a.translation_target_lang,
-      orderIndex: a.order_index,
-      createdDate: a.created_date,
-    }))
-    res.json({ assets: formatted })
+    let assets = []
+    try {
+      assets = await query(
+        'SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC, created_date ASC',
+        [req.project.id]
+      )
+    } catch (queryErr) {
+      console.warn(`[composerAssets] Query assets with created_date failed, fallback:`, queryErr?.message || queryErr)
+      assets = await query(
+        'SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC',
+        [req.project.id]
+      )
+    }
+    res.json({ assets: assets.map(formatAsset) })
   } catch (err) {
     console.error('Get assets error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
@@ -168,7 +202,7 @@ router.post('/:id/assets', requireProjectOwner, totalSizeLimit, uploadHandler, a
       savedAssets.push(saved)
     }
 
-    res.status(200).json({ assets: savedAssets })
+    res.status(200).json({ assets: savedAssets.map(formatAsset) })
   } catch (err) {
     cleanupFiles()
     console.error('Upload assets error:', err)
@@ -193,9 +227,11 @@ router.delete('/:id/assets/:assetId', requireProjectOwner, async (req, res) => {
       }
     }
 
-    await run('DELETE FROM assets WHERE id = ?', [req.params.assetId])
-    await run('DELETE FROM audios WHERE id = ?', [req.params.assetId])
-    await run('DELETE FROM timeline_clips WHERE asset_id = ? OR voice_audio_id = ?', [req.params.assetId, req.params.assetId])
+    await withTransaction(async (tx) => {
+      await tx.run('DELETE FROM timeline_clips WHERE (asset_id = ? OR voice_audio_id = ?) AND project_id = ?', [req.params.assetId, req.params.assetId, req.project.id])
+      await tx.run('DELETE FROM audios WHERE id = ? AND project_id = ?', [req.params.assetId, req.project.id])
+      await tx.run('DELETE FROM assets WHERE id = ? AND project_id = ?', [req.params.assetId, req.project.id])
+    })
 
     res.json({ message: 'Deleted', assetId: req.params.assetId })
   } catch (err) {
@@ -216,8 +252,14 @@ router.put('/:id/assets/reorder', requireProjectOwner, async (req, res) => {
       await run('UPDATE assets SET order_index = ? WHERE id = ? AND project_id = ?', [i, assetIds[i], req.project.id])
     }
 
-    const updated = await query('SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC, created_date ASC', [req.project.id])
-    res.json({ assets: updated })
+    let updated = []
+    try {
+      updated = await query('SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC, created_date ASC', [req.project.id])
+    } catch (queryErr) {
+      console.warn(`[composerAssets] Reorder query assets with created_date failed, fallback:`, queryErr?.message || queryErr)
+      updated = await query('SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC', [req.project.id])
+    }
+    res.json({ assets: updated.map(formatAsset) })
   } catch (err) {
     console.error('Reorder assets error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')

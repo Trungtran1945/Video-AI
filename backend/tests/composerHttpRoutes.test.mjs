@@ -248,6 +248,57 @@ try {
   assert.equal(asset2.order_index, 0, 'asset 2 has order_index 0')
   assert.equal(asset1.order_index, 1, 'asset 1 has order_index 1')
 
+  // 10. Robustness: legacy rows or null created_date does not cause 500
+  console.log('--- 10. Legacy assets without created_date query successfully ---')
+  const legacyAssetId = 'asset-legacy-1'
+  await insert('assets', {
+    id: legacyAssetId,
+    project_id: projectId,
+    user_id: testUser1.id,
+    kind: 'image',
+    name: 'legacy.png',
+    storage_key: `projects/${projectId}/assets/legacy.png`,
+    order_index: 2,
+    created_date: null,
+  })
+  const projectGetRes = await fetch(`${baseUrl}/${projectId}`, {
+    headers: { Authorization: `Bearer ${token1}` },
+  })
+  assert.equal(projectGetRes.status, 200, 'GET /projects/:id returns 200 with legacy assets')
+  const projectData = await projectGetRes.json()
+  assert.ok(projectData.assets.some((a) => a.id === legacyAssetId), 'Contains legacy asset')
+
+  const assetsGetRes = await fetch(`${baseUrl}/${projectId}/assets`, {
+    headers: { Authorization: `Bearer ${token1}` },
+  })
+  assert.equal(assetsGetRes.status, 200, 'GET /projects/:id/assets returns 200')
+  const assetsData = await assetsGetRes.json()
+  assert.ok(assetsData.assets.some((a) => a.id === legacyAssetId), 'Asset list contains legacy asset')
+
+  // 11. DTO Consistency across GET /projects/:id, GET /assets, and PUT /assets/reorder
+  console.log('--- 11. DTO Consistency: url, storageKey, thumbnailUrl, mimeType across endpoints ---')
+  for (const asset of projectData.assets) {
+    assert.ok(asset.id, 'Asset DTO has id')
+    assert.ok(asset.projectId || asset.project_id, 'Asset DTO has projectId')
+    assert.ok(asset.storageKey, 'Asset DTO has storageKey (camelCase)')
+    assert.ok(asset.storage_key, 'Asset DTO has storage_key (snake_case)')
+    assert.ok(asset.url.startsWith('/storage/'), 'Asset DTO has computed url')
+  }
+
+  for (const asset of assetsData.assets) {
+    assert.ok(asset.id, 'Asset DTO has id')
+    assert.ok(asset.projectId || asset.project_id, 'Asset DTO has projectId')
+    assert.ok(asset.storageKey, 'Asset DTO has storageKey (camelCase)')
+    assert.ok(asset.storage_key, 'Asset DTO has storage_key (snake_case)')
+    assert.ok(asset.url.startsWith('/storage/'), 'Asset DTO has computed url')
+  }
+
+  for (const asset of reorderData.assets) {
+    assert.ok(asset.id, 'Reordered asset DTO has id')
+    assert.ok(asset.storageKey, 'Reordered asset DTO has storageKey')
+    assert.ok(asset.url.startsWith('/storage/'), 'Reordered asset DTO has computed url')
+  }
+
   console.log('\nALL PASS: AI Media Composer HTTP API & Route Contract tests passed.')
 } finally {
   server.close()

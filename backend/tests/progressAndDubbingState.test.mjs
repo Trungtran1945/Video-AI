@@ -139,6 +139,22 @@ for (const id of [pCompleted, pFailed, pQueued, pCancelled]) {
 await run('DELETE FROM users WHERE id = ?', [user.id])
 fs.rmSync(process.env.DB_PATH, { force: true })
 
+try {
+  const { notifyQueue } = await import('../src/queue/notifyQueue.js')
+  await notifyQueue.close().catch(() => {})
+} catch (_) {}
+try {
+  const { connection } = await import('../src/queue/connection.js')
+  connection.removeAllListeners('error')
+  connection.disconnect()
+} catch (_) {}
+for (let i = 0; i < 100; i++) {
+  const pending = process._getActiveHandles().filter((h) => h?.constructor?.name === 'Socket')
+  if (pending.length === 0) break
+  await new Promise((r) => setTimeout(r, 20))
+}
+await new Promise((r) => setTimeout(r, 100))
+
 if (failures > 0) process.exit(1)
 console.log('ALL PROGRESS & DUBBING STATE TESTS PASS')
 process.exit(0)

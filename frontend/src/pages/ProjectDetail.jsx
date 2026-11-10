@@ -85,6 +85,12 @@ function normSegment(s) {
   };
 }
 
+const normalizeAssets = (raw) => {
+  if (Array.isArray(raw)) return raw;
+  if (raw && Array.isArray(raw.assets)) return raw.assets;
+  return [];
+};
+
 export default function ProjectDetail() {
   const { id } = useParams();
   const [project, setProject] = useState(null);
@@ -543,7 +549,18 @@ export default function ProjectDetail() {
           start: Number(c.start_at_sec ?? c.start_sec ?? c.start ?? 0),
           duration: Math.max(0.1, Number((c.out_sec != null && c.in_sec != null ? c.out_sec - c.in_sec : null) ?? c.duration_sec ?? c.duration ?? 4)),
           content: c.text_content || c.content || c.name || '',
-          style: typeof c.style_json === 'string' ? JSON.parse(c.style_json) : (c.style || {}),
+          style: (() => {
+            if (typeof c.style_json === 'string') {
+              try { return JSON.parse(c.style_json); } catch (_) { return c.style || {}; }
+            }
+            return c.style || {};
+          })(),
+          meta: (() => {
+            if (typeof c.meta === 'string') {
+              try { return JSON.parse(c.meta); } catch (_) { return c.meta || {}; }
+            }
+            return c.meta || {};
+          })(),
           volume: Number(c.volume ?? 1),
           order_index: c.order_index ?? idx,
         }));
@@ -554,7 +571,7 @@ export default function ProjectDetail() {
           if (normTracks.length > 0) setStoreTracks(normTracks);
           setStoreClips(normClips);
         }
-        setComposerAssets(p.assets || []);
+        setComposerAssets(normalizeAssets(p.assets));
       }
 
       // Best-effort cùng nhịp load (không vòng poll riêng — giữ single interval).
@@ -945,10 +962,18 @@ export default function ProjectDetail() {
         imageDurationSec: 4.0,
         enableBgmDucking: true,
       });
-      toast({
-        title: 'Tự động sắp xếp thành công',
-        description: `Đã xếp ${res?.clips?.length || 0} clip lên timeline khớp giọng đọc và nhạc nền.`,
-      });
+      const hasContentClips = res?.clips?.some((c) => (c.clip_type || c.type) !== 'background');
+      if (res?.message && !hasContentClips) {
+        toast({
+          title: 'Chưa có tài nguyên để sắp xếp',
+          description: res.message,
+        });
+      } else {
+        toast({
+          title: 'Tự động sắp xếp thành công',
+          description: `Đã xếp ${res?.clips?.length || 0} clip lên timeline khớp giọng đọc và nhạc nền.`,
+        });
+      }
       composerInitialLoadedRef.current = false;
       await load();
     } catch (err) {
@@ -1074,10 +1099,86 @@ export default function ProjectDetail() {
     });
   };
 
+  const handleSetBackground = (asset) => {
+    if (!asset) return;
+    const currentTracks = storeTracks && storeTracks.length > 0 ? storeTracks : composerTracks;
+    const bgTrack = currentTracks.find(
+      (t) => (t.track_type || t.type) === 'background'
+    ) || currentTracks[0];
+
+    const existingBgClip = storeClips.find(
+      (c) => (c.clip_type || c.type) === 'background'
+    );
+
+    const isVideo = Boolean(
+      asset.kind === 'video' ||
+      asset.mimeType?.startsWith('video/') ||
+      asset.mime_type?.startsWith('video/') ||
+      /\.(mp4|webm|mov|mkv)$/i.test(asset.storageKey || asset.storage_key || '')
+    );
+
+    const defaultMeta = {
+      fit: 'cover',
+      loop: true,
+      muted: true,
+      opacity: 0.7,
+      isVideo,
+      name: asset.name,
+    };
+
+    const currentTotalDuration = storeClips.reduce((max, c) => {
+      const start = Number(c.start ?? c.start_at_sec ?? 0);
+      const dur = Number(c.duration ?? c.out_sec ?? 0);
+      return Math.max(max, start + dur);
+    }, 0);
+    const bgDuration = Math.max(10, currentTotalDuration || Number(asset.durationSec || 10));
+
+    if (existingBgClip) {
+      const updatedMeta = { ...(existingBgClip.meta || {}), ...defaultMeta };
+      updateStoreClip(existingBgClip.id, {
+        assetId: asset.id,
+        asset_id: asset.id,
+        duration: Math.max(existingBgClip.duration || 0, bgDuration),
+        out_sec: Math.max(existingBgClip.duration || 0, bgDuration),
+        meta: updatedMeta,
+      });
+      setComposerClips((prev) =>
+        prev.map((c) =>
+          c.id === existingBgClip.id
+            ? { ...c, assetId: asset.id, asset_id: asset.id, meta: updatedMeta }
+            : c
+        )
+      );
+    } else {
+      const newBgClip = {
+        id: `clip-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        trackId: bgTrack?.id || 'track-0',
+        track_id: bgTrack?.id || 'track-0',
+        type: 'background',
+        clip_type: 'background',
+        assetId: asset.id,
+        asset_id: asset.id,
+        start: 0,
+        start_at_sec: 0,
+        duration: bgDuration,
+        out_sec: bgDuration,
+        meta: defaultMeta,
+        volume: 1.0,
+      };
+      addStoreClip(newBgClip);
+      setComposerClips((prev) => [...prev, newBgClip]);
+    }
+
+    toast({
+      title: 'Đã đặt nền cho dự án',
+      description: `Đã áp dụng "${asset.name}" làm nền (${isVideo ? 'Video' : 'Hình ảnh'})`,
+    });
+  };
+
   const handleRefreshAssets = async () => {
     try {
       const res = await projectsApi.getAssets(id);
-      setComposerAssets(res || []);
+      setComposerAssets(normalizeAssets(res));
     } catch (err) {
       console.error('Refresh assets error:', err);
     }
@@ -1584,6 +1685,7 @@ export default function ProjectDetail() {
                 assets={composerAssets}
                 onRefresh={handleRefreshAssets}
                 onAddClipToTimeline={handleAddComposerClip}
+                onSetBackground={handleSetBackground}
               />
             </div>
 
@@ -1610,6 +1712,7 @@ export default function ProjectDetail() {
             <div className="w-full md:w-72 shrink-0 border-l border-border h-full overflow-hidden bg-card/40">
               <ClipInspector
                 selectedClip={selectedComposerClip}
+                assets={composerAssets}
                 onUpdateClip={(id, upd) => updateStoreClip(id, upd)}
                 onDeleteClip={(id) => deleteStoreClip(id)}
               />
@@ -1618,6 +1721,15 @@ export default function ProjectDetail() {
 
           {/* 5. Lower Workspace: Multi-track Timeline */}
           <div className="shrink-0 border-t border-border bg-card">
+            {storeClips.filter((c) => (c.clip_type || c.type) !== 'background').length === 0 && (
+              <div className="px-4 py-2 bg-primary/5 border-b border-primary/20 flex items-center justify-between text-xs text-muted-foreground">
+                <span className="flex items-center gap-2 text-primary font-medium">
+                  <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                  Dòng thời gian đang trống: Nhấn nút <strong>"+"</strong> trên tư liệu từ Thư viện Media hoặc bấm <strong>"Tự động sắp xếp"</strong> để bắt đầu biên tập.
+                </span>
+                <span className="text-[11px] text-muted-foreground/80 hidden sm:inline">Hỗ trợ 7 tracks NLE chuyên nghiệp</span>
+              </div>
+            )}
             <VideoTimeline
               currentTime={currentTime}
               duration={composerDuration}

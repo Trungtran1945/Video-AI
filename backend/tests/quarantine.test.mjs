@@ -91,5 +91,10 @@ try {
   connection.removeAllListeners('error')
   connection.disconnect()
 } catch (_) {}
+for (let i = 0; i < 100; i++) {
+  const pending = process._getActiveHandles().filter((h) => h?.constructor?.name === 'Socket')
+  if (pending.length === 0) break
+  await new Promise((r) => setTimeout(r, 20))
+}
 await new Promise((r) => setTimeout(r, 100))
 process.exit(failures === 0 ? 0 : 1)

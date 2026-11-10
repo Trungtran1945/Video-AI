@@ -83,6 +83,8 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
     else assetKind = 'image'
   } else if (assetKind === 'image' && isVideo) {
     assetKind = 'video'
+  } else if (assetKind === 'background') {
+    assetKind = 'background'
   }
 
   // Generate thumbnail for images and videos
@@ -101,7 +103,12 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
     try {
       const thumbFilename = `${assetId}_thumb.jpg`
       const thumbAbsPath = path.join(assetsDir, thumbFilename)
-      await ffmpeg(['-y', '-ss', '0.5', '-i', targetAbsPath, '-frames:v', '1', '-vf', 'scale=320:-1', '-q:v', '3', thumbAbsPath])
+      try {
+        await ffmpeg(['-y', '-ss', '0.5', '-i', targetAbsPath, '-frames:v', '1', '-vf', 'scale=320:-1', '-q:v', '3', thumbAbsPath])
+      } catch (_) {
+        // Fallback to 0s for short clips (< 0.5s)
+        await ffmpeg(['-y', '-ss', '0', '-i', targetAbsPath, '-frames:v', '1', '-vf', 'scale=320:-1', '-q:v', '3', thumbAbsPath])
+      }
       if (fs.existsSync(thumbAbsPath)) {
         thumbnailKey = toStorageKey(thumbAbsPath)
       }
@@ -126,6 +133,7 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
     thumbnail_key: thumbnailKey,
     duration_sec: durationSec,
     order_index: Number(orderIndex) || 0,
+    created_date: new Date().toISOString(),
   })
 
   // If kind is audio, also register in audios table for unified playback
@@ -481,6 +489,7 @@ export async function generateVoiceoverTts({ projectId, userId, text, voiceProvi
     byte_size: fs.statSync(outPath).size,
     duration_sec: durationSec,
     order_index: 0,
+    created_date: new Date().toISOString(),
   })
 
   return {
@@ -502,7 +511,17 @@ export async function autoArrangeTimeline({ projectId, options = {}, ...rest }) 
   const musicTrack = trackMap.get('music')
   const textTrack = trackMap.get('text')
 
-  const assets = await query('SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC, created_date ASC', [projectId])
+  let assets = []
+  try {
+    assets = await query('SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC, created_date ASC', [projectId])
+  } catch (err) {
+    console.warn(`[composerService] Query assets with created_date failed, fallback:`, err?.message || err)
+    try {
+      assets = await query('SELECT * FROM assets WHERE project_id = ? ORDER BY order_index ASC', [projectId])
+    } catch (_) {
+      assets = []
+    }
+  }
   const audios = await query('SELECT * FROM audios WHERE project_id = ? ORDER BY id ASC', [projectId])
 
   const bgAssets = assets.filter((a) => a.kind === 'background')
@@ -512,6 +531,44 @@ export async function autoArrangeTimeline({ projectId, options = {}, ...rest }) 
     ...audios.filter((a) => a.kind === 'voiceover'),
     ...assets.filter((a) => a.kind === 'voiceover' && !audios.some((au) => au.id === a.id)),
   ]
+
+  // Edge case: No assets and no audios available to arrange
+  if (assets.length === 0 && audios.length === 0) {
+    const defaultBgColor = opts.defaultBackground || '#0F1117'
+    const bgClips = []
+    if (bgTrack) {
+      bgClips.push({
+        id: uuidv4(),
+        project_id: projectId,
+        track_id: bgTrack.id,
+        clip_type: 'background',
+        asset_id: null,
+        order_index: 0,
+        start_at_sec: 0,
+        in_sec: 0,
+        out_sec: 10,
+        speed: 1.0,
+        volume: 1.0,
+        text_content: null,
+        meta: JSON.stringify({ color: defaultBgColor }),
+      })
+    }
+    await withTransaction(async (tx) => {
+      await tx.run('DELETE FROM timeline_clips WHERE project_id = ?', [projectId])
+      for (const c of bgClips) {
+        await tx.insert('timeline_clips', c)
+      }
+    })
+    const savedClips = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [projectId])
+    return {
+      projectId,
+      tracks,
+      clips: savedClips,
+      timeline: savedClips,
+      totalDuration: 10,
+      message: 'Không có tài nguyên hình ảnh hoặc âm thanh để sắp xếp tự động. Hãy thêm tài nguyên từ Thư viện Media.',
+    }
+  }
 
   // Calculate Voiceover Duration
   let totalVoiceSec = 0

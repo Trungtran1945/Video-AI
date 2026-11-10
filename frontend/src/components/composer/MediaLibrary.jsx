@@ -38,6 +38,7 @@ export default function MediaLibrary({
   assets = [],
   onRefresh,
   onAddClipToTimeline,
+  onSetBackground,
 }) {
   const [activeTab, setActiveTab] = useState('all');
   const [uploading, setUploading] = useState(false);
@@ -45,7 +46,9 @@ export default function MediaLibrary({
   const [showTtsModal, setShowTtsModal] = useState(false);
   const fileInputRef = useRef(null);
 
-  const filteredAssets = assets.filter((a) => {
+  const safeAssets = Array.isArray(assets) ? assets : (assets?.assets && Array.isArray(assets.assets) ? assets.assets : []);
+
+  const filteredAssets = safeAssets.filter(Boolean).filter((a) => {
     if (activeTab === 'all') return true;
     if (activeTab === 'background') return a.kind === 'background';
     if (activeTab === 'video') return a.kind === 'video';
@@ -220,120 +223,147 @@ export default function MediaLibrary({
             )}
           </div>
         ) : (
-          filteredAssets.map((asset, index) => (
-            <div
-              key={asset.id}
-              className="group flex items-center gap-3 p-2 rounded-xl border border-border bg-muted/20 hover:bg-muted/50 transition-all text-left"
-            >
-              {/* Thumbnail / Icon */}
-              {asset.kind === 'image' || asset.kind === 'background' || asset.kind === 'video' ? (
-                <div className="w-14 h-14 rounded-lg bg-black/20 border border-border overflow-hidden shrink-0 relative flex items-center justify-center">
-                  {asset.thumbnailUrl || (asset.kind === 'image' && asset.url) ? (
-                    <img
-                      src={asset.thumbnailUrl || asset.url}
-                      alt={asset.name}
-                      className="w-full h-full object-cover"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <Video className="w-6 h-6 text-blue-400" />
-                  )}
-                  {asset.kind === 'video' && (
-                    <span className="absolute top-0.5 left-0.5 text-[8px] bg-blue-600/90 text-white px-1 rounded font-bold">
-                      VIDEO
-                    </span>
-                  )}
-                  {asset.ocrText && (
-                    <span className="absolute bottom-0.5 right-0.5 text-[8px] bg-emerald-600/90 text-white px-1 rounded font-bold">
-                      OCR
-                    </span>
-                  )}
-                </div>
-              ) : (
-                <div className="w-12 h-12 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0 text-primary">
-                  {asset.kind === 'voiceover' ? <Mic className="w-5 h-5" /> : asset.kind === 'sfx' ? <Volume2 className="w-5 h-5" /> : <FileAudio className="w-5 h-5" />}
-                </div>
-              )}
+          filteredAssets.map((asset, index) => {
+            const isVideoAsset = Boolean(
+              asset.kind === 'video' ||
+              (asset.kind === 'background' && (asset.mimeType?.startsWith('video/') || asset.mime_type?.startsWith('video/') || /\.(mp4|webm|mov|mkv)$/i.test(asset.storageKey || asset.storage_key || ''))) ||
+              asset.mimeType?.startsWith('video/') ||
+              asset.mime_type?.startsWith('video/')
+            );
+            const isBgAsset = asset.kind === 'background';
 
-              {/* Info */}
-              <div className="flex-1 min-w-0">
-                <span className="text-xs font-semibold text-foreground truncate block">{asset.name}</span>
-                <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
-                  {asset.durationSec ? (
-                    <span className="font-mono">{asset.durationSec.toFixed(1)}s</span>
-                  ) : asset.byteSize ? (
-                    <span className="font-mono">{Math.round(asset.byteSize / 1024)} KB</span>
-                  ) : null}
-                  {asset.translationText && (
-                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">Đã dịch</span>
-                  )}
-                </div>
-              </div>
-
-              {/* Actions */}
-              <div className="flex items-center gap-1 opacity-90 sm:opacity-0 group-hover:opacity-100 transition-opacity">
-                {activeTab === 'image' && (
-                  <div className="flex flex-col gap-0.5 mr-0.5">
-                    <button
-                      type="button"
-                      title="Di chuyển lên trước"
-                      disabled={index === 0}
-                      onClick={() => handleMoveAsset(asset.id, 'up')}
-                      className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-20 transition cursor-pointer"
-                    >
-                      <ArrowUp className="w-3 h-3" />
-                    </button>
-                    <button
-                      type="button"
-                      title="Di chuyển xuống sau"
-                      disabled={index === filteredAssets.length - 1}
-                      onClick={() => handleMoveAsset(asset.id, 'down')}
-                      className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-20 transition cursor-pointer"
-                    >
-                      <ArrowDown className="w-3 h-3" />
-                    </button>
+            return (
+              <div
+                key={asset.id}
+                className="group flex items-center gap-3 p-2 rounded-xl border border-border bg-muted/20 hover:bg-muted/50 transition-all text-left"
+              >
+                {/* Thumbnail / Icon */}
+                {asset.kind === 'image' || isBgAsset || isVideoAsset ? (
+                  <div className="w-14 h-14 rounded-lg bg-black/20 border border-border overflow-hidden shrink-0 relative flex items-center justify-center">
+                    {asset.thumbnailUrl || (asset.kind === 'image' && asset.url) ? (
+                      <img
+                        src={asset.thumbnailUrl || asset.url}
+                        alt={asset.name}
+                        className="w-full h-full object-cover"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <Video className="w-6 h-6 text-blue-400" />
+                    )}
+                    {isVideoAsset && (
+                      <span className="absolute top-0.5 left-0.5 text-[8px] bg-blue-600/90 text-white px-1 rounded font-bold tracking-wide">
+                        VIDEO
+                      </span>
+                    )}
+                    {!isVideoAsset && isBgAsset && (
+                      <span className="absolute top-0.5 left-0.5 text-[8px] bg-purple-600/90 text-white px-1 rounded font-bold tracking-wide">
+                        NỀN
+                      </span>
+                    )}
+                    {asset.ocrText && (
+                      <span className="absolute bottom-0.5 right-0.5 text-[8px] bg-emerald-600/90 text-white px-1 rounded font-bold">
+                        OCR
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <div className="w-12 h-12 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0 text-primary">
+                    {asset.kind === 'voiceover' ? <Mic className="w-5 h-5" /> : asset.kind === 'sfx' ? <Volume2 className="w-5 h-5" /> : <FileAudio className="w-5 h-5" />}
                   </div>
                 )}
 
-                {asset.kind === 'image' && (
+                {/* Info */}
+                <div className="flex-1 min-w-0">
+                  <span className="text-xs font-semibold text-foreground truncate block">{asset.name}</span>
+                  <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
+                    {asset.durationSec ? (
+                      <span className="font-mono">{Number(asset.durationSec).toFixed(1)}s</span>
+                    ) : asset.byteSize ? (
+                      <span className="font-mono">{Math.round(asset.byteSize / 1024)} KB</span>
+                    ) : null}
+                    {asset.translationText && (
+                      <span className="text-emerald-600 dark:text-emerald-400 font-medium">Đã dịch</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-1 opacity-90 sm:opacity-0 group-hover:opacity-100 transition-opacity">
+                  {activeTab === 'image' && (
+                    <div className="flex flex-col gap-0.5 mr-0.5">
+                      <button
+                        type="button"
+                        title="Di chuyển lên trước"
+                        disabled={index === 0}
+                        onClick={() => handleMoveAsset(asset.id, 'up')}
+                        className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-20 transition cursor-pointer"
+                      >
+                        <ArrowUp className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        title="Di chuyển xuống sau"
+                        disabled={index === filteredAssets.length - 1}
+                        onClick={() => handleMoveAsset(asset.id, 'down')}
+                        className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-20 transition cursor-pointer"
+                      >
+                        <ArrowDown className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
+
+                  {asset.kind === 'image' && (
+                    <button
+                      type="button"
+                      title="OCR & Dịch chữ trên ảnh"
+                      onClick={() => setOcrModalAsset(asset)}
+                      className="p-1.5 rounded-lg border border-border bg-background hover:bg-muted text-foreground transition cursor-pointer"
+                    >
+                      <ScanText className="w-3.5 h-3.5 text-primary" />
+                    </button>
+                  )}
+
+                  {(isBgAsset || isVideoAsset || asset.kind === 'image') && onSetBackground && (
+                    <button
+                      type="button"
+                      title="Đặt làm nền dự án"
+                      onClick={() => onSetBackground(asset)}
+                      className="p-1.5 rounded-lg border border-purple-500/30 bg-purple-500/10 hover:bg-purple-500/20 text-purple-600 dark:text-purple-400 transition cursor-pointer"
+                    >
+                      <Layers className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+
                   <button
                     type="button"
-                    title="OCR & Dịch chữ trên ảnh"
-                    onClick={() => setOcrModalAsset(asset)}
+                    title="Thêm clip vào timeline"
+                    onClick={() => {
+                      let trackType = asset.kind;
+                      if (trackType === 'bgm') trackType = 'music';
+                      if (trackType === 'background') trackType = 'background';
+                      onAddClipToTimeline?.({
+                        trackType: trackType || (isVideoAsset ? 'video' : 'image'),
+                        assetId: asset.id,
+                        duration: asset.durationSec || 4,
+                      });
+                    }}
                     className="p-1.5 rounded-lg border border-border bg-background hover:bg-muted text-foreground transition cursor-pointer"
                   >
-                    <ScanText className="w-3.5 h-3.5 text-primary" />
+                    <Plus className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
                   </button>
-                )}
 
-                <button
-                  type="button"
-                  title="Thêm clip vào timeline"
-                  onClick={() => {
-                    let trackType = asset.kind;
-                    if (trackType === 'bgm') trackType = 'music';
-                    onAddClipToTimeline?.({
-                      trackType: trackType || 'video',
-                      assetId: asset.id,
-                      duration: asset.durationSec || 4,
-                    });
-                  }}
-                  className="p-1.5 rounded-lg border border-border bg-background hover:bg-muted text-foreground transition cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                </button>
-
-                <button
-                  type="button"
-                  title="Xóa tư liệu"
-                  onClick={() => handleDeleteAsset(asset.id)}
-                  className="p-1.5 rounded-lg border border-border bg-background hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition cursor-pointer"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
+                  <button
+                    type="button"
+                    title="Xóa tư liệu"
+                    onClick={() => handleDeleteAsset(asset.id)}
+                    className="p-1.5 rounded-lg border border-border bg-background hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 

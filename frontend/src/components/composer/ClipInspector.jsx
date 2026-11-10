@@ -1,8 +1,8 @@
 import React from 'react';
-import { Sliders, Clock, Volume2, Type, Trash2 } from 'lucide-react';
+import { Sliders, Clock, Volume2, Type, Trash2, Layers, RotateCcw, Check } from 'lucide-react';
 import { useTimelineStore } from '../timeline/timelineStore';
 
-export default function ClipInspector({ selectedClip, onUpdateClip, onDeleteClip }) {
+export default function ClipInspector({ selectedClip, assets = [], onUpdateClip, onDeleteClip }) {
   const { deleteClip } = useTimelineStore();
 
   if (!selectedClip) {
@@ -18,8 +18,19 @@ export default function ClipInspector({ selectedClip, onUpdateClip, onDeleteClip
   }
 
   const clipType = selectedClip.clip_type || selectedClip.type || 'image';
+  const isBgClip = clipType === 'background';
   const isTextClip = clipType === 'text';
   const isAudioClip = clipType === 'voiceover' || clipType === 'music' || clipType === 'sfx';
+
+  const meta = selectedClip.meta || {};
+  const currentAsset = (assets || []).find((a) => a.id === (selectedClip.asset_id || selectedClip.assetId));
+  const isVideoBg = Boolean(
+    meta.isVideo ||
+    currentAsset?.kind === 'video' ||
+    currentAsset?.mimeType?.startsWith('video/') ||
+    currentAsset?.mime_type?.startsWith('video/') ||
+    /\.(mp4|webm|mov|mkv)$/i.test(currentAsset?.storageKey || currentAsset?.storage_key || '')
+  );
 
   // Parse style_json if available
   let textStyle = { fontSize: 28, color: '#FFFFFF', bg: 'rgba(0,0,0,0.6)', position: 'bottom' };
@@ -47,6 +58,21 @@ export default function ClipInspector({ selectedClip, onUpdateClip, onDeleteClip
     });
   };
 
+  const handleMetaChange = (key, val) => {
+    const updatedMeta = { ...meta, [key]: val };
+    onUpdateClip?.(selectedClip.id, {
+      meta: updatedMeta,
+    });
+  };
+
+  const handleRemoveBgAsset = () => {
+    onUpdateClip?.(selectedClip.id, {
+      assetId: null,
+      asset_id: null,
+      meta: { ...meta, isVideo: false, name: null },
+    });
+  };
+
   const handleDelete = () => {
     deleteClip(selectedClip.id);
     onDeleteClip?.(selectedClip.id);
@@ -63,7 +89,7 @@ export default function ClipInspector({ selectedClip, onUpdateClip, onDeleteClip
           </h4>
         </div>
         <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20 uppercase font-bold">
-          {clipType}
+          {isBgClip ? 'NỀN (BACKGROUND)' : clipType}
         </span>
       </div>
 
@@ -111,6 +137,120 @@ export default function ClipInspector({ selectedClip, onUpdateClip, onDeleteClip
             </div>
           </div>
         </div>
+
+        {/* Background Settings Controls */}
+        {isBgClip && (
+          <div className="p-3 rounded-xl bg-muted/30 border border-border space-y-3.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                <Layers className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+                <span>Cấu hình Lớp nền</span>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/10 text-purple-700 dark:text-purple-400 border border-purple-500/20 font-bold uppercase">
+                {isVideoBg ? 'Video Nền' : currentAsset ? 'Ảnh Nền' : 'Nền màu'}
+              </span>
+            </div>
+
+            {/* Media Information */}
+            <div className="p-2.5 rounded-lg bg-background/80 border border-border/80 space-y-1">
+              <span className="text-[11px] font-semibold text-foreground truncate block">
+                {currentAsset?.name || meta.name || 'Nền mặc định (#0F1117)'}
+              </span>
+              <div className="flex items-center justify-between text-[10px] text-muted-foreground font-mono">
+                <span>{isVideoBg ? 'Định dạng Video' : currentAsset ? 'Định dạng Hình ảnh' : 'Màu thuần'}</span>
+                {currentAsset?.durationSec && <span>{Number(currentAsset.durationSec).toFixed(1)}s gốc</span>}
+              </div>
+            </div>
+
+            {/* Fit Mode Selection */}
+            <div>
+              <label className="text-[11px] text-muted-foreground mb-1.5 block">Chế độ hiển thị (Fit Mode):</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleMetaChange('fit', 'cover')}
+                  className={`py-1.5 px-2 text-xs rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                    (meta.fit || 'cover') === 'cover'
+                      ? 'bg-purple-600 text-white border-purple-500 shadow-xs'
+                      : 'bg-background hover:bg-muted text-muted-foreground border-border'
+                  }`}
+                >
+                  {(meta.fit || 'cover') === 'cover' && <Check className="w-3 h-3" />}
+                  <span>Cover (Lấp đầy)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleMetaChange('fit', 'contain')}
+                  className={`py-1.5 px-2 text-xs rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                    meta.fit === 'contain'
+                      ? 'bg-purple-600 text-white border-purple-500 shadow-xs'
+                      : 'bg-background hover:bg-muted text-muted-foreground border-border'
+                  }`}
+                >
+                  {meta.fit === 'contain' && <Check className="w-3 h-3" />}
+                  <span>Contain (Vừa khung)</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Video-specific Toggles */}
+            {isVideoBg && (
+              <div className="space-y-2 pt-1 border-t border-border/60">
+                <label className="flex items-center justify-between text-xs text-foreground cursor-pointer select-none">
+                  <span className="text-[11px] text-muted-foreground">Lặp lại video (Loop):</span>
+                  <input
+                    type="checkbox"
+                    checked={meta.loop !== false}
+                    onChange={(e) => handleMetaChange('loop', e.target.checked)}
+                    className="w-4 h-4 rounded border-border text-purple-600 focus:ring-purple-500 cursor-pointer accent-purple-600"
+                  />
+                </label>
+                <label className="flex items-center justify-between text-xs text-foreground cursor-pointer select-none">
+                  <span className="text-[11px] text-muted-foreground">Tắt tiếng video (Muted):</span>
+                  <input
+                    type="checkbox"
+                    checked={meta.muted !== false}
+                    onChange={(e) => handleMetaChange('muted', e.target.checked)}
+                    className="w-4 h-4 rounded border-border text-purple-600 focus:ring-purple-500 cursor-pointer accent-purple-600"
+                  />
+                </label>
+              </div>
+            )}
+
+            {/* Opacity Slider */}
+            <div className="space-y-1.5 pt-1 border-t border-border/60">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-muted-foreground">Độ mờ lớp nền (Opacity):</span>
+                <span className="text-xs font-mono font-medium text-foreground">
+                  {Math.round((meta.opacity != null ? Number(meta.opacity) : 0.7) * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="20"
+                max="100"
+                step="5"
+                value={Math.round((meta.opacity != null ? Number(meta.opacity) : 0.7) * 100)}
+                onChange={(e) => handleMetaChange('opacity', Number(e.target.value) / 100)}
+                className="w-full accent-purple-600 cursor-pointer"
+              />
+            </div>
+
+            {/* Remove / Reset Background Button */}
+            {currentAsset && (
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={handleRemoveBgAsset}
+                  className="w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground text-xs font-medium transition cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Gỡ bỏ tệp nền (Về màu tối)</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Audio Volume Controls (for audio tracks) */}
         {isAudioClip && (

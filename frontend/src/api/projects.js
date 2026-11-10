@@ -1,5 +1,11 @@
 import api from './client'
 
+const unwrapAssets = (data) => {
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.assets)) return data.assets;
+  return [];
+};
+
 export const projectsApi = {
   list: (params) => api.get('/projects', { params }).then((r) => r.data),
   get: (id) => api.get(`/projects/${id}`).then((r) => r.data),
@@ -51,11 +57,11 @@ export const projectsApi = {
   // Group 1: Confirm preview (FR-J2)
   confirmPreview: (id) => api.post(`/projects/${id}/translate-dub/confirm-preview`).then((r) => r.data),
   // MEDIA_COMPOSER APIs
-  getAssets: (id) => api.get(`/projects/${id}/assets`).then((r) => r.data),
+  getAssets: (id) => api.get(`/projects/${id}/assets`).then((r) => unwrapAssets(r.data)),
   uploadAssets: (id, formData) =>
-    api.post(`/projects/${id}/assets`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then((r) => r.data),
+    api.post(`/projects/${id}/assets`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then((r) => unwrapAssets(r.data)),
   deleteAsset: (id, assetId) => api.delete(`/projects/${id}/assets/${assetId}`).then((r) => r.data),
-  reorderAssets: (id, assetIds) => api.put(`/projects/${id}/assets/reorder`, { assetIds }).then((r) => r.data),
+  reorderAssets: (id, assetIds) => api.put(`/projects/${id}/assets/reorder`, { assetIds }).then((r) => unwrapAssets(r.data)),
   runOcr: (id, assetId) => api.post(`/projects/${id}/assets/${assetId}/ocr`).then((r) => r.data),
   runTranslate: (id, assetId, body) => api.post(`/projects/${id}/assets/${assetId}/translate`, body).then((r) => r.data),
   generateTts: (id, body) => api.post(`/projects/${id}/tts`, body).then((r) => r.data),

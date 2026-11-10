@@ -86,13 +86,15 @@ export async function composerRender(ctx = {}) {
   const bgFile = bgAsset ? resolveStorageKey(bgAsset.storage_key) : null
   const defaultBgColor = project?.params?.defaultBackground || '#0F1117'
   const bgVideoPath = path.join(tmp, 'bg_layer.mp4')
+  let bgAudioFile = null
 
   if (bgFile && fs.existsSync(bgFile)) {
     let isVideoBg = false
     let bgDuration = 0
+    let bgInfo = null
     try {
-      const info = await probe(bgFile)
-      bgDuration = info.durationSec || 0
+      bgInfo = await probe(bgFile)
+      bgDuration = bgInfo.durationSec || 0
       const ext = path.extname(bgFile).toLowerCase()
       if (
         ['.mp4', '.webm', '.mov', '.mkv', '.m4v'].includes(ext) ||
@@ -103,14 +105,32 @@ export async function composerRender(ctx = {}) {
     } catch (_) {}
 
     if (isVideoBg) {
+      let bgMeta = {}
+      try {
+        if (typeof bgClips[0]?.meta === 'string') {
+          bgMeta = JSON.parse(bgClips[0].meta)
+        } else if (bgClips[0]?.meta && typeof bgClips[0].meta === 'object') {
+          bgMeta = bgClips[0].meta
+        }
+      } catch (_) {}
+
+      const fitMode = bgMeta.fit || 'cover'
+      const shouldLoop = bgMeta.loop !== false
+      const loopArg = shouldLoop && bgDuration > 0 && bgDuration < totalDuration ? ['-stream_loop', '-1'] : []
+      const padColor = (defaultBgColor || '#0F1117').startsWith('#')
+        ? defaultBgColor.replace(/^#/, '0x')
+        : (defaultBgColor || '0x0F1117')
+      const vfFilter = fitMode === 'contain'
+        ? `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1`
+        : `scale=w=${width}:h=${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1`
+
       // Video Background: Loop or trim, preserve video frames, fit canvas aspect ratio
-      const loopArg = bgDuration > 0 && bgDuration < totalDuration ? ['-stream_loop', '-1'] : []
       await ffmpeg([
         '-y',
         ...loopArg,
         '-i', bgFile,
         '-t', String(totalDuration),
-        '-vf', `scale=w=${width}:h=${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`,
+        '-vf', vfFilter,
         '-c:v', 'libx264',
         '-preset', 'veryfast',
         '-crf', '20',
@@ -118,6 +138,29 @@ export async function composerRender(ctx = {}) {
         '-an',
         bgVideoPath,
       ])
+
+      // If user enabled audio on video background (muted === false) and source has audio
+      if (bgMeta.muted === false && bgInfo?.hasAudio) {
+        const candidateAudio = path.join(tmp, 'bg_audio.wav')
+        const bgVol = Number.isFinite(Number(bgMeta.volume)) ? Number(bgMeta.volume) : 1.0
+        try {
+          await ffmpeg([
+            '-y',
+            ...(shouldLoop && bgDuration > 0 && bgDuration < totalDuration ? ['-stream_loop', '-1'] : []),
+            '-i', bgFile,
+            '-t', String(totalDuration),
+            '-vn',
+            '-af', `volume=${Math.max(0, Math.min(2.0, bgVol))}`,
+            '-c:a', 'pcm_s16le',
+            candidateAudio,
+          ])
+          if (fs.existsSync(candidateAudio)) {
+            bgAudioFile = candidateAudio
+          }
+        } catch (_) {
+          bgAudioFile = null
+        }
+      }
     } else {
       // Image Background: Apply subtle cinematic motion across total duration
       await applyMotionImage({
@@ -131,9 +174,12 @@ export async function composerRender(ctx = {}) {
     }
   } else {
     // Solid background fallback
+    const solidColor = (defaultBgColor || '#0F1117').startsWith('#')
+      ? defaultBgColor.replace(/^#/, '0x')
+      : (defaultBgColor || '0x0F1117')
     await ffmpeg([
       '-y', '-f', 'lavfi',
-      '-i', `color=c=${defaultBgColor}:s=${width}x${height}:d=${round2(totalDuration)}:r=30`,
+      '-i', `color=c=${solidColor}:s=${width}x${height}:d=${round2(totalDuration)}:r=30`,
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
       bgVideoPath,
     ])
@@ -307,6 +353,8 @@ export async function composerRender(ctx = {}) {
         musicFile = abs
       }
     }
+  } else if (!musicFile && bgAudioFile) {
+    musicFile = bgAudioFile
   }
 
   setProgress(75)

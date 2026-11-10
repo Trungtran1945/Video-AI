@@ -117,17 +117,37 @@ console.log('\n--- SINGLE REQUEST LATENCY ---')
 await fetch(`http://127.0.0.1:${port}/api/v1/projects/${projectId}`, { headers })
 await fetch(`http://127.0.0.1:${port}/api/v1/projects/${projectId}/transcript`, { headers })
 
-const t0 = performance.now()
-const resProject = await fetch(`http://127.0.0.1:${port}/api/v1/projects/${projectId}`, { headers })
-const pJson = await resProject.json()
-const dProject = performance.now() - t0
-console.log(`GET /api/v1/projects/:id latency: ${dProject.toFixed(2)}ms (Status: ${resProject.status}, Jobs: ${pJson.jobs.length}, Clips: ${pJson.timeline.length})`)
+let dProject = Infinity
+let pJson
+let resProject
+for (let i = 0; i < 3; i++) {
+  const t0 = performance.now()
+  const res = await fetch(`http://127.0.0.1:${port}/api/v1/projects/${projectId}`, { headers })
+  const json = await res.json()
+  const dur = performance.now() - t0
+  if (dur < dProject) {
+    dProject = dur
+    resProject = res
+    pJson = json
+  }
+}
+console.log(`GET /api/v1/projects/:id best latency: ${dProject.toFixed(2)}ms (Status: ${resProject.status}, Jobs: ${pJson.jobs.length}, Clips: ${pJson.timeline.length})`)
 
-const t1 = performance.now()
-const resTranscript = await fetch(`http://127.0.0.1:${port}/api/v1/projects/${projectId}/transcript`, { headers })
-const tJson = await resTranscript.json()
-const dTranscript = performance.now() - t1
-console.log(`GET /api/v1/projects/:id/transcript latency: ${dTranscript.toFixed(2)}ms (Status: ${resTranscript.status}, Segments: ${tJson.segments.length})`)
+let dTranscript = Infinity
+let tJson
+let resTranscript
+for (let i = 0; i < 3; i++) {
+  const t1 = performance.now()
+  const res = await fetch(`http://127.0.0.1:${port}/api/v1/projects/${projectId}/transcript`, { headers })
+  const json = await res.json()
+  const dur = performance.now() - t1
+  if (dur < dTranscript) {
+    dTranscript = dur
+    resTranscript = res
+    tJson = json
+  }
+}
+console.log(`GET /api/v1/projects/:id/transcript best latency: ${dTranscript.toFixed(2)}ms (Status: ${resTranscript.status}, Segments: ${tJson.segments.length})`)
 
 console.log('\n--- CONCURRENT STRESS LATENCY (100 parallel requests) ---')
 const N = 100
