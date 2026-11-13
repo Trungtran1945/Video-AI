@@ -199,7 +199,14 @@ if (nodeEnv === 'production' && config.cookieSecure) {
 // production only allows origins explicitly listed in CORS_ORIGINS.
 export function isOriginAllowed(origin, { nodeEnv: env = nodeEnv, corsOrigins = config.corsOrigins } = {}) {
   if (!origin) return true // same-origin / curl / non-browser
-  return corsOrigins.includes(origin)
+  if (corsOrigins.includes(origin)) return true
+  if (env !== 'production') {
+    try {
+      const u = new URL(origin)
+      if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return true
+    } catch (_) {}
+  }
+  return false
 }
 
 if (config.instanceMode !== 'single') {

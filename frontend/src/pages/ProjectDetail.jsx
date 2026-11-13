@@ -8,7 +8,7 @@ import { VideoTimeline } from '@/components/timeline';
 import MaskEditor from '@/components/MaskEditor';
 import { useTimelineStore } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, AlertTriangle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap, Save, Youtube, ExternalLink, Pencil, Copy, ChevronDown, ChevronUp, EyeOff, SlidersHorizontal } from 'lucide-react';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, AlertTriangle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap, Save, Youtube, ExternalLink, Pencil, Copy, ChevronDown, ChevronUp, EyeOff, SlidersHorizontal, Check, X } from 'lucide-react';
 import { STAGE_LABELS, SCRIPT_STAGES, COMPOSER_STAGES, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, AUDIO_MODE_LABELS, ACTIVE_STATUSES as SHARED_ACTIVE_STATUSES, isCompletedStatus } from '@/lib/constants';
 import { friendlyJobError } from '@/lib/providerErrorMessage';
 import { resolveStorageUrl } from '@/lib/apiBase';
@@ -146,6 +146,9 @@ export default function ProjectDetail() {
   const [arrangingTimeline, setArrangingTimeline] = useState(false);
   const [confirmResetTimeline, setConfirmResetTimeline] = useState(false);
   const [resettingTimeline, setResettingTimeline] = useState(false);
+  const [isEditingSummaryTitle, setIsEditingSummaryTitle] = useState(false);
+  const [summaryTitleInput, setSummaryTitleInput] = useState('');
+  const [savingSummaryRename, setSavingSummaryRename] = useState(false);
   const composerInitialLoadedRef = useRef(false);
 
   // Zustand timeline store selectors for Media Composer
@@ -530,6 +533,7 @@ export default function ProjectDetail() {
         const normTracks = rawTracks.map((t) => ({
           id: t.id,
           type: t.track_type || t.type,
+          track_type: t.track_type || t.type,
           name: t.name,
           isMuted: Boolean(t.muted),
           muted: Boolean(t.muted),
@@ -952,6 +956,26 @@ export default function ProjectDetail() {
       });
       setDeleting(false);
       setConfirmDelete(false);
+    }
+  };
+
+  const handleRenameProject = async (newTitle) => {
+    const cleanTitle = (newTitle || '').trim();
+    if (!cleanTitle || cleanTitle === project?.title) return;
+    try {
+      await projectsApi.rename(id, cleanTitle);
+      setProject((prev) => (prev ? { ...prev, title: cleanTitle } : prev));
+      toast({
+        title: 'Đã đổi tên dự án',
+        description: `Dự án đã được đổi tên thành “${cleanTitle}”.`,
+      });
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Lỗi đổi tên dự án',
+        description: err?.response?.data?.message || err.message,
+      });
+      throw err;
     }
   };
 
@@ -1580,6 +1604,7 @@ export default function ProjectDetail() {
               onCancel={handleCancel}
               onRegenerate={handleRenderComposerVideo}
               onPublishYoutube={() => setShowYoutubeModal(true)}
+              onRename={handleRenameProject}
             />
           </div>
 
@@ -1805,7 +1830,7 @@ export default function ProjectDetail() {
     return (
       <Layout>
         <div className="p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
-          <ProjectHeader project={project} canCancel={canCancel} canRegenerate={canRegenerate} onCancel={handleCancel} onRegenerate={handleRegenerate} onPublishYoutube={() => setShowYoutubeModal(true)} />
+          <ProjectHeader project={project} canCancel={canCancel} canRegenerate={canRegenerate} onCancel={handleCancel} onRegenerate={handleRegenerate} onPublishYoutube={() => setShowYoutubeModal(true)} onRename={handleRenameProject} />
           <PipelineStatus progress={computedProgress} isActive={isPipelineActivelyRunning} sseAvailable={sseAvailable} stages={stages} jobByStage={jobByStage} onRetry={handleRetryStage} redisStatus={redisStatus} />
 
           <div className="rounded-2xl bg-amber-500/10 border border-amber-500/20 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -1923,6 +1948,7 @@ export default function ProjectDetail() {
               setIsDubConfigExpanded(true);
             }}
             isDubConfigHidden={isDubConfigHidden}
+            onRename={handleRenameProject}
           />
 
           {/* 2. Pipeline Progress */}
@@ -2848,7 +2874,75 @@ export default function ProjectDetail() {
         <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 mb-6">
           <div>
             <div className="flex items-center gap-3 mb-2">
-              <h1 className="text-2xl font-bold text-foreground">{project.title}</h1>
+              {isEditingSummaryTitle ? (
+                <div className="flex items-center gap-1.5 max-w-md">
+                  <input
+                    type="text"
+                    value={summaryTitleInput}
+                    onChange={(e) => setSummaryTitleInput(e.target.value)}
+                    onKeyDown={async (e) => {
+                      if (e.key === 'Enter') {
+                        setSavingSummaryRename(true);
+                        try {
+                          await handleRenameProject(summaryTitleInput);
+                          setIsEditingSummaryTitle(false);
+                        } finally {
+                          setSavingSummaryRename(false);
+                        }
+                      }
+                      if (e.key === 'Escape') {
+                        setIsEditingSummaryTitle(false);
+                      }
+                    }}
+                    className="flex-1 px-3 py-1 text-lg font-bold rounded-lg bg-background border border-primary text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                    maxLength={200}
+                    autoFocus
+                    disabled={savingSummaryRename}
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setSavingSummaryRename(true);
+                      try {
+                        await handleRenameProject(summaryTitleInput);
+                        setIsEditingSummaryTitle(false);
+                      } finally {
+                        setSavingSummaryRename(false);
+                      }
+                    }}
+                    disabled={savingSummaryRename || !summaryTitleInput.trim()}
+                    className="p-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground transition disabled:opacity-50 cursor-pointer shrink-0"
+                    title="Lưu tên dự án"
+                  >
+                    {savingSummaryRename ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingSummaryTitle(false)}
+                    disabled={savingSummaryRename}
+                    className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition cursor-pointer shrink-0"
+                    title="Hủy"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <h1 className="text-2xl font-bold text-foreground">{project.title}</h1>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsEditingSummaryTitle(true);
+                      setSummaryTitleInput(project.title);
+                    }}
+                    aria-label="Đổi tên dự án"
+                    title="Đổi tên dự án"
+                    className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition cursor-pointer shrink-0"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
               <StatusBadge status={project.status} />
             </div>
             <p className="text-sm text-muted-foreground">

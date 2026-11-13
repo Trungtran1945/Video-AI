@@ -10,6 +10,8 @@ export const projectsApi = {
   list: (params) => api.get('/projects', { params }).then((r) => r.data),
   get: (id) => api.get(`/projects/${id}`).then((r) => r.data),
   create: (body) => api.post('/projects', body).then((r) => r.data),
+  rename: (id, title) => api.patch(`/projects/${id}`, { title }).then((r) => r.data),
+  update: (id, body) => api.patch(`/projects/${id}`, body).then((r) => r.data),
   // GET /projects/:id đã kèm timeline — endpoint timeline rời không có call-site → gỡ.
   regenerate: (id, fromStage) =>
     api.post(`/projects/${id}/regenerate`, fromStage ? { fromStage } : {}).then((r) => r.data),
@@ -58,8 +60,11 @@ export const projectsApi = {
   confirmPreview: (id) => api.post(`/projects/${id}/translate-dub/confirm-preview`).then((r) => r.data),
   // MEDIA_COMPOSER APIs
   getAssets: (id) => api.get(`/projects/${id}/assets`).then((r) => unwrapAssets(r.data)),
-  uploadAssets: (id, formData) =>
-    api.post(`/projects/${id}/assets`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then((r) => unwrapAssets(r.data)),
+  uploadAssets: (id, formData, options = {}) =>
+    api.post(`/projects/${id}/assets`, formData, {
+      timeout: 10 * 60 * 1000,
+      ...options,
+    }).then((r) => unwrapAssets(r.data)),
   deleteAsset: (id, assetId) => api.delete(`/projects/${id}/assets/${assetId}`).then((r) => r.data),
   reorderAssets: (id, assetIds) => api.put(`/projects/${id}/assets/reorder`, { assetIds }).then((r) => unwrapAssets(r.data)),
   runOcr: (id, assetId) => api.post(`/projects/${id}/assets/${assetId}/ocr`).then((r) => r.data),

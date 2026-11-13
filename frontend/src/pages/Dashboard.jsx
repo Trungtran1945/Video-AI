@@ -7,8 +7,9 @@ import StatCard from '@/components/StatCard';
 import Loading from '@/components/Loading';
 import ErrorState from '@/components/ErrorState';
 import { Link } from 'react-router-dom';
-import { Video, Layers, ListOrdered, HardDrive, Cpu, Clock, ArrowRight, Plus, CheckCircle2, Film, Clapperboard } from 'lucide-react';
+import { Video, Layers, ListOrdered, HardDrive, Cpu, Clock, ArrowRight, Plus, CheckCircle2, Film, Clapperboard, Pencil, Check, X, Loader2 } from 'lucide-react';
 import { STAGE_LABELS, formatDate, isCompletedStatus } from '@/lib/constants';
+import { useToast } from '@/components/ui/use-toast';
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
@@ -17,6 +18,10 @@ export default function Dashboard() {
   const [jobs, setJobs] = useState([]);
   const [logs, setLogs] = useState([]);
   const [providers, setProviders] = useState(null);
+  const [editingProjectId, setEditingProjectId] = useState(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  const [savingRename, setSavingRename] = useState(false);
+  const { toast } = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -57,6 +62,58 @@ export default function Dashboard() {
   const summaryStages = ['summary.transcribe', 'summary.sceneDetect', 'summary.analyze', 'summary.script', 'summary.align', 'summary.tts', 'summary.subtitle', 'summary.render'].map(s => STAGE_LABELS[s]);
   // D4: đủ 7 bước TRANSLATE_DUB (gồm dub.mask), khớp DUB_STAGES_ALL ở ProjectDetail.
   const dubStages = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.mask', 'dub.ttsAlign', 'dub.render'].map(s => STAGE_LABELS[s]);
+
+  const handleStartRename = (e, project) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setEditingProjectId(project.id);
+    setEditingTitle(project.title);
+  };
+
+  const handleCancelRename = (e) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    setEditingProjectId(null);
+    setEditingTitle('');
+  };
+
+  const handleSaveRename = async (e, projectId) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    const cleanTitle = editingTitle.trim();
+    if (!cleanTitle) {
+      toast({
+        variant: 'destructive',
+        title: 'Tên dự án không được để trống',
+      });
+      return;
+    }
+    setSavingRename(true);
+    try {
+      await projectsApi.rename(projectId, cleanTitle);
+      setProjects((prev) =>
+        (prev || []).map((p) => (p.id === projectId ? { ...p, title: cleanTitle } : p))
+      );
+      toast({
+        title: 'Đã đổi tên dự án',
+        description: `Dự án đã được đổi tên thành “${cleanTitle}”.`,
+      });
+      setEditingProjectId(null);
+      setEditingTitle('');
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Lỗi đổi tên dự án',
+        description: err?.response?.data?.message || err.message,
+      });
+    } finally {
+      setSavingRename(false);
+    }
+  };
 
   return (
     <Layout>
@@ -157,18 +214,74 @@ export default function Dashboard() {
 
               <div className="space-y-2">
                 {(projects || []).slice(0, 4).map(p => (
-                  <Link
+                  <div
                     key={p.id}
-                    to={`/projects/${p.id}`}
                     className="flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 border border-transparent hover:border-border/70 transition-colors group"
                   >
                     <div className="w-9 h-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
                       <Film className="w-4 h-4" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-semibold text-foreground truncate group-hover:text-primary transition-colors">
-                        {p.title}
-                      </div>
+                      {editingProjectId === p.id ? (
+                        <div
+                          className="flex items-center gap-1.5 my-0.5"
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                        >
+                          <input
+                            type="text"
+                            value={editingTitle}
+                            onChange={(e) => setEditingTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSaveRename(e, p.id);
+                              if (e.key === 'Escape') handleCancelRename(e);
+                            }}
+                            className="flex-1 px-2 py-0.5 text-xs sm:text-sm rounded bg-background border border-primary text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                            maxLength={200}
+                            autoFocus
+                            disabled={savingRename}
+                          />
+                          <button
+                            type="button"
+                            onClick={(e) => handleSaveRename(e, p.id)}
+                            disabled={savingRename || !editingTitle.trim()}
+                            className="p-1 rounded bg-primary hover:bg-primary/90 text-primary-foreground transition disabled:opacity-50 cursor-pointer shrink-0"
+                            title="Lưu tên dự án"
+                          >
+                            {savingRename ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Check className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleCancelRename}
+                            disabled={savingRename}
+                            className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition cursor-pointer shrink-0"
+                            title="Hủy"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 group/title">
+                          <Link
+                            to={`/projects/${p.id}`}
+                            className="text-sm font-semibold text-foreground truncate group-hover:text-primary transition-colors block"
+                          >
+                            {p.title}
+                          </Link>
+                          <button
+                            type="button"
+                            onClick={(e) => handleStartRename(e, p)}
+                            aria-label={`Đổi tên dự án ${p.title}`}
+                            title="Đổi tên dự án"
+                            className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted opacity-80 sm:opacity-0 group-hover:opacity-100 group-hover/title:opacity-100 transition cursor-pointer shrink-0"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
                       <div className="text-xs text-muted-foreground mt-0.5">{formatDate(p.created_date)}</div>
                     </div>
                     <div className="w-24 sm:w-32 hidden xs:block">
@@ -180,7 +293,7 @@ export default function Dashboard() {
                       </div>
                     </div>
                     <span className="text-xs font-medium text-muted-foreground font-mono w-10 text-right">{p.progress || 0}%</span>
-                  </Link>
+                  </div>
                 ))}
 
                 {projects.length === 0 && (

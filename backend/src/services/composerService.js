@@ -92,7 +92,7 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
     try {
       const thumbFilename = `${assetId}_thumb.jpg`
       const thumbAbsPath = path.join(assetsDir, thumbFilename)
-      await ffmpeg(['-y', '-i', targetAbsPath, '-vf', 'scale=320:-1', '-q:v', '3', thumbAbsPath])
+      await ffmpeg(['-y', '-i', targetAbsPath, '-frames:v', '1', '-vf', 'scale=320:-1', '-q:v', '3', thumbAbsPath])
       if (fs.existsSync(thumbAbsPath)) {
         thumbnailKey = toStorageKey(thumbAbsPath)
       }
@@ -506,6 +506,7 @@ export async function autoArrangeTimeline({ projectId, options = {}, ...rest }) 
   const trackMap = new Map(tracks.map((t) => [t.track_type, t]))
 
   const bgTrack = trackMap.get('background')
+  const videoTrack = trackMap.get('video')
   const imgTrack = trackMap.get('image')
   const voiceTrack = trackMap.get('voiceover')
   const musicTrack = trackMap.get('music')
@@ -525,7 +526,7 @@ export async function autoArrangeTimeline({ projectId, options = {}, ...rest }) 
   const audios = await query('SELECT * FROM audios WHERE project_id = ? ORDER BY id ASC', [projectId])
 
   const bgAssets = assets.filter((a) => a.kind === 'background')
-  const imgAssets = assets.filter((a) => a.kind === 'image')
+  const visualAssets = assets.filter((a) => a.kind === 'image' || a.kind === 'video')
   const musicAssets = assets.filter((a) => a.kind === 'music' || a.kind === 'bgm')
   const voiceAudios = [
     ...audios.filter((a) => a.kind === 'voiceover'),
@@ -602,21 +603,22 @@ export async function autoArrangeTimeline({ projectId, options = {}, ...rest }) 
   const imgClips = []
   const textClips = []
 
-  if (imgAssets.length > 0) {
-    const imgDuration = totalVoiceSec > 0 ? (totalVoiceSec / imgAssets.length) : defaultImgDur
-    totalDuration = totalVoiceSec > 0 ? totalVoiceSec : (imgAssets.length * imgDuration)
+  if (visualAssets.length > 0) {
+    const itemDuration = totalVoiceSec > 0 ? (totalVoiceSec / visualAssets.length) : defaultImgDur
+    totalDuration = totalVoiceSec > 0 ? totalVoiceSec : (visualAssets.length * itemDuration)
 
-    for (let i = 0; i < imgAssets.length; i++) {
-      const img = imgAssets[i]
-      const startAt = Math.round(i * imgDuration * 100) / 100
-      const dur = Math.round(imgDuration * 100) / 100
+    for (let i = 0; i < visualAssets.length; i++) {
+      const item = visualAssets[i]
+      const isVideoItem = item.kind === 'video'
+      const startAt = Math.round(i * itemDuration * 100) / 100
+      const dur = Math.round(itemDuration * 100) / 100
 
       imgClips.push({
         id: uuidv4(),
         project_id: projectId,
-        track_id: imgTrack?.id,
-        clip_type: 'image',
-        asset_id: img.id,
+        track_id: isVideoItem ? (videoTrack?.id || imgTrack?.id) : imgTrack?.id,
+        clip_type: isVideoItem ? 'video' : 'image',
+        asset_id: item.id,
         order_index: i,
         start_at_sec: startAt,
         in_sec: 0,
@@ -624,18 +626,18 @@ export async function autoArrangeTimeline({ projectId, options = {}, ...rest }) 
         speed: 1.0,
         volume: 1.0,
         text_content: null,
-        meta: JSON.stringify({ name: img.name }),
+        meta: JSON.stringify({ name: item.name }),
       })
 
-      // If image has OCR or translated text, create a matching text overlay
-      const textOverlay = (img.translation_text || img.ocr_text || '').trim()
+      // If item has OCR or translated text, create a matching text overlay
+      const textOverlay = (item.translation_text || item.ocr_text || '').trim()
       if (textOverlay) {
         textClips.push({
           id: uuidv4(),
           project_id: projectId,
           track_id: textTrack?.id,
           clip_type: 'text',
-          asset_id: img.id,
+          asset_id: item.id,
           order_index: i,
           start_at_sec: startAt,
           in_sec: 0,
@@ -692,7 +694,7 @@ export async function autoArrangeTimeline({ projectId, options = {}, ...rest }) 
       start_at_sec: 0,
       in_sec: 0,
       out_sec: totalDuration,
-      volume: voiceAudios.length > 0 && opts.enableBgmDucking !== false ? 0.25 : (Number(opts.bgmVolume) || 0.8),
+      volume: voiceAudios.length > 0 && opts.enableDucking !== false ? 0.25 : (Number(opts.bgmVolume) || 0.8),
       fade_in_sec: 1.0,
       fade_out_sec: 2.0,
       meta: JSON.stringify({
@@ -778,7 +780,7 @@ export async function saveTimeline({ projectId, tracks = [], clips = [] }) {
 
       const clipType = c.clip_type || c.type || 'image'
       if (!ALLOWED_CLIP_TYPES.has(clipType)) {
-        const err = new Error(`Loại clip không hợp lệ: "${clipType}". Chỉ chấp nhận: image, background, voiceover, music, text, sfx`)
+        const err = new Error(`Loại clip không hợp lệ: "${clipType}". Chỉ chấp nhận: image, background, voiceover, music, text, sfx, video`)
         err.code = 'INVALID_TIMELINE_DATA'
         err.statusCode = 400
         throw err

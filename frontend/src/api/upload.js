@@ -10,10 +10,8 @@ function uploadMultipart(file, { onProgress, signal } = {}) {
   const form = new FormData()
   form.append('file', file)
   return api.post('/upload', form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      signal,
-      timeout: UPLOAD_REQUEST_TIMEOUT_MS,
-
+    signal,
+    timeout: UPLOAD_REQUEST_TIMEOUT_MS,
     onUploadProgress: (event) => {
       if (event.total) onProgress?.(Math.round((event.loaded / event.total) * 100))
     },

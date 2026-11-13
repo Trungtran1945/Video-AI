@@ -183,23 +183,23 @@ export async function composerPrepare(ctx = {}) {
   setProgress(80)
   await assertRunOwner(project.id, runToken)
 
-  // 3. Prepare audio elements
+  // 3. Prepare audio elements (Voiceover & SFX)
   const audios = await query('SELECT * FROM audios WHERE project_id = ?', [project.id])
   const audioMap = new Map(audios.map((a) => [a.id, a]))
-  const voiceClips = clips.filter((c) => c.clip_type === 'voiceover' || c.voice_audio_id || c.audio_id)
+  const audioClips = clips.filter((c) => c.clip_type === 'voiceover' || c.clip_type === 'sfx' || c.voice_audio_id || c.audio_id)
 
-  for (const vc of voiceClips) {
-    const audioId = vc.audio_id || vc.voice_audio_id
-    const aud = audioMap.get(audioId)
+  for (const ac of audioClips) {
+    const audioId = ac.audio_id || ac.voice_audio_id || ac.asset_id
+    const aud = audioMap.get(audioId) || assetMap.get(audioId)
     if (!aud) continue
     const srcAudio = resolveStorageKey(aud.storage_key)
     if (!srcAudio || !fs.existsSync(srcAudio)) continue
 
-    const outPrepWav = path.join(prepDir, `voice_${vc.id}.wav`)
+    const outPrepWav = path.join(prepDir, `voice_${ac.id}.wav`)
     try {
       await ffmpeg(['-y', '-i', srcAudio, '-ar', '48000', '-ac', '2', outPrepWav])
     } catch (err) {
-      console.warn(`[composerPrepare] Resample voice failed for ${vc.id}: ${err.message}`)
+      console.warn(`[composerPrepare] Resample audio failed for ${ac.id}: ${err.message}`)
     }
   }
 

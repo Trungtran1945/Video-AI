@@ -45,7 +45,7 @@ export async function composerIngest(ctx = {}) {
     : []
   const assetMap = new Map(assets.map((a) => [a.id, a]))
 
-  const audioIds = [...new Set(clips.map((c) => c.audio_id).filter(Boolean))]
+  const audioIds = [...new Set(clips.map((c) => c.voice_audio_id).filter(Boolean))]
   const audios = audioIds.length
     ? await query('SELECT * FROM audios WHERE project_id = ?', [project.id])
     : []
@@ -64,8 +64,8 @@ export async function composerIngest(ctx = {}) {
       }
     }
 
-    if (c.audio_id) {
-      const aud = audioMap.get(c.audio_id)
+    if (c.voice_audio_id) {
+      const aud = audioMap.get(c.voice_audio_id)
       if (aud) {
         const abs = resolveStorageKey(aud.storage_key)
         if (!abs || !fs.existsSync(abs)) {

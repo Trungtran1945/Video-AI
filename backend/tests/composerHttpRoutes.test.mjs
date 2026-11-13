@@ -299,6 +299,57 @@ try {
     assert.ok(asset.url.startsWith('/storage/'), 'Reordered asset DTO has computed url')
   }
 
+  // 12. POST /api/v1/projects/:id/assets multipart upload with boundary
+  console.log('--- 12. POST /projects/:id/assets multipart upload with boundary ---')
+  const dummyPng = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+    0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+    0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+  ])
+  const dummyMp3 = Buffer.from([
+    0x49, 0x44, 0x33, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xfb, 0x90, 0x44, 0x00, 0x00,
+  ])
+
+  const uploadFd = new FormData()
+  uploadFd.append('kind', 'image')
+  uploadFd.append('files', new Blob([dummyPng], { type: 'image/png' }), 'upload_test.png')
+  uploadFd.append('files', new Blob([dummyMp3], { type: 'audio/mpeg' }), 'upload_test.mp3')
+
+  const uploadRes = await fetch(`${baseUrl}/${projectId}/assets`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token1}` },
+    body: uploadFd,
+  })
+  assert.equal(uploadRes.status, 200, 'POST /projects/:id/assets returns 200')
+  const uploadData = await uploadRes.json()
+  assert.ok(Array.isArray(uploadData.assets), 'Returns assets array')
+  assert.equal(uploadData.assets.length, 2, 'Saved 2 uploaded assets')
+  assert.equal(uploadData.assets[0].name, 'upload_test.png', 'First asset is image')
+  assert.equal(uploadData.assets[1].name, 'upload_test.mp3', 'Second asset is audio')
+  assert.ok(uploadData.assets[0].url.startsWith('/storage/'), 'Asset has valid /storage/ url')
+  assert.ok(uploadData.assets[0].storageKey, 'Asset has storageKey')
+
+  // 13. POST /api/v1/projects/:id/assets error handling: empty files and non-owner
+  console.log('--- 13. POST /projects/:id/assets error handling (empty & forbidden) ---')
+  const emptyFd = new FormData()
+  emptyFd.append('kind', 'image')
+  const emptyUploadRes = await fetch(`${baseUrl}/${projectId}/assets`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token1}` },
+    body: emptyFd,
+  })
+  assert.equal(emptyUploadRes.status, 400, 'Empty upload returns 400')
+
+  const nonOwnerUploadRes = await fetch(`${baseUrl}/${projectId}/assets`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token2}` },
+    body: uploadFd,
+  })
+  assert.equal(nonOwnerUploadRes.status, 403, 'Non-owner upload returns 403')
+
   console.log('\nALL PASS: AI Media Composer HTTP API & Route Contract tests passed.')
 } finally {
   server.close()

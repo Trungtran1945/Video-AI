@@ -1,6 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ScanText, Languages, Sparkles, Check, X, Loader2, Plus, Type, AlertCircle } from 'lucide-react';
+import {
+  ScanText,
+  Languages,
+  Sparkles,
+  Check,
+  X,
+  Loader2,
+  Plus,
+  Type,
+  AlertCircle,
+  HelpCircle,
+} from 'lucide-react';
 import { projectsApi } from '@/api/projects';
 import { TARGET_LANGUAGES } from '@/lib/constants';
 
@@ -10,21 +21,101 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
   const [ocrText, setOcrText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
   const [targetLang, setTargetLang] = useState('vi');
+  const [selectedSource, setSelectedSource] = useState('translation'); // 'translation' | 'ocr'
+  const [overlayPosition, setOverlayPosition] = useState('bottom'); // 'bottom' | 'center' | 'top'
   const [error, setError] = useState('');
+  const [hasScanned, setHasScanned] = useState(false);
+
+  // Close on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && isOpen) {
+        onClose?.();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
 
   useEffect(() => {
-    if (isOpen && asset) {
-      setError('');
-      setOcrText(asset.ocrText || '');
-      setTranslatedText(asset.translationText || '');
-      setTargetLang(asset.translationTargetLang || 'vi');
+    if (!isOpen || !asset) return;
+    setError('');
+    const initialOcr = asset.ocrText || '';
+    const initialTrans = asset.translationText || '';
+    const initialLang = asset.translationTargetLang || 'vi';
 
-      // If not yet OCR'd, auto trigger OCR
-      if (!asset.ocrText) {
-        handleRunOcr();
-      }
+    setOcrText(initialOcr);
+    setTranslatedText(initialTrans);
+    setTargetLang(initialLang);
+    setHasScanned(Boolean(initialOcr));
+    setSelectedSource(initialTrans ? 'translation' : 'ocr');
+
+    let cancelled = false;
+
+    // Case 1: No OCR text yet -> auto-run OCR, then auto-translate
+    if (!initialOcr) {
+      (async () => {
+        setLoadingOcr(true);
+        setError('');
+        try {
+          const res = await projectsApi.runOcr(projectId, asset.id);
+          if (cancelled) return;
+          const text = res.text || '';
+          setOcrText(text);
+          setHasScanned(true);
+
+          if (text) {
+            setLoadingTranslate(true);
+            try {
+              const tRes = await projectsApi.runTranslate(projectId, asset.id, {
+                text,
+                targetLanguage: initialLang,
+              });
+              if (!cancelled) {
+                const trans = tRes.translatedText || '';
+                setTranslatedText(trans);
+                setSelectedSource(trans ? 'translation' : 'ocr');
+              }
+            } catch (tErr) {
+              if (!cancelled) setError(tErr?.response?.data?.message || 'Lỗi dịch thuật văn bản');
+            } finally {
+              if (!cancelled) setLoadingTranslate(false);
+            }
+          }
+        } catch (err) {
+          if (!cancelled) setError(err?.response?.data?.message || 'Không thể quét chữ trên ảnh');
+        } finally {
+          if (!cancelled) setLoadingOcr(false);
+        }
+      })();
     }
-  }, [isOpen, asset]);
+    // Case 2: Has OCR text but no translation -> auto-run translate
+    else if (initialOcr && !initialTrans) {
+      (async () => {
+        setLoadingTranslate(true);
+        try {
+          const tRes = await projectsApi.runTranslate(projectId, asset.id, {
+            text: initialOcr,
+            targetLanguage: initialLang,
+          });
+          if (!cancelled) {
+            const trans = tRes.translatedText || '';
+            setTranslatedText(trans);
+            setSelectedSource(trans ? 'translation' : 'ocr');
+          }
+        } catch (tErr) {
+          if (!cancelled) setError(tErr?.response?.data?.message || 'Lỗi dịch thuật văn bản');
+        } finally {
+          if (!cancelled) setLoadingTranslate(false);
+        }
+      })();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, asset?.id]);
 
   const handleRunOcr = async () => {
     if (!asset) return;
@@ -32,10 +123,11 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
     setError('');
     try {
       const res = await projectsApi.runOcr(projectId, asset.id);
-      setOcrText(res.text || '');
-      if (res.text && !translatedText) {
-        // Auto trigger translation after OCR
-        handleTranslate(res.text, targetLang);
+      const text = res.text || '';
+      setOcrText(text);
+      setHasScanned(true);
+      if (text) {
+        await handleTranslate(text, targetLang);
       }
     } catch (err) {
       setError(err?.response?.data?.message || 'Không thể quét chữ trên ảnh');
@@ -53,7 +145,9 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
         text: sourceText,
         targetLanguage: lang,
       });
-      setTranslatedText(res.translatedText || '');
+      const trans = res.translatedText || '';
+      setTranslatedText(trans);
+      if (trans) setSelectedSource('translation');
     } catch (err) {
       setError(err?.response?.data?.message || 'Lỗi dịch thuật văn bản');
     } finally {
@@ -62,11 +156,22 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
   };
 
   const handleAddToTimeline = () => {
-    const finalContent = (translatedText || ocrText || '').trim();
-    if (!finalContent) return;
+    const textToAdd =
+      selectedSource === 'translation'
+        ? (translatedText || ocrText || '').trim()
+        : (ocrText || translatedText || '').trim();
+
+    if (!textToAdd) return;
+
     onAddOverlay?.({
       assetId: asset.id,
-      text: finalContent,
+      text: textToAdd,
+      style: {
+        fontSize: 28,
+        color: '#FFFFFF',
+        bg: 'rgba(0,0,0,0.65)',
+        position: overlayPosition,
+      },
     });
     onClose();
   };
@@ -75,7 +180,12 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+      <div
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose();
+        }}
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs select-none"
+      >
         <motion.div
           initial={{ opacity: 0, scale: 0.95, y: 10 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -96,7 +206,7 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
             <button
               type="button"
               onClick={onClose}
-              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition"
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
@@ -120,22 +230,27 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
               />
               <div className="flex-1 min-w-0 space-y-1.5">
                 <span className="text-xs font-semibold text-foreground block">Trích xuất chữ (OCR)</span>
-                <p className="text-[11px] text-muted-foreground">
-                  Hệ thống tự động phát hiện văn bản và nhãn hiệu có trong ảnh mà không can thiệp làm hỏng ảnh gốc.
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Nhận diện chữ trên ảnh và dịch sang ngôn ngữ mong muốn để hiển thị phụ đề trực quan.
                 </p>
                 <div className="pt-1 flex items-center gap-2">
                   <button
                     type="button"
                     onClick={handleRunOcr}
                     disabled={loadingOcr}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-secondary hover:bg-secondary/80 text-secondary-foreground text-xs font-medium transition"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-secondary hover:bg-secondary/80 text-secondary-foreground text-xs font-medium transition cursor-pointer"
                   >
                     {loadingOcr ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ScanText className="w-3.5 h-3.5" />}
                     <span>{loadingOcr ? 'Đang quét...' : 'Quét lại chữ'}</span>
                   </button>
                   {ocrText && !loadingOcr && (
                     <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
-                      <Check className="w-3.5 h-3.5" /> Đã quét
+                      <Check className="w-3.5 h-3.5" /> Đã quét xong
+                    </span>
+                  )}
+                  {hasScanned && !ocrText && !loadingOcr && (
+                    <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+                      <HelpCircle className="w-3.5 h-3.5" /> Không tìm thấy chữ trên ảnh
                     </span>
                   )}
                 </div>
@@ -149,13 +264,26 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
                   <Type className="w-3.5 h-3.5 text-muted-foreground" />
                   <span>Văn bản gốc nhận diện:</span>
                 </label>
+                {ocrText && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSource('ocr')}
+                    className={`text-[11px] px-2 py-0.5 rounded transition cursor-pointer ${
+                      selectedSource === 'ocr'
+                        ? 'bg-primary text-primary-foreground font-semibold'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    Dùng bản gốc này
+                  </button>
+                )}
               </div>
               <textarea
                 value={ocrText}
                 onChange={(e) => setOcrText(e.target.value)}
-                placeholder="Chưa có chữ nào được nhận diện..."
+                placeholder="Chưa phát hiện văn bản nào..."
                 rows={2}
-                className="w-full px-3 py-2 text-xs rounded-xl bg-background border border-border focus:outline-none focus:ring-2 focus:ring-primary/40 text-foreground"
+                className="w-full px-3 py-2 text-xs rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary/40 text-foreground"
               />
             </div>
 
@@ -184,16 +312,31 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
               </div>
 
               <div>
-                <label className="text-xs font-medium text-muted-foreground mb-1 block">
-                  Bản dịch (cho phép sửa tay trực tiếp):
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Bản dịch (cho phép sửa tay trực tiếp):
+                  </label>
+                  {translatedText && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSource('translation')}
+                      className={`text-[11px] px-2 py-0.5 rounded transition cursor-pointer ${
+                        selectedSource === 'translation'
+                          ? 'bg-primary text-primary-foreground font-semibold'
+                          : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      Dùng bản dịch này
+                    </button>
+                  )}
+                </div>
                 <div className="relative">
                   <textarea
                     value={translatedText}
                     onChange={(e) => setTranslatedText(e.target.value)}
                     placeholder="Bản dịch sẽ xuất hiện tại đây..."
                     rows={2}
-                    className="w-full px-3 py-2 text-xs rounded-xl bg-background border border-border focus:outline-none focus:ring-2 focus:ring-primary/40 text-foreground"
+                    className="w-full px-3 py-2 text-xs rounded-xl bg-background border border-border focus:outline-none focus:ring-1 focus:ring-primary/40 text-foreground"
                   />
                   {loadingTranslate && (
                     <div className="absolute inset-0 bg-background/60 rounded-xl flex items-center justify-center">
@@ -203,12 +346,32 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
                 </div>
               </div>
 
-              <div className="flex justify-end">
+              <div className="flex items-center justify-between pt-1">
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span>Vị trí hiển thị:</span>
+                  <div className="inline-flex rounded-lg border border-border p-0.5 bg-background">
+                    {['top', 'center', 'bottom'].map((pos) => (
+                      <button
+                        key={pos}
+                        type="button"
+                        onClick={() => setOverlayPosition(pos)}
+                        className={`px-2 py-0.5 text-[11px] rounded capitalize transition cursor-pointer ${
+                          overlayPosition === pos
+                            ? 'bg-primary text-primary-foreground font-semibold'
+                            : 'text-muted-foreground hover:text-foreground'
+                        }`}
+                      >
+                        {pos === 'top' ? 'Trên' : pos === 'center' ? 'Giữa' : 'Dưới'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <button
                   type="button"
                   onClick={() => handleTranslate(ocrText, targetLang)}
                   disabled={loadingTranslate || !ocrText.trim()}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-background hover:bg-muted text-xs font-medium text-foreground transition disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-background hover:bg-muted text-xs font-medium text-foreground transition disabled:opacity-50 cursor-pointer"
                 >
                   <Sparkles className="w-3.5 h-3.5 text-primary" />
                   <span>Dịch lại</span>
@@ -222,7 +385,7 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
             <button
               type="button"
               onClick={onClose}
-              className="px-3.5 py-1.5 text-xs rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition"
+              className="px-3.5 py-1.5 text-xs rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition cursor-pointer"
             >
               Hủy bỏ
             </button>
@@ -230,10 +393,12 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
               type="button"
               onClick={handleAddToTimeline}
               disabled={!translatedText.trim() && !ocrText.trim()}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold transition disabled:opacity-50 shadow-xs"
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold transition disabled:opacity-50 shadow-xs cursor-pointer"
             >
               <Plus className="w-4 h-4" />
-              <span>Thêm vào Video (Tạo Text Overlay)</span>
+              <span>
+                Thêm vào Video ({selectedSource === 'translation' ? 'Bản dịch' : 'Bản gốc'})
+              </span>
             </button>
           </div>
         </motion.div>

@@ -144,6 +144,7 @@ export async function initSchema() {
   try { db.run(`ALTER TABLE projects ADD COLUMN script_hash TEXT`) } catch (_) {}
   try { db.run(`ALTER TABLE projects ADD COLUMN script_version INTEGER DEFAULT 0`) } catch (_) {}
   try { db.run(`ALTER TABLE projects ADD COLUMN script_review_required INTEGER DEFAULT 0`) } catch (_) {}
+  try { db.run(`ALTER TABLE projects ADD COLUMN updated_at TEXT`) } catch (_) {}
   // Canonical status migration: 'success' was a job/output status leak, never a
   // valid project status — normalize legacy rows to 'completed' (no data loss).
   try {

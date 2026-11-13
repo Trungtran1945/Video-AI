@@ -282,7 +282,7 @@ export async function composerRender(ctx = {}) {
   await assertRunOwner(project.id, runToken)
   setProgress(65)
 
-  // 3. Build Audio Track (Voiceover + Music respecting Track Mute, Track Volume & Ducking)
+  // 3. Build Audio Track (Voiceover + SFX + Music respecting Track Mute, Track Volume & Ducking)
   const voiceTrackConfig = trackByType.get('voiceover')
   const isVoiceMuted = voiceTrackConfig ? Boolean(voiceTrackConfig.muted) : false
   const voiceTrackVolume = voiceTrackConfig && Number.isFinite(Number(voiceTrackConfig.volume))
@@ -294,8 +294,8 @@ export async function composerRender(ctx = {}) {
 
   if (!isVoiceMuted && voiceTrackVolume > 0) {
     for (const vc of voiceClips) {
-      const audioId = vc.audio_id || vc.voice_audio_id
-      const aud = audioById.get(audioId)
+      const audioId = vc.audio_id || vc.voice_audio_id || vc.asset_id
+      const aud = audioById.get(audioId) || assetById.get(audioId)
       const prepWav = path.join(prepDir, `voice_${vc.id}.wav`)
       const absAudio = fs.existsSync(prepWav) ? prepWav : (aud ? resolveStorageKey(aud.storage_key) : null)
       if (absAudio && fs.existsSync(absAudio)) {
@@ -304,6 +304,32 @@ export async function composerRender(ctx = {}) {
         voiceEntries.push({
           file: absAudio,
           offsetSec: Number(vc.start_at_sec) || 0,
+          volume: effectiveVol,
+        })
+      }
+    }
+  }
+
+  // SFX track support
+  const sfxTrackConfig = trackByType.get('sfx')
+  const isSfxMuted = sfxTrackConfig ? Boolean(sfxTrackConfig.muted) : false
+  const sfxTrackVolume = sfxTrackConfig && Number.isFinite(Number(sfxTrackConfig.volume))
+    ? Math.max(0, Math.min(2.0, Number(sfxTrackConfig.volume)))
+    : 1.0
+
+  const sfxClips = clips.filter((c) => c.clip_type === 'sfx')
+  if (!isSfxMuted && sfxTrackVolume > 0) {
+    for (const sc of sfxClips) {
+      const audioId = sc.audio_id || sc.voice_audio_id || sc.asset_id
+      const aud = audioById.get(audioId) || assetById.get(audioId)
+      const prepWav = path.join(prepDir, `voice_${sc.id}.wav`)
+      const absAudio = fs.existsSync(prepWav) ? prepWav : (aud ? resolveStorageKey(aud.storage_key) : null)
+      if (absAudio && fs.existsSync(absAudio)) {
+        const clipVol = Number.isFinite(Number(sc.volume)) ? Number(sc.volume) : 1.0
+        const effectiveVol = Math.max(0, Math.min(2.0, clipVol * sfxTrackVolume))
+        voiceEntries.push({
+          file: absAudio,
+          offsetSec: Number(sc.start_at_sec) || 0,
           volume: effectiveVol,
         })
       }
@@ -346,7 +372,7 @@ export async function composerRender(ctx = {}) {
         if (parsedMeta.ducking === false) isDuckingEnabled = false
       } catch (_) {}
     }
-    const asset = assetById.get(mc.asset_id) || audioById.get(mc.audio_id)
+    const asset = assetById.get(mc.asset_id) || audioById.get(mc.voice_audio_id)
     if (asset) {
       const abs = resolveStorageKey(asset.storage_key)
       if (abs && fs.existsSync(abs)) {
@@ -372,9 +398,9 @@ export async function composerRender(ctx = {}) {
       // Loop music indefinitely, then sidechaincompress to dip -12dB under speech
       audioFilter =
         `[2:a]aresample=48000,aloop=loop=-1:size=2e+09,atrim=0:${roundDuration}[bgm_loop];` +
-        `[1:a]aresample=48000[voice];` +
-        `[bgm_loop][voice]sidechaincompress=threshold=0.03:ratio=6:attack=50:release=300:volume=${targetBgmVolume}[bgm_ducked];` +
-        `[voice][bgm_ducked]amix=inputs=2:duration=first:normalize=0,${tail}`
+        `[1:a]aresample=48000,asplit=2[v_side][v_mix];` +
+        `[bgm_loop][v_side]sidechaincompress=threshold=0.03:ratio=6:attack=50:release=300,volume=${targetBgmVolume}[bgm_ducked];` +
+        `[v_mix][bgm_ducked]amix=inputs=2:duration=first:normalize=0,${tail}`
     } else {
       audioFilter =
         `[2:a]aresample=48000,aloop=loop=-1:size=2e+09,atrim=0:${roundDuration},volume=${targetBgmVolume}[bgm];` +

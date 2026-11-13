@@ -1,5 +1,17 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Play, Pause, RotateCcw, Volume2, VolumeX, Sparkles } from 'lucide-react';
+import {
+  Play,
+  Pause,
+  RotateCcw,
+  Volume2,
+  VolumeX,
+  Sparkles,
+  Maximize2,
+  Minimize2,
+  FastForward,
+  Rewind,
+  Film,
+} from 'lucide-react';
 
 export default function ComposerPreview({
   project,
@@ -20,27 +32,47 @@ export default function ComposerPreview({
   const videoRef = useRef(null);
   const bgVideoRef = useRef(null);
   const visualVideoRef = useRef(null);
+
   const [muted, setMuted] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [previewMode, setPreviewMode] = useState(outputUrl ? 'video' : 'canvas');
+  const [videoLoadError, setVideoLoadError] = useState(false);
 
   useEffect(() => {
     if (outputUrl) {
       setPreviewMode('video');
+      setVideoLoadError(false);
     }
   }, [outputUrl]);
 
-  const safeAssets = Array.isArray(assets) ? assets : (assets?.assets && Array.isArray(assets.assets) ? assets.assets : []);
+  // Sync muted state dynamically to all media elements
+  useEffect(() => {
+    [audioRef, bgmAudioRef, sfxAudioRef, visualVideoRef, bgVideoRef].forEach((ref) => {
+      if (ref?.current) {
+        ref.current.muted = muted;
+      }
+    });
+  }, [muted]);
+
+  const safeAssets = Array.isArray(assets)
+    ? assets
+    : (assets?.assets && Array.isArray(assets.assets) ? assets.assets : []);
   const assetMap = new Map(safeAssets.filter(Boolean).map((a) => [a.id, a]));
 
-  const voiceTrack = (tracks || []).find((t) => t.track_type === 'voiceover');
-  const musicTrack = (tracks || []).find((t) => t.track_type === 'music');
-  const sfxTrack = (tracks || []).find((t) => t.track_type === 'sfx');
-  const isVoiceMuted = Boolean(voiceTrack?.muted);
-  const isMusicMuted = Boolean(musicTrack?.muted);
-  const isSfxMuted = Boolean(sfxTrack?.muted);
+  const voiceTrack = (tracks || []).find((t) => (t.track_type || t.type) === 'voiceover');
+  const musicTrack = (tracks || []).find((t) => (t.track_type || t.type) === 'music');
+  const sfxTrack = (tracks || []).find((t) => (t.track_type || t.type) === 'sfx');
+  const videoTrack = (tracks || []).find((t) => (t.track_type || t.type) === 'video');
+
+  const isVoiceMuted = Boolean(voiceTrack?.muted || voiceTrack?.isMuted) || muted;
+  const isMusicMuted = Boolean(musicTrack?.muted || musicTrack?.isMuted) || muted;
+  const isSfxMuted = Boolean(sfxTrack?.muted || sfxTrack?.isMuted) || muted;
+  const isVideoTrackMuted = Boolean(videoTrack?.muted || videoTrack?.isMuted) || muted;
+
   const voiceTrackVol = Number.isFinite(Number(voiceTrack?.volume)) ? Number(voiceTrack.volume) : 1.0;
   const musicTrackVol = Number.isFinite(Number(musicTrack?.volume)) ? Number(musicTrack.volume) : 1.0;
   const sfxTrackVol = Number.isFinite(Number(sfxTrack?.volume)) ? Number(sfxTrack.volume) : 1.0;
+  const videoTrackVol = Number.isFinite(Number(videoTrack?.volume)) ? Number(videoTrack.volume) : 1.0;
 
   // Find active clips at currentTime
   const activeClips = clips.filter((c) => {
@@ -50,13 +82,16 @@ export default function ComposerPreview({
   });
 
   const activeVisualClip = activeClips.find(
-    (c) => c.clip_type === 'video' || c.clip_type === 'image' || (!c.clip_type && (c.type === 'video' || c.type === 'image'))
+    (c) =>
+      c.clip_type === 'video' ||
+      c.clip_type === 'image' ||
+      (!c.clip_type && (c.type === 'video' || c.type === 'image'))
   );
   const activeBgClip = activeClips.find(
     (c) => c.clip_type === 'background' || (!c.clip_type && c.type === 'background')
   );
-  const activeTextClip = activeClips.find(
-    (c) => c.clip_type === 'text' || Boolean(c.textContent || c.text_content)
+  const activeTextClips = activeClips.filter(
+    (c) => c.clip_type === 'text' || (!c.clip_type && c.type === 'text') || Boolean(c.textContent || c.text_content)
   );
   const activeVoiceClip = activeClips.find(
     (c) => c.clip_type === 'voiceover' || (!c.clip_type && c.type === 'voiceover')
@@ -68,8 +103,10 @@ export default function ComposerPreview({
     (c) => c.clip_type === 'sfx' || (!c.clip_type && c.type === 'sfx')
   );
 
-  // Determine Background visual
-  const bgAsset = activeBgClip ? assetMap.get(activeBgClip.asset_id || activeBgClip.assetId) : null;
+  // Background visual layer
+  const bgAsset = activeBgClip
+    ? assetMap.get(activeBgClip.asset_id || activeBgClip.assetId)
+    : null;
   const defaultBgColor = project?.params?.defaultBackground || '#0F1117';
   const bgUrl = bgAsset?.url || activeBgClip?.url || bgAsset?.thumbnailUrl;
   const isBgVideo = Boolean(
@@ -83,9 +120,10 @@ export default function ComposerPreview({
 
   const bgFit = activeBgClip?.meta?.fit === 'contain' ? 'object-contain' : 'object-cover';
   const bgLoop = activeBgClip?.meta?.loop !== false;
-  const bgMuted = activeBgClip?.meta?.muted !== false;
+  const bgMuted = (activeBgClip?.meta?.muted !== false) || muted;
   const bgOpacity = typeof activeBgClip?.meta?.opacity === 'number' ? activeBgClip.meta.opacity : 0.7;
 
+  // Background video playback sync
   useEffect(() => {
     if (!bgVideoRef.current || !isBgVideo) return;
     if (isPlaying) {
@@ -106,7 +144,7 @@ export default function ComposerPreview({
     }
   }, [currentTime, isBgVideo, bgLoop]);
 
-  // Determine Visual (Image or Video)
+  // Active Visual (Image or Video)
   const visualAsset = activeVisualClip
     ? assetMap.get(activeVisualClip.asset_id || activeVisualClip.assetId)
     : null;
@@ -115,9 +153,14 @@ export default function ComposerPreview({
     activeVisualClip?.clip_type === 'video' ||
     activeVisualClip?.type === 'video' ||
     visualAsset?.mime_type?.startsWith('video/') ||
+    visualAsset?.mimeType?.startsWith('video/') ||
     (visualUrl && /\.(mp4|webm|mov|mkv)(\?.*)?$/i.test(visualUrl))
   );
 
+  const visualFit = activeVisualClip?.meta?.fit === 'cover' ? 'object-cover' : 'object-contain';
+  const visualOpacity = typeof activeVisualClip?.meta?.opacity === 'number' ? activeVisualClip.meta.opacity : 1.0;
+
+  // Visual Video playback and volume sync
   useEffect(() => {
     if (!visualVideoRef.current || !isVisualVideo) return;
     if (isPlaying) {
@@ -134,40 +177,39 @@ export default function ComposerPreview({
     if (Math.abs(visualVideoRef.current.currentTime - offset) > 0.3) {
       visualVideoRef.current.currentTime = offset;
     }
-  }, [currentTime, isVisualVideo, activeVisualClip]);
-
-  // Determine Text Overlay
-  const textContent = activeTextClip
-    ? activeTextClip.textContent || activeTextClip.text_content || activeTextClip.content
-    : null;
-  let textStyle = { fontSize: 24, color: '#FFFFFF', bg: 'rgba(0,0,0,0.6)', position: 'bottom' };
-  try {
-    if (activeTextClip?.style_json) {
-      textStyle = { ...textStyle, ...JSON.parse(activeTextClip.style_json) };
-    } else if (activeTextClip?.style) {
-      textStyle = { ...textStyle, ...activeTextClip.style };
-    }
-  } catch (_) {}
+    const clipVol = Number.isFinite(Number(activeVisualClip.volume)) ? Number(activeVisualClip.volume) : 1.0;
+    visualVideoRef.current.muted = isVideoTrackMuted;
+    visualVideoRef.current.volume = isVideoTrackMuted ? 0 : Math.max(0, Math.min(1.0, clipVol * videoTrackVol));
+  }, [currentTime, isVisualVideo, activeVisualClip, isVideoTrackMuted, videoTrackVol]);
 
   // Aspect ratio class
   const aspectRatio = project?.aspect_ratio || project?.aspectRatio || '16:9';
   const aspectClass =
     aspectRatio === '9:16'
-      ? 'aspect-[9/16] max-h-[520px]'
+      ? 'aspect-[9/16] max-h-[540px]'
       : aspectRatio === '1:1'
-      ? 'aspect-square max-h-[460px]'
-      : 'aspect-[16/9] max-h-[460px]';
+      ? 'aspect-square max-h-[480px]'
+      : 'aspect-[16/9] max-h-[480px]';
 
-  // Audio sync with track mute & volume
+  // Voiceover audio sync
   useEffect(() => {
     if (!audioRef.current) return;
     const voiceAsset = activeVoiceClip
-      ? assetMap.get(activeVoiceClip.audio_id || activeVoiceClip.asset_id)
+      ? assetMap.get(
+          activeVoiceClip.audio_id ||
+          activeVoiceClip.voice_audio_id ||
+          activeVoiceClip.audioId ||
+          activeVoiceClip.asset_id ||
+          activeVoiceClip.assetId
+        )
       : null;
     const audioUrl = voiceAsset?.url;
 
     if (audioUrl && isPlaying && !isVoiceMuted && voiceTrackVol > 0) {
-      if (audioRef.current.src !== window.location.origin + audioUrl && !audioRef.current.src.endsWith(audioUrl)) {
+      const isSrcChanged =
+        audioRef.current.src !== window.location.origin + audioUrl &&
+        !audioRef.current.src.endsWith(audioUrl);
+      if (isSrcChanged) {
         audioRef.current.src = audioUrl;
       }
       const clipStart = Number(activeVoiceClip.start ?? activeVoiceClip.start_at_sec ?? 0);
@@ -183,18 +225,28 @@ export default function ComposerPreview({
     }
   }, [currentTime, isPlaying, activeVoiceClip, assetMap, isVoiceMuted, voiceTrackVol]);
 
-  // BGM audio sync & dynamic ducking with track mute & volume
+  // BGM audio sync & dynamic ducking
   useEffect(() => {
     if (!bgmAudioRef.current) return;
     const bgmAsset = activeBgmClip
-      ? assetMap.get(activeBgmClip.audio_id || activeBgmClip.asset_id)
+      ? assetMap.get(
+          activeBgmClip.audio_id ||
+          activeBgmClip.audioId ||
+          activeBgmClip.asset_id ||
+          activeBgmClip.assetId
+        )
       : null;
     const bgmUrl = bgmAsset?.url;
 
     if (bgmUrl && isPlaying && !isMusicMuted && musicTrackVol > 0) {
-      if (bgmAudioRef.current.src !== window.location.origin + bgmUrl && !bgmAudioRef.current.src.endsWith(bgmUrl)) {
+      const isSrcChanged =
+        bgmAudioRef.current.src !== window.location.origin + bgmUrl &&
+        !bgmAudioRef.current.src.endsWith(bgmUrl);
+      if (isSrcChanged) {
         bgmAudioRef.current.src = bgmUrl;
       }
+      bgmAudioRef.current.loop = activeBgmClip?.meta?.loop !== false;
+
       const clipStart = Number(activeBgmClip.start ?? activeBgmClip.start_at_sec ?? 0);
       const offset = Math.max(0, currentTime - clipStart);
       if (Math.abs(bgmAudioRef.current.currentTime - offset) > 0.3) {
@@ -209,16 +261,24 @@ export default function ComposerPreview({
     }
   }, [currentTime, isPlaying, activeBgmClip, activeVoiceClip, assetMap, isMusicMuted, musicTrackVol]);
 
-  // SFX audio sync with track mute & volume
+  // SFX audio sync
   useEffect(() => {
     if (!sfxAudioRef.current) return;
     const sfxAsset = activeSfxClip
-      ? assetMap.get(activeSfxClip.audio_id || activeSfxClip.asset_id)
+      ? assetMap.get(
+          activeSfxClip.audio_id ||
+          activeSfxClip.audioId ||
+          activeSfxClip.asset_id ||
+          activeSfxClip.assetId
+        )
       : null;
     const sfxUrl = sfxAsset?.url;
 
     if (sfxUrl && isPlaying && !isSfxMuted && sfxTrackVol > 0) {
-      if (sfxAudioRef.current.src !== window.location.origin + sfxUrl && !sfxAudioRef.current.src.endsWith(sfxUrl)) {
+      const isSrcChanged =
+        sfxAudioRef.current.src !== window.location.origin + sfxUrl &&
+        !sfxAudioRef.current.src.endsWith(sfxUrl);
+      if (isSrcChanged) {
         sfxAudioRef.current.src = sfxUrl;
       }
       const clipStart = Number(activeSfxClip.start ?? activeSfxClip.start_at_sec ?? 0);
@@ -234,7 +294,20 @@ export default function ComposerPreview({
     }
   }, [currentTime, isPlaying, activeSfxClip, assetMap, isSfxMuted, sfxTrackVol]);
 
-  // Clean up all media elements on unmount & stop cleanly when paused
+  // Clean up media on pause
+  useEffect(() => {
+    if (!isPlaying) {
+      [audioRef, bgmAudioRef, sfxAudioRef, videoRef, bgVideoRef, visualVideoRef].forEach((ref) => {
+        if (ref?.current) {
+          try {
+            ref.current.pause();
+          } catch (_) {}
+        }
+      });
+    }
+  }, [isPlaying]);
+
+  // Clean up all media elements on unmount
   useEffect(() => {
     return () => {
       [audioRef, bgmAudioRef, sfxAudioRef, videoRef, bgVideoRef, visualVideoRef].forEach((ref) => {
@@ -249,23 +322,20 @@ export default function ComposerPreview({
     };
   }, []);
 
-  useEffect(() => {
-    if (!isPlaying) {
-      [audioRef, bgmAudioRef, sfxAudioRef, videoRef, bgVideoRef, visualVideoRef].forEach((ref) => {
-        if (ref?.current) {
-          try {
-            ref.current.pause();
-          } catch (_) {}
-        }
-      });
-    }
-  }, [isPlaying]);
-
   const fmtTime = (s) => {
     const sec = Math.max(0, Math.floor(s || 0));
     const m = Math.floor(sec / 60);
     const r = sec % 60;
     return `${m}:${String(r).padStart(2, '0')}`;
+  };
+
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return;
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
+    } else {
+      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+    }
   };
 
   return (
@@ -293,17 +363,19 @@ export default function ComposerPreview({
               <button
                 type="button"
                 onClick={() => setPreviewMode('video')}
-                className={`px-2 py-0.5 rounded font-medium transition cursor-pointer ${
+                className={`px-2 py-0.5 rounded font-medium transition cursor-pointer flex items-center gap-1 ${
                   previewMode === 'video'
                     ? 'bg-primary text-primary-foreground shadow-xs font-semibold'
                     : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
-                Video MP4
+                <Film className="w-3 h-3" />
+                <span>Video MP4</span>
               </button>
             </div>
           ) : (
-            <span className="font-semibold text-foreground uppercase tracking-wider text-[11px]">
+            <span className="font-semibold text-foreground uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               Dựng thời gian thực
             </span>
           )}
@@ -311,21 +383,41 @@ export default function ComposerPreview({
             {aspectRatio}
           </span>
         </div>
-        <div className="flex items-center gap-2 font-mono text-xs">
-          <span className="text-foreground font-semibold">{fmtTime(currentTime)}</span>
-          <span>/</span>
-          <span>{fmtTime(duration)}</span>
+
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 font-mono text-xs">
+            <span className="text-foreground font-semibold">{fmtTime(currentTime)}</span>
+            <span>/</span>
+            <span>{fmtTime(duration)}</span>
+          </div>
+
+          <button
+            type="button"
+            title={isFullscreen ? 'Thu nhỏ' : 'Toàn màn hình'}
+            onClick={toggleFullscreen}
+            className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition cursor-pointer"
+          >
+            {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+          </button>
         </div>
       </div>
 
       {/* Main Canvas / Video Viewport */}
       <div className="flex-1 w-full flex items-center justify-center p-2 min-h-0">
-        {previewMode === 'video' && outputUrl ? (
-          <div className={`relative rounded-2xl overflow-hidden shadow-2xl border border-border/80 flex items-center justify-center bg-black ${aspectClass} w-auto max-w-full`}>
+        {previewMode === 'video' && outputUrl && !videoLoadError ? (
+          <div
+            className={`relative rounded-2xl overflow-hidden shadow-2xl border border-border/80 flex items-center justify-center bg-black ${aspectClass} w-auto max-w-full`}
+          >
             <video
               ref={videoRef}
               src={outputUrl}
               controls
+              onError={() => setVideoLoadError(true)}
+              onTimeUpdate={(e) => {
+                if (Math.abs(currentTime - e.target.currentTime) > 0.5) {
+                  onSeek?.(e.target.currentTime);
+                }
+              }}
               className="w-full h-full object-contain"
             />
           </div>
@@ -353,106 +445,155 @@ export default function ComposerPreview({
                   src={bgAsset?.thumbnailUrl || bgUrl}
                   alt="Background"
                   style={{ opacity: bgOpacity }}
-                  className={`absolute inset-0 w-full h-full ${bgFit} transition-all`}
+                  onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                  className={`absolute inset-0 w-full h-full ${bgFit} transition-all pointer-events-none`}
                 />
               )
             )}
 
             {/* Active Visual (Image or Video) Layer */}
             {visualUrl ? (
-              <div className="relative z-10 w-full h-full flex items-center justify-center p-4">
+              <div
+                style={{ opacity: visualOpacity }}
+                className="relative z-10 w-full h-full flex items-center justify-center p-4 transition-opacity"
+              >
                 {isVisualVideo ? (
                   <video
                     ref={visualVideoRef}
                     src={visualUrl}
                     autoPlay={isPlaying}
                     playsInline
-                    className="max-w-full max-h-full object-contain rounded-lg shadow-md"
+                    className={`max-w-full max-h-full ${visualFit} rounded-lg shadow-md`}
                   />
                 ) : (
                   <img
                     src={visualUrl}
                     alt="Active Visual"
-                    className="max-w-full max-h-full object-contain rounded-lg shadow-md transition-all duration-300"
+                    onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                    className={`max-w-full max-h-full ${visualFit} rounded-lg shadow-md transition-all duration-200`}
                   />
                 )}
               </div>
             ) : (
-              <div className="relative z-10 text-center p-6 text-muted-foreground/60">
+              <div className="relative z-10 text-center p-6 text-muted-foreground/60 select-none">
                 <Sparkles className="w-8 h-8 stroke-1 mx-auto mb-2 opacity-50" />
                 <span className="text-xs">Chưa có clip hiển thị ở mốc này</span>
               </div>
             )}
 
-            {/* Text Overlay Layer */}
-            {textContent && (
-              <div
-                className={`absolute z-20 left-4 right-4 flex justify-center pointer-events-none transition-all ${
-                  textStyle.position === 'top'
-                    ? 'top-6'
-                    : textStyle.position === 'center'
-                    ? 'top-1/2 -translate-y-1/2'
-                    : 'bottom-6'
-                }`}
-              >
+            {/* Text Overlay Layer (Multiple active text clips support) */}
+            {activeTextClips.map((clip) => {
+              const text = clip.textContent || clip.text_content || clip.content;
+              if (!text) return null;
+
+              let style = {
+                fontSize: 24,
+                color: '#FFFFFF',
+                bg: 'rgba(0,0,0,0.65)',
+                position: 'bottom',
+                fontFamily: 'inherit',
+              };
+              try {
+                if (clip.style_json) {
+                  style = { ...style, ...JSON.parse(clip.style_json) };
+                } else if (clip.style && typeof clip.style === 'object') {
+                  style = { ...style, ...clip.style };
+                }
+              } catch (_) {}
+
+              const posClass =
+                style.position === 'top'
+                  ? 'top-6'
+                  : style.position === 'center'
+                  ? 'top-1/2 -translate-y-1/2'
+                  : 'bottom-6';
+
+              return (
                 <div
-                  style={{
-                    fontSize: `${Math.max(14, Math.min(36, textStyle.fontSize || 24))}px`,
-                    color: textStyle.color || '#FFFFFF',
-                    backgroundColor: textStyle.bg || 'rgba(0,0,0,0.65)',
-                    fontFamily: textStyle.fontFamily || 'inherit',
-                  }}
-                  className="px-4 py-2 rounded-xl backdrop-blur-xs text-center font-semibold leading-relaxed shadow-lg max-w-[85%] whitespace-pre-wrap"
+                  key={clip.id}
+                  className={`absolute z-20 left-4 right-4 flex justify-center pointer-events-none transition-all ${posClass}`}
                 >
-                  {textContent}
+                  <div
+                    style={{
+                      fontSize: `${Math.max(14, Math.min(42, style.fontSize || 24))}px`,
+                      color: style.color || '#FFFFFF',
+                      backgroundColor: style.bg || 'rgba(0,0,0,0.65)',
+                      fontFamily: style.fontFamily || 'inherit',
+                    }}
+                    className="px-4 py-2 rounded-xl backdrop-blur-xs text-center font-semibold leading-relaxed shadow-lg max-w-[85%] whitespace-pre-wrap select-none"
+                  >
+                    {text}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })}
           </div>
         )}
       </div>
 
       {/* Playback Controls Footer */}
-      <div className="w-full max-w-xl mt-3 p-2.5 rounded-2xl bg-card border border-border shadow-sm flex items-center justify-between gap-3">
-        <button
-          type="button"
-          onClick={() => onSeek?.(0)}
-          title="Về đầu video"
-          className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted transition"
-        >
-          <RotateCcw className="w-4 h-4" />
-        </button>
+      {previewMode !== 'video' && (
+        <div className="w-full max-w-xl mt-3 p-2.5 rounded-2xl bg-card border border-border shadow-sm flex items-center justify-between gap-2.5">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => onSeek?.(0)}
+              title="Về đầu video"
+              className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted transition cursor-pointer"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onSeek?.(Math.max(0, currentTime - 5))}
+              title="Lùi 5 giây"
+              className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted transition cursor-pointer"
+            >
+              <Rewind className="w-4 h-4" />
+            </button>
+          </div>
 
-        <button
-          type="button"
-          onClick={onTogglePlay}
-          className="w-10 h-10 rounded-full bg-primary hover:bg-primary/90 text-primary-foreground flex items-center justify-center transition shadow-md"
-        >
-          {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
-        </button>
+          <button
+            type="button"
+            onClick={onTogglePlay}
+            title={isPlaying ? 'Tạm dừng (Space)' : 'Phát (Space)'}
+            className="w-10 h-10 rounded-full bg-primary hover:bg-primary/90 text-primary-foreground flex items-center justify-center transition shadow-md cursor-pointer"
+          >
+            {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
+          </button>
 
-        {/* Scrub Bar */}
-        <div className="flex-1 px-2">
-          <input
-            type="range"
-            min="0"
-            max={Math.max(1, duration)}
-            step="0.05"
-            value={currentTime}
-            onChange={(e) => onSeek?.(parseFloat(e.target.value) || 0)}
-            className="w-full accent-primary h-1.5 bg-muted rounded-lg cursor-pointer"
-          />
+          <button
+            type="button"
+            onClick={() => onSeek?.(Math.min(duration, currentTime + 5))}
+            title="Tiến 5 giây"
+            className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted transition cursor-pointer"
+          >
+            <FastForward className="w-4 h-4" />
+          </button>
+
+          {/* Scrub Bar */}
+          <div className="flex-1 px-2">
+            <input
+              type="range"
+              min="0"
+              max={Math.max(1, duration)}
+              step="0.05"
+              value={currentTime}
+              onChange={(e) => onSeek?.(parseFloat(e.target.value) || 0)}
+              className="w-full accent-primary h-1.5 bg-muted rounded-lg cursor-pointer"
+            />
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setMuted(!muted)}
+            title={muted ? 'Bật âm thanh' : 'Tắt âm thanh'}
+            className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted transition cursor-pointer"
+          >
+            {muted ? <VolumeX className="w-4 h-4 text-destructive" /> : <Volume2 className="w-4 h-4" />}
+          </button>
         </div>
-
-        <button
-          type="button"
-          onClick={() => setMuted(!muted)}
-          title={muted ? 'Bật âm thanh' : 'Tắt âm thanh'}
-          className="p-2 rounded-xl text-muted-foreground hover:text-foreground hover:bg-muted transition"
-        >
-          {muted ? <VolumeX className="w-4 h-4 text-destructive" /> : <Volume2 className="w-4 h-4" />}
-        </button>
-      </div>
+      )}
     </div>
   );
 }

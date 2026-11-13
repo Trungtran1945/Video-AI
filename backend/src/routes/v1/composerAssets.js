@@ -40,8 +40,18 @@ function totalSizeLimit(req, res, next) {
 function uploadHandler(req, res, next) {
   upload.fields([{ name: 'files', maxCount: 50 }, { name: 'file', maxCount: 1 }])(req, res, (err) => {
     if (!err) return next()
+    // Cleanup any partial files created before error
+    const uploaded = [...(req.files?.files || []), ...(req.files?.file || [])]
+    for (const f of uploaded) {
+      if (f.path && fs.existsSync(f.path)) {
+        try { fs.unlinkSync(f.path) } catch (_) {}
+      }
+    }
     if (err?.code === 'LIMIT_FILE_SIZE') {
       return sendError(res, 413, 'FILE_TOO_LARGE', 'Tệp tải lên vượt quá giới hạn 100MB')
+    }
+    if (err?.message?.includes('Boundary not found')) {
+      return sendError(res, 400, 'MALFORMED_MULTIPART', 'Yêu cầu tải lên thiếu multipart boundary hợp lệ')
     }
     return sendError(res, 400, 'UPLOAD_ERROR', err.message || 'Lỗi tải lên tệp')
   })
@@ -60,6 +70,8 @@ function checkMediaSignature(filePath) {
     if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true
     // PNG: 89 50 4E 47
     if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return true
+    // GIF: GIF8 (47 49 46 38)
+    if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return true
     // RIFF (WEBP / WAV / AVI)
     if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) {
       if (bytesRead >= 12) {
@@ -71,6 +83,8 @@ function checkMediaSignature(filePath) {
     // MP3: ID3 or sync frame FF FB / FF F3 / FF F2 / FF E0
     if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) return true
     if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return true
+    // FLAC: 66 4C 61 43 (fLaC)
+    if (buf[0] === 0x66 && buf[1] === 0x4c && buf[2] === 0x61 && buf[3] === 0x43) return true
     // MP4 / QuickTime (MOV, M4A, MP4): ftyp or moov at offset 4
     if (bytesRead >= 8 && (buf.toString('ascii', 4, 8) === 'ftyp' || buf.toString('ascii', 4, 8) === 'moov')) return true
     // OGG: OggS
@@ -94,7 +108,7 @@ export function formatAsset(a) {
   const storageKey = a.storage_key || a.storageKey || null
   const thumbnailKey = a.thumbnail_key || a.thumbnailKey || null
   const mimeType = a.mime_type || a.mimeType || null
-  const isImg = mimeType?.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(storageKey || '')
+  const isImg = mimeType?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg)$/i.test(storageKey || '')
 
   return {
     id: a.id,
@@ -166,6 +180,12 @@ router.post('/:id/assets', requireProjectOwner, totalSizeLimit, uploadHandler, a
       }
     }
   }
+
+  req.on('close', () => {
+    if (!res.writableEnded) {
+      cleanupFiles()
+    }
+  })
 
   try {
     if (!files || files.length === 0) {
@@ -248,9 +268,11 @@ router.put('/:id/assets/reorder', requireProjectOwner, async (req, res) => {
       return sendError(res, 400, ERR.VALIDATION, 'Danh sách assetIds không hợp lệ', { field: 'assetIds' })
     }
 
-    for (let i = 0; i < assetIds.length; i++) {
-      await run('UPDATE assets SET order_index = ? WHERE id = ? AND project_id = ?', [i, assetIds[i], req.project.id])
-    }
+    await withTransaction(async (tx) => {
+      for (let i = 0; i < assetIds.length; i++) {
+        await tx.run('UPDATE assets SET order_index = ? WHERE id = ? AND project_id = ?', [i, assetIds[i], req.project.id])
+      }
+    })
 
     let updated = []
     try {

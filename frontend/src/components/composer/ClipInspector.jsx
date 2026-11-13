@@ -1,17 +1,50 @@
-import React from 'react';
-import { Sliders, Clock, Volume2, Type, Trash2, Layers, RotateCcw, Check } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  Sliders,
+  Clock,
+  Volume2,
+  Type,
+  Trash2,
+  Layers,
+  RotateCcw,
+  Check,
+  Video,
+  Image as ImageIcon,
+  ScanText,
+  FileAudio,
+} from 'lucide-react';
 import { useTimelineStore } from '../timeline/timelineStore';
 
-export default function ClipInspector({ selectedClip, assets = [], onUpdateClip, onDeleteClip }) {
+export default function ClipInspector({
+  selectedClip,
+  assets = [],
+  onUpdateClip,
+  onDeleteClip,
+  onSetBackground,
+  onOpenOcr,
+}) {
   const { deleteClip } = useTimelineStore();
+
+  const [startInput, setStartInput] = useState('');
+  const [durationInput, setDurationInput] = useState('');
+
+  // Sync inputs when clip selection or timing changes externally
+  useEffect(() => {
+    if (selectedClip) {
+      const s = Number(selectedClip.start ?? selectedClip.start_at_sec ?? 0);
+      const d = Number(selectedClip.duration ?? selectedClip.out_sec ?? 4);
+      setStartInput(String(Number(s.toFixed(2))));
+      setDurationInput(String(Number(d.toFixed(2))));
+    }
+  }, [selectedClip?.id, selectedClip?.start, selectedClip?.duration]);
 
   if (!selectedClip) {
     return (
       <div className="h-full flex flex-col items-center justify-center p-6 text-center text-muted-foreground select-none bg-card border-l border-border">
-        <Sliders className="w-10 h-10 stroke-1 mb-2.5 opacity-40" />
+        <Sliders className="w-10 h-10 stroke-1 mb-2.5 opacity-40 text-primary" />
         <span className="text-xs font-semibold text-foreground">Chưa chọn Clip nào</span>
         <p className="text-[11px] opacity-75 mt-1 max-w-[200px]">
-          Nhấp vào bất kỳ clip nào trên Timeline để xem và chỉnh sửa thông số.
+          Nhấp vào bất kỳ clip nào trên Timeline để xem và tùy chỉnh thông số chi tiết.
         </p>
       </div>
     );
@@ -21,9 +54,14 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
   const isBgClip = clipType === 'background';
   const isTextClip = clipType === 'text';
   const isAudioClip = clipType === 'voiceover' || clipType === 'music' || clipType === 'sfx';
+  const isVisualClip = clipType === 'image' || clipType === 'video';
+  const isVideoClip = clipType === 'video';
 
   const meta = selectedClip.meta || {};
-  const currentAsset = (assets || []).find((a) => a.id === (selectedClip.asset_id || selectedClip.assetId));
+  const currentAsset = (assets || []).find(
+    (a) => a.id === (selectedClip.asset_id || selectedClip.assetId || selectedClip.audio_id || selectedClip.voice_audio_id)
+  );
+
   const isVideoBg = Boolean(
     meta.isVideo ||
     currentAsset?.kind === 'video' ||
@@ -33,7 +71,7 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
   );
 
   // Parse style_json if available
-  let textStyle = { fontSize: 28, color: '#FFFFFF', bg: 'rgba(0,0,0,0.6)', position: 'bottom' };
+  let textStyle = { fontSize: 28, color: '#FFFFFF', bg: 'rgba(0,0,0,0.65)', position: 'bottom', fontFamily: 'Arial' };
   try {
     if (typeof selectedClip.style_json === 'string') {
       textStyle = { ...textStyle, ...JSON.parse(selectedClip.style_json) };
@@ -41,6 +79,46 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
       textStyle = { ...textStyle, ...selectedClip.style };
     }
   } catch (_) {}
+
+  const handleStartChange = (val) => {
+    setStartInput(val);
+    const num = parseFloat(val);
+    if (!isNaN(num) && num >= 0) {
+      onUpdateClip?.(selectedClip.id, {
+        start: num,
+        start_at_sec: num,
+      });
+    }
+  };
+
+  const handleStartBlur = () => {
+    const num = Math.max(0, parseFloat(startInput) || 0);
+    setStartInput(String(Number(num.toFixed(2))));
+    onUpdateClip?.(selectedClip.id, {
+      start: num,
+      start_at_sec: num,
+    });
+  };
+
+  const handleDurationChange = (val) => {
+    setDurationInput(val);
+    const num = parseFloat(val);
+    if (!isNaN(num) && num >= 0.1) {
+      onUpdateClip?.(selectedClip.id, {
+        duration: num,
+        out_sec: num,
+      });
+    }
+  };
+
+  const handleDurationBlur = () => {
+    const num = Math.max(0.1, parseFloat(durationInput) || 0.1);
+    setDurationInput(String(Number(num.toFixed(2))));
+    onUpdateClip?.(selectedClip.id, {
+      duration: num,
+      out_sec: num,
+    });
+  };
 
   const handleTextChange = (val) => {
     onUpdateClip?.(selectedClip.id, {
@@ -74,8 +152,11 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
   };
 
   const handleDelete = () => {
-    deleteClip(selectedClip.id);
-    onDeleteClip?.(selectedClip.id);
+    if (onDeleteClip) {
+      onDeleteClip(selectedClip.id);
+    } else {
+      deleteClip(selectedClip.id);
+    }
   };
 
   return (
@@ -108,14 +189,10 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
                 type="number"
                 step="0.1"
                 min="0"
-                value={Number(selectedClip.start ?? selectedClip.start_at_sec ?? 0).toFixed(2)}
-                onChange={(e) =>
-                  onUpdateClip?.(selectedClip.id, {
-                    start: Math.max(0, parseFloat(e.target.value) || 0),
-                    start_at_sec: Math.max(0, parseFloat(e.target.value) || 0),
-                  })
-                }
-                className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-background border border-border text-foreground font-mono focus:outline-none"
+                value={startInput}
+                onChange={(e) => handleStartChange(e.target.value)}
+                onBlur={handleStartBlur}
+                className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-background border border-border text-foreground font-mono focus:outline-none focus:ring-1 focus:ring-primary/40"
               />
             </div>
 
@@ -124,19 +201,160 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
               <input
                 type="number"
                 step="0.1"
-                min="0.2"
-                value={Number(selectedClip.duration ?? selectedClip.out_sec ?? 4).toFixed(2)}
-                onChange={(e) =>
-                  onUpdateClip?.(selectedClip.id, {
-                    duration: Math.max(0.2, parseFloat(e.target.value) || 0.2),
-                    out_sec: Math.max(0.2, parseFloat(e.target.value) || 0.2),
-                  })
-                }
-                className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-background border border-border text-foreground font-mono focus:outline-none"
+                min="0.1"
+                value={durationInput}
+                onChange={(e) => handleDurationChange(e.target.value)}
+                onBlur={handleDurationBlur}
+                className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-background border border-border text-foreground font-mono focus:outline-none focus:ring-1 focus:ring-primary/40"
               />
             </div>
           </div>
         </div>
+
+        {/* Visual Clip Controls (Image or Video) */}
+        {isVisualClip && (
+          <div className="p-3 rounded-xl bg-muted/30 border border-border space-y-3.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                {isVideoClip ? <Video className="w-3.5 h-3.5 text-blue-500" /> : <ImageIcon className="w-3.5 h-3.5 text-emerald-500" />}
+                <span>{isVideoClip ? 'Cấu hình Video' : 'Cấu hình Hình ảnh'}</span>
+              </div>
+              {currentAsset && (
+                <span className="text-[10px] font-mono text-muted-foreground">
+                  {currentAsset.durationSec ? `${Number(currentAsset.durationSec).toFixed(1)}s` : ''}
+                </span>
+              )}
+            </div>
+
+            {/* Media Information Card */}
+            {currentAsset && (
+              <div className="flex items-center gap-2.5 p-2 rounded-lg bg-background/80 border border-border/80">
+                {currentAsset.thumbnailUrl || (currentAsset.kind === 'image' && currentAsset.url) ? (
+                  <img
+                    src={currentAsset.thumbnailUrl || currentAsset.url}
+                    alt={currentAsset.name}
+                    className="w-10 h-10 rounded object-cover border border-border bg-black/20 shrink-0"
+                  />
+                ) : (
+                  <div className="w-10 h-10 rounded bg-primary/10 flex items-center justify-center shrink-0 text-primary">
+                    {isVideoClip ? <Video className="w-5 h-5" /> : <ImageIcon className="w-5 h-5" />}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <span className="text-[11px] font-semibold text-foreground truncate block">
+                    {currentAsset.name}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground font-mono">
+                    ID: {currentAsset.id.slice(0, 8)}...
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Fit Mode */}
+            <div>
+              <label className="text-[11px] text-muted-foreground mb-1.5 block">Chế độ hiển thị (Fit Mode):</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleMetaChange('fit', 'contain')}
+                  className={`py-1.5 px-2 text-xs rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                    (meta.fit || 'contain') === 'contain'
+                      ? 'bg-primary text-primary-foreground border-primary shadow-xs'
+                      : 'bg-background hover:bg-muted text-muted-foreground border-border'
+                  }`}
+                >
+                  {(meta.fit || 'contain') === 'contain' && <Check className="w-3 h-3" />}
+                  <span>Vừa khung (Contain)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleMetaChange('fit', 'cover')}
+                  className={`py-1.5 px-2 text-xs rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                    meta.fit === 'cover'
+                      ? 'bg-primary text-primary-foreground border-primary shadow-xs'
+                      : 'bg-background hover:bg-muted text-muted-foreground border-border'
+                  }`}
+                >
+                  {meta.fit === 'cover' && <Check className="w-3 h-3" />}
+                  <span>Lấp đầy (Cover)</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Opacity Slider */}
+            <div className="space-y-1.5 pt-1 border-t border-border/60">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-muted-foreground">Độ mờ đục (Opacity):</span>
+                <span className="text-xs font-mono font-medium text-foreground">
+                  {Math.round((meta.opacity != null ? Number(meta.opacity) : 1.0) * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="10"
+                max="100"
+                step="5"
+                value={Math.round((meta.opacity != null ? Number(meta.opacity) : 1.0) * 100)}
+                onChange={(e) => handleMetaChange('opacity', Number(e.target.value) / 100)}
+                className="w-full accent-primary cursor-pointer"
+              />
+            </div>
+
+            {/* Video-specific volume slider */}
+            {isVideoClip && (
+              <div className="space-y-1.5 pt-1 border-t border-border/60">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-muted-foreground">Âm lượng Video:</span>
+                  <span className="text-xs font-mono font-medium text-foreground">
+                    {Math.round((Number(selectedClip.volume) || 1.0) * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="2"
+                  step="0.05"
+                  value={Number(selectedClip.volume ?? 1.0)}
+                  onChange={(e) =>
+                    onUpdateClip?.(selectedClip.id, {
+                      volume: parseFloat(e.target.value),
+                    })
+                  }
+                  className="w-full accent-primary cursor-pointer"
+                />
+              </div>
+            )}
+
+            {/* Quick Action: OCR if image */}
+            {clipType === 'image' && currentAsset && onOpenOcr && (
+              <div className="pt-1 border-t border-border/60">
+                <button
+                  type="button"
+                  onClick={() => onOpenOcr(currentAsset)}
+                  className="w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border bg-background hover:bg-muted text-foreground text-xs font-medium transition cursor-pointer"
+                >
+                  <ScanText className="w-3.5 h-3.5 text-primary" />
+                  <span>Quét & Dịch chữ trên ảnh</span>
+                </button>
+              </div>
+            )}
+
+            {/* Quick Action: Set as background */}
+            {currentAsset && onSetBackground && (
+              <div className="pt-1 border-t border-border/60">
+                <button
+                  type="button"
+                  onClick={() => onSetBackground(currentAsset)}
+                  className="w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-purple-500/30 bg-purple-500/10 hover:bg-purple-500/20 text-purple-600 dark:text-purple-400 text-xs font-medium transition cursor-pointer"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Đặt clip này làm nền dự án</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Background Settings Controls */}
         {isBgClip && (
@@ -265,6 +483,20 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
               </span>
             </div>
 
+            {currentAsset && (
+              <div className="flex items-center gap-2 p-2 rounded-lg bg-background/80 border border-border/80">
+                <FileAudio className="w-4 h-4 text-primary shrink-0" />
+                <span className="text-[11px] font-semibold text-foreground truncate block flex-1">
+                  {currentAsset.name || selectedClip.content || 'Âm thanh'}
+                </span>
+                {currentAsset.durationSec && (
+                  <span className="text-[10px] font-mono text-muted-foreground shrink-0">
+                    {Number(currentAsset.durationSec).toFixed(1)}s
+                  </span>
+                )}
+              </div>
+            )}
+
             <input
               type="range"
               min="0"
@@ -276,7 +508,7 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
                   volume: parseFloat(e.target.value),
                 })
               }
-              className="w-full accent-primary"
+              className="w-full accent-primary cursor-pointer"
             />
           </div>
         )}
@@ -295,7 +527,7 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
                 value={selectedClip.textContent || selectedClip.text_content || selectedClip.content || ''}
                 onChange={(e) => handleTextChange(e.target.value)}
                 rows={3}
-                className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-background border border-border text-foreground focus:outline-none"
+                className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-background border border-border text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40 leading-relaxed"
               />
             </div>
 
@@ -318,11 +550,11 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
                 <label className="text-[11px] text-muted-foreground mb-1 block">Cỡ chữ (px):</label>
                 <input
                   type="number"
-                  min="16"
+                  min="14"
                   max="72"
                   value={textStyle.fontSize || 28}
                   onChange={(e) => handleStyleChange('fontSize', parseInt(e.target.value, 10) || 28)}
-                  className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-background border border-border text-foreground font-mono"
+                  className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-background border border-border text-foreground font-mono focus:outline-none"
                 />
               </div>
 
@@ -348,7 +580,7 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
                     key={pos}
                     type="button"
                     onClick={() => handleStyleChange('position', pos)}
-                    className={`py-1 text-xs rounded-md border capitalize font-medium transition ${
+                    className={`py-1 text-xs rounded-md border capitalize font-medium transition cursor-pointer ${
                       textStyle.position === pos
                         ? 'bg-primary text-primary-foreground border-primary'
                         : 'bg-background hover:bg-muted text-muted-foreground border-border'
@@ -366,7 +598,7 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
                 <button
                   type="button"
                   onClick={() => handleStyleChange('bg', 'rgba(0,0,0,0.65)')}
-                  className={`px-2.5 py-1 text-xs rounded-lg border font-medium transition ${
+                  className={`px-2.5 py-1 text-xs rounded-lg border font-medium transition cursor-pointer ${
                     textStyle.bg === 'rgba(0,0,0,0.65)' || !textStyle.bg
                       ? 'bg-primary/20 text-primary border-primary/40'
                       : 'bg-background hover:bg-muted text-muted-foreground border-border'
@@ -377,7 +609,7 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
                 <button
                   type="button"
                   onClick={() => handleStyleChange('bg', 'transparent')}
-                  className={`px-2.5 py-1 text-xs rounded-lg border font-medium transition ${
+                  className={`px-2.5 py-1 text-xs rounded-lg border font-medium transition cursor-pointer ${
                     textStyle.bg === 'transparent'
                       ? 'bg-primary/20 text-primary border-primary/40'
                       : 'bg-background hover:bg-muted text-muted-foreground border-border'
@@ -388,7 +620,7 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
                 <button
                   type="button"
                   onClick={() => handleStyleChange('bg', '#000000')}
-                  className={`px-2.5 py-1 text-xs rounded-lg border font-medium transition ${
+                  className={`px-2.5 py-1 text-xs rounded-lg border font-medium transition cursor-pointer ${
                     textStyle.bg === '#000000'
                       ? 'bg-primary/20 text-primary border-primary/40'
                       : 'bg-background hover:bg-muted text-muted-foreground border-border'
@@ -407,7 +639,7 @@ export default function ClipInspector({ selectedClip, assets = [], onUpdateClip,
         <button
           type="button"
           onClick={handleDelete}
-          className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-destructive/30 bg-destructive/10 hover:bg-destructive/20 text-destructive text-xs font-semibold transition"
+          className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-destructive/30 bg-destructive/10 hover:bg-destructive/20 text-destructive text-xs font-semibold transition cursor-pointer"
         >
           <Trash2 className="w-3.5 h-3.5" />
           <span>Xóa Clip khỏi Timeline</span>

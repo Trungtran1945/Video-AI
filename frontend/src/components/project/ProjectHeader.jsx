@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Trash2, XCircle, RotateCcw, Loader2, Play, Download, AlertCircle, ChevronDown, Youtube, AudioLines } from 'lucide-react';
+import { ArrowLeft, Trash2, XCircle, RotateCcw, Loader2, Play, Download, AlertCircle, ChevronDown, Youtube, AudioLines, Pencil, Check, X } from 'lucide-react';
 import { StatusBadge } from '@/lib/constants';
+import { projectsApi } from '@/api/projects';
 
 export default function ProjectHeader({
   project,
@@ -16,9 +17,50 @@ export default function ProjectHeader({
   onPublishYoutube,
   onToggleDubConfig = null,
   isDubConfigHidden = false,
+  onRename = null,
 }) {
   const [showRerunMenu, setShowRerunMenu] = useState(false);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editingTitle, setEditingTitle] = useState('');
+  const [savingRename, setSavingRename] = useState(false);
+  const [localTitle, setLocalTitle] = useState(project?.title || '');
   const menuRef = useRef(null);
+
+  useEffect(() => {
+    setLocalTitle(project?.title || '');
+  }, [project?.title]);
+
+  const handleStartRename = () => {
+    setIsEditingTitle(true);
+    setEditingTitle(localTitle);
+  };
+
+  const handleCancelRename = () => {
+    setIsEditingTitle(false);
+    setEditingTitle('');
+  };
+
+  const handleSaveRename = async () => {
+    const cleanTitle = editingTitle.trim();
+    if (!cleanTitle || cleanTitle === localTitle) {
+      setIsEditingTitle(false);
+      return;
+    }
+    setSavingRename(true);
+    try {
+      if (onRename) {
+        await onRename(cleanTitle);
+      } else if (project?.id) {
+        await projectsApi.rename(project.id, cleanTitle);
+      }
+      setLocalTitle(cleanTitle);
+      setIsEditingTitle(false);
+    } catch (err) {
+      console.error('Rename error:', err);
+    } finally {
+      setSavingRename(false);
+    }
+  };
 
   useEffect(() => {
     function handleClickOutside(e) {
@@ -62,8 +104,59 @@ export default function ProjectHeader({
         <ArrowLeft className="w-3 h-3" /> Quay lại dự án
       </Link>
       <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3 min-w-0">
-          <h1 className="text-lg font-bold text-foreground truncate">{project?.title}</h1>
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          {isEditingTitle ? (
+            <div className="flex items-center gap-1.5 max-w-md w-full">
+              <input
+                type="text"
+                value={editingTitle}
+                onChange={(e) => setEditingTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSaveRename();
+                  if (e.key === 'Escape') handleCancelRename();
+                }}
+                className="flex-1 px-2.5 py-1 text-sm rounded-lg bg-background border border-primary text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                maxLength={200}
+                autoFocus
+                disabled={savingRename}
+              />
+              <button
+                type="button"
+                onClick={handleSaveRename}
+                disabled={savingRename || !editingTitle.trim()}
+                className="p-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground transition disabled:opacity-50 cursor-pointer shrink-0"
+                title="Lưu tên dự án"
+              >
+                {savingRename ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Check className="w-3.5 h-3.5" />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={handleCancelRename}
+                disabled={savingRename}
+                className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition cursor-pointer shrink-0"
+                title="Hủy"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 min-w-0">
+              <h1 className="text-lg font-bold text-foreground truncate">{localTitle}</h1>
+              <button
+                type="button"
+                onClick={handleStartRename}
+                aria-label="Đổi tên dự án"
+                title="Đổi tên dự án"
+                className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition cursor-pointer shrink-0"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
           <StatusBadge status={project?.status} />
         </div>
         <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">

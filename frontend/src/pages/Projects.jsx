@@ -6,7 +6,7 @@ import Loading from '@/components/Loading';
 import EmptyState from '@/components/EmptyState';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Film, Languages, Plus, Search, Trash2 } from 'lucide-react';
+import { Film, Languages, Plus, Search, Trash2, Pencil, Check, X, Loader2 } from 'lucide-react';
 import { StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, MODE_LABELS, STYLE_PRESETS_FALLBACK } from '@/lib/constants';
 
 const STYLE_PRESET_NAMES = new Map((STYLE_PRESETS_FALLBACK || []).map((p) => [p.slug, p.name]));
@@ -33,6 +33,9 @@ export default function Projects() {
   const [modeFilter, setModeFilter] = useState('ALL'); // 'ALL' | 'SUMMARY' | 'TRANSLATE_DUB'
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [editingProjectId, setEditingProjectId] = useState(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  const [savingRename, setSavingRename] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -68,6 +71,51 @@ export default function Projects() {
       });
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const handleStartRename = (e, project) => {
+    e.stopPropagation();
+    setEditingProjectId(project.id);
+    setEditingTitle(project.title);
+  };
+
+  const handleCancelRename = (e) => {
+    if (e) e.stopPropagation();
+    setEditingProjectId(null);
+    setEditingTitle('');
+  };
+
+  const handleSaveRename = async (e, projectId) => {
+    if (e) e.stopPropagation();
+    const cleanTitle = editingTitle.trim();
+    if (!cleanTitle) {
+      toast({
+        variant: 'destructive',
+        title: 'Tên dự án không được để trống',
+      });
+      return;
+    }
+    setSavingRename(true);
+    try {
+      await projectsApi.rename(projectId, cleanTitle);
+      setProjects((prev) =>
+        prev.map((p) => (p.id === projectId ? { ...p, title: cleanTitle } : p))
+      );
+      toast({
+        title: 'Đã đổi tên dự án',
+        description: `Dự án đã được đổi tên thành “${cleanTitle}”.`,
+      });
+      setEditingProjectId(null);
+      setEditingTitle('');
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Lỗi đổi tên dự án',
+        description: err?.response?.data?.message || err.message,
+      });
+    } finally {
+      setSavingRename(false);
     }
   };
 
@@ -194,9 +242,63 @@ export default function Projects() {
                       </div>
                     </div>
 
-                    <h3 className="font-semibold text-foreground text-sm sm:text-base truncate group-hover:text-primary transition-colors">
-                      {p.title}
-                    </h3>
+                    {editingProjectId === p.id ? (
+                      <div
+                        className="flex items-center gap-1.5 my-1"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="text"
+                          value={editingTitle}
+                          onChange={(e) => setEditingTitle(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleSaveRename(e, p.id);
+                            if (e.key === 'Escape') handleCancelRename(e);
+                          }}
+                          className="flex-1 px-2.5 py-1 text-xs sm:text-sm rounded-lg bg-background border border-primary text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                          maxLength={200}
+                          autoFocus
+                          disabled={savingRename}
+                        />
+                        <button
+                          type="button"
+                          onClick={(e) => handleSaveRename(e, p.id)}
+                          disabled={savingRename || !editingTitle.trim()}
+                          className="p-1.5 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground transition disabled:opacity-50 cursor-pointer shrink-0"
+                          title="Lưu tên dự án"
+                        >
+                          {savingRename ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Check className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCancelRename}
+                          disabled={savingRename}
+                          className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition cursor-pointer shrink-0"
+                          title="Hủy"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between gap-2 group/title">
+                        <h3 className="font-semibold text-foreground text-sm sm:text-base truncate group-hover:text-primary transition-colors flex-1">
+                          {p.title}
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={(e) => handleStartRename(e, p)}
+                          aria-label={`Đổi tên dự án ${p.title}`}
+                          title="Đổi tên dự án"
+                          className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted opacity-80 sm:opacity-0 group-hover:opacity-100 group-hover/title:opacity-100 transition cursor-pointer shrink-0"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
 
                     <div className="flex flex-wrap gap-1.5 mt-2.5">
                       <span className="px-2 py-0.5 rounded-md bg-muted text-[11px] font-medium text-foreground">

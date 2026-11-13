@@ -514,6 +514,40 @@ router.get('/:id', async (req, res) => {
   }
 })
 
+// PATCH /api/v1/projects/:id (rename project title)
+router.patch('/:id', requireProjectOwner, async (req, res) => {
+  try {
+    const rawTitle = req.body?.title
+    if (typeof rawTitle !== 'string') {
+      return sendError(res, 400, ERR.VALIDATION, 'Tiêu đề dự án phải là chuỗi ký tự', { field: 'title' })
+    }
+    const title = rawTitle.trim()
+    if (title.length < 1 || title.length > 200) {
+      return sendError(res, 400, ERR.VALIDATION, 'Tiêu đề dự án phải từ 1 đến 200 ký tự', { field: 'title' })
+    }
+
+    const now = new Date().toISOString()
+    try {
+      await run('UPDATE projects SET title = ?, updated_at = ? WHERE id = ?', [title, now, req.project.id])
+    } catch (_) {
+      await run('UPDATE projects SET title = ? WHERE id = ?', [title, req.project.id])
+    }
+
+    const updated = await queryOne('SELECT * FROM projects WHERE id = ?', [req.project.id])
+    const publicProject = { ...updated }
+    delete publicProject.script_key
+    if (publicProject.params) {
+      try {
+        publicProject.params = typeof publicProject.params === 'string' ? JSON.parse(publicProject.params) : publicProject.params
+      } catch (_) {}
+    }
+    res.json(publicProject)
+  } catch (err) {
+    console.error('Update project title error:', err)
+    sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
+  }
+})
+
 // GET /api/v1/projects/:id/timeline
 router.get('/:id/timeline', requireProjectOwner, async (req, res) => {
   const timeline = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [req.params.id])
