@@ -19,13 +19,14 @@ import {
 } from "lucide-react";
 import AuthLayout from "@/components/AuthLayout";
 import OtpInput from "@/components/auth/OtpInput";
+import GoogleSignInButton from "@/components/auth/GoogleSignInButton";
 import { useAuth } from "@/lib/AuthContext";
 import { useToast } from "@/components/ui/use-toast";
 
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { login, sendOtp, loginWithOtp } = useAuth();
+  const { login, sendOtp, loginWithOtp, googleLogin } = useAuth();
   const { toast } = useToast();
 
   const from = location.state?.from?.pathname || "/dashboard";
@@ -39,6 +40,8 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [passwordError, setPasswordError] = useState("");
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [googleError, setGoogleError] = useState("");
 
   // State cho Đăng nhập Email OTP
   const [otpStep, setOtpStep] = useState("request"); // 'request' | 'verify'
@@ -57,6 +60,7 @@ export default function Login() {
     setAuthMode(val);
     setPasswordError("");
     setOtpError("");
+    setGoogleError("");
     // Đồng bộ email nếu user đã gõ ở tab kia
     if (val === "otp" && email && !otpEmail) {
       setOtpEmail(email);
@@ -74,9 +78,19 @@ export default function Login() {
       await login(email, password);
       navigate(from, { replace: true });
     } catch (err) {
-      setPasswordError(
-        err?.response?.data?.message || err.message || "Email hoặc mật khẩu không chính xác"
-      );
+      if (err?.response?.status === 429) {
+        const wait = err.response.data?.retryAfterSec
+          ? ` sau ${err.response.data.retryAfterSec} giây`
+          : " sau ít phút";
+        setPasswordError(
+          err.response.data?.message ||
+          `Bạn đã gửi yêu cầu quá nhiều lần liên tiếp (Rate limit). Vui lòng thử lại${wait}.`
+        );
+      } else {
+        setPasswordError(
+          err?.response?.data?.message || err.message || "Email hoặc mật khẩu không chính xác"
+        );
+      }
     } finally {
       setPasswordLoading(false);
     }
@@ -98,10 +112,58 @@ export default function Login() {
       return "Bạn đã nhập sai quá số lần quy định. Vui lòng yêu cầu mã OTP mới.";
     }
     if (err?.response?.status === 429) {
-      const wait = data?.retryAfterSec ? ` sau ${data.retryAfterSec}s` : "";
-      return `Bạn thao tác quá nhanh. Vui lòng thử lại${wait}.`;
+      const wait = data?.retryAfterSec ? ` sau ${data.retryAfterSec} giây` : " sau ít phút";
+      return data?.message || `Bạn đã gửi yêu cầu quá nhiều lần (Rate limit). Vui lòng thử lại${wait}.`;
     }
     return data?.message || err.message || "Thao tác không thành công. Vui lòng thử lại.";
+  };
+
+  // Google Sign-In handlers
+  const handleGoogleSuccess = async (credentialData) => {
+    setPasswordError("");
+    setOtpError("");
+    setGoogleError("");
+    setGoogleLoading(true);
+    try {
+      await googleLogin(credentialData);
+      toast({
+        title: "Đăng nhập Google thành công!",
+        description: "Chào mừng bạn trở lại Video AI Studio.",
+      });
+      navigate(from, { replace: true });
+    } catch (err) {
+      if (err?.response?.status === 429) {
+        const wait = err?.response?.data?.retryAfterSec
+          ? ` sau ${err.response.data.retryAfterSec} giây`
+          : " sau ít phút";
+        setGoogleError(
+          err?.response?.data?.message ||
+          `Thao tác đăng nhập Google bị giới hạn tần suất. Vui lòng thử lại${wait}.`
+        );
+      } else {
+        setGoogleError(
+          err?.response?.data?.message || err.message || "Đăng nhập bằng Google thất bại. Vui lòng thử lại."
+        );
+      }
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
+  const handleGoogleError = (err) => {
+    if (err?.response?.status === 429) {
+      const wait = err?.response?.data?.retryAfterSec
+        ? ` sau ${err.response.data.retryAfterSec} giây`
+        : " sau ít phút";
+      setGoogleError(
+        err?.response?.data?.message ||
+        `Thao tác đăng nhập Google bị giới hạn tần suất. Vui lòng thử lại${wait}.`
+      );
+    } else {
+      setGoogleError(
+        err?.response?.data?.message || err?.message || "Đăng nhập bằng Google thất bại. Vui lòng thử lại."
+      );
+    }
   };
 
   // 2. Submit yêu cầu gửi mã OTP
@@ -210,6 +272,31 @@ export default function Login() {
         </>
       }
     >
+      {/* Đăng nhập nhanh bằng Google */}
+      <div className="mb-5 space-y-4">
+        {googleError && (
+          <div className="p-3.5 rounded-xl bg-destructive/15 border border-destructive/30 text-destructive text-xs sm:text-sm font-medium">
+            {googleError}
+          </div>
+        )}
+
+        <GoogleSignInButton
+          onSuccess={handleGoogleSuccess}
+          onError={handleGoogleError}
+          text="Đăng nhập với Google"
+          disabled={passwordLoading || isSendingOtp || isVerifyingOtp || googleLoading}
+        />
+
+        <div className="relative flex items-center justify-center my-2">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-border/80" />
+          </div>
+          <div className="relative px-3 bg-card text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
+            Hoặc tiếp tục với
+          </div>
+        </div>
+      </div>
+
       {/* Tabs chuyển đổi giữa Mật khẩu và Email OTP */}
       <Tabs value={authMode} onValueChange={handleTabChange} className="w-full">
         <TabsList className="grid w-full grid-cols-2 mb-5 h-11 bg-muted/60 p-1 rounded-xl">

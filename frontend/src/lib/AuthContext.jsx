@@ -90,6 +90,30 @@ export const AuthProvider = ({ children }) => {
     return data
   }
 
+  const registerSendOtp = async (email, password, name) => {
+    return await authApi.registerSendOtp(email, password, name)
+  }
+
+  const registerVerifyOtp = async (email, otp, password, name) => {
+    const data = await authApi.registerVerifyOtp(email, otp, password, name)
+    setAccessToken(data.accessToken)
+    setUser(data.user)
+    setIsAuthenticated(true)
+    setAuthError(null)
+    postAccessUpdated(data.accessToken, data.user)
+    return data
+  }
+
+  const googleLogin = async (credential) => {
+    const data = await authApi.googleLogin(credential)
+    setAccessToken(data.accessToken)
+    setUser(data.user)
+    setIsAuthenticated(true)
+    setAuthError(null)
+    postAccessUpdated(data.accessToken, data.user)
+    return data
+  }
+
   const logout = async () => {
     try {
       await authApi.logout()
@@ -136,6 +160,9 @@ export const AuthProvider = ({ children }) => {
         sendOtp,
         loginWithOtp,
         register,
+        registerSendOtp,
+        registerVerifyOtp,
+        googleLogin,
         logout,
         navigateToLogin,
         refreshAuth,

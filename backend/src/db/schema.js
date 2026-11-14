@@ -50,6 +50,9 @@ export async function initSchema() {
   try { db.run(`ALTER TABLE users ADD COLUMN refresh_token TEXT`) } catch (_) {}
   try { db.run(`ALTER TABLE users ADD COLUMN refresh_expires TEXT`) } catch (_) {}
   try { db.run(`ALTER TABLE users ADD COLUMN credits INTEGER DEFAULT 0`) } catch (_) {}
+  try { db.run(`ALTER TABLE users ADD COLUMN email_verified INTEGER DEFAULT 0`) } catch (_) {}
+  try { db.run(`ALTER TABLE users ADD COLUMN google_id TEXT`) } catch (_) {}
+  try { db.run(`ALTER TABLE users ADD COLUMN avatar TEXT`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS reset_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

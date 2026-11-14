@@ -4,6 +4,7 @@ import { config } from '../config.js'
 
 export const OTP_TTL_SECONDS = 300 // 5 minutes
 export const OTP_PURPOSE_LOGIN = 'login'
+export const OTP_PURPOSE_REGISTER = 'register'
 export const OTP_MAX_ATTEMPTS = 5
 
 let transporter = null
@@ -47,7 +48,7 @@ export function hashOtp(otp) {
  * Template HTML email OTP rõ ràng, thẩm mỹ
  */
 export function renderOtpEmailHtml({ otp, purpose = 'login', ttlMinutes = 5 }) {
-  const actionText = purpose === 'login' ? 'đăng nhập tài khoản' : 'xác thực tài khoản'
+  const actionText = purpose === 'register' ? 'đăng ký tài khoản' : (purpose === 'login' ? 'đăng nhập tài khoản' : 'xác thực tài khoản')
   return `
 <!DOCTYPE html>
 <html lang="vi">
@@ -104,12 +105,13 @@ export async function sendOtpEmail({ email, otp, purpose = 'login' }) {
 
   if (transport) {
     try {
+      const actionSubject = purpose === 'register' ? 'đăng ký' : (purpose === 'login' ? 'đăng nhập' : 'xác thực')
       await transport.sendMail({
         from: config.notifyFromEmail || 'noreply@videoai.local',
         to: email,
-        subject: `[Video AI] Mã xác thực đăng nhập: ${otp}`,
+        subject: `[Video AI] Mã xác thực ${actionSubject}: ${otp}`,
         html: renderOtpEmailHtml({ otp, purpose, ttlMinutes: Math.round(OTP_TTL_SECONDS / 60) }),
-        text: `Mã OTP xác thực đăng nhập Video AI của bạn là: ${otp}. Mã có hiệu lực trong 5 phút. Vui lòng không chia sẻ mã này cho bất kỳ ai.`,
+        text: `Mã OTP xác thực ${actionSubject} Video AI của bạn là: ${otp}. Mã có hiệu lực trong 5 phút. Vui lòng không chia sẻ mã này cho bất kỳ ai.`,
       })
       sent = true
     } catch (err) {
@@ -129,6 +131,7 @@ export async function sendOtpEmail({ email, otp, purpose = 'login' }) {
 export default {
   OTP_TTL_SECONDS,
   OTP_PURPOSE_LOGIN,
+  OTP_PURPOSE_REGISTER,
   OTP_MAX_ATTEMPTS,
   generateNumericOtp,
   hashOtp,

@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS users (
     name VARCHAR(255) DEFAULT '',
     credits INTEGER DEFAULT 0,
     email_verified BOOLEAN DEFAULT FALSE,
+    google_id VARCHAR(128),
+    avatar TEXT,
     refresh_token TEXT,
     refresh_expires TIMESTAMPTZ,
     created_date TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
