@@ -1,8 +1,8 @@
 import path from 'path'
 import fs from 'node:fs'
 import { config } from '../config.js'
-import { getDb, captureMemorySnapshot, persistOrRollback } from '../db.js'
-import { queryOne, run, withWriteLock } from '../db/query.js'
+import { getDb, captureMemorySnapshot, persistOrRollback, isPostgresMode, getPool } from '../db.js'
+import { queryOne, run, withWriteLock, sanitizeVal } from '../db/query.js'
 import { resolveSafePath, isPathInside, UnsafeStoragePathError } from '../lib/safePath.js'
 import { normalizeJobStatus } from '../lib/projectStatus.js'
 
@@ -105,7 +105,22 @@ export async function getUserSettings(userId) {
 }
 
 export async function insertMany(table, objects) {
-  if (!objects.length) return
+  if (!objects || !objects.length) return
+  if (isPostgresMode()) {
+    const pool = getPool()
+    const cols = Object.keys(objects[0])
+    const params = []
+    const rowPlaceholders = objects.map((obj) => {
+      const rowSlots = cols.map((c) => {
+        params.push(sanitizeVal(obj[c]))
+        return `$${params.length}`
+      })
+      return `(${rowSlots.join(', ')})`
+    })
+    const sql = `INSERT INTO "${table}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES ${rowPlaceholders.join(', ')}`
+    await pool.query(sql, params)
+    return
+  }
   return withWriteLock(async () => {
     const db = await getDb()
     const snapshot = captureMemorySnapshot()

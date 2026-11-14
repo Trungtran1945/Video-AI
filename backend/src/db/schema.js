@@ -1,5 +1,10 @@
-import { getDb, captureMemorySnapshot, persistOrRollback } from '../db.js'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { getDb, captureMemorySnapshot, persistOrRollback, isPostgresMode, getPool } from '../db.js'
 import { config } from '../config.js'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // Initialize all tables for the two-mode system (sql.js / SQLite).
 // Mirrors docs/02_THIET_KE_CO_SO_DU_LIEU.md but uses sql.js (no Prisma).
@@ -12,6 +17,16 @@ import { config } from '../config.js'
 //   template_video_* columns are legacy from the removed STYLE_EDIT mode (kept inert).
 // - users.credits column is legacy/inert — never exposed through the API.
 export async function initSchema() {
+  if (isPostgresMode()) {
+    const pool = getPool()
+    const sqlPath = path.join(__dirname, 'postgresSchema.sql')
+    if (fs.existsSync(sqlPath)) {
+      const ddl = fs.readFileSync(sqlPath, 'utf8')
+      await pool.query(ddl)
+      console.log('[DB] PostgreSQL schema verified/initialized')
+    }
+    return
+  }
   const db = await getDb()
   // Schema initialization is a mutation too: if persisting it fails, memory is
   // rolled back to the pre-init image instead of keeping tables the disk never

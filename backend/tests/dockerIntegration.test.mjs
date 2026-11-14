@@ -92,12 +92,13 @@ if (daemonOk) {
     failures++
     console.error('FAIL: docker integration probe threw —', e?.message || e)
   } finally {
-    const down = run('docker', ['compose', 'down', '-v'], { cwd: repoRoot })
-    if (down.status !== 0) {
+    const stop = run('docker', ['compose', 'stop', 'redis', 'api'], { cwd: repoRoot })
+    const rm = run('docker', ['compose', 'rm', '-f', '-v', 'redis', 'api'], { cwd: repoRoot })
+    if (stop.status !== 0 || rm.status !== 0) {
       failures++
-      console.error(`FAIL: docker compose down -v (exit ${down.status}) ${String(down.stderr).slice(0, 1000)}`)
+      console.error(`FAIL: docker compose stop/rm redis api`)
     } else {
-      console.log('PASS: docker compose down -v (no orphans)')
+      console.log('PASS: docker compose stop/rm redis api (cleaned ephemeral services)')
     }
   }
 } else {

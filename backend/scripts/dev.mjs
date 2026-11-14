@@ -1,3 +1,4 @@
+import 'dotenv/config'
 // Dev orchestrator: `npm run dev` → ZeroTTS kèm API trong 1 terminal.
 // Usage: node scripts/dev.mjs [--api-only]
 // - ZeroTTS fail-open: lỗi phía Python chỉ warn, API vẫn lên.

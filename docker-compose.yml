@@ -13,6 +13,26 @@ services:
       timeout: 5s
       retries: 5
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: video-ai-postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    environment:
+      POSTGRES_DB: ${DB_NAME:-video_ai}
+      POSTGRES_USER: ${DB_USER:-video_ai_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-VideoAI_Secure_Db_2026!}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-video_ai_user} -d ${DB_NAME:-video_ai}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   api:
     build:
       context: .
@@ -24,8 +44,7 @@ services:
       - PORT=3001
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - DATABASE_URL=file:/app/data/data.db
-      - DB_PATH=/app/data/data.db
+      - DATABASE_URL=postgresql://${DB_USER:-video_ai_user}:${DB_PASSWORD:-VideoAI_Secure_Db_2026!}@postgres:5432/${DB_NAME:-video_ai}
       - INSTANCE_MODE=single
       - DB_MAX_PENDING_WRITES=${DB_MAX_PENDING_WRITES:-1000}
       - DB_SLOW_WRITE_MS=${DB_SLOW_WRITE_MS:-1000}
@@ -67,6 +86,8 @@ services:
       - db_data:/app/data
     depends_on:
       redis:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/health"]
@@ -116,6 +137,7 @@ services:
 
 volumes:
   redis_data:
+  postgres_data:
   storage_data:
   db_data:
   voicestudio_data:

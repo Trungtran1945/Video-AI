@@ -46,7 +46,7 @@ When designing and developing frontend interfaces:
 - **Modes:** SUMMARY vs TRANSLATE_DUB (target spec in `Video_AI_docs/docs/`, legacy STYLE_EDIT code being removed). 13 translation style presets via `GET /style-presets`. Resumable TUS-like upload (`POST /uploads/init`, `PUT /uploads/:id/chunk`, `POST /uploads/:id/complete`), SSE `GET /projects/:id/events`, storage served at `/storage/<key>`.
 - **Pipeline stages** (`backend/src/pipeline/stages/`): `dubIngest → dubStt → dubMerge → dubTranslate → dubMask → dubTtsAlign → dubRender`; `summaryTranscribe → summaryAnalyze → summaryScript → summarySceneDetect → summaryAlign → summarySubtitle → summaryTts → summaryRender`.
 - **Workers/queue:** BullMQ + Redis (`src/queue/`). `docker-compose.yml` services: `redis` (6379), `api` (3001), `worker` (profile `scale`), `web` (80). Redis NOT guaranteed running locally — probe via `npm run check:redis` or `/health`, never assume.
-- **Database:** SQLite via `sql.js` (`src/db/`), `DATABASE_URL=file:./data.db`. Seeds in `src/db/seed.js`.
+- **Database:** PostgreSQL (pg) via `DATABASE_URL=postgresql://...` (`.env`/compose). SQLite (sql.js) remains only as fallback for temp test DBs. Seeds in `src/db/seed.js`.
 - **FFmpeg:** via `src/media/ffmpeg.js` (+ `FFMPEG_PATH` in `backend/.env`). Probe `ffmpeg -version` / `ffprobe -version` (9.0.1-full_build confirmed 2026-10-28) — never assume; mark checks SKIP/BLOCKED if missing.
 - **AI services:** keys via env (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`); SMTP/quota vars in `docker-compose.yml`. Secrets: UNKNOWN values, never log.
 - **Docker:** `docker/api.Dockerfile`, `docker/web.Dockerfile`, `docker-compose.yml` as above.

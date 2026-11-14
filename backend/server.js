@@ -1,10 +1,11 @@
+import 'dotenv/config'
 import './src/config.js'
 import express from 'express'
 import cors from 'cors'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'node:fs'
-import { getDb, getDbPersistenceStats, getDbPersistenceHealth, PERSISTENCE_STATES } from './src/db.js'
+import { getDb, getDbPersistenceStats, getDbPersistenceHealth, PERSISTENCE_STATES, isPostgresMode } from './src/db.js'
 import { getWriteQueueStats } from './src/db/query.js'
 import { getRefreshFallbackStats } from './src/lib/refreshMetrics.js'
 import { getCleanupStats } from './src/services/projectCleanup.js'
@@ -167,7 +168,7 @@ async function start() {
   if (ff.ok) console.log(`[Media] ${ff.version}`)
   else console.warn(`[Media] FFmpeg chưa sẵn sàng — pipeline render sẽ thất bại. Cài FFmpeg hoặc đặt FFMPEG_PATH trong backend/.env`)
   await getDb()
-  console.log('[DB] SQLite initialized')
+  console.log(isPostgresMode() ? '[DB] PostgreSQL initialized' : '[DB] SQLite initialized')
   await initSchema()
   await seed()
   const uploadRecovery = await resumableUploadService.recoverUploadSessions()

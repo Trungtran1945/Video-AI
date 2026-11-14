@@ -139,8 +139,9 @@ if (hasDocker && redisStartedByUs) {
     try { child.kill('SIGKILL') } catch (_) {}
     try { fs.rmSync(tmpRoot, { recursive: true, force: true }) } catch {}
     if (redisStartedByUs) {
-      spawnSync('docker', ['compose', '-f', 'docker-compose.yml', '-f', 'docker-compose.redis-host.yml', 'down', '-v'], { cwd: repoRoot, encoding: 'utf8' })
-      console.log('PASS: ephemeral redis cleaned (down -v)')
+      spawnSync('docker', ['compose', '-f', 'docker-compose.yml', '-f', 'docker-compose.redis-host.yml', 'stop', 'redis'], { cwd: repoRoot, encoding: 'utf8' })
+      spawnSync('docker', ['compose', '-f', 'docker-compose.yml', '-f', 'docker-compose.redis-host.yml', 'rm', '-f', '-v', 'redis'], { cwd: repoRoot, encoding: 'utf8' })
+      console.log('PASS: ephemeral redis cleaned (stop + rm)')
     }
   }
 } else {

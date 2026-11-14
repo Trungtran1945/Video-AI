@@ -16,7 +16,7 @@ const assert = (condition, message) => {
 }
 
 const compose = fs.readFileSync(path.join(root, '..', 'docker-compose.yml'), 'utf8')
-assert(compose.includes('DB_PATH=/app/data/data.db'), 'Compose persists the sql.js file inside the mounted volume')
+assert(compose.includes('DATABASE_URL=postgresql://'), 'Compose configures the API to use PostgreSQL')
 assert(compose.includes('INSTANCE_MODE=single'), 'Compose API declares the single-writer invariant')
 assert(!compose.includes('INSTANCE_MODE=multi'), 'Compose never declares a multi-writer service')
 assert(!compose.includes('scale-disabled') && !/^\s{2}worker:/m.test(compose), 'Compose has no crash-loop placeholder worker service')

@@ -3,6 +3,57 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
+import pg from 'pg'
+
+const { Pool: PgPool, types: pgTypes } = pg
+
+// Configure pg type parsers for complete backward compatibility
+pgTypes.setTypeParser(114, (val) => val) // json -> raw string for application JSON.parse compatibility
+pgTypes.setTypeParser(3802, (val) => val) // jsonb -> raw string
+pgTypes.setTypeParser(20, (val) => Number(val)) // int8 / bigint / count(*) -> number
+pgTypes.setTypeParser(1700, (val) => Number(val)) // numeric / decimal -> number
+
+export function isPostgresMode() {
+  if (process.env.FORCE_SQLITE === '1' || process.env.FORCE_SQLITE === 'true') return false
+  if (process.env.DB_PATH) return false
+  const url = process.env.DATABASE_URL
+  return typeof url === 'string' && (url.startsWith('postgresql://') || url.startsWith('postgres://'))
+}
+
+let pgPool = null
+
+export function getPool() {
+  if (!pgPool) {
+    const connectionString = process.env.DATABASE_URL
+    const poolConfig = connectionString
+      ? { connectionString }
+      : {
+          host: process.env.DB_HOST || 'localhost',
+          port: Number(process.env.DB_PORT || 5433),
+          user: process.env.DB_USER || 'video_ai_user',
+          password: process.env.DB_PASSWORD || 'VideoAI_Secure_Db_2026!',
+          database: process.env.DB_NAME || 'video_ai',
+        }
+    pgPool = new PgPool({
+      ...poolConfig,
+      max: Number(process.env.DB_POOL_MAX || 20),
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000,
+    })
+    pgPool.on('error', (err) => {
+      console.error('[PostgreSQL Pool Error]', err?.message || err)
+    })
+  }
+  return pgPool
+}
+
+export async function closePool() {
+  if (pgPool) {
+    const p = pgPool
+    pgPool = null
+    await p.end()
+  }
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -113,6 +164,7 @@ function replacePersistedDatabase(tempPath) {
 }
 
 function acquireWriterLock() {
+  if (isPostgresMode()) return
   const mode = String(process.env.INSTANCE_MODE || 'single').toLowerCase()
   if (mode !== 'single') {
     throw new Error(`[DB] sql.js supports INSTANCE_MODE=single only (got ${mode})`)
@@ -149,6 +201,7 @@ function acquireWriterLock() {
 }
 
 export function releaseWriterLock() {
+  if (isPostgresMode()) return
   if (writerLockHeartbeat) {
     clearInterval(writerLockHeartbeat)
     writerLockHeartbeat = null
@@ -163,6 +216,15 @@ export function releaseWriterLock() {
 }
 
 export function getDbPersistenceStats() {
+  if (isPostgresMode()) {
+    return {
+      engine: 'postgresql',
+      lastSaveAt: new Date().toISOString(),
+      lastSaveDurationMs: 0,
+      lastSaveError: null,
+      writerLock: false,
+    }
+  }
   return {
     lastSaveAt,
     lastSaveDurationMs,
@@ -175,6 +237,17 @@ export function getDbPersistenceStats() {
 // → WRITE_BLOCKED (threshold reached; mutations must be rejected).
 // Any successful save resets the counter and returns to HEALTHY.
 export function getDbPersistenceHealth() {
+  if (isPostgresMode()) {
+    return {
+      engine: 'postgresql',
+      state: PERSISTENCE_STATES.HEALTHY,
+      consecutiveSaveFailures: 0,
+      lastSaveError: null,
+      lastSuccessfulSaveAt: new Date().toISOString(),
+      lastSaveDurationMs: 0,
+      maxSaveFailures: MAX_SAVE_FAILURES,
+    }
+  }
   return {
     state: persistenceState,
     consecutiveSaveFailures,
@@ -186,6 +259,16 @@ export function getDbPersistenceHealth() {
 }
 
 export async function getDb() {
+  if (isPostgresMode()) {
+    const pool = getPool()
+    if (!dbInitPromise) {
+      dbInitPromise = pool.query('SELECT 1').then(() => pool).catch((err) => {
+        dbInitPromise = null
+        throw err
+      })
+    }
+    return await dbInitPromise
+  }
   if (db) return db
   if (dbInitPromise) return dbInitPromise
   dbInitPromise = (async () => {
@@ -215,6 +298,7 @@ export async function getDb() {
 }
 
 export function save() {
+  if (isPostgresMode()) return
   if (!db) return
   const startedAt = Date.now()
   const data = db.export()
@@ -263,11 +347,13 @@ export function save() {
 // Health accounting (HEALTHY/DEGRADED/WRITE_BLOCKED, DB_MAX_SAVE_FAILURES)
 // lives entirely inside save() and is untouched by the rollback.
 export function captureMemorySnapshot() {
+  if (isPostgresMode()) return null
   if (!db) throw new Error('[DB] database is not initialized')
   return db.export()
 }
 
 export function persistOrRollback(snapshot) {
+  if (isPostgresMode()) return
   try {
     save()
   } catch (error) {
@@ -283,6 +369,7 @@ export function persistOrRollback(snapshot) {
 // Rebuild the in-memory database from a snapshot taken before a mutation.
 // The old handle is closed so nothing can keep reading the discarded state.
 export function restoreMemorySnapshot(snapshot) {
+  if (isPostgresMode()) return null
   if (!sqlModule) throw new Error('[DB] sql.js module is not initialized')
   const previous = db
   db = new sqlModule.Database(snapshot)
@@ -293,12 +380,23 @@ export function restoreMemorySnapshot(snapshot) {
   return db
 }
 
-process.once('exit', releaseWriterLock)
+process.once('exit', () => {
+  releaseWriterLock()
+  if (isPostgresMode()) {
+    closePool().catch(() => {})
+  }
+})
 process.once('SIGINT', () => {
   releaseWriterLock()
+  if (isPostgresMode()) {
+    closePool().catch(() => {})
+  }
   process.exit(130)
 })
 process.once('SIGTERM', () => {
   releaseWriterLock()
+  if (isPostgresMode()) {
+    closePool().catch(() => {})
+  }
   process.exit(143)
 })
