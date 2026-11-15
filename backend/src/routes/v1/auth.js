@@ -17,6 +17,11 @@ import { noteRefreshFallback } from '../../lib/refreshMetrics.js'
 import { config } from '../../config.js'
 import { cookieCsrf } from '../../middleware/cookieCsrf.js'
 import { generateNumericOtp, hashOtp, sendOtpEmail, OTP_TTL_SECONDS } from '../../services/emailService.js'
+import {
+  verifyGoogleIdToken,
+  __setGoogleOAuthClientForTest,
+  __resetGoogleOAuthClientForTest,
+} from '../../services/googleAuthService.js'
 
 const router = Router()
 
@@ -133,97 +138,12 @@ export function isValidEmail(email) {
   return typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
 }
 
-export async function decodeOrVerifyGoogleCredential(rawCredential) {
-  if (!rawCredential) return null
-
-  let cred = rawCredential
-  if (typeof cred === 'string') {
-    const trimmed = cred.trim()
-    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-      try {
-        cred = JSON.parse(trimmed)
-      } catch (_) {}
-    }
-  }
-
-  if (typeof cred === 'object' && cred !== null) {
-    if (cred.credential && typeof cred.credential !== 'object') {
-      return decodeOrVerifyGoogleCredential(cred.credential)
-    }
-    if (cred.email && (cred.sub || cred.id || cred.googleId)) {
-      return {
-        email: String(cred.email).trim().toLowerCase(),
-        name: cred.name || cred.email.split('@')[0],
-        googleId: String(cred.sub || cred.id || cred.googleId),
-        avatar: cred.picture || cred.avatar || null,
-        emailVerified: cred.email_verified !== false,
-      }
-    }
-  }
-
-  const tokenStr = String(cred).trim()
-  const parts = tokenStr.split('.')
-  if (parts.length === 3) {
-    let payload = null
-    try {
-      const decodedPayload = Buffer.from(parts[1], 'base64url').toString('utf8')
-      payload = JSON.parse(decodedPayload)
-    } catch (_) {
-      try {
-        const decodedPayload = Buffer.from(parts[1], 'base64').toString('utf8')
-        payload = JSON.parse(decodedPayload)
-      } catch (_) {}
-    }
-
-    if (payload && payload.email && (payload.sub || payload.id)) {
-      return {
-        email: String(payload.email).trim().toLowerCase(),
-        name: payload.name || payload.email.split('@')[0],
-        googleId: String(payload.sub || payload.id),
-        avatar: payload.picture || payload.avatar || null,
-        emailVerified: payload.email_verified !== false,
-      }
-    }
-  }
-
-  return null
+export {
+  verifyGoogleIdToken,
+  __setGoogleOAuthClientForTest,
+  __resetGoogleOAuthClientForTest,
 }
-
-async function verifyGoogleToken(rawCredential) {
-  if (!rawCredential) return null
-
-  const decoded = await decodeOrVerifyGoogleCredential(rawCredential)
-  if (decoded && process.env.NODE_ENV === 'test') {
-    return decoded
-  }
-
-  if (typeof rawCredential === 'string' && !rawCredential.startsWith('{') && !rawCredential.startsWith('mock')) {
-    try {
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 3000)
-      const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(rawCredential.trim())}`, {
-        signal: controller.signal,
-      })
-      clearTimeout(timeout)
-      if (res.ok) {
-        const data = await res.json()
-        if (data && data.email && data.sub) {
-          return {
-            email: String(data.email).trim().toLowerCase(),
-            name: data.name || data.email.split('@')[0],
-            googleId: String(data.sub),
-            avatar: data.picture || null,
-            emailVerified: data.email_verified === 'true' || data.email_verified === true,
-          }
-        }
-      }
-    } catch (_) {
-      // Fallback to local decoded token
-    }
-  }
-
-  return decoded
-}
+export const verifyGoogleToken = verifyGoogleIdToken
 
 // POST /api/v1/auth/register
 router.post('/register', async (req, res) => {
@@ -507,9 +427,12 @@ router.post('/login', async (req, res) => {
 // POST /api/v1/auth/google
 router.post('/google', async (req, res) => {
   try {
-    const rawCredential = req.body?.credential || req.body?.token || req.body?.idToken || req.body
-    if (!rawCredential) {
-      return sendError(res, 400, ERR.VALIDATION, 'Google credential is required', { field: 'credential' })
+    const rawToken = req.body && typeof req.body === 'object'
+      ? (req.body.credential || req.body.idToken || req.body.token)
+      : (typeof req.body === 'string' ? req.body : null)
+
+    if (!rawToken || typeof rawToken !== 'string' || !rawToken.trim()) {
+      return sendError(res, 400, ERR.VALIDATION, 'Google ID Token is required', { field: 'credential' })
     }
 
     const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown'
@@ -518,33 +441,64 @@ router.post('/google', async (req, res) => {
       return sendError(res, 429, 'RATE_LIMITED', 'Quá nhiều yêu cầu đăng nhập Google từ IP này. Vui lòng thử lại sau.', { retryAfterSec: ipWait })
     }
 
-    const verified = await verifyGoogleToken(rawCredential)
-    if (!verified || !verified.email || !verified.googleId) {
+    const verified = await verifyGoogleIdToken(rawToken)
+    if (!verified || !verified.email || !verified.sub) {
       return sendError(res, 401, 'INVALID_GOOGLE_TOKEN', 'Google token không hợp lệ hoặc đã hết hạn')
     }
 
-    const { email, name, googleId, avatar } = verified
+    const { email, name, sub: googleId, avatar } = verified
 
-    let user = await queryOne(`SELECT * FROM users WHERE google_id = ? OR email = ?`, [googleId, email])
+    // 1. Find user by Google subject ID (sub)
+    let user = await queryOne(`SELECT * FROM users WHERE google_id = ?`, [googleId])
 
     if (user) {
+      // User found by Google subject ID -> login
       await run(
-        `UPDATE users SET google_id = COALESCE(google_id, ?), avatar = COALESCE(?, avatar), email_verified = true WHERE id = ?`,
-        [googleId, avatar, user.id]
+        `UPDATE users SET avatar = COALESCE(avatar, ?), email_verified = true WHERE id = ?`,
+        [avatar, user.id]
       )
       user = await queryOne(`SELECT * FROM users WHERE id = ?`, [user.id])
     } else {
-      const dummyPassword = await bcrypt.hash(uuidv4(), 10)
-      user = await insert('users', {
-        id: uuidv4(),
-        email,
-        password: dummyPassword,
-        role: 'user',
-        name: name || email.split('@')[0],
-        google_id: googleId,
-        avatar: avatar || null,
-        email_verified: true,
-      })
+      // 2. Not found by google_id: check if account with this verified email exists
+      const existingUser = await queryOne(`SELECT * FROM users WHERE email = ?`, [email])
+      if (existingUser) {
+        // Prevent account collision/takeover if existing account is already linked to another Google ID
+        if (existingUser.google_id && existingUser.google_id !== googleId) {
+          return sendError(
+            res,
+            409,
+            'GOOGLE_ACCOUNT_CONFLICT',
+            'Tài khoản email này đã được liên kết với một tài khoản Google khác.'
+          )
+        }
+        // Link Google ID to existing account
+        await run(
+          `UPDATE users SET google_id = ?, avatar = COALESCE(avatar, ?), email_verified = true WHERE id = ?`,
+          [googleId, avatar, existingUser.id]
+        )
+        user = await queryOne(`SELECT * FROM users WHERE id = ?`, [existingUser.id])
+      } else {
+        // 3. Neither exists: create new user with safe race-condition handling
+        const dummyPassword = await bcrypt.hash(uuidv4(), 10)
+        try {
+          user = await insert('users', {
+            id: uuidv4(),
+            email,
+            password: dummyPassword,
+            role: 'user',
+            name: name || email.split('@')[0],
+            google_id: googleId,
+            avatar: avatar || null,
+            email_verified: true,
+          })
+        } catch (insertErr) {
+          // If concurrent request inserted the user, re-query
+          user = await queryOne(`SELECT * FROM users WHERE google_id = ? OR email = ?`, [googleId, email])
+          if (!user) {
+            throw insertErr
+          }
+        }
+      }
     }
 
     const accessToken = generateAccessToken(user)

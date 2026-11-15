@@ -16,7 +16,7 @@ const { initSchema } = await import('../src/db/schema.js')
 const { insert, queryOne, query, run } = await import('../src/db/query.js')
 const { sha256 } = await import('../src/lib/crypto.js')
 const authRouter = (await import('../src/routes/v1/auth.js')).default
-const { __resetAuthRateLimitsForTests } = await import('../src/routes/v1/auth.js')
+const { __resetAuthRateLimitsForTests, __setGoogleOAuthClientForTest } = await import('../src/routes/v1/auth.js')
 const { hashOtp } = await import('../src/services/emailService.js')
 
 await initSchema()
@@ -165,6 +165,34 @@ console.log('\n--- 4. Đăng nhập bằng Google (POST /api/v1/auth/google) ---
 {
   __resetAuthRateLimitsForTests()
 
+  // Thiết lập mock OAuth2Client cho unit test
+  __setGoogleOAuthClientForTest({
+    async verifyIdToken({ idToken, audience }) {
+      if (!idToken || idToken === 'invalid.token.here') {
+        throw new Error('Invalid token signature or expired')
+      }
+      const parts = idToken.split('.')
+      if (parts.length !== 3) {
+        throw new Error('Invalid JWT format')
+      }
+      let payload
+      try {
+        payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+      } catch (_) {
+        throw new Error('Malformed payload')
+      }
+      return {
+        getPayload: () => ({
+          iss: 'https://accounts.google.com',
+          aud: audience || process.env.GOOGLE_CLIENT_ID || 'mock-google-client-id',
+          exp: Math.floor(Date.now() / 1000) + 3600,
+          email_verified: true,
+          ...payload,
+        }),
+      }
+    },
+  })
+
   // 4a. Tạo user mới với Google Sign-In
   const googlePayload = {
     sub: 'google-uid-10001',
@@ -216,6 +244,7 @@ console.log('\n--- 4. Đăng nhập bằng Google (POST /api/v1/auth/google) ---
     email: existingLocalEmail,
     name: 'Local User Updated',
     picture: 'https://lh3.googleusercontent.com/avatar_link.jpg',
+    email_verified: true,
   })
   const resLink = await post('/google', { credential: linkJwt })
   const bodyLink = await resLink.json()
@@ -226,9 +255,49 @@ console.log('\n--- 4. Đăng nhập bằng Google (POST /api/v1/auth/google) ---
   assert(linkedUser.google_id === 'google-uid-link-999', 'google_id đã được cập nhật vào user')
   assert(Boolean(linkedUser.email_verified) === true, 'email_verified đã được nâng cấp thành true')
 
-  // 4d. Token không hợp lệ
+  // 4d. Token không hợp lệ trả về 401
   const invalidRes = await post('/google', { credential: 'invalid.token.here' })
   assert(invalidRes.status === 401, 'Token không hợp lệ trả về 401')
+
+  // 4e. Fail-closed: Chặn raw object / payload giả mạo không có JWT
+  const rawObjRes = await post('/google', { email: 'hacker@example.com', googleId: 'fake-sub' })
+  assert(rawObjRes.status === 400, 'Gửi raw object { email, googleId } bị chặn 400')
+
+  // 4f. Fail-closed: Chặn token có email_verified === false
+  const unverifiedEmailJwt = makeMockGoogleJwt({
+    sub: 'google-uid-unverified',
+    email: 'unverified@example.com',
+    email_verified: false,
+  })
+  const unverifiedRes = await post('/google', { credential: unverifiedEmailJwt })
+  assert(unverifiedRes.status === 401, 'Google account có email_verified: false bị từ chối 401')
+
+  // 4g. Fail-closed: Chặn token có expired timestamp
+  const expiredJwt = makeMockGoogleJwt({
+    sub: 'google-uid-expired',
+    email: 'expired@example.com',
+    exp: Math.floor(Date.now() / 1000) - 300,
+  })
+  const expiredRes = await post('/google', { credential: expiredJwt })
+  assert(expiredRes.status === 401, 'Token Google đã hết hạn bị từ chối 401')
+
+  // 4h. Fail-closed: Chặn token sai issuer
+  const badIssuerJwt = makeMockGoogleJwt({
+    sub: 'google-uid-bad-issuer',
+    email: 'badiss@example.com',
+    iss: 'https://evil-issuer.com',
+  })
+  const badIssuerRes = await post('/google', { credential: badIssuerJwt })
+  assert(badIssuerRes.status === 401, 'Token sai issuer bị từ chối 401')
+
+  // 4i. Chống Account Takeover: Ngăn chặn liên kết nếu tài khoản đã liên kết với Google ID khác
+  const conflictJwt = makeMockGoogleJwt({
+    sub: 'another-google-sub-hacker',
+    email: existingLocalEmail, // Cố tình dùng cùng email của local-user-id-55 (đã link với google-uid-link-999)
+    email_verified: true,
+  })
+  const conflictRes = await post('/google', { credential: conflictJwt })
+  assert(conflictRes.status === 409, 'Cố liên kết Google ID khác vào tài khoản đã gắn Google ID trả về 409 GOOGLE_ACCOUNT_CONFLICT')
 }
 
 console.log('\n--- 5. Rate Limiting cho Đăng nhập thường (POST /api/v1/auth/login) ---')

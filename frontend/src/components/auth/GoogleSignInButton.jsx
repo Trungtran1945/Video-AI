@@ -1,7 +1,11 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
-import { Loader2 } from "lucide-react";
+import { Loader2, AlertCircle, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+
+const SCRIPT_ID = "google-gsi-client";
+const SCRIPT_SRC = "https://accounts.google.com/gsi/client";
+const LOAD_TIMEOUT_MS = 10000;
 
 export function GoogleIcon({ className = "w-4 h-4" }) {
   return (
@@ -30,113 +34,250 @@ GoogleIcon.propTypes = {
   className: PropTypes.string,
 };
 
+/**
+ * Maps custom button text to Google Identity Services standard enum values:
+ * 'signin_with' | 'signup_with' | 'continue_with' | 'signin'
+ */
+function resolveGsiText(text) {
+  if (!text || typeof text !== "string") return "signin_with";
+  const lower = text.toLowerCase();
+  if (lower.includes("ký") || lower.includes("sign up") || lower.includes("signup") || lower.includes("register")) {
+    return "signup_with";
+  }
+  if (lower.includes("tiếp tục") || lower.includes("continue")) {
+    return "continue_with";
+  }
+  return "signin_with";
+}
+
 export default function GoogleSignInButton({
   onSuccess,
   onError,
-  text = "Tiếp tục với Google",
+  text = "Đăng nhập với Google",
   disabled = false,
   className = "",
+  theme = "outline",
+  size = "large",
+  shape = "rectangular",
+  logoAlignment = "left",
+  width,
 }) {
-  const [loading, setLoading] = useState(false);
+  const containerRef = useRef(null);
+  const isSubmittingRef = useRef(false);
+
+  // SDK status: 'idle' | 'loading' | 'ready' | 'error'
+  const [sdkStatus, setSdkStatus] = useState("loading");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
 
-  useEffect(() => {
-    if (!clientId) return;
-
-    // Load Google Identity Services script if not already loaded
-    if (!window.google && !document.getElementById("google-gsi-client")) {
-      const script = document.createElement("script");
-      script.id = "google-gsi-client";
-      script.src = "https://accounts.google.com/gsi/client";
-      script.async = true;
-      script.defer = true;
-      document.body.appendChild(script);
+  // Helper to load or verify Google Identity Services script
+  const loadGsiScript = useCallback(() => {
+    if (!clientId) {
+      setSdkStatus("error");
+      setErrorMessage("Chưa cấu hình Google Client ID (VITE_GOOGLE_CLIENT_ID).");
+      return;
     }
+
+    if (window.google?.accounts?.id) {
+      setSdkStatus("ready");
+      setErrorMessage("");
+      return;
+    }
+
+    setSdkStatus("loading");
+    setErrorMessage("");
+
+    let existingScript = document.getElementById(SCRIPT_ID);
+    let timer = null;
+
+    const handleSuccess = () => {
+      if (timer) clearTimeout(timer);
+      if (window.google?.accounts?.id) {
+        setSdkStatus("ready");
+      } else {
+        setSdkStatus("error");
+        setErrorMessage("Dịch vụ Google Identity không khởi tạo được.");
+      }
+    };
+
+    const handleError = () => {
+      if (timer) clearTimeout(timer);
+      setSdkStatus("error");
+      setErrorMessage("Không thể tải dịch vụ Google. Vui lòng kiểm tra kết nối mạng hoặc tiện ích chặn quảng cáo.");
+    };
+
+    timer = setTimeout(() => {
+      if (!window.google?.accounts?.id) {
+        setSdkStatus("error");
+        setErrorMessage("Hết thời gian kết nối tới Google Identity Services.");
+      }
+    }, LOAD_TIMEOUT_MS);
+
+    if (existingScript) {
+      if (existingScript.getAttribute("data-loaded") === "true") {
+        handleSuccess();
+      } else {
+        existingScript.addEventListener("load", handleSuccess, { once: true });
+        existingScript.addEventListener("error", handleError, { once: true });
+      }
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.id = SCRIPT_ID;
+    script.src = SCRIPT_SRC;
+    script.async = true;
+    script.defer = true;
+    script.addEventListener("load", () => {
+      script.setAttribute("data-loaded", "true");
+      handleSuccess();
+    }, { once: true });
+    script.addEventListener("error", handleError, { once: true });
+
+    document.head.appendChild(script);
   }, [clientId]);
 
-  const handleGoogleClick = async () => {
-    if (disabled || loading) return;
-    setLoading(true);
+  useEffect(() => {
+    loadGsiScript();
+  }, [loadGsiScript]);
+
+  // Handle Google Credential Response
+  const handleCredentialResponse = useCallback(
+    async (response) => {
+      if (isSubmittingRef.current) return;
+
+      if (!response?.credential) {
+        const errorObj = new Error("Không nhận được chứng thực hợp lệ từ Google.");
+        if (onError) onError(errorObj);
+        return;
+      }
+
+      isSubmittingRef.current = true;
+      setIsAuthenticating(true);
+
+      try {
+        if (onSuccess) {
+          // Pass the genuine Google ID Token string to consumer
+          await onSuccess(response.credential);
+        }
+      } catch (err) {
+        console.error("Google authentication error:", err);
+        if (onError) onError(err);
+      } finally {
+        isSubmittingRef.current = false;
+        setIsAuthenticating(false);
+      }
+    },
+    [onSuccess, onError]
+  );
+
+  // Render official Google button when SDK is ready and DOM ref is attached
+  useEffect(() => {
+    if (sdkStatus !== "ready" || !containerRef.current || !window.google?.accounts?.id || !clientId) {
+      return;
+    }
 
     try {
-      // 1. If Google Identity Services is available and client ID is set
-      if (window.google?.accounts?.id && clientId) {
-        window.google.accounts.id.initialize({
-          client_id: clientId,
-          callback: async (response) => {
-            try {
-              if (response?.credential && onSuccess) {
-                await onSuccess(response.credential);
-              }
-            } catch (err) {
-              if (onError) onError(err);
-            } finally {
-              setLoading(false);
-            }
-          },
-        });
-        window.google.accounts.id.prompt();
-        return;
+      // 1. Initialize Google Identity Services
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: handleCredentialResponse,
+        auto_select: false,
+        cancel_on_tap_outside: true,
+      });
+
+      // 2. Clear container to prevent duplicate iframes
+      containerRef.current.innerHTML = "";
+
+      // 3. Calculate button width clamped to Google's constraints [200, 400]
+      let resolvedWidth;
+      if (typeof width === "number") {
+        resolvedWidth = Math.min(400, Math.max(200, width));
+      } else if (typeof width === "string" && !isNaN(parseInt(width, 10))) {
+        resolvedWidth = Math.min(400, Math.max(200, parseInt(width, 10)));
+      } else {
+        const containerWidth = containerRef.current.offsetWidth || 380;
+        resolvedWidth = Math.min(400, Math.max(200, containerWidth));
       }
 
-      // 2. Dev / Local fallback: Prompt user for mock/simulated Google account
-      const defaultEmail = "google.user@example.com";
-      const emailInput = window.prompt(
-        "Đăng nhập bằng tài khoản Google:\nNhập địa chỉ email Google để tiếp tục thử nghiệm:",
-        defaultEmail
-      );
-
-      if (!emailInput || !emailInput.trim()) {
-        setLoading(false);
-        return;
-      }
-
-      const cleanEmail = emailInput.trim();
-      // Generate standard mock Google credential JWT / payload
-      const mockPayload = {
-        iss: "https://accounts.google.com",
-        sub: "google-uid-" + Math.random().toString(36).slice(2, 10),
-        email: cleanEmail,
-        email_verified: true,
-        name: cleanEmail.split("@")[0],
-        picture: "https://lh3.googleusercontent.com/a/default-user",
+      const buttonConfig = {
+        type: "standard",
+        theme: theme || "outline",
+        size: size || "large",
+        text: resolveGsiText(text),
+        shape: shape || "rectangular",
+        logo_alignment: logoAlignment || "left",
+        width: resolvedWidth,
+        locale: "vi",
       };
 
-      // Base64url encode simulated JWT payload for credential
-      const header = btoa(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-      const payload = btoa(JSON.stringify(mockPayload));
-      const simulatedCredential = `${header}.${payload}.simulated_signature`;
-
-      if (onSuccess) {
-        await onSuccess({
-          credential: simulatedCredential,
-          email: cleanEmail,
-          name: mockPayload.name,
-        });
-      }
+      // 4. Render official Google button
+      window.google.accounts.id.renderButton(containerRef.current, buttonConfig);
     } catch (err) {
-      console.error("Google sign-in error:", err);
-      if (onError) onError(err);
-    } finally {
-      setLoading(false);
+      console.error("Error rendering Google Identity button:", err);
+      setSdkStatus("error");
+      setErrorMessage("Không thể kết xuất nút Google Identity.");
     }
-  };
+  }, [sdkStatus, clientId, text, theme, size, shape, logoAlignment, width, handleCredentialResponse]);
+
+  // Loading state placeholder with matching height to prevent layout shift
+  if (sdkStatus === "loading") {
+    return (
+      <div
+        className={`w-full min-h-[44px] sm:min-h-[48px] rounded-xl border border-border/80 bg-background/50 flex items-center justify-center gap-2.5 text-xs sm:text-sm text-muted-foreground font-medium transition-all ${className}`}
+        aria-busy="true"
+        aria-label="Đang kết nối dịch vụ Google"
+      >
+        <Loader2 className="w-4 h-4 animate-spin text-primary" />
+        <span>Đang kết nối Google...</span>
+      </div>
+    );
+  }
+
+  // Error state with retry action
+  if (sdkStatus === "error") {
+    return (
+      <div className={`w-full space-y-2 ${className}`}>
+        <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/25 text-destructive text-xs sm:text-sm font-medium flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span className="flex-1 leading-snug">{errorMessage || "Không thể kết nối dịch vụ Google."}</span>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={loadGsiScript}
+          className="w-full h-9 rounded-lg text-xs font-semibold border-border/80 hover:bg-muted cursor-pointer flex items-center justify-center gap-1.5"
+        >
+          <RotateCw className="w-3.5 h-3.5" />
+          <span>Thử lại kết nối Google</span>
+        </Button>
+      </div>
+    );
+  }
+
+  // Ready state: container for Google's official rendered button
+  const isDisabled = disabled || isAuthenticating;
 
   return (
-    <Button
-      type="button"
-      variant="outline"
-      onClick={handleGoogleClick}
-      disabled={disabled || loading}
-      className={`w-full h-11 sm:h-12 border-border/80 bg-background/80 hover:bg-muted font-semibold text-xs sm:text-sm text-foreground flex items-center justify-center gap-2.5 rounded-xl shadow-xs transition-all cursor-pointer ${className}`}
+    <div
+      className={`relative w-full flex justify-center items-center min-h-[44px] sm:min-h-[48px] transition-opacity ${
+        isDisabled ? "pointer-events-none opacity-60" : ""
+      } ${className}`}
     >
-      {loading ? (
-        <Loader2 className="w-4 h-4 animate-spin text-primary" />
-      ) : (
-        <GoogleIcon className="w-4 h-4 shrink-0" />
+      {/* Official Google rendered iframe will mount inside this container */}
+      <div ref={containerRef} className="w-full flex justify-center items-center" />
+
+      {/* Authenticating overlay for double-click protection */}
+      {isAuthenticating && (
+        <div className="absolute inset-0 bg-background/70 backdrop-blur-[1px] flex items-center justify-center rounded-xl z-10 gap-2 text-xs sm:text-sm font-semibold text-foreground animate-in fade-in-50">
+          <Loader2 className="w-4 h-4 animate-spin text-primary" />
+          <span>Đang xác thực Google...</span>
+        </div>
       )}
-      <span>{text}</span>
-    </Button>
+    </div>
   );
 }
 
@@ -146,4 +287,9 @@ GoogleSignInButton.propTypes = {
   text: PropTypes.string,
   disabled: PropTypes.bool,
   className: PropTypes.string,
+  theme: PropTypes.oneOf(["outline", "filled_blue", "filled_black"]),
+  size: PropTypes.oneOf(["large", "medium", "small"]),
+  shape: PropTypes.oneOf(["rectangular", "pill", "circle", "square"]),
+  logoAlignment: PropTypes.oneOf(["left", "center"]),
+  width: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
 };

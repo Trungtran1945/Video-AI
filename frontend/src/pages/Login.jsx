@@ -260,43 +260,7 @@ export default function Login() {
       title="Chào mừng trở lại"
       subtitle="Đăng nhập vào tài khoản AI Shorts Factory của bạn"
       shapeType="crystalTorus"
-      footer={
-        <>
-          Chưa có tài khoản?{" "}
-          <Link
-            to="/register"
-            className="text-primary font-bold hover:underline transition-colors"
-          >
-            Đăng ký ngay
-          </Link>
-        </>
-      }
     >
-      {/* Đăng nhập nhanh bằng Google */}
-      <div className="mb-5 space-y-4">
-        {googleError && (
-          <div className="p-3.5 rounded-xl bg-destructive/15 border border-destructive/30 text-destructive text-xs sm:text-sm font-medium">
-            {googleError}
-          </div>
-        )}
-
-        <GoogleSignInButton
-          onSuccess={handleGoogleSuccess}
-          onError={handleGoogleError}
-          text="Đăng nhập với Google"
-          disabled={passwordLoading || isSendingOtp || isVerifyingOtp || googleLoading}
-        />
-
-        <div className="relative flex items-center justify-center my-2">
-          <div className="absolute inset-0 flex items-center">
-            <div className="w-full border-t border-border/80" />
-          </div>
-          <div className="relative px-3 bg-card text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
-            Hoặc tiếp tục với
-          </div>
-        </div>
-      </div>
-
       {/* Tabs chuyển đổi giữa Mật khẩu và Email OTP */}
       <Tabs value={authMode} onValueChange={handleTabChange} className="w-full">
         <TabsList className="grid w-full grid-cols-2 mb-5 h-11 bg-muted/60 p-1 rounded-xl">
@@ -394,7 +358,7 @@ export default function Login() {
 
             <Button
               type="submit"
-              className="w-full h-11 sm:h-12 font-bold text-sm sm:text-base rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 transition-all mt-2"
+              className="w-full h-11 sm:h-12 font-bold text-sm sm:text-base rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 transition-all mt-2 cursor-pointer"
               disabled={passwordLoading}
             >
               {passwordLoading ? (
@@ -405,6 +369,17 @@ export default function Login() {
               ) : (
                 "Đăng nhập"
               )}
+            </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              asChild
+              className="w-full h-11 sm:h-12 font-semibold text-sm sm:text-base rounded-xl border-border/80 bg-background/50 hover:bg-muted/80 text-foreground transition-all mt-2 cursor-pointer"
+            >
+              <Link to="/register">
+                Đăng ký tài khoản
+              </Link>
             </Button>
           </form>
         </TabsContent>
@@ -459,7 +434,7 @@ export default function Login() {
 
               <Button
                 type="submit"
-                className="w-full h-11 sm:h-12 font-bold text-sm sm:text-base rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 transition-all mt-2"
+                className="w-full h-11 sm:h-12 font-bold text-sm sm:text-base rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 transition-all mt-2 cursor-pointer"
                 disabled={isSendingOtp || !otpEmail.trim()}
               >
                 {isSendingOtp ? (
@@ -473,6 +448,17 @@ export default function Login() {
                     Gửi mã xác thực OTP
                   </>
                 )}
+              </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                asChild
+                className="w-full h-11 sm:h-12 font-semibold text-sm sm:text-base rounded-xl border-border/80 bg-background/50 hover:bg-muted/80 text-foreground transition-all mt-2 cursor-pointer"
+              >
+                <Link to="/register">
+                  Đăng ký tài khoản
+                </Link>
               </Button>
             </form>
           )}
@@ -534,7 +520,7 @@ export default function Login() {
 
               <Button
                 type="submit"
-                className="w-full h-11 sm:h-12 font-bold text-sm sm:text-base rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 transition-all mt-2"
+                className="w-full h-11 sm:h-12 font-bold text-sm sm:text-base rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 transition-all mt-2 cursor-pointer"
                 disabled={isVerifyingOtp || otp.length !== 6 || otpSuccess}
               >
                 {isVerifyingOtp ? (
@@ -554,10 +540,47 @@ export default function Login() {
                   </>
                 )}
               </Button>
+
+              <Button
+                type="button"
+                variant="outline"
+                asChild
+                className="w-full h-11 sm:h-12 font-semibold text-sm sm:text-base rounded-xl border-border/80 bg-background/50 hover:bg-muted/80 text-foreground transition-all mt-2 cursor-pointer"
+              >
+                <Link to="/register">
+                  Đăng ký tài khoản
+                </Link>
+              </Button>
             </form>
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Divider với chữ "Hoặc" */}
+      <div className="relative flex items-center justify-center my-4 sm:my-5">
+        <div className="absolute inset-0 flex items-center">
+          <div className="w-full border-t border-border/80" />
+        </div>
+        <div className="relative px-3 bg-card text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+          Hoặc
+        </div>
+      </div>
+
+      {/* Đăng nhập bằng Google */}
+      <div className="space-y-3">
+        {googleError && (
+          <div className="p-3.5 rounded-xl bg-destructive/15 border border-destructive/30 text-destructive text-xs sm:text-sm font-medium">
+            {googleError}
+          </div>
+        )}
+
+        <GoogleSignInButton
+          onSuccess={handleGoogleSuccess}
+          onError={handleGoogleError}
+          text="Đăng nhập với Google"
+          disabled={passwordLoading || isSendingOtp || isVerifyingOtp || googleLoading}
+        />
+      </div>
     </AuthLayout>
   );
 }

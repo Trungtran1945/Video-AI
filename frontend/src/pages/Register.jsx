@@ -204,14 +204,6 @@ export default function Register() {
           : "Bắt đầu sản xuất video Shorts tự động ngay hôm nay"
       }
       shapeType="orbitalGyro"
-      footer={
-        <>
-          Đã có tài khoản?{" "}
-          <Link to="/login" className="text-primary font-bold hover:underline transition-colors">
-            Đăng nhập
-          </Link>
-        </>
-      }
     >
       {error && (
         <div className="mb-4 p-3.5 rounded-xl bg-destructive/15 border border-destructive/30 text-destructive text-xs sm:text-sm font-medium leading-relaxed">
@@ -241,23 +233,6 @@ export default function Register() {
 
       {step === "form" ? (
         <div className="space-y-4">
-          {/* Google Sign-In Option */}
-          <GoogleSignInButton
-            onSuccess={handleGoogleSuccess}
-            onError={handleGoogleError}
-            text="Đăng ký nhanh với Google"
-            disabled={loading}
-          />
-
-          <div className="relative flex items-center justify-center my-3">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-border/80" />
-            </div>
-            <div className="relative px-3 bg-card text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
-              Hoặc với email
-            </div>
-          </div>
-
           <form onSubmit={handleFormSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="name" className="text-foreground font-semibold text-xs sm:text-sm">
@@ -365,7 +340,36 @@ export default function Register() {
                 "Nhận mã OTP để đăng ký"
               )}
             </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              asChild
+              className="w-full h-11 sm:h-12 font-semibold text-sm sm:text-base rounded-xl border-border/80 bg-background/50 hover:bg-muted/80 text-foreground transition-all mt-2 cursor-pointer"
+            >
+              <Link to="/login">
+                Đã có tài khoản? Đăng nhập
+              </Link>
+            </Button>
           </form>
+
+          {/* Divider với chữ "Hoặc" */}
+          <div className="relative flex items-center justify-center my-4 sm:my-5">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-border/80" />
+            </div>
+            <div className="relative px-3 bg-card text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+              Hoặc
+            </div>
+          </div>
+
+          {/* Google Sign-In Option */}
+          <GoogleSignInButton
+            onSuccess={handleGoogleSuccess}
+            onError={handleGoogleError}
+            text="Đăng ký nhanh với Google"
+            disabled={loading}
+          />
         </div>
       ) : (
         /* Step 2: OTP Verification */
