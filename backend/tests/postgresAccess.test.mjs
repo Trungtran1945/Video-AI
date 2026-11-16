@@ -31,6 +31,39 @@ await initSchema()
 
 console.log('=== PostgreSQL Database Access Layer Verification Suite ===\n')
 
+if (!isPostgresMode()) {
+  console.log('SKIP: PostgreSQL is not configured (DATABASE_URL not set). Running SQL Converter & Sanitizer unit tests.')
+
+  // 2. SQL Converter verification
+  const testSql1 = 'SELECT * FROM users WHERE email = ? AND role = ?'
+  assert.equal(convertSqlForPostgres(testSql1), 'SELECT * FROM users WHERE email = $1 AND role = $2')
+
+  const testSql2 = "SELECT * FROM projects WHERE title = 'What?' AND user_id = ?"
+  assert.equal(convertSqlForPostgres(testSql2), "SELECT * FROM projects WHERE title = 'What?' AND user_id = $1")
+
+  const testSql3 = 'INSERT OR IGNORE INTO settings (user_id) VALUES (?)'
+  assert.equal(convertSqlForPostgres(testSql3), 'INSERT INTO settings (user_id) VALUES ($1) ON CONFLICT DO NOTHING')
+
+  const testSql4 = 'SELECT * FROM outputs WHERE project_id = ? ORDER BY created_date DESC, rowid DESC LIMIT 1'
+  assert.equal(convertSqlForPostgres(testSql4), 'SELECT * FROM outputs WHERE project_id = $1 ORDER BY created_date DESC, ctid DESC LIMIT 1')
+
+  const testSql5 = 'INSERT OR REPLACE INTO provider_cache (id, provider, type, input_hash, result, expires_date) VALUES (?, ?, ?, ?, ?, ?)'
+  const converted5 = convertSqlForPostgres(testSql5)
+  assert.ok(converted5.includes('ON CONFLICT (provider, type, input_hash) DO UPDATE'), 'Should convert provider_cache UPSERT')
+  console.log('✓ SQL Dialect Converter PASSED')
+
+  // 3. Sanitizer verification
+  assert.equal(sanitizeVal(undefined), null)
+  assert.equal(sanitizeVal('text'), 'text')
+  assert.equal(sanitizeVal(123), 123)
+  assert.equal(sanitizeVal({ key: 'val' }), '{"key":"val"}')
+  assert.deepEqual(sanitizeParams([1, { a: 2 }, undefined]), [1, '{"a":2}', null])
+  console.log('✓ Parameter Sanitizer PASSED')
+
+  console.log('\nALL PASS (Unit tests only; live PostgreSQL connection skipped)')
+  process.exit(0)
+}
+
 // 1. Mode & Pool verification
 assert.equal(isPostgresMode(), true, 'isPostgresMode() should be true when DATABASE_URL is set')
 const pool = getPool()

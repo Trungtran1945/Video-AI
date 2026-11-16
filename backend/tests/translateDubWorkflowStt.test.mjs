@@ -11,6 +11,7 @@ import { v4 as uuidv4 } from 'uuid'
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai_workflow_stt_'))
 process.env.DB_PATH = path.join(tmpDir, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpDir, 'storage')
+process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'mock-ci-whisper-key'
 
 const { initSchema } = await import('../src/db/schema.js')
 const { run, query, queryOne } = await import('../src/db/query.js')
