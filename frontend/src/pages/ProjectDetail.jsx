@@ -8,7 +8,7 @@ import { VideoTimeline } from '@/components/timeline';
 import MaskEditor from '@/components/MaskEditor';
 import { useTimelineStore } from '@/components/timeline';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, AlertTriangle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap, Save, Youtube, ExternalLink, Pencil, Copy, ChevronDown, ChevronUp, EyeOff, SlidersHorizontal, Check, X } from 'lucide-react';
+import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, AlertTriangle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap, Save, Youtube, ExternalLink, Pencil, Copy, ChevronDown, ChevronUp, EyeOff, SlidersHorizontal, Check, X, Settings2 } from 'lucide-react';
 import { STAGE_LABELS, SCRIPT_STAGES, COMPOSER_STAGES, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, AUDIO_MODE_LABELS, ACTIVE_STATUSES as SHARED_ACTIVE_STATUSES, isCompletedStatus } from '@/lib/constants';
 import { friendlyJobError } from '@/lib/providerErrorMessage';
 import { resolveStorageUrl } from '@/lib/apiBase';
@@ -16,7 +16,7 @@ import { useJobEvents } from '@/hooks/useJobEvents';
 import ProjectHeader from '@/components/project/ProjectHeader';
 import PipelineStatus from '@/components/project/PipelineStatus';
 import ErrorState from '@/components/ErrorState';
-import { MediaLibrary, ComposerPreview, ClipInspector } from '@/components/composer';
+import { MediaLibrary, ComposerPreview, ClipInspector, FrameSettingsModal } from '@/components/composer';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -146,6 +146,7 @@ export default function ProjectDetail() {
   const [arrangingTimeline, setArrangingTimeline] = useState(false);
   const [confirmResetTimeline, setConfirmResetTimeline] = useState(false);
   const [resettingTimeline, setResettingTimeline] = useState(false);
+  const [showFrameModal, setShowFrameModal] = useState(false);
   const [isEditingSummaryTitle, setIsEditingSummaryTitle] = useState(false);
   const [summaryTitleInput, setSummaryTitleInput] = useState('');
   const [savingSummaryRename, setSavingSummaryRename] = useState(false);
@@ -1305,6 +1306,31 @@ export default function ProjectDetail() {
     }
   };
 
+  const handleSaveFrameSettings = async (payload) => {
+    try {
+      const res = await projectsApi.update(id, payload);
+      setProject((prev) => ({
+        ...prev,
+        ...res,
+        aspect_ratio: payload.aspectRatio,
+        aspectRatio: payload.aspectRatio,
+        params: { ...(prev?.params || {}), ...(payload.params || {}) },
+      }));
+      toast({
+        title: 'Đã cập nhật khung hình',
+        description: `Tỉ lệ ${payload.aspectRatio} (${payload.params?.width || ''}x${payload.params?.height || ''}) đã được áp dụng.`,
+      });
+      await load();
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Lỗi cập nhật khung hình',
+        description: err?.response?.data?.message || err.message,
+      });
+      throw err;
+    }
+  };
+
   const handleSaveAllSegments = async () => {
     if (savingAllSegments || !project?.scriptSegments) return true;
     setSavingAllSegments(true);
@@ -1725,9 +1751,17 @@ export default function ProjectDetail() {
                 <Sparkles className="w-3.5 h-3.5" />
                 <span>AI Media Composer</span>
               </span>
-              <span className="px-2 py-0.5 rounded bg-muted text-muted-foreground font-mono text-[11px]">
-                {params.resolution || '1080p'} • {params.aspectRatio || '16:9'} • {params.fps || 30}fps
-              </span>
+              <button
+                type="button"
+                onClick={() => setShowFrameModal(true)}
+                title="Nhấp để thay đổi tỉ lệ khung hình & độ phân giải"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-muted hover:bg-muted/80 text-foreground font-mono text-[11px] border border-border transition cursor-pointer group shadow-2xs"
+              >
+                <Settings2 className="w-3.5 h-3.5 text-primary group-hover:rotate-45 transition-transform" />
+                <span>
+                  {params.resolution || '1080p'} • {project.aspect_ratio || project.aspectRatio || params.aspectRatio || '16:9'} • {params.fps || 30}fps
+                </span>
+              </button>
               <span className="text-muted-foreground hidden sm:inline">
                 ({composerAssets.length} assets • {storeClips.length} clips)
               </span>
@@ -1917,6 +1951,16 @@ export default function ProjectDetail() {
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
+
+          {/* Frame & Resolution Settings Modal */}
+          {showFrameModal && (
+            <FrameSettingsModal
+              isOpen={showFrameModal}
+              onClose={() => setShowFrameModal(false)}
+              project={project}
+              onSave={handleSaveFrameSettings}
+            />
+          )}
         </div>
       </Layout>
     );

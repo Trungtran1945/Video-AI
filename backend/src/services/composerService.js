@@ -80,12 +80,23 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
   const storageKey = toStorageKey(targetAbsPath)
   let thumbnailKey = null
   let durationSec = null
+  let probeMeta = null
 
   // Probe media details
   try {
     const info = await probe(targetAbsPath, { timeout: 10000 })
     if (Number.isFinite(info?.durationSec) && info.durationSec > 0) {
       durationSec = Math.round(info.durationSec * 100) / 100
+    }
+    if (info) {
+      probeMeta = {
+        width: info.width || null,
+        height: info.height || null,
+        fps: info.fps || null,
+        codec: info.codec || null,
+        pixFmt: info.pixFmt || null,
+        aspectRatio: (info.width && info.height) ? Math.round((info.width / info.height) * 1000) / 1000 : null,
+      }
     }
   } catch (_) {}
 
@@ -160,6 +171,7 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
     byte_size: byteSize,
     thumbnail_key: thumbnailKey,
     duration_sec: durationSec,
+    meta: probeMeta ? JSON.stringify(probeMeta) : null,
     order_index: Number(orderIndex) || 0,
     created_date: new Date().toISOString(),
   })
@@ -189,6 +201,9 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
     thumbnailKey,
     thumbnailUrl: thumbnailKey ? `/storage/${thumbnailKey}` : (isImage ? `/storage/${storageKey}` : null),
     durationSec,
+    width: probeMeta?.width || null,
+    height: probeMeta?.height || null,
+    meta: probeMeta,
     orderIndex: Number(orderIndex) || 0,
     byteSize,
     mimeType,

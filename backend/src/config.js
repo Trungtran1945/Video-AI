@@ -128,6 +128,7 @@ export const config = {
   providerCacheEnabled: process.env.PROVIDER_CACHE_ENABLED !== 'false',
   providerCacheTtlDays: Number(process.env.PROVIDER_CACHE_TTL_DAYS || 90),
   defaultProviderMode: process.env.DEFAULT_PROVIDER_MODE || 'live', // 'live' | 'mock'
+  maxUpscale: Number(process.env.MAX_UPSCALE || 2.0),
   // VoiceStudio provider config (OpenAI-compatible speech API on port 3900)
   voicestudio: {
     url: process.env.VOICESTUDIO_URL || '',

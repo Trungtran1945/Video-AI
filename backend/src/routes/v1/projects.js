@@ -514,23 +514,74 @@ router.get('/:id', async (req, res) => {
   }
 })
 
-// PATCH /api/v1/projects/:id (rename project title)
+// PATCH /api/v1/projects/:id (rename project title, update frame aspect ratio & params)
 router.patch('/:id', requireProjectOwner, async (req, res) => {
   try {
-    const rawTitle = req.body?.title
-    if (typeof rawTitle !== 'string') {
+    const b = req.body || {}
+    const hasTitle = b.title !== undefined
+    const hasAspect = b.aspectRatio !== undefined || b.aspect_ratio !== undefined
+    const hasParams = b.params !== undefined
+    const hasResolution = b.resolution !== undefined
+
+    if (!hasTitle && !hasAspect && !hasParams && !hasResolution) {
       return sendError(res, 400, ERR.VALIDATION, 'Tiêu đề dự án phải là chuỗi ký tự', { field: 'title' })
     }
-    const title = rawTitle.trim()
-    if (title.length < 1 || title.length > 200) {
-      return sendError(res, 400, ERR.VALIDATION, 'Tiêu đề dự án phải từ 1 đến 200 ký tự', { field: 'title' })
+
+    let titleToUpdate = null
+    if (hasTitle) {
+      if (typeof b.title !== 'string') {
+        return sendError(res, 400, ERR.VALIDATION, 'Tiêu đề dự án phải là chuỗi ký tự', { field: 'title' })
+      }
+      const title = b.title.trim()
+      if (title.length < 1 || title.length > 200) {
+        return sendError(res, 400, ERR.VALIDATION, 'Tiêu đề dự án phải từ 1 đến 200 ký tự', { field: 'title' })
+      }
+      titleToUpdate = title
+    }
+
+    const { dimsForAspect, toEven } = await import('../../pipeline/context.js')
+
+    let existingParams = {}
+    try {
+      existingParams = typeof req.project.params === 'string' ? JSON.parse(req.project.params) : (req.project.params || {})
+    } catch (_) {}
+
+    if (b.params && typeof b.params === 'object') {
+      existingParams = { ...existingParams, ...b.params }
+    }
+    if (hasResolution && typeof b.resolution === 'string') {
+      existingParams.resolution = b.resolution
+    }
+
+    let newAspect = req.project.aspect_ratio || '16:9'
+    if (hasAspect) {
+      newAspect = String(b.aspectRatio || b.aspect_ratio || '').trim()
+    }
+
+    // Even dimension enforcement
+    if (existingParams.width != null || existingParams.height != null) {
+      if (existingParams.width) existingParams.width = toEven(existingParams.width)
+      if (existingParams.height) existingParams.height = toEven(existingParams.height)
+    } else if (hasAspect) {
+      const calculated = dimsForAspect(newAspect, existingParams)
+      existingParams.width = calculated.width
+      existingParams.height = calculated.height
     }
 
     const now = new Date().toISOString()
+    const updateTitle = titleToUpdate !== null ? titleToUpdate : req.project.title
+    const updateParamsStr = JSON.stringify(existingParams)
+
     try {
-      await run('UPDATE projects SET title = ?, updated_at = ? WHERE id = ?', [title, now, req.project.id])
+      await run(
+        'UPDATE projects SET title = ?, aspect_ratio = ?, params = ?, updated_at = ? WHERE id = ?',
+        [updateTitle, newAspect, updateParamsStr, now, req.project.id]
+      )
     } catch (_) {
-      await run('UPDATE projects SET title = ? WHERE id = ?', [title, req.project.id])
+      await run(
+        'UPDATE projects SET title = ?, aspect_ratio = ?, params = ? WHERE id = ?',
+        [updateTitle, newAspect, updateParamsStr, req.project.id]
+      )
     }
 
     const updated = await queryOne('SELECT * FROM projects WHERE id = ?', [req.project.id])
@@ -543,7 +594,7 @@ router.patch('/:id', requireProjectOwner, async (req, res) => {
     }
     res.json(publicProject)
   } catch (err) {
-    console.error('Update project title error:', err)
+    console.error('Update project error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })

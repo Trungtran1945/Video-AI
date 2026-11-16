@@ -21,6 +21,7 @@ import Playhead from './Playhead';
 export default function VideoTimeline({
   currentTime: propCurrentTime,
   duration: propDuration = 0,
+  fps: propFps,
   isPlaying: propIsPlaying,
   playbackSpeed: propPlaybackSpeed,
   volume: propVolume,
@@ -130,6 +131,7 @@ export default function VideoTimeline({
   // falling back to Zustand storeCurrentTime when uncontrolled.
   const activeCurrentTime = propCurrentTime !== undefined ? propCurrentTime : (storeCurrentTime ?? 0);
   const activeIsPlaying = isControlledPlayback ? propIsPlaying : storeIsPlaying;
+  const fps = Math.max(1, Math.round(Number(propFps ?? project?.params?.fps ?? project?.fps ?? 30)));
 
   // Calculate total timeline duration (placed before internal ticker to avoid TDZ)
   const totalDuration = useMemo(() => {
@@ -334,11 +336,11 @@ export default function VideoTimeline({
           <div className="flex items-center gap-1.5 bg-background border border-border px-2.5 py-1 rounded-lg shadow-inner">
             <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
             <span className="font-mono text-xs font-semibold tracking-wider text-foreground">
-              {formatTimeCode(activeCurrentTime)}
+              {formatTimeCode(activeCurrentTime, fps)}
             </span>
             <span className="text-muted-foreground text-[10px]">/</span>
             <span className="font-mono text-xs text-muted-foreground">
-              {formatTimeCode(propDuration > 0 ? propDuration : totalDuration)}
+              {formatTimeCode(propDuration > 0 ? propDuration : totalDuration, fps)}
             </span>
           </div>
 
@@ -537,8 +539,8 @@ export default function VideoTimeline({
                   height: `${totalRulerAndTracksHeight}px`,
                 }}
               >
-                <TimeRuler totalDuration={totalDuration} onSeek={handleSeek} />
-                <Playhead height={totalRulerAndTracksHeight} onSeek={handleSeek} currentTime={activeCurrentTime} />
+                <TimeRuler totalDuration={totalDuration} onSeek={handleSeek} fps={fps} />
+                <Playhead height={totalRulerAndTracksHeight} onSeek={handleSeek} currentTime={activeCurrentTime} fps={fps} />
 
                 <div className="relative flex flex-col">
                   {tracks.map((track) => {

@@ -51,7 +51,26 @@ export async function composerPrepare(ctx = {}) {
   const tmp = ensureDir(tmpDirOf(project.id))
   const prepDir = ensureDir(path.join(tmp, 'prepared'))
 
-  const { width, height } = dimsForAspect(project.aspect_ratio || '16:9')
+  let projectParams = {}
+  try {
+    if (typeof project.params === 'string') projectParams = JSON.parse(project.params)
+    else if (project.params && typeof project.params === 'object') projectParams = project.params
+  } catch (_) {}
+
+  let frameWidth, frameHeight
+  if (Number(projectParams.width) > 0 && Number(projectParams.height) > 0) {
+    frameWidth = Math.max(2, Math.floor(Number(projectParams.width) / 2) * 2)
+    frameHeight = Math.max(2, Math.floor(Number(projectParams.height) / 2) * 2)
+  } else if (Number(project.width) > 0 && Number(project.height) > 0) {
+    frameWidth = Math.max(2, Math.floor(Number(project.width) / 2) * 2)
+    frameHeight = Math.max(2, Math.floor(Number(project.height) / 2) * 2)
+  } else {
+    const dims = dimsForAspect(project.aspect_ratio || '16:9')
+    frameWidth = Math.max(2, Math.floor(dims.width / 2) * 2)
+    frameHeight = Math.max(2, Math.floor(dims.height / 2) * 2)
+  }
+  const width = frameWidth
+  const height = frameHeight
 
   const clips = await query(
     'SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC',

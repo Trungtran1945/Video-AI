@@ -2,13 +2,14 @@
  * Utility functions for Timeline operations, time formatting, and snapping.
  */
 
-// Formats seconds into MM:SS:FF (30 frames per second standard)
+// Formats seconds into MM:SS:FF (dynamic frames per second)
 export function formatTimeCode(totalSeconds, fps = 30) {
   if (isNaN(totalSeconds) || totalSeconds < 0) totalSeconds = 0;
 
+  const effectiveFps = Math.max(1, Math.round(Number(fps) || 30));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = Math.floor(totalSeconds % 60);
-  const frames = Math.min(fps - 1, Math.round((totalSeconds % 1) * fps));
+  const frames = Math.min(effectiveFps - 1, Math.round((totalSeconds % 1) * effectiveFps));
 
   const mm = String(minutes).padStart(2, '0');
   const ss = String(seconds).padStart(2, '0');
@@ -18,7 +19,7 @@ export function formatTimeCode(totalSeconds, fps = 30) {
 }
 
 // Formats seconds for the sticky time ruler (e.g. 00:00, 00:05, 01:20)
-export function formatRulerTime(totalSeconds) {
+export function formatRulerTime(totalSeconds, fps = 30) {
   if (isNaN(totalSeconds) || totalSeconds < 0) totalSeconds = 0;
 
   const minutes = Math.floor(totalSeconds / 60);
@@ -26,6 +27,12 @@ export function formatRulerTime(totalSeconds) {
 
   const mm = String(minutes).padStart(2, '0');
   const ss = String(seconds).padStart(2, '0');
+
+  if (totalSeconds % 1 !== 0) {
+    const effectiveFps = Math.max(1, Math.round(Number(fps) || 30));
+    const frames = Math.min(effectiveFps - 1, Math.round((totalSeconds % 1) * effectiveFps));
+    return `${mm}:${ss}:${String(frames).padStart(2, '0')}`;
+  }
 
   return `${mm}:${ss}`;
 }

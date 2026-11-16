@@ -8,10 +8,22 @@ test('formatTimeCode formats mm:ss:ff correctly at 30 fps', () => {
   assert.equal(formatTimeCode(2.0), '00:02:00')
 })
 
+test('formatTimeCode formats mm:ss:ff correctly with custom project framerates (24, 25, 60 fps)', () => {
+  assert.equal(formatTimeCode(65.5, 24), '01:05:12')
+  assert.equal(formatTimeCode(65.5, 25), '01:05:13')
+  assert.equal(formatTimeCode(65.5, 60), '01:05:30')
+  assert.equal(formatTimeCode(10.25, 60), '00:10:15')
+})
+
 test('formatRulerTime formats mm:ss correctly', () => {
   assert.equal(formatRulerTime(0), '00:00')
   assert.equal(formatRulerTime(5), '00:05')
   assert.equal(formatRulerTime(75), '01:15')
+})
+
+test('formatRulerTime formats fractional seconds at high zoom with custom fps', () => {
+  assert.equal(formatRulerTime(5.5, 24), '00:05:12')
+  assert.equal(formatRulerTime(5.5, 60), '00:05:30')
 })
 
 test('getMagneticSnap snaps left edge when within 10px threshold', () => {

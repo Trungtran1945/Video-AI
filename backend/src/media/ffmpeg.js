@@ -168,10 +168,12 @@ export async function probe(file, opts = {}) {
     durationSec: Number(info.format?.duration) || Number(audio?.duration) || 0,
     width: video?.width || 0,
     height: video?.height || 0,
+    aspectRatio: (video?.width && video?.height) ? Math.round((video.width / video.height) * 1000) / 1000 : null,
     fps: den ? num / den : 0,
     sizeBytes: Number(info.format?.size) || 0,
     hasAudio: Boolean(audio),
     codec: video?.codec_name || null,
+    pixFmt: video?.pix_fmt || null,
     formatName: info.format?.format_name || null,
   }
 }

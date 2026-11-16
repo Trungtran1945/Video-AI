@@ -13,6 +13,95 @@ import {
   Film,
 } from 'lucide-react';
 
+export function getOverlayStyle(clip) {
+  const meta = clip.meta || {};
+  const fit = meta.fit || 'contain';
+  const autoFit = meta.autoFit !== false;
+  const scale = Number.isFinite(Number(meta.scale)) ? Number(meta.scale) : 1.0;
+  const posX = Number.isFinite(Number(meta.posX)) ? Number(meta.posX) : (Number.isFinite(Number(meta.x)) ? Number(meta.x) : 0);
+  const posY = Number.isFinite(Number(meta.posY)) ? Number(meta.posY) : (Number.isFinite(Number(meta.y)) ? Number(meta.y) : 0);
+  const align = meta.align || 'center';
+  const opacity = Number.isFinite(Number(meta.opacity)) ? Number(meta.opacity) : 1.0;
+
+  // Compute CSS anchor and translation
+  let top = '50%';
+  let left = '50%';
+  let baseTranslateX = '-50%';
+  let baseTranslateY = '-50%';
+
+  if (align === 'top-left') {
+    top = '0%';
+    left = '0%';
+    baseTranslateX = '0%';
+    baseTranslateY = '0%';
+  } else if (align === 'top' || align === 'top-center') {
+    top = '0%';
+    left = '50%';
+    baseTranslateX = '-50%';
+    baseTranslateY = '0%';
+  } else if (align === 'top-right') {
+    top = '0%';
+    left = '100%';
+    baseTranslateX = '-100%';
+    baseTranslateY = '0%';
+  } else if (align === 'left' || align === 'center-left') {
+    top = '50%';
+    left = '0%';
+    baseTranslateX = '0%';
+    baseTranslateY = '-50%';
+  } else if (align === 'right' || align === 'center-right') {
+    top = '50%';
+    left = '100%';
+    baseTranslateX = '-100%';
+    baseTranslateY = '-50%';
+  } else if (align === 'bottom-left') {
+    top = '100%';
+    left = '0%';
+    baseTranslateX = '0%';
+    baseTranslateY = '-100%';
+  } else if (align === 'bottom' || align === 'bottom-center') {
+    top = '100%';
+    left = '50%';
+    baseTranslateX = '-50%';
+    baseTranslateY = '-100%';
+  } else if (align === 'bottom-right') {
+    top = '100%';
+    left = '100%';
+    baseTranslateX = '-100%';
+    baseTranslateY = '-100%';
+  }
+
+  // Combine anchor base translation with custom percentage offsets (posX, posY)
+  const transform = `translate(calc(${baseTranslateX} + ${posX}%), calc(${baseTranslateY} + ${posY}%)) scale(${scale})`;
+
+  return {
+    wrapperStyle: {
+      position: 'absolute',
+      top,
+      left,
+      transform,
+      transformOrigin: 'center center',
+      opacity,
+      width: fit === 'cover' || fit === 'fill' ? '100%' : 'auto',
+      height: fit === 'cover' || fit === 'fill' ? '100%' : 'auto',
+      maxWidth: fit === 'cover' || fit === 'fill' ? '100%' : (autoFit ? '100%' : 'none'),
+      maxHeight: fit === 'cover' || fit === 'fill' ? '100%' : (autoFit ? '100%' : 'none'),
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      pointerEvents: 'none',
+      transition: 'opacity 0.15s ease',
+    },
+    mediaClass: `${
+      fit === 'cover'
+        ? 'w-full h-full object-cover'
+        : fit === 'fill'
+        ? 'w-full h-full object-fill'
+        : 'max-w-full max-h-full object-contain'
+    } rounded-lg shadow-md`,
+  };
+}
+
 export default function ComposerPreview({
   project,
   clips = [],
@@ -32,6 +121,7 @@ export default function ComposerPreview({
   const videoRef = useRef(null);
   const bgVideoRef = useRef(null);
   const visualVideoRef = useRef(null);
+  const visualVideoMapRef = useRef(new Map()); // Map<clipId, HTMLVideoElement>
 
   const [muted, setMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -81,7 +171,7 @@ export default function ComposerPreview({
     return currentTime >= start && currentTime < start + dur;
   });
 
-  const activeVisualClip = activeClips.find(
+  const activeVisualClips = activeClips.filter(
     (c) =>
       c.clip_type === 'video' ||
       c.clip_type === 'image' ||
@@ -118,7 +208,10 @@ export default function ComposerPreview({
     (bgUrl && /\.(mp4|webm|mov|mkv)(\?.*)?$/i.test(bgUrl))
   );
 
-  const bgFit = activeBgClip?.meta?.fit === 'contain' ? 'object-contain' : 'object-cover';
+  const bgFit =
+    activeBgClip?.meta?.fit === 'contain' || activeBgClip?.meta?.fit === 'smart'
+      ? 'object-contain'
+      : 'object-cover';
   const bgLoop = activeBgClip?.meta?.loop !== false;
   const bgMuted = (activeBgClip?.meta?.muted !== false) || muted;
   const bgOpacity = typeof activeBgClip?.meta?.opacity === 'number' ? activeBgClip.meta.opacity : 0.7;
@@ -144,52 +237,62 @@ export default function ComposerPreview({
     }
   }, [currentTime, isBgVideo, bgLoop]);
 
-  // Active Visual (Image or Video)
-  const visualAsset = activeVisualClip
-    ? assetMap.get(activeVisualClip.asset_id || activeVisualClip.assetId)
-    : null;
-  const visualUrl = visualAsset?.url || activeVisualClip?.thumbnailUrl || visualAsset?.thumbnailUrl;
-  const isVisualVideo = Boolean(
-    activeVisualClip?.clip_type === 'video' ||
-    activeVisualClip?.type === 'video' ||
-    visualAsset?.mime_type?.startsWith('video/') ||
-    visualAsset?.mimeType?.startsWith('video/') ||
-    (visualUrl && /\.(mp4|webm|mov|mkv)(\?.*)?$/i.test(visualUrl))
-  );
-
-  const visualFit = activeVisualClip?.meta?.fit === 'cover' ? 'object-cover' : 'object-contain';
-  const visualOpacity = typeof activeVisualClip?.meta?.opacity === 'number' ? activeVisualClip.meta.opacity : 1.0;
-
-  // Visual Video playback and volume sync
+  // Synchronize playback & volume across all active visual videos
   useEffect(() => {
-    if (!visualVideoRef.current || !isVisualVideo) return;
-    if (isPlaying) {
-      visualVideoRef.current.play().catch(() => {});
-    } else {
-      visualVideoRef.current.pause();
+    for (const [clipId, vEl] of visualVideoMapRef.current.entries()) {
+      if (!vEl) continue;
+      const clip = activeVisualClips.find((c) => c.id === clipId);
+      if (!clip || !isPlaying) {
+        vEl.pause();
+      } else {
+        vEl.play().catch(() => {});
+      }
     }
-  }, [isPlaying, isVisualVideo]);
+  }, [isPlaying, activeVisualClips]);
 
   useEffect(() => {
-    if (!visualVideoRef.current || !isVisualVideo || !activeVisualClip) return;
-    const clipStart = Number(activeVisualClip.start ?? activeVisualClip.start_at_sec ?? 0);
-    const offset = Math.max(0, currentTime - clipStart);
-    if (Math.abs(visualVideoRef.current.currentTime - offset) > 0.08) {
-      visualVideoRef.current.currentTime = offset;
+    for (const [clipId, vEl] of visualVideoMapRef.current.entries()) {
+      if (!vEl) continue;
+      const clip = activeVisualClips.find((c) => c.id === clipId);
+      if (!clip) continue;
+      const clipStart = Number(clip.start ?? clip.start_at_sec ?? 0);
+      const offset = Math.max(0, currentTime - clipStart);
+      if (Math.abs(vEl.currentTime - offset) > 0.08) {
+        vEl.currentTime = offset;
+      }
+      const clipVol = Number.isFinite(Number(clip.volume)) ? Number(clip.volume) : 1.0;
+      vEl.muted = isVideoTrackMuted;
+      vEl.volume = isVideoTrackMuted ? 0 : Math.max(0, Math.min(1.0, clipVol * videoTrackVol));
     }
-    const clipVol = Number.isFinite(Number(activeVisualClip.volume)) ? Number(activeVisualClip.volume) : 1.0;
-    visualVideoRef.current.muted = isVideoTrackMuted;
-    visualVideoRef.current.volume = isVideoTrackMuted ? 0 : Math.max(0, Math.min(1.0, clipVol * videoTrackVol));
-  }, [currentTime, isVisualVideo, activeVisualClip, isVideoTrackMuted, videoTrackVol]);
+  }, [currentTime, activeVisualClips, isVideoTrackMuted, videoTrackVol]);
 
-  // Aspect ratio class
-  const aspectRatio = project?.aspect_ratio || project?.aspectRatio || '16:9';
-  const aspectClass =
-    aspectRatio === '9:16'
-      ? 'aspect-[9/16] max-h-[540px]'
-      : aspectRatio === '1:1'
-      ? 'aspect-square max-h-[480px]'
-      : 'aspect-[16/9] max-h-[480px]';
+  // Dynamic Aspect ratio & dimensions
+  const params = project?.params || {};
+  const aspectRatio = project?.aspect_ratio || project?.aspectRatio || params.aspectRatio || '16:9';
+  const projectWidth = Number(params.width) || (aspectRatio === '9:16' ? 1080 : aspectRatio === '1:1' ? 1080 : aspectRatio === '4:3' ? 1440 : aspectRatio === '3:4' ? 1080 : aspectRatio === '4:5' ? 1080 : aspectRatio === '21:9' ? 2560 : 1920);
+  const projectHeight = Number(params.height) || (aspectRatio === '9:16' ? 1920 : aspectRatio === '1:1' ? 1080 : aspectRatio === '4:3' ? 1080 : aspectRatio === '3:4' ? 1440 : aspectRatio === '4:5' ? 1350 : aspectRatio === '21:9' ? 1080 : 1080);
+
+  const numericRatio = React.useMemo(() => {
+    if (projectWidth > 0 && projectHeight > 0) {
+      return projectWidth / projectHeight;
+    }
+    if (aspectRatio === '9:16') return 9 / 16;
+    if (aspectRatio === '1:1') return 1;
+    if (aspectRatio === '4:3') return 4 / 3;
+    if (aspectRatio === '3:4') return 3 / 4;
+    if (aspectRatio === '4:5') return 4 / 5;
+    if (aspectRatio === '21:9') return 21 / 9;
+    return 16 / 9;
+  }, [aspectRatio, projectWidth, projectHeight]);
+
+  const isPortrait = numericRatio < 1.0;
+  const frameContainerStyle = {
+    aspectRatio: `${projectWidth} / ${projectHeight}`,
+    maxHeight: isPortrait ? 'min(560px, 68vh)' : 'min(480px, 60vh)',
+    maxWidth: '100%',
+    width: 'auto',
+    backgroundColor: defaultBgColor,
+  };
 
   // Dynamic audio pool to support multi-track, overlapping audio clips without dropouts
   const audioPoolRef = useRef(new Map()); // Map<clipId, HTMLAudioElement>
@@ -307,6 +410,15 @@ export default function ComposerPreview({
           try { el.pause(); } catch (_) {}
         }
       }
+      if (visualVideoMapRef.current) {
+        for (const vEl of visualVideoMapRef.current.values()) {
+          try {
+            vEl.pause();
+            vEl.src = '';
+          } catch (_) {}
+        }
+        visualVideoMapRef.current.clear();
+      }
       [audioRef, bgmAudioRef, sfxAudioRef, videoRef, bgVideoRef, visualVideoRef].forEach((ref) => {
         if (ref?.current) {
           try {
@@ -328,6 +440,15 @@ export default function ComposerPreview({
           } catch (_) {}
         }
         audioPoolRef.current.clear();
+      }
+      if (visualVideoMapRef.current) {
+        for (const vEl of visualVideoMapRef.current.values()) {
+          try {
+            vEl.pause();
+            vEl.src = '';
+          } catch (_) {}
+        }
+        visualVideoMapRef.current.clear();
       }
       [audioRef, bgmAudioRef, sfxAudioRef, videoRef, bgVideoRef, visualVideoRef].forEach((ref) => {
         if (ref?.current) {
@@ -399,7 +520,7 @@ export default function ComposerPreview({
             </span>
           )}
           <span className="px-1.5 py-0.5 rounded bg-muted font-mono text-[10px] border border-border">
-            {aspectRatio}
+            {aspectRatio} ({projectWidth}×{projectHeight})
           </span>
         </div>
 
@@ -425,7 +546,8 @@ export default function ComposerPreview({
       <div className="flex-1 w-full flex items-center justify-center p-2 min-h-0">
         {previewMode === 'video' && outputUrl && !videoLoadError ? (
           <div
-            className={`relative rounded-2xl overflow-hidden shadow-2xl border border-border/80 flex items-center justify-center bg-black ${aspectClass} w-auto max-w-full`}
+            style={frameContainerStyle}
+            className="relative rounded-2xl overflow-hidden shadow-2xl border border-border/80 flex items-center justify-center bg-black transition-all"
           >
             <video
               ref={videoRef}
@@ -443,8 +565,8 @@ export default function ComposerPreview({
         ) : (
           <div
             ref={containerRef}
-            style={{ backgroundColor: defaultBgColor }}
-            className={`relative rounded-2xl overflow-hidden shadow-2xl border border-border/80 flex items-center justify-center transition-all ${aspectClass} w-auto max-w-full`}
+            style={frameContainerStyle}
+            className="relative rounded-2xl overflow-hidden shadow-2xl border border-border/80 flex items-center justify-center transition-all"
           >
             {/* Background Layer */}
             {bgUrl && (
@@ -470,35 +592,53 @@ export default function ComposerPreview({
               )
             )}
 
-            {/* Active Visual (Image or Video) Layer */}
-            {visualUrl ? (
-              <div
-                style={{ opacity: visualOpacity }}
-                className="relative z-10 w-full h-full flex items-center justify-center p-4 transition-opacity"
-              >
-                {isVisualVideo ? (
-                  <video
-                    ref={visualVideoRef}
-                    src={visualUrl}
-                    autoPlay={isPlaying}
-                    playsInline
-                    className={`max-w-full max-h-full ${visualFit} rounded-lg shadow-md`}
-                  />
-                ) : (
-                  <img
-                    src={visualUrl}
-                    alt="Active Visual"
-                    onError={(e) => { e.currentTarget.style.display = 'none'; }}
-                    className={`max-w-full max-h-full ${visualFit} rounded-lg shadow-md transition-all duration-200`}
-                  />
-                )}
-              </div>
-            ) : (
+            {/* Active Visual Overlays (Multiple simultaneous image/video overlays) */}
+            {activeVisualClips.length > 0 ? (
+              activeVisualClips.map((clip) => {
+                const asset = assetMap.get(clip.asset_id || clip.assetId);
+                const url = asset?.url || clip.url || asset?.thumbnailUrl;
+                if (!url) return null;
+
+                const isVideo = Boolean(
+                  clip.clip_type === 'video' ||
+                  clip.type === 'video' ||
+                  asset?.mime_type?.startsWith('video/') ||
+                  asset?.mimeType?.startsWith('video/') ||
+                  (url && /\.(mp4|webm|mov|mkv)(\?.*)?$/i.test(url))
+                );
+
+                const { wrapperStyle, mediaClass } = getOverlayStyle(clip);
+
+                return (
+                  <div key={clip.id} style={wrapperStyle} className="z-10">
+                    {isVideo ? (
+                      <video
+                        ref={(el) => {
+                          if (el) visualVideoMapRef.current.set(clip.id, el);
+                          else visualVideoMapRef.current.delete(clip.id);
+                        }}
+                        src={url}
+                        autoPlay={isPlaying}
+                        playsInline
+                        className={mediaClass}
+                      />
+                    ) : (
+                      <img
+                        src={url}
+                        alt={clip.content || 'Visual Overlay'}
+                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        className={`${mediaClass} transition-all duration-200`}
+                      />
+                    )}
+                  </div>
+                );
+              })
+            ) : !bgUrl ? (
               <div className="relative z-10 text-center p-6 text-muted-foreground/60 select-none">
                 <Sparkles className="w-8 h-8 stroke-1 mx-auto mb-2 opacity-50" />
                 <span className="text-xs">Chưa có clip hiển thị ở mốc này</span>
               </div>
-            )}
+            ) : null}
 
             {/* Text Overlay Layer (Multiple active text clips support) */}
             {activeTextClips.map((clip) => {

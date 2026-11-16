@@ -12,8 +12,26 @@ import {
   Image as ImageIcon,
   ScanText,
   FileAudio,
+  AlertTriangle,
+  Move,
+  Lock,
+  Unlock,
+  Grid,
+  Sparkles,
 } from 'lucide-react';
 import { useTimelineStore } from '../timeline/timelineStore';
+
+const ALIGN_OPTIONS = [
+  { id: 'top-left', label: 'TL', title: 'Góc trên - Trái' },
+  { id: 'top', label: 'TC', title: 'Phía trên - Giữa' },
+  { id: 'top-right', label: 'TR', title: 'Góc trên - Phải' },
+  { id: 'left', label: 'ML', title: 'Ở giữa - Trái' },
+  { id: 'center', label: 'C', title: 'Chính giữa khung hình' },
+  { id: 'right', label: 'MR', title: 'Ở giữa - Phải' },
+  { id: 'bottom-left', label: 'BL', title: 'Góc dưới - Trái' },
+  { id: 'bottom', label: 'BC', title: 'Phía dưới - Giữa' },
+  { id: 'bottom-right', label: 'BR', title: 'Góc dưới - Phải' },
+];
 
 export default function ClipInspector({
   selectedClip,
@@ -145,6 +163,23 @@ export default function ClipInspector({
     });
   };
 
+  const handleResetTransform = () => {
+    onUpdateClip?.(selectedClip.id, {
+      meta: {
+        ...meta,
+        autoFit: true,
+        fit: 'contain',
+        scale: 1.0,
+        posX: 0,
+        posY: 0,
+        x: 0,
+        y: 0,
+        align: 'center',
+        lockAspect: true,
+      },
+    });
+  };
+
   const handleRemoveBgAsset = () => {
     onUpdateClip?.(selectedClip.id, {
       assetId: null,
@@ -253,35 +288,204 @@ export default function ClipInspector({
               </div>
             )}
 
-            {/* Fit Mode */}
+            {/* Low Resolution Quality Warning */}
+            {currentAsset?.width && currentAsset?.height && (currentAsset.width < 1280 || currentAsset.height < 720) && (
+              <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-[11px] flex items-start gap-2">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>
+                  Độ phân giải nguồn ({currentAsset.width}×{currentAsset.height}) thấp hơn khung hình chuẩn. Tránh phóng to quá mức để hạn chế vỡ hạt.
+                </span>
+              </div>
+            )}
+
+            {/* Smart Auto Fit Toggle */}
+            <div className="pt-1 border-t border-border/60">
+              <label className="flex items-center justify-between text-xs text-foreground cursor-pointer select-none">
+                <span className="text-[11px] font-semibold text-foreground flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-primary" />
+                  <span>Tự động vừa khung (Smart Auto Fit)</span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={meta.autoFit !== false}
+                  onChange={(e) => handleMetaChange('autoFit', e.target.checked)}
+                  className="w-4 h-4 rounded border-border text-primary focus:ring-primary cursor-pointer accent-primary"
+                />
+              </label>
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                {meta.autoFit !== false
+                  ? 'Bật: Giữ trọn tỉ lệ gốc của media, căn giữa trong khung hình, không bị cắt mép.'
+                  : 'Tắt: Điều chỉnh vị trí, tỉ lệ và kích thước hoàn toàn tự do.'}
+              </p>
+            </div>
+
+            {/* Fit Mode Selection (Contain / Cover / Fill) */}
             <div>
               <label className="text-[11px] text-muted-foreground mb-1.5 block">Chế độ hiển thị (Fit Mode):</label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-1.5">
                 <button
                   type="button"
                   onClick={() => handleMetaChange('fit', 'contain')}
-                  className={`py-1.5 px-2 text-xs rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                  className={`py-1.5 px-1.5 text-[11px] rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
                     (meta.fit || 'contain') === 'contain'
                       ? 'bg-primary text-primary-foreground border-primary shadow-xs'
                       : 'bg-background hover:bg-muted text-muted-foreground border-border'
                   }`}
                 >
                   {(meta.fit || 'contain') === 'contain' && <Check className="w-3 h-3" />}
-                  <span>Vừa khung (Contain)</span>
+                  <span>Vừa khung</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => handleMetaChange('fit', 'cover')}
-                  className={`py-1.5 px-2 text-xs rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                  className={`py-1.5 px-1.5 text-[11px] rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
                     meta.fit === 'cover'
                       ? 'bg-primary text-primary-foreground border-primary shadow-xs'
                       : 'bg-background hover:bg-muted text-muted-foreground border-border'
                   }`}
                 >
                   {meta.fit === 'cover' && <Check className="w-3 h-3" />}
-                  <span>Lấp đầy (Cover)</span>
+                  <span>Lấp đầy</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleMetaChange('fit', 'fill')}
+                  className={`py-1.5 px-1.5 text-[11px] rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                    meta.fit === 'fill'
+                      ? 'bg-primary text-primary-foreground border-primary shadow-xs'
+                      : 'bg-background hover:bg-muted text-muted-foreground border-border'
+                  }`}
+                >
+                  {meta.fit === 'fill' && <Check className="w-3 h-3" />}
+                  <span>Kéo giãn</span>
                 </button>
               </div>
+            </div>
+
+            {/* Scale Slider (10% - 300%) */}
+            <div className="space-y-1.5 pt-1 border-t border-border/60">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-muted-foreground">Tỉ lệ phóng to / thu nhỏ (Scale):</span>
+                <span className="text-xs font-mono font-medium text-foreground">
+                  {Math.round((Number.isFinite(Number(meta.scale)) ? Number(meta.scale) : 1.0) * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="10"
+                max="300"
+                step="5"
+                value={Math.round((Number.isFinite(Number(meta.scale)) ? Number(meta.scale) : 1.0) * 100)}
+                onChange={(e) => handleMetaChange('scale', Number(e.target.value) / 100)}
+                className="w-full accent-primary cursor-pointer"
+              />
+            </div>
+
+            {/* Position Offset X and Y (-50% to +50%) */}
+            <div className="space-y-2 pt-1 border-t border-border/60">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+                <Move className="w-3.5 h-3.5 text-primary" />
+                <span>Dịch chuyển tọa độ (Offset):</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-0.5">
+                    <span>Trục X (Ngang):</span>
+                    <span className="font-mono font-medium">{Number(meta.posX ?? meta.x ?? 0)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-50"
+                    max="50"
+                    step="1"
+                    value={Number(meta.posX ?? meta.x ?? 0)}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      onUpdateClip?.(selectedClip.id, {
+                        meta: { ...meta, posX: v, x: v },
+                      });
+                    }}
+                    className="w-full accent-primary cursor-pointer"
+                  />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-0.5">
+                    <span>Trục Y (Dọc):</span>
+                    <span className="font-mono font-medium">{Number(meta.posY ?? meta.y ?? 0)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-50"
+                    max="50"
+                    step="1"
+                    value={Number(meta.posY ?? meta.y ?? 0)}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      onUpdateClip?.(selectedClip.id, {
+                        meta: { ...meta, posY: v, y: v },
+                      });
+                    }}
+                    className="w-full accent-primary cursor-pointer"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* 3x3 Alignment Grid */}
+            <div className="pt-1 border-t border-border/60">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+                  <Grid className="w-3 h-3 text-primary" />
+                  <span>Căn lề khung hình (Alignment):</span>
+                </span>
+                <span className="text-[10px] font-mono text-muted-foreground uppercase">
+                  {meta.align || 'center'}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5 w-36 mx-auto">
+                {ALIGN_OPTIONS.map((opt) => {
+                  const isCurrent = (meta.align || 'center') === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      title={opt.title}
+                      onClick={() => handleMetaChange('align', opt.id)}
+                      className={`h-7 rounded-md border text-[10px] font-mono font-bold transition flex items-center justify-center cursor-pointer ${
+                        isCurrent
+                          ? 'bg-primary text-primary-foreground border-primary shadow-xs'
+                          : 'bg-background hover:bg-muted text-muted-foreground border-border'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Lock Aspect Ratio & Reset Transform */}
+            <div className="pt-1 border-t border-border/60 flex items-center justify-between gap-2">
+              <label className="flex items-center gap-1.5 text-[11px] text-foreground cursor-pointer select-none">
+                {meta.lockAspect !== false ? <Lock className="w-3.5 h-3.5 text-primary" /> : <Unlock className="w-3.5 h-3.5 text-muted-foreground" />}
+                <span>Khóa tỉ lệ</span>
+                <input
+                  type="checkbox"
+                  checked={meta.lockAspect !== false}
+                  onChange={(e) => handleMetaChange('lockAspect', e.target.checked)}
+                  className="hidden"
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={handleResetTransform}
+                title="Khôi phục vị trí, căn lề và phóng to về mặc định"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground text-[10px] font-semibold transition cursor-pointer"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Đặt lại</span>
+              </button>
             </div>
 
             {/* Opacity Slider */}
@@ -382,33 +586,56 @@ export default function ClipInspector({
               </div>
             </div>
 
+            {/* Low Resolution Quality Warning for Background */}
+            {currentAsset?.width && currentAsset?.height && (currentAsset.width < 1280 || currentAsset.height < 720) && (
+              <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-[11px] flex items-start gap-2">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>
+                  Độ phân giải nguồn ({currentAsset.width}×{currentAsset.height}) thấp. Khuyên dùng chế độ <strong>Smart</strong> để tránh phóng to làm vỡ hạt nền.
+                </span>
+              </div>
+            )}
+
             {/* Fit Mode Selection */}
             <div>
               <label className="text-[11px] text-muted-foreground mb-1.5 block">Chế độ hiển thị (Fit Mode):</label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-1.5">
                 <button
                   type="button"
                   onClick={() => handleMetaChange('fit', 'cover')}
-                  className={`py-1.5 px-2 text-xs rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                  className={`py-1.5 px-1.5 text-[11px] rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
                     (meta.fit || 'cover') === 'cover'
                       ? 'bg-purple-600 text-white border-purple-500 shadow-xs'
                       : 'bg-background hover:bg-muted text-muted-foreground border-border'
                   }`}
                 >
                   {(meta.fit || 'cover') === 'cover' && <Check className="w-3 h-3" />}
-                  <span>Cover (Lấp đầy)</span>
+                  <span>Cover</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => handleMetaChange('fit', 'contain')}
-                  className={`py-1.5 px-2 text-xs rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                  className={`py-1.5 px-1.5 text-[11px] rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
                     meta.fit === 'contain'
                       ? 'bg-purple-600 text-white border-purple-500 shadow-xs'
                       : 'bg-background hover:bg-muted text-muted-foreground border-border'
                   }`}
                 >
                   {meta.fit === 'contain' && <Check className="w-3 h-3" />}
-                  <span>Contain (Vừa khung)</span>
+                  <span>Contain</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleMetaChange('fit', 'smart')}
+                  title="Giới hạn phóng to không quá 2x để bảo vệ độ phân giải nguồn, phần thừa đệm màu nền"
+                  className={`py-1.5 px-1.5 text-[11px] rounded-lg border font-medium transition flex items-center justify-center gap-1 cursor-pointer ${
+                    meta.fit === 'smart'
+                      ? 'bg-purple-600 text-white border-purple-500 shadow-xs'
+                      : 'bg-background hover:bg-muted text-muted-foreground border-border'
+                  }`}
+                >
+                  {meta.fit === 'smart' && <Check className="w-3 h-3" />}
+                  <span>Smart</span>
                 </button>
               </div>
             </div>

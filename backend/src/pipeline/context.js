@@ -145,25 +145,43 @@ export function clamp(n, min, max) {
 export const round2 = (n) => Math.round(n * 100) / 100
 export const round3 = (n) => Math.round(n * 1000) / 1000
 
-const ASPECT_DIMS = {
+export const ASPECT_DIMS = {
   '16:9': [1920, 1080],
   '9:16': [1080, 1920],
-  '4:3': [1440, 1080],
   '1:1': [1080, 1080],
+  '4:3': [1440, 1080],
+  '3:4': [1080, 1440],
+  '4:5': [1080, 1350],
+  '21:9': [2560, 1080],
 }
 
-export function dimsForAspect(aspectRatio) {
-  const key = String(aspectRatio || '').trim()
-  const dims = ASPECT_DIMS[key]
-  if (dims) return { width: dims[0], height: dims[1] }
+export function toEven(v) {
+  const n = Math.round(Number(v) || 0)
+  return Math.max(2, Math.floor(n / 2) * 2)
+}
+
+export function dimsForAspect(aspectRatio, customDims = null) {
+  const rawKey = String(aspectRatio || '').trim()
+  const key = rawKey.toLowerCase()
+  if ((key === 'custom' || !key) && customDims) {
+    const cw = Number(customDims.width || customDims.w)
+    const ch = Number(customDims.height || customDims.h)
+    if (cw > 0 && ch > 0) {
+      return { width: toEven(cw), height: toEven(ch) }
+    }
+  }
+  const dims = ASPECT_DIMS[rawKey] || ASPECT_DIMS[key]
+  if (dims) return { width: toEven(dims[0]), height: toEven(dims[1]) }
   const m = key.match(/^(\d+)\s*[:xX]\s*(\d+)$/)
   if (m) {
     const w = Number(m[1])
     const h = Number(m[2])
     if (w > 0 && h > 0) {
+      if (w >= 100 && h >= 100) {
+        return { width: toEven(w), height: toEven(h) }
+      }
       const scale = 1080 / Math.min(w, h)
-      const even = (v) => Math.max(2, Math.round((v * scale) / 2) * 2)
-      return { width: even(w), height: even(h) }
+      return { width: toEven(w * scale), height: toEven(h * scale) }
     }
   }
   return { width: 1080, height: 1920 }

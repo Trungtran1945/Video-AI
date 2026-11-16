@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback } from 'react';
 import { useTimelineStore } from './timelineStore';
 import { formatTimeCode } from './timelineUtils';
 
-export default function Playhead({ height, onSeek, currentTime: propCurrentTime }) {
+export default function Playhead({ height, onSeek, currentTime: propCurrentTime, fps = 30 }) {
   const { currentTime: storeCurrentTime, zoomLevel, setCurrentTime, snappingGuide } = useTimelineStore();
   const [isDragging, setIsDragging] = useState(false);
   const handleRef = useRef(null);
@@ -97,7 +97,7 @@ export default function Playhead({ height, onSeek, currentTime: propCurrentTime 
               }`}
             >
               <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-              <span>{formatTimeCode(currentTime)}</span>
+              <span>{formatTimeCode(currentTime, fps)}</span>
             </div>
           )}
 

@@ -2,7 +2,7 @@ import React, { useRef, useCallback } from 'react';
 import { useTimelineStore } from './timelineStore';
 import { formatRulerTime } from './timelineUtils';
 
-export default function TimeRuler({ totalDuration, onSeek }) {
+export default function TimeRuler({ totalDuration, onSeek, fps = 30 }) {
   const { zoomLevel, setCurrentTime } = useTimelineStore();
   const rulerRef = useRef(null);
 
@@ -95,7 +95,7 @@ export default function TimeRuler({ totalDuration, onSeek }) {
               className="absolute bottom-0 flex flex-col items-start pointer-events-none"
             >
               <span className="text-[10px] font-mono text-muted-foreground pl-1 -mt-0.5 leading-none">
-                {formatRulerTime(timeSec)}
+                {formatRulerTime(timeSec, fps)}
               </span>
               <div className="w-[1px] h-3 bg-muted-foreground/60 dark:bg-zinc-500 mt-1" />
             </div>

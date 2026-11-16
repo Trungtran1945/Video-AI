@@ -70,7 +70,27 @@ export async function composerRender(ctx = {}) {
   const tmp = ensureDir(tmpDirOf(project.id))
   const segDir = ensureDir(path.join(tmp, 'segments'))
   const prepDir = ensureDir(path.join(tmp, 'prepared'))
-  const { width, height } = dimsForAspect(project.aspect_ratio || '16:9')
+
+  let projectParams = {}
+  try {
+    if (typeof project.params === 'string') projectParams = JSON.parse(project.params)
+    else if (project.params && typeof project.params === 'object') projectParams = project.params
+  } catch (_) {}
+
+  let frameWidth, frameHeight
+  if (Number(projectParams.width) > 0 && Number(projectParams.height) > 0) {
+    frameWidth = Math.max(2, Math.floor(Number(projectParams.width) / 2) * 2)
+    frameHeight = Math.max(2, Math.floor(Number(projectParams.height) / 2) * 2)
+  } else if (Number(project.width) > 0 && Number(project.height) > 0) {
+    frameWidth = Math.max(2, Math.floor(Number(project.width) / 2) * 2)
+    frameHeight = Math.max(2, Math.floor(Number(project.height) / 2) * 2)
+  } else {
+    const dims = dimsForAspect(project.aspect_ratio || '16:9')
+    frameWidth = Math.max(2, Math.floor(dims.width / 2) * 2)
+    frameHeight = Math.max(2, Math.floor(dims.height / 2) * 2)
+  }
+  const width = frameWidth
+  const height = frameHeight
 
   // Calculate total duration from timeline clips
   let maxEnd = 0
@@ -81,10 +101,11 @@ export async function composerRender(ctx = {}) {
   const totalDuration = round2(Math.max(1, maxEnd))
 
   // 1. Build Background Layer Video (Respect Video Background vs Image Background vs Solid Color)
+  const MAX_UPSCALE = 2.0
   const bgClips = clips.filter((c) => c.clip_type === 'background')
   const bgAsset = bgClips[0] ? assetById.get(bgClips[0].asset_id) : null
   const bgFile = bgAsset ? resolveStorageKey(bgAsset.storage_key) : null
-  const defaultBgColor = project?.params?.defaultBackground || '#0F1117'
+  const defaultBgColor = projectParams?.defaultBackground || project?.params?.defaultBackground || '#0F1117'
   const bgVideoPath = path.join(tmp, 'bg_layer.mp4')
   let bgAudioFile = null
 
@@ -104,25 +125,47 @@ export async function composerRender(ctx = {}) {
       }
     } catch (_) {}
 
-    if (isVideoBg) {
-      let bgMeta = {}
-      try {
-        if (typeof bgClips[0]?.meta === 'string') {
-          bgMeta = JSON.parse(bgClips[0].meta)
-        } else if (bgClips[0]?.meta && typeof bgClips[0].meta === 'object') {
-          bgMeta = bgClips[0].meta
-        }
-      } catch (_) {}
+    const bgW = bgInfo?.width || 0
+    const bgH = bgInfo?.height || 0
+    if (bgW > 0 && bgH > 0 && (bgW < width * 0.75 || bgH < height * 0.75)) {
+      console.warn(`[composerRender] Background resolution warning: source (${bgW}x${bgH}) is below target frame (${width}x${height}). MAX_UPSCALE=${MAX_UPSCALE}`)
+    }
 
-      const fitMode = bgMeta.fit || 'cover'
+    let bgMeta = {}
+    try {
+      if (typeof bgClips[0]?.meta === 'string') {
+        bgMeta = JSON.parse(bgClips[0].meta)
+      } else if (bgClips[0]?.meta && typeof bgClips[0].meta === 'object') {
+        bgMeta = bgClips[0].meta
+      }
+    } catch (_) {}
+
+    const fitMode = (bgMeta.fit || 'cover').toLowerCase()
+    const padColor = (defaultBgColor || '#0F1117').startsWith('#')
+      ? defaultBgColor.replace(/^#/, '0x')
+      : (defaultBgColor || '0x0F1117')
+
+    let vfFilter
+    if (fitMode === 'contain') {
+      vfFilter = `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1`
+    } else if (fitMode === 'smart') {
+      const scaleW = bgW > 0 ? width / bgW : 1
+      const scaleH = bgH > 0 ? height / bgH : 1
+      if (scaleW > MAX_UPSCALE || scaleH > MAX_UPSCALE) {
+        const capW = Math.max(2, Math.floor((bgW * MAX_UPSCALE) / 2) * 2)
+        const capH = Math.max(2, Math.floor((bgH * MAX_UPSCALE) / 2) * 2)
+        vfFilter = `scale=w=${capW}:h=${capH}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1`
+      } else {
+        vfFilter = `scale=w=${width}:h=${height}:force_original_aspect_ratio=increase:force_divisible_by=2,crop=${width}:${height},setsar=1`
+      }
+    } else {
+      // cover
+      vfFilter = `scale=w=${width}:h=${height}:force_original_aspect_ratio=increase:force_divisible_by=2,crop=${width}:${height},setsar=1`
+    }
+
+    if (isVideoBg) {
       const shouldLoop = bgMeta.loop !== false
       const loopArg = shouldLoop && bgDuration > 0 && bgDuration < totalDuration ? ['-stream_loop', '-1'] : []
-      const padColor = (defaultBgColor || '#0F1117').startsWith('#')
-        ? defaultBgColor.replace(/^#/, '0x')
-        : (defaultBgColor || '0x0F1117')
-      const vfFilter = fitMode === 'contain'
-        ? `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${padColor},setsar=1`
-        : `scale=w=${width}:h=${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1`
 
       // Video Background: Loop or trim, preserve video frames, fit canvas aspect ratio
       await ffmpeg([
@@ -162,15 +205,32 @@ export async function composerRender(ctx = {}) {
         }
       }
     } else {
-      // Image Background: Apply subtle cinematic motion across total duration
-      await applyMotionImage({
-        src: bgFile,
-        out: bgVideoPath,
-        durationSec: totalDuration,
-        width,
-        height,
-        zoomMax: 1.02,
-      })
+      // Image Background
+      const isOverUpscale = bgW > 0 && bgH > 0 && (width / bgW > MAX_UPSCALE || height / bgH > MAX_UPSCALE)
+      if (fitMode === 'contain' || (fitMode === 'smart' && isOverUpscale)) {
+        await ffmpeg([
+          '-y', '-loop', '1',
+          '-t', String(totalDuration),
+          '-i', bgFile,
+          '-vf', vfFilter,
+          '-r', '30',
+          '-c:v', 'libx264',
+          '-preset', 'veryfast',
+          '-pix_fmt', 'yuv420p',
+          '-an',
+          bgVideoPath,
+        ])
+      } else {
+        // Image Background: Apply subtle cinematic motion across total duration
+        await applyMotionImage({
+          src: bgFile,
+          out: bgVideoPath,
+          durationSec: totalDuration,
+          width,
+          height,
+          zoomMax: 1.02,
+        })
+      }
     }
   } else {
     // Solid background fallback
@@ -196,7 +256,8 @@ export async function composerRender(ctx = {}) {
       if (signal?.aborted) throw new Error('Cancelled')
       const prepImg = path.join(prepDir, `img_${clip.id}.png`)
       const asset = assetById.get(clip.asset_id)
-      const srcImg = fs.existsSync(prepImg) ? prepImg : (asset ? resolveStorageKey(asset.storage_key) : null)
+      const rawAssetFile = asset ? resolveStorageKey(asset.storage_key) : null
+      const srcImg = (rawAssetFile && fs.existsSync(rawAssetFile)) ? rawAssetFile : (fs.existsSync(prepImg) ? prepImg : null)
       if (!srcImg || !fs.existsSync(srcImg)) {
         throw new Error(`File phương tiện cho clip #${clip.order_index} không tồn tại`)
       }
@@ -207,7 +268,43 @@ export async function composerRender(ctx = {}) {
         else if (clip.meta && typeof clip.meta === 'object') clipMeta = clip.meta
       } catch (_) {}
 
-      const fitMode = clipMeta.fit || 'contain'
+      // Probe native source resolution
+      let srcW = width
+      let srcH = height
+      try {
+        const pInfo = await probe(srcImg)
+        if (pInfo.width > 0 && pInfo.height > 0) {
+          srcW = pInfo.width
+          srcH = pInfo.height
+        }
+      } catch (_) {}
+
+      // Quality Warning
+      if (srcW < width * 0.5 || srcH < height * 0.5) {
+        console.warn(`[composerRender] Quality warning: Clip #${clip.order_index} source resolution (${srcW}x${srcH}) is below 50% of canvas (${width}x${height})`)
+      }
+
+      const fitMode = (clipMeta.fit || 'contain').toLowerCase()
+      const autoFit = clipMeta.autoFit !== false
+      const rawScale = Number(clipMeta.scale)
+      const clipScale = Number.isFinite(rawScale) && rawScale > 0 ? Math.min(5.0, Math.max(0.05, rawScale)) : 1.0
+      const maxScale = Number(clipMeta.maxScale) > 0 ? Number(clipMeta.maxScale) : 1.0
+
+      let targetW, targetH
+      if (fitMode === 'cover') {
+        const scale = Math.max(width / srcW, height / srcH)
+        targetW = Math.max(2, Math.floor((srcW * scale * clipScale) / 2) * 2)
+        targetH = Math.max(2, Math.floor((srcH * scale * clipScale) / 2) * 2)
+      } else if (fitMode === 'fill') {
+        targetW = Math.max(2, Math.floor((width * clipScale) / 2) * 2)
+        targetH = Math.max(2, Math.floor((height * clipScale) / 2) * 2)
+      } else {
+        // Default: 'contain'
+        const scale = autoFit ? Math.min(width / srcW, height / srcH, maxScale) : (width / srcW)
+        targetW = Math.max(2, Math.floor((srcW * scale * clipScale) / 2) * 2)
+        targetH = Math.max(2, Math.floor((srcH * scale * clipScale) / 2) * 2)
+      }
+
       const inSec = Math.max(0, Number(clip.in_sec || 0))
       const rawDur = Math.max(0.5, Number(clip.out_sec) - inSec)
       const rawSpeed = Number(clip.speed)
@@ -219,19 +316,25 @@ export async function composerRender(ctx = {}) {
       let rendered
       const isVid = clip.clip_type === 'video' || asset?.mime_type?.startsWith('video/') || /\.(mp4|webm|mov|mkv)$/i.test(srcImg)
       if (isVid) {
-        let vf = fitMode === 'cover'
-          ? `scale=w=${width}:h=${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`
-          : `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease`
+        const vf = []
         if (speed !== 1.0) {
-          vf = `setpts=${(1 / speed).toFixed(6)}*PTS,` + vf
+          vf.push(`setpts=${(1 / speed).toFixed(6)}*PTS`)
         }
+        if (fitMode === 'cover') {
+          vf.push(`scale=w=${targetW}:h=${targetH}:force_original_aspect_ratio=increase:force_divisible_by=2,crop=${targetW}:${targetH}`)
+        } else if (fitMode === 'fill') {
+          vf.push(`scale=w=${targetW}:h=${targetH}`)
+        } else {
+          vf.push(`scale=w=${targetW}:h=${targetH}:force_original_aspect_ratio=decrease:force_divisible_by=2`)
+        }
+        vf.push('setsar=1')
 
         await ffmpeg([
           '-y',
           '-ss', String(inSec),
           '-i', srcImg,
           '-t', String(rawDur),
-          '-vf', vf,
+          '-vf', vf.join(','),
           '-c:v', 'libx264',
           '-preset', 'veryfast',
           '-pix_fmt', 'yuv420p',
@@ -292,18 +395,33 @@ export async function composerRender(ctx = {}) {
             src: srcImg,
             out,
             durationSec,
-            width,
-            height,
+            width: targetW,
+            height: targetH,
             zoomMax: 1.05,
           })
-        } else {
-          // Static contained image preserving canvas background visibility
+        } else if (fitMode === 'fill') {
           await ffmpeg([
             '-y',
             '-loop', '1',
             '-t', String(durationSec),
             '-i', srcImg,
-            '-vf', `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease`,
+            '-vf', `scale=w=${targetW}:h=${targetH},setsar=1`,
+            '-r', '30',
+            '-c:v', 'libx264',
+            '-preset', 'veryfast',
+            '-pix_fmt', 'yuv420p',
+            '-an',
+            out,
+          ])
+          rendered = { file: out, durationSec }
+        } else {
+          // Static contained image
+          await ffmpeg([
+            '-y',
+            '-loop', '1',
+            '-t', String(durationSec),
+            '-i', srcImg,
+            '-vf', `scale=w=${targetW}:h=${targetH}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`,
             '-r', '30',
             '-c:v', 'libx264',
             '-preset', 'veryfast',
@@ -314,11 +432,63 @@ export async function composerRender(ctx = {}) {
           rendered = { file: out, durationSec }
         }
       }
+
+      // Check actual dimensions of rendered segment
+      let segW = targetW
+      let segH = targetH
+      try {
+        const segProbe = await probe(rendered.file)
+        if (segProbe.width > 0 && segProbe.height > 0) {
+          segW = segProbe.width
+          segH = segProbe.height
+        }
+      } catch (_) {}
+
+      // Alignment and positioning math
+      const align = String(clipMeta.align || 'center').toLowerCase().replace(/[\s_]+/g, '-')
+      let baseX = (width - segW) / 2
+      let baseY = (height - segH) / 2
+
+      if (align === 'top-left' || align === 'topleft') {
+        baseX = 0; baseY = 0
+      } else if (align === 'top' || align === 'top-center' || align === 'topcenter') {
+        baseX = (width - segW) / 2; baseY = 0
+      } else if (align === 'top-right' || align === 'topright') {
+        baseX = width - segW; baseY = 0
+      } else if (align === 'left' || align === 'center-left' || align === 'centerleft') {
+        baseX = 0; baseY = (height - segH) / 2
+      } else if (align === 'right' || align === 'center-right' || align === 'centerright') {
+        baseX = width - segW; baseY = (height - segH) / 2
+      } else if (align === 'bottom-left' || align === 'bottomleft') {
+        baseX = 0; baseY = height - segH
+      } else if (align === 'bottom' || align === 'bottom-center' || align === 'bottomcenter') {
+        baseX = (width - segW) / 2; baseY = height - segH
+      } else if (align === 'bottom-right' || align === 'bottomright') {
+        baseX = width - segW; baseY = height - segH
+      }
+
+      const rawX = Number(clipMeta.posX) || 0
+      const normX = Math.abs(rawX) > 1.0 ? rawX / 100 : rawX
+      const rawY = Number(clipMeta.posY) || 0
+      const normY = Math.abs(rawY) > 1.0 ? rawY / 100 : rawY
+
+      const offsetX = Math.round(normX * width)
+      const offsetY = Math.round(normY * height)
+
+      const finalX = Math.round(baseX + offsetX)
+      const finalY = Math.round(baseY + offsetY)
+      const opacity = Number.isFinite(Number(clipMeta.opacity)) ? Math.max(0, Math.min(1.0, Number(clipMeta.opacity))) : 1.0
+
       return {
         file: rendered.file,
         durationSec: rendered.durationSec,
         startAt,
         endAt: round2(startAt + rendered.durationSec),
+        finalX,
+        finalY,
+        opacity,
+        segW,
+        segH,
       }
     })
 
@@ -336,7 +506,11 @@ export async function composerRender(ctx = {}) {
     for (let i = 0; i < slices.length; i++) {
       const slice = slices[i]
       const inputIdx = i + 1
-      filterLines.push(`[${inputIdx}:v]setpts=PTS-STARTPTS+${slice.startAt}/TB[v${inputIdx}_timed]`)
+      if (slice.opacity < 1.0) {
+        filterLines.push(`[${inputIdx}:v]format=rgba,colorchannelmixer=aa=${slice.opacity.toFixed(2)},setpts=PTS-STARTPTS+${slice.startAt}/TB[v${inputIdx}_timed]`)
+      } else {
+        filterLines.push(`[${inputIdx}:v]setpts=PTS-STARTPTS+${slice.startAt}/TB[v${inputIdx}_timed]`)
+      }
     }
 
     let prevLayer = '0:v'
@@ -345,7 +519,7 @@ export async function composerRender(ctx = {}) {
       const inputIdx = i + 1
       const nextLayer = i === slices.length - 1 ? 'v_comp' : `l_${inputIdx}`
       filterLines.push(
-        `[${prevLayer}][v${inputIdx}_timed]overlay=(W-w)/2:(H-h)/2:enable='between(t,${slice.startAt},${slice.endAt})':eof_action=pass[${nextLayer}]`
+        `[${prevLayer}][v${inputIdx}_timed]overlay=x=${slice.finalX}:y=${slice.finalY}:format=auto:enable='between(t,${slice.startAt},${slice.endAt})':eof_action=pass[${nextLayer}]`
       )
       prevLayer = nextLayer
     }

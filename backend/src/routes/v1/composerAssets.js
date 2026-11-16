@@ -135,6 +135,15 @@ export function formatAsset(a) {
   const mimeType = a.mime_type || a.mimeType || null
   const isImg = mimeType?.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg)$/i.test(storageKey || '')
 
+  let metaObj = null
+  try {
+    metaObj = typeof a.meta === 'string' ? JSON.parse(a.meta) : (a.meta || null)
+  } catch (_) {}
+
+  const width = a.width ?? metaObj?.width ?? null
+  const height = a.height ?? metaObj?.height ?? null
+  const aspectRatio = a.aspect_ratio ?? a.aspectRatio ?? metaObj?.aspectRatio ?? (width && height ? Math.round((width / height) * 1000) / 1000 : null)
+
   return {
     id: a.id,
     projectId: a.project_id || a.projectId,
@@ -153,6 +162,11 @@ export function formatAsset(a) {
       : (isImg && storageKey ? `/storage/${storageKey}` : null),
     durationSec: a.duration_sec != null ? Number(a.duration_sec) : (a.durationSec != null ? Number(a.durationSec) : null),
     duration_sec: a.duration_sec != null ? Number(a.duration_sec) : (a.durationSec != null ? Number(a.durationSec) : null),
+    width: width != null ? Number(width) : null,
+    height: height != null ? Number(height) : null,
+    aspectRatio: aspectRatio != null ? Number(aspectRatio) : null,
+    aspect_ratio: aspectRatio != null ? Number(aspectRatio) : null,
+    meta: metaObj,
     byteSize: a.byte_size != null ? Number(a.byte_size) : (a.byteSize != null ? Number(a.byteSize) : null),
     byte_size: a.byte_size != null ? Number(a.byte_size) : (a.byteSize != null ? Number(a.byteSize) : null),
     mimeType: mimeType || null,
