@@ -19,9 +19,15 @@ for (const f of files) {
   if (r.status !== 0) {
     failed.push(f)
     console.error(`FAIL: ${f} (exit ${r.status})`)
+    if (process.env.GITHUB_ACTIONS) {
+      console.log(`::error file=backend/tests/${f},title=Test Failed::${f} exited with code ${r.status}`)
+    }
   }
 }
 if (failed.length) {
+  if (process.env.GITHUB_ACTIONS) {
+    console.log(`::error title=Failed Tests::${failed.length} test files failed: ${failed.join(', ')}`)
+  }
   console.error(`\n${failed.length} FAILURES: ${failed.join(', ')}`)
   process.exit(1)
 }
