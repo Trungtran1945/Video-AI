@@ -12,6 +12,7 @@
     "check:redis": "node scripts/check-redis.mjs",
     "test": "node scripts/run-tests.mjs",
     "lint": "eslint src tests scripts --quiet",
+    "test:zerotts": "node tests/zeroTtsIntegration.test.mjs",
     "test:voicestudio": "node tests/voiceStudioProvider.test.mjs"
   },
   "dependencies": {
