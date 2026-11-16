@@ -26,7 +26,7 @@ router.get('/', async (req, res) => {
       )
     } catch (_) { /* bảng trống/chưa có cột created_date → bỏ qua health */ }
     try {
-      keys = await query('SELECT DISTINCT provider FROM api_keys WHERE user_id = ? AND is_active = 1', [req.user.id])
+      keys = await query('SELECT DISTINCT provider FROM api_keys WHERE user_id = ? AND is_active = TRUE', [req.user.id])
     } catch (_) {}
     const statMap = new Map(stats.map((s) => [s.provider, s]))
     const keySet = new Set(keys.map((k) => k.provider))
@@ -98,7 +98,7 @@ router.get('/quota-summary', async (req, res) => {
   try {
     let keyProviders = []
     try {
-      const rows = await query('SELECT DISTINCT provider FROM api_keys WHERE user_id = ? AND is_active = 1', [req.user.id])
+      const rows = await query('SELECT DISTINCT provider FROM api_keys WHERE user_id = ? AND is_active = TRUE', [req.user.id])
       keyProviders = rows.map((r) => r.provider).filter(Boolean)
     } catch (_) {}
     const requested = String(req.query.providers || '')

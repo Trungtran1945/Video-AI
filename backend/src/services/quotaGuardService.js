@@ -179,7 +179,7 @@ export async function checkQuotaWarning(userId, provider) {
  */
 export async function selectBestApiKey(userId, provider) {
   const keys = await query(
-    `SELECT * FROM api_keys WHERE user_id = ? AND provider = ? AND is_active = 1 ORDER BY priority ASC, created_date ASC`,
+    `SELECT * FROM api_keys WHERE user_id = ? AND provider = ? AND is_active = TRUE ORDER BY priority ASC, created_date ASC`,
     [userId, provider]
   )
 

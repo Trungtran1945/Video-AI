@@ -1,3 +1,5 @@
+import globals from 'globals'
+
 // Minimal backend lint gate: ESM syntax errors + unused vars/prefix rules.
 // Run: cd backend && npm run lint (fails loudly — never masked in CI).
 export default [
@@ -39,6 +41,20 @@ export default [
     files: ['tests/**/*.mjs', 'scripts/**/*.mjs'],
     rules: {
       'no-unused-vars': 'off',
+    },
+  },
+  {
+    // Browser evaluation contexts in Playwright tests (e.g. page.evaluate, page.addInitScript)
+    files: [
+      'tests/**/*Browser*.test.mjs',
+      'tests/**/*Playwright*.test.mjs',
+      'tests/**/*browser*.test.mjs',
+      'tests/**/*playwright*.test.mjs',
+    ],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+      },
     },
   },
 ]

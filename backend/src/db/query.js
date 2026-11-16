@@ -32,6 +32,23 @@ export function convertSqlForPostgres(sql) {
   // 3. Map SQLite rowid to PostgreSQL ctid
   s = s.replace(/\browid\b/gi, 'ctid')
 
+  // 3.5. Convert boolean column comparisons and assignments (= 1 / = 0) to TRUE / FALSE for PostgreSQL
+  const BOOL_COLS = '(?:is_active|used|email_verified|auto_upload_youtube|notify_on_complete|copyright_acknowledged|script_review_required|muted|locked|is_time_manually_adjusted|is_text_manually_edited|is_translation_manually_edited|is_static|enabled|is_system|case_sensitive)'
+  const parts = s.split(/('(?:''|[^'])*')/)
+  for (let i = 0; i < parts.length; i += 2) {
+    if (!parts[i]) continue
+    parts[i] = parts[i]
+      .replace(new RegExp(`\\b(${BOOL_COLS})\\s*=\\s*1\\b`, 'gi'), '$1 = TRUE')
+      .replace(new RegExp(`\\b(${BOOL_COLS})\\s*=\\s*0\\b`, 'gi'), '$1 = FALSE')
+      .replace(new RegExp(`\\b(${BOOL_COLS})\\s*(?:!=|<>)\\s*0\\b`, 'gi'), '$1 = TRUE')
+      .replace(new RegExp(`\\b(${BOOL_COLS})\\s*(?:!=|<>)\\s*1\\b`, 'gi'), '$1 = FALSE')
+      .replace(new RegExp(`\\b1\\s*=\\s*(${BOOL_COLS})\\b`, 'gi'), 'TRUE = $1')
+      .replace(new RegExp(`\\b0\\s*=\\s*(${BOOL_COLS})\\b`, 'gi'), 'FALSE = $1')
+      .replace(new RegExp(`\\b(${BOOL_COLS})\\s+IS\\s+1\\b`, 'gi'), '$1 IS TRUE')
+      .replace(new RegExp(`\\b(${BOOL_COLS})\\s+IS\\s+0\\b`, 'gi'), '$1 IS FALSE')
+  }
+  s = parts.join('')
+
   // 4. Convert parameter placeholders '?' -> '$1', '$2', ... (respecting quoted string literals)
   let paramIndex = 1
   let inSingleQuote = false

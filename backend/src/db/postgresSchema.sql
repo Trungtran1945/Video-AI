@@ -374,8 +374,10 @@ CREATE TABLE IF NOT EXISTS subtitles (
     format VARCHAR(16) DEFAULT 'srt',
     language VARCHAR(16) DEFAULT 'vi',
     storage_key TEXT,
-    cues JSONB
+    cues JSONB,
+    created_date TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE subtitles ADD COLUMN IF NOT EXISTS created_date TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;
 CREATE INDEX IF NOT EXISTS idx_subtitles_project ON subtitles(project_id);
 
 CREATE TABLE IF NOT EXISTS outputs (

@@ -324,8 +324,10 @@ export async function initSchema() {
     format TEXT DEFAULT 'srt',
     language TEXT DEFAULT 'vi',
     storage_key TEXT,
-    cues TEXT
+    cues TEXT,
+    created_date TEXT DEFAULT (datetime('now'))
   )`)
+  try { db.run(`ALTER TABLE subtitles ADD COLUMN created_date TEXT DEFAULT (datetime('now'))`) } catch (_) {}
 
   db.run(`CREATE TABLE IF NOT EXISTS outputs (
     id TEXT PRIMARY KEY,

@@ -173,8 +173,8 @@ export function formatAsset(a) {
     mime_type: mimeType || null,
     ocrText: a.ocr_text || a.ocrText || null,
     ocr_text: a.ocr_text || a.ocrText || null,
-    ocrData: a.ocr_data ? (typeof a.ocr_data === 'string' ? JSON.parse(a.ocr_data) : a.ocr_data) : (a.ocrData || null),
-    ocr_data: typeof a.ocr_data === 'string' ? a.ocr_data : (a.ocrData ? JSON.stringify(a.ocrData) : null),
+    ocrData: a.ocr_data ? (typeof a.ocr_data === 'string' ? (() => { try { return JSON.parse(a.ocr_data) } catch (_) { return null } })() : a.ocr_data) : (a.ocrData || null),
+    ocr_data: typeof a.ocr_data === 'string' ? a.ocr_data : (a.ocr_data ? JSON.stringify(a.ocr_data) : (a.ocrData ? JSON.stringify(a.ocrData) : null)),
     translationText: a.translation_text || a.translationText || null,
     translation_text: a.translation_text || a.translationText || null,
     translationTargetLang: a.translation_target_lang || a.translationTargetLang || null,
@@ -408,7 +408,11 @@ router.post('/:id/assets/:assetId/translate', requireProjectOwner, async (req, r
 // POST /api/v1/projects/:id/tts
 router.post('/:id/tts', requireProjectOwner, async (req, res) => {
   try {
-    const text = req.body?.text
+    let text = req.body?.text
+    if (!text && req.body?.assetId) {
+      const asset = await queryOne('SELECT translation_text, ocr_text FROM assets WHERE id = ? AND project_id = ?', [req.body.assetId, req.project.id])
+      text = (asset?.translation_text || asset?.ocr_text || '').trim()
+    }
     if (!text || !text.trim()) {
       return sendError(res, 400, ERR.VALIDATION, 'Văn bản chuyển giọng nói không được để trống', { field: 'text' })
     }
