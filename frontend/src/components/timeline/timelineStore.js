@@ -79,7 +79,15 @@ export const useTimelineStore = create((set, get) => ({
         t.id === id ? { ...t, volume: Math.max(0, Math.min(1, volume)) } : t
       ),
     })),
-  addClip: (clip) => set((state) => ({ clips: [...state.clips, clip] })),
+  addClip: (clip) => set((state) => {
+    const c = { ...clip };
+    if (c.start !== undefined && c.start_at_sec === undefined) c.start_at_sec = c.start;
+    if (c.start_at_sec !== undefined && c.start === undefined) c.start = c.start_at_sec;
+    if (c.duration !== undefined && c.out_sec === undefined) {
+      c.out_sec = Number(((Number(c.in_sec) || 0) + c.duration).toFixed(3));
+    }
+    return { clips: [...state.clips, c] };
+  }),
   clearClips: () => set({ clips: [], selectedClipId: null }),
 
   initTimeline: ({ clips, currentTime, tracks }) => {
@@ -93,9 +101,23 @@ export const useTimelineStore = create((set, get) => ({
   // Clip Modifications
   updateClip: (id, updates) => {
     set((state) => ({
-      clips: state.clips.map((clip) =>
-        clip.id === id ? { ...clip, ...updates } : clip
-      ),
+      clips: state.clips.map((clip) => {
+        if (clip.id !== id) return clip;
+        const merged = { ...clip, ...updates };
+        if (updates.start !== undefined) {
+          merged.start_at_sec = updates.start;
+        } else if (updates.start_at_sec !== undefined) {
+          merged.start = updates.start_at_sec;
+        }
+        if (updates.duration !== undefined) {
+          const inSec = Number(merged.in_sec ?? 0);
+          merged.out_sec = Number((inSec + updates.duration).toFixed(3));
+        } else if (updates.out_sec !== undefined) {
+          const inSec = Number(merged.in_sec ?? 0);
+          merged.duration = Math.max(0.1, Number((updates.out_sec - inSec).toFixed(3)));
+        }
+        return merged;
+      }),
     }));
   },
 

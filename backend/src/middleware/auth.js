@@ -118,7 +118,7 @@ export async function sseAuthMiddleware(req, res, next) {
       // Không log ticket.
       const claimed = await runAffected(
         `DELETE FROM sse_tickets
-         WHERE ticket_hash = ? AND used = 0 AND expires_at > ?
+         WHERE ticket_hash = ? AND used = FALSE AND expires_at > ?
            AND project_id = ? AND user_id = ?`,
         [sha256(ticket), new Date().toISOString(), row.project_id, row.user_id],
         { op: 'auth.sse.consume' }

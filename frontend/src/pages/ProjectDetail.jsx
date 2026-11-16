@@ -236,6 +236,20 @@ export default function ProjectDetail() {
     return Math.max(10, Math.ceil(maxEnd));
   }, [storeClips]);
 
+  const effectiveDuration = useMemo(() => {
+    if (isComposer) return composerDuration;
+    if (duration > 0) return duration;
+    if (Array.isArray(transcript) && transcript.length > 0) {
+      let maxEnd = 0;
+      for (const s of transcript) {
+        const end = Number(s.endSec ?? s.end_sec ?? 0);
+        if (end > maxEnd) maxEnd = end;
+      }
+      if (maxEnd > 0) return maxEnd;
+    }
+    return 30;
+  }, [isComposer, composerDuration, duration, transcript]);
+
   // Gộp trạng thái job từ polling DB + SSE realtime
   const jobByStage = useMemo(() => {
     const map = {};
@@ -320,55 +334,79 @@ export default function ProjectDetail() {
 
   // Playback control functions
   const handlePlayPause = useCallback(() => {
-    const video = videoRef.current || document.getElementById('output-video');
-    if (!video) return;
-    if (video.paused) {
-      video.play().then(() => {
-        setIsPlaying(true);
-      }).catch((err) => {
-        console.warn('Video play failed:', err);
-      });
-    } else {
-      video.pause();
-      setIsPlaying(false);
+    if (isComposer) {
+      if (!isPlaying && currentTime >= composerDuration - 0.05) {
+        setCurrentTime(0);
+        setStoreCurrentTime(0);
+      }
+      setIsPlaying((prev) => !prev);
+      return;
     }
-  }, []);
+    const video = videoRef.current || document.getElementById('output-video');
+    if (video && video.src && !video.error) {
+      if (video.paused) {
+        video.play().then(() => {
+          setIsPlaying(true);
+        }).catch((err) => {
+          console.warn('Video play failed, falling back to software clock:', err);
+          setIsPlaying(true);
+        });
+      } else {
+        video.pause();
+        setIsPlaying(false);
+      }
+      return;
+    }
+    // Audio-only or no-video fallback: toggle isPlaying smoothly with software clock
+    if (!isPlaying && currentTime >= effectiveDuration - 0.05) {
+      setCurrentTime(0);
+      setStoreCurrentTime(0);
+    }
+    setIsPlaying((prev) => !prev);
+  }, [isComposer, isPlaying, currentTime, composerDuration, effectiveDuration, setStoreCurrentTime]);
 
   const handleSeek = useCallback((time) => {
+    const clamped = Math.max(0, Number(time.toFixed(3)));
     const video = videoRef.current || document.getElementById('output-video');
-    if (video) {
-      video.currentTime = time;
-      setCurrentTime(time);
-      setStoreCurrentTime(time);
+    if (video && video.src) {
+      try {
+        video.currentTime = clamped;
+      } catch (_) {}
     }
+    setCurrentTime(clamped);
+    setStoreCurrentTime(clamped);
   }, [setStoreCurrentTime]);
 
   const handleSpeedChange = useCallback((speed) => {
     const video = videoRef.current || document.getElementById('output-video');
     if (video) {
-      video.playbackRate = speed;
-      setPlaybackSpeed(speed);
+      try { video.playbackRate = speed; } catch (_) {}
     }
+    setPlaybackSpeed(speed);
   }, []);
 
   const handleVolumeChange = useCallback((vol) => {
     const video = videoRef.current || document.getElementById('output-video');
     if (video) {
-      video.volume = vol;
-      setVolume(vol);
-      if (vol > 0 && muted) {
-        video.muted = false;
-        setMuted(false);
-      }
+      try {
+        video.volume = vol;
+        if (vol > 0 && muted) {
+          video.muted = false;
+        }
+      } catch (_) {}
+    }
+    setVolume(vol);
+    if (vol > 0 && muted) {
+      setMuted(false);
     }
   }, [muted]);
 
   const handleMuteToggle = useCallback(() => {
     const video = videoRef.current || document.getElementById('output-video');
     if (video) {
-      video.muted = !video.muted;
-      setMuted(!muted);
+      try { video.muted = !video.muted; } catch (_) {}
     }
+    setMuted(!muted);
   }, [muted]);
 
   const handleSegmentClick = useCallback((segmentId) => {
@@ -424,6 +462,42 @@ export default function ProjectDetail() {
     rafId = requestAnimationFrame(syncLoop);
     return () => cancelAnimationFrame(rafId);
   }, [isPlaying, outputUrl, setStoreCurrentTime]);
+
+  // Unified Master Software Playback Clock Ticker:
+  // In MEDIA_COMPOSER mode, or when playing audio without a master video element,
+  // a 60fps RAF clock driven by performance.now() advances currentTime and syncs
+  // Zustand storeCurrentTime smoothly, driving playback and VideoTimeline playhead.
+  useEffect(() => {
+    if (!isPlaying) return;
+    const video = videoRef.current || document.getElementById('output-video');
+    const hasActiveVideo = Boolean(video && video.src && !video.error);
+    if (!isComposer && hasActiveVideo) return;
+
+    let lastTime = performance.now();
+    let rafId;
+    const maxDur = isComposer ? composerDuration : effectiveDuration;
+
+    const tick = (now) => {
+      const deltaSec = (now - lastTime) / 1000;
+      lastTime = now;
+
+      setCurrentTime((prev) => {
+        const next = prev + deltaSec * (playbackSpeed || 1);
+        if (next >= maxDur) {
+          setIsPlaying(false);
+          setStoreCurrentTime(maxDur);
+          return maxDur;
+        }
+        setStoreCurrentTime(next);
+        return next;
+      });
+
+      rafId = requestAnimationFrame(tick);
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [isComposer, isPlaying, composerDuration, effectiveDuration, playbackSpeed, setStoreCurrentTime]);
 
   // Reload video element when output changes (e.g. after redub) while
   // preserving playback position when still valid.
@@ -544,30 +618,53 @@ export default function ProjectDetail() {
         setComposerTracks(normTracks);
 
         const rawClips = p.timeline || [];
-        const normClips = rawClips.map((c, idx) => ({
-          id: c.id,
-          trackId: c.track_id || c.trackId,
-          type: c.clip_type || c.type || 'image',
-          clip_type: c.clip_type || c.type || 'image',
-          assetId: c.asset_id || c.assetId,
-          start: Number(c.start_at_sec ?? c.start_sec ?? c.start ?? 0),
-          duration: Math.max(0.1, Number((c.out_sec != null && c.in_sec != null ? c.out_sec - c.in_sec : null) ?? c.duration_sec ?? c.duration ?? 4)),
-          content: c.text_content || c.content || c.name || '',
-          style: (() => {
-            if (typeof c.style_json === 'string') {
-              try { return JSON.parse(c.style_json); } catch (_) { return c.style || {}; }
-            }
-            return c.style || {};
-          })(),
-          meta: (() => {
-            if (typeof c.meta === 'string') {
-              try { return JSON.parse(c.meta); } catch (_) { return c.meta || {}; }
-            }
-            return c.meta || {};
-          })(),
-          volume: Number(c.volume ?? 1),
-          order_index: c.order_index ?? idx,
-        }));
+        const normClips = rawClips.map((c, idx) => {
+          const inSec = Number(c.in_sec ?? 0);
+          const dur = Math.max(0.1, Number((c.out_sec != null && c.in_sec != null ? c.out_sec - c.in_sec : null) ?? c.duration_sec ?? c.duration ?? 4));
+          const startSec = Number(c.start_at_sec ?? c.start_sec ?? c.start ?? 0);
+          const outSec = Number(c.out_sec != null ? c.out_sec : inSec + dur);
+          const assetId = c.asset_id || c.assetId || null;
+          const voiceAudioId = c.voice_audio_id || c.audio_id || c.audioId || null;
+
+          return {
+            id: c.id,
+            trackId: c.track_id || c.trackId,
+            track_id: c.track_id || c.trackId,
+            type: c.clip_type || c.type || 'image',
+            clip_type: c.clip_type || c.type || 'image',
+            assetId,
+            asset_id: assetId,
+            voice_audio_id: voiceAudioId,
+            audio_id: voiceAudioId,
+            audioId: voiceAudioId,
+            start: startSec,
+            start_at_sec: startSec,
+            in_sec: inSec,
+            out_sec: outSec,
+            duration: dur,
+            content: c.text_content || c.content || c.name || '',
+            textContent: c.text_content || c.content || c.textContent || '',
+            text_content: c.text_content || c.content || c.textContent || '',
+            style: (() => {
+              if (typeof c.style_json === 'string') {
+                try { return JSON.parse(c.style_json); } catch (_) { return c.style || {}; }
+              }
+              return c.style || {};
+            })(),
+            style_json: typeof c.style_json === 'string' ? c.style_json : (c.style ? JSON.stringify(c.style) : null),
+            meta: (() => {
+              if (typeof c.meta === 'string') {
+                try { return JSON.parse(c.meta); } catch (_) { return c.meta || {}; }
+              }
+              return c.meta || {};
+            })(),
+            volume: Number(c.volume ?? 1),
+            speed: Number(c.speed ?? 1),
+            fade_in_sec: Number(c.fade_in_sec ?? 0),
+            fade_out_sec: Number(c.fade_out_sec ?? 0),
+            order_index: c.order_index ?? idx,
+          };
+        });
 
         if (!composerInitialLoadedRef.current || isCompletedStatus(p.status)) {
           composerInitialLoadedRef.current = true;
@@ -1725,7 +1822,7 @@ export default function ProjectDetail() {
                 duration={composerDuration}
                 isPlaying={isPlaying}
                 outputUrl={outputUrl}
-                onTogglePlay={() => setIsPlaying(!isPlaying)}
+                onTogglePlay={handlePlayPause}
                 onSeek={(t) => {
                   setCurrentTime(t);
                   setStoreCurrentTime(t);
@@ -1763,7 +1860,7 @@ export default function ProjectDetail() {
                 setCurrentTime(t);
                 setStoreCurrentTime(t);
               }}
-              onPlayPause={() => setIsPlaying(!isPlaying)}
+              onPlayPause={handlePlayPause}
               customTracks={composerTracks}
               project={project}
             />
@@ -3150,6 +3247,7 @@ export default function ProjectDetail() {
             canEdit={!isActive}
             onUpdateSegment={load}
             toast={toast}
+            onSeek={handleSeek}
           />
         )}
 
@@ -3295,7 +3393,7 @@ function InfoGrid({ project, isDub, params }) {
   );
 }
 
-function ScriptSegmentsShowcase({ segments, aspectRatio, projectId, scriptVersion, canEdit, onUpdateSegment, toast }) {
+function ScriptSegmentsShowcase({ segments, aspectRatio, projectId, scriptVersion, canEdit, onUpdateSegment, toast, onSeek }) {
   const [editingSegmentId, setEditingSegmentId] = useState(null);
   const [draftNarration, setDraftNarration] = useState('');
   const [draftVisualPrompt, setDraftVisualPrompt] = useState('');
@@ -3528,6 +3626,19 @@ function ScriptSegmentsShowcase({ segments, aspectRatio, projectId, scriptVersio
                           src={seg.audioUrl}
                           controls
                           preload="none"
+                          onPlay={() => {
+                            const start = Number(seg.startSec ?? seg.start_sec ?? 0);
+                            onSeek?.(start);
+                          }}
+                          onTimeUpdate={(e) => {
+                            const start = Number(seg.startSec ?? seg.start_sec ?? 0);
+                            const cur = start + e.currentTarget.currentTime;
+                            onSeek?.(cur);
+                          }}
+                          onEnded={() => {
+                            const end = Number(seg.endSec ?? seg.end_sec ?? (Number(seg.startSec ?? 0) + (Number(seg.durationSec) || 2)));
+                            onSeek?.(end);
+                          }}
                           className="h-8 w-full max-w-md accent-primary"
                         />
                       </div>

@@ -2,11 +2,12 @@ import React, { useState, useRef, useCallback } from 'react';
 import { useTimelineStore } from './timelineStore';
 import { formatTimeCode } from './timelineUtils';
 
-export default function Playhead({ height, onSeek }) {
-  const { currentTime, zoomLevel, setCurrentTime, snappingGuide } = useTimelineStore();
+export default function Playhead({ height, onSeek, currentTime: propCurrentTime }) {
+  const { currentTime: storeCurrentTime, zoomLevel, setCurrentTime, snappingGuide } = useTimelineStore();
   const [isDragging, setIsDragging] = useState(false);
   const handleRef = useRef(null);
 
+  const currentTime = propCurrentTime !== undefined ? propCurrentTime : storeCurrentTime;
   const leftPx = currentTime * zoomLevel;
 
   const handlePointerDown = useCallback(
@@ -73,10 +74,11 @@ export default function Playhead({ height, onSeek }) {
       {/* Red Playhead Line & Draggable Handle */}
       <div
         style={{
-          left: `${leftPx}px`,
+          transform: `translate3d(${leftPx}px, 0, 0)`,
           height: `${height}px`,
+          willChange: 'transform',
         }}
-        className="absolute top-0 z-40 pointer-events-none group"
+        className="absolute top-0 left-0 z-40 pointer-events-none group"
       >
         {/* Playhead Vertical Red Line */}
         <div className="w-[2px] h-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.8)] -translate-x-1/2" />

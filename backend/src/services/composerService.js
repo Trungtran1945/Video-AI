@@ -11,6 +11,12 @@ function computeHash(content) {
   return crypto.createHash('sha256').update(content).digest('hex')
 }
 
+export const ALLOWED_MEDIA_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.svg',
+  '.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac',
+  '.mp4', '.mov', '.webm', '.avi', '.mkv',
+])
+
 export async function ensureDefaultTracks(projectId) {
   let tracks = await query('SELECT * FROM timeline_tracks WHERE project_id = ? ORDER BY order_index ASC', [projectId])
   if (tracks.length === 0) {
@@ -47,7 +53,18 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
   const pDir = projectDir(projectId)
   const assetsDir = ensureDir(path.join(pDir, 'assets'))
 
-  const ext = path.extname(file.originalname || file.name || '').toLowerCase() || (file.mimetype?.includes('image') ? '.png' : file.mimetype?.includes('audio') ? '.mp3' : '.mp4')
+  let ext = path.extname(file.originalname || file.name || '').toLowerCase()
+  if (!ALLOWED_MEDIA_EXTENSIONS.has(ext)) {
+    if (file.mimetype?.startsWith('image/')) {
+      ext = file.mimetype === 'image/png' ? '.png' : file.mimetype === 'image/webp' ? '.webp' : file.mimetype === 'image/gif' ? '.gif' : '.jpg'
+    } else if (file.mimetype?.startsWith('audio/')) {
+      ext = file.mimetype === 'audio/wav' ? '.wav' : file.mimetype === 'audio/ogg' ? '.ogg' : file.mimetype === 'audio/flac' ? '.flac' : '.mp3'
+    } else if (file.mimetype?.startsWith('video/')) {
+      ext = file.mimetype === 'video/webm' ? '.webm' : file.mimetype === 'video/quicktime' ? '.mov' : '.mp4'
+    } else {
+      ext = '.png'
+    }
+  }
   const safeFilename = `${assetId}${ext}`
   const targetAbsPath = path.join(assetsDir, safeFilename)
 
@@ -66,7 +83,7 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
 
   // Probe media details
   try {
-    const info = await probe(targetAbsPath)
+    const info = await probe(targetAbsPath, { timeout: 10000 })
     if (Number.isFinite(info?.durationSec) && info.durationSec > 0) {
       durationSec = Math.round(info.durationSec * 100) / 100
     }
@@ -74,7 +91,7 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
 
   const isVideo = file.mimetype?.startsWith('video/') || ['.mp4', '.mov', '.webm', '.avi', '.mkv'].includes(ext)
   const isAudio = file.mimetype?.startsWith('audio/') || ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac'].includes(ext)
-  const isImage = file.mimetype?.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.webp'].includes(ext)
+  const isImage = file.mimetype?.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'].includes(ext)
 
   let assetKind = kind
   if (assetKind === 'all' || !assetKind) {
@@ -83,16 +100,21 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
     else assetKind = 'image'
   } else if (assetKind === 'image' && isVideo) {
     assetKind = 'video'
+  } else if (assetKind === 'image' && isAudio) {
+    assetKind = 'music'
   } else if (assetKind === 'background') {
     assetKind = 'background'
   }
 
-  // Generate thumbnail for images and videos
-  if (isImage) {
+  // Generate thumbnail for images and videos with timeout & safe fallback
+  if (isImage && ext !== '.svg' && file.mimetype !== 'image/svg+xml') {
     try {
       const thumbFilename = `${assetId}_thumb.jpg`
       const thumbAbsPath = path.join(assetsDir, thumbFilename)
-      await ffmpeg(['-y', '-i', targetAbsPath, '-frames:v', '1', '-vf', 'scale=320:-1', '-q:v', '3', thumbAbsPath])
+      await ffmpeg(
+        ['-y', '-i', targetAbsPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '3', thumbAbsPath],
+        { timeout: 10000 }
+      )
       if (fs.existsSync(thumbAbsPath)) {
         thumbnailKey = toStorageKey(thumbAbsPath)
       }
@@ -104,10 +126,16 @@ export async function saveUploadedAsset({ projectId, userId, file, kind = 'image
       const thumbFilename = `${assetId}_thumb.jpg`
       const thumbAbsPath = path.join(assetsDir, thumbFilename)
       try {
-        await ffmpeg(['-y', '-ss', '0.5', '-i', targetAbsPath, '-frames:v', '1', '-vf', 'scale=320:-1', '-q:v', '3', thumbAbsPath])
+        await ffmpeg(
+          ['-y', '-ss', '0.5', '-i', targetAbsPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '3', thumbAbsPath],
+          { timeout: 10000 }
+        )
       } catch (_) {
         // Fallback to 0s for short clips (< 0.5s)
-        await ffmpeg(['-y', '-ss', '0', '-i', targetAbsPath, '-frames:v', '1', '-vf', 'scale=320:-1', '-q:v', '3', thumbAbsPath])
+        await ffmpeg(
+          ['-y', '-ss', '0', '-i', targetAbsPath, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '3', thumbAbsPath],
+          { timeout: 10000 }
+        )
       }
       if (fs.existsSync(thumbAbsPath)) {
         thumbnailKey = toStorageKey(thumbAbsPath)
@@ -304,14 +332,22 @@ export async function processOcr({ assetId, projectId, userId, force = false, vi
   }
 }
 
-export async function processTranslation({ text, targetLanguage = 'vi', sourceLanguage = 'auto', assetId = null, userId = null, translateProvider = null }) {
+export async function processTranslation({ text, targetLanguage = 'vi', sourceLanguage = 'auto', assetId = null, projectId = null, userId = null, translateProvider = null }) {
   const cleanText = String(text || '').trim()
   if (!cleanText) throw new Error('Text to translate is required')
 
   // Check asset-level translation if assetId given
   // Cache invalidation rule: Only hit cache if targetLanguage matches AND asset's ocr_text matches cleanText
   if (assetId) {
-    const asset = await queryOne('SELECT ocr_text, translation_text, translation_target_lang FROM assets WHERE id = ?', [assetId])
+    const asset = projectId
+      ? await queryOne('SELECT ocr_text, translation_text, translation_target_lang, project_id FROM assets WHERE id = ? AND project_id = ?', [assetId, projectId])
+      : await queryOne('SELECT ocr_text, translation_text, translation_target_lang, project_id FROM assets WHERE id = ?', [assetId])
+    if (projectId && !asset) {
+      const err = new Error(`Asset "${assetId}" không tồn tại trong dự án "${projectId}"`)
+      err.code = 'NOT_FOUND'
+      err.statusCode = 404
+      throw err
+    }
     if (
       asset?.translation_text &&
       asset.translation_target_lang === targetLanguage &&
@@ -342,12 +378,22 @@ export async function processTranslation({ text, targetLanguage = 'vi', sourceLa
     } catch (_) {}
     if (trText && trText.trim()) {
       if (assetId) {
-        await run('UPDATE assets SET translation_text = ?, translation_target_lang = ?, ocr_text = ? WHERE id = ?', [
-          trText,
-          targetLanguage,
-          cleanText,
-          assetId,
-        ])
+        if (projectId) {
+          await run('UPDATE assets SET translation_text = ?, translation_target_lang = ?, ocr_text = ? WHERE id = ? AND project_id = ?', [
+            trText,
+            targetLanguage,
+            cleanText,
+            assetId,
+            projectId,
+          ])
+        } else {
+          await run('UPDATE assets SET translation_text = ?, translation_target_lang = ?, ocr_text = ? WHERE id = ?', [
+            trText,
+            targetLanguage,
+            cleanText,
+            assetId,
+          ])
+        }
       }
       return {
         assetId,
@@ -421,12 +467,22 @@ export async function processTranslation({ text, targetLanguage = 'vi', sourceLa
 
   // Update asset row
   if (assetId) {
-    await run('UPDATE assets SET translation_text = ?, translation_target_lang = ?, ocr_text = ? WHERE id = ?', [
-      translated,
-      targetLanguage,
-      cleanText,
-      assetId,
-    ])
+    if (projectId) {
+      await run('UPDATE assets SET translation_text = ?, translation_target_lang = ?, ocr_text = ? WHERE id = ? AND project_id = ?', [
+        translated,
+        targetLanguage,
+        cleanText,
+        assetId,
+        projectId,
+      ])
+    } else {
+      await run('UPDATE assets SET translation_text = ?, translation_target_lang = ?, ocr_text = ? WHERE id = ?', [
+        translated,
+        targetLanguage,
+        cleanText,
+        assetId,
+      ])
+    }
   }
 
   return {
@@ -826,7 +882,7 @@ export async function saveTimeline({ projectId, tracks = [], clips = [] }) {
         throw err
       }
 
-      const outSec = c.out_sec != null ? Number(c.out_sec) : (c.duration != null ? inSec + Number(c.duration) : inSec + 4)
+      const outSec = c.duration != null ? inSec + Number(c.duration) : (c.out_sec != null ? Number(c.out_sec) : inSec + 4)
       if (!Number.isFinite(outSec) || outSec <= inSec) {
         const err = new Error(`Clip #${i}: out_sec (${outSec}) phải là số hữu hạn và lớn hơn in_sec (${inSec})`)
         err.code = 'INVALID_TIMELINE_DATA'
@@ -879,7 +935,7 @@ export async function saveTimeline({ projectId, tracks = [], clips = [] }) {
       for (let i = 0; i < clips.length; i++) {
         const c = clips[i]
         const inSec = Number(c.in_sec ?? 0)
-        const outSec = c.out_sec != null ? Number(c.out_sec) : (c.duration != null ? inSec + Number(c.duration) : inSec + 4)
+        const outSec = c.duration != null ? inSec + Number(c.duration) : (c.out_sec != null ? Number(c.out_sec) : inSec + 4)
 
         await tx.insert('timeline_clips', {
           id: c.id || uuidv4(),

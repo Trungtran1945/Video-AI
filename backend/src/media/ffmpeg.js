@@ -144,14 +144,15 @@ export async function ffmpegAvailable() {
   }
 }
 
-export async function probe(file) {
+export async function probe(file, opts = {}) {
+  const { timeout, signal, ...spawnOpts } = opts
   const { stdout } = await enqueue(() => runBin(FFPROBE_BIN, [
     '-v', 'quiet',
     '-print_format', 'json',
     '-show_format',
     '-show_streams',
     file,
-  ], { captureStdout: true }))
+  ], { captureStdout: true, timeout, signal, ...spawnOpts }))
   let info
   try {
     info = JSON.parse(stdout)
@@ -164,7 +165,7 @@ export async function probe(file) {
   const fpsRaw = video?.avg_frame_rate || video?.r_frame_rate || '0/1'
   const [num, den] = fpsRaw.split('/').map(Number)
   return {
-    durationSec: Number(info.format?.duration) || 0,
+    durationSec: Number(info.format?.duration) || Number(audio?.duration) || 0,
     width: video?.width || 0,
     height: video?.height || 0,
     fps: den ? num / den : 0,

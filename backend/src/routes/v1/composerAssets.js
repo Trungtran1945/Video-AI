@@ -26,13 +26,13 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 100 * 1024 * 1024, files: 50 }, // 100MB per file, up to 50 files
+  limits: { fileSize: 500 * 1024 * 1024, files: 50 }, // 500MB per file, up to 50 files
 })
 
 function totalSizeLimit(req, res, next) {
   const len = Number(req.headers['content-length'] || 0)
-  if (len > 200 * 1024 * 1024) {
-    return sendError(res, 413, 'BATCH_TOO_LARGE', 'Tổng dung lượng tệp tải lên vượt quá giới hạn 200MB')
+  if (len > 1024 * 1024 * 1024) {
+    return sendError(res, 413, 'BATCH_TOO_LARGE', 'Tổng dung lượng tệp tải lên vượt quá giới hạn 1GB')
   }
   next()
 }
@@ -48,7 +48,7 @@ function uploadHandler(req, res, next) {
       }
     }
     if (err?.code === 'LIMIT_FILE_SIZE') {
-      return sendError(res, 413, 'FILE_TOO_LARGE', 'Tệp tải lên vượt quá giới hạn 100MB')
+      return sendError(res, 413, 'FILE_TOO_LARGE', 'Tệp tải lên vượt quá giới hạn 500MB')
     }
     if (err?.message?.includes('Boundary not found')) {
       return sendError(res, 400, 'MALFORMED_MULTIPART', 'Yêu cầu tải lên thiếu multipart boundary hợp lệ')
@@ -62,18 +62,20 @@ function checkMediaSignature(filePath) {
   let fd
   try {
     fd = fs.openSync(filePath, 'r')
-    const buf = Buffer.alloc(16)
-    const bytesRead = fs.readSync(fd, buf, 0, 16, 0)
-    if (bytesRead < 4) return false
+    const buf = Buffer.alloc(64)
+    const bytesRead = fs.readSync(fd, buf, 0, 64, 0)
+    if (bytesRead < 2) return false
 
     // JPEG: FF D8 FF
-    if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true
+    if (bytesRead >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true
     // PNG: 89 50 4E 47
-    if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return true
+    if (bytesRead >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return true
     // GIF: GIF8 (47 49 46 38)
-    if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return true
+    if (bytesRead >= 4 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return true
+    // BMP: BM (42 4D)
+    if (bytesRead >= 2 && buf[0] === 0x42 && buf[1] === 0x4d) return true
     // RIFF (WEBP / WAV / AVI)
-    if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) {
+    if (bytesRead >= 4 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) {
       if (bytesRead >= 12) {
         const typeStr = buf.toString('ascii', 8, 12)
         if (typeStr === 'WEBP' || typeStr === 'WAVE' || typeStr === 'AVI ') return true
@@ -81,16 +83,39 @@ function checkMediaSignature(filePath) {
       return true
     }
     // MP3: ID3 or sync frame FF FB / FF F3 / FF F2 / FF E0
-    if (buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) return true
-    if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return true
+    if (bytesRead >= 3 && buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) return true
+    if (bytesRead >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return true
+    // AAC (ADTS frame header: FF F1 or FF F9)
+    if (bytesRead >= 2 && buf[0] === 0xff && (buf[1] === 0xf1 || buf[1] === 0xf9)) return true
     // FLAC: 66 4C 61 43 (fLaC)
-    if (buf[0] === 0x66 && buf[1] === 0x4c && buf[2] === 0x61 && buf[3] === 0x43) return true
-    // MP4 / QuickTime (MOV, M4A, MP4): ftyp or moov at offset 4
-    if (bytesRead >= 8 && (buf.toString('ascii', 4, 8) === 'ftyp' || buf.toString('ascii', 4, 8) === 'moov')) return true
+    if (bytesRead >= 4 && buf[0] === 0x66 && buf[1] === 0x4c && buf[2] === 0x61 && buf[3] === 0x43) return true
     // OGG: OggS
-    if (buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) return true
+    if (bytesRead >= 4 && buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) return true
     // EBML (WebM / MKV): 1A 45 DF A3
-    if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return true
+    if (bytesRead >= 4 && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return true
+
+    // MP4 / QuickTime (MOV, M4A, MP4) atoms: ftyp, moov, wide, free, skip, mdat
+    const latinStr = buf.toString('latin1', 0, bytesRead)
+    if (
+      latinStr.includes('ftyp') ||
+      latinStr.includes('moov') ||
+      latinStr.includes('wide') ||
+      latinStr.includes('free') ||
+      latinStr.includes('skip') ||
+      latinStr.includes('mdat')
+    ) {
+      return true
+    }
+
+    // SVG / XML vector graphics
+    const utf8Str = buf.toString('utf8', 0, bytesRead).trim().toLowerCase()
+    if (
+      utf8Str.startsWith('<svg') ||
+      utf8Str.startsWith('<?xml') ||
+      utf8Str.includes('<svg')
+    ) {
+      return true
+    }
 
     return false
   } catch (_) {
@@ -165,6 +190,9 @@ router.get('/:id/assets', requireProjectOwner, async (req, res) => {
     }
     res.json({ assets: assets.map(formatAsset) })
   } catch (err) {
+    if (err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED') {
+      return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs })
+    }
     console.error('Get assets error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
@@ -210,23 +238,49 @@ router.post('/:id/assets', requireProjectOwner, totalSizeLimit, uploadHandler, a
     const startIndex = Number(req.body?.orderIndex) || 0
 
     const savedAssets = []
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i]
-      const saved = await composerService.saveUploadedAsset({
-        projectId: req.project.id,
-        userId: req.user.id,
-        file,
-        kind,
-        orderIndex: startIndex + i,
-      })
-      savedAssets.push(saved)
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i]
+        const saved = await composerService.saveUploadedAsset({
+          projectId: req.project.id,
+          userId: req.user.id,
+          file,
+          kind,
+          orderIndex: startIndex + i,
+        })
+        savedAssets.push(saved)
+      }
+    } catch (saveErr) {
+      // Rollback any successfully saved assets in this batch on partial failure
+      for (const asset of savedAssets) {
+        if (asset.storageKey) {
+          const abs = resolveStorageKey(asset.storageKey)
+          if (abs && fs.existsSync(abs)) {
+            try { fs.unlinkSync(abs) } catch (_) {}
+          }
+        }
+        if (asset.thumbnailKey) {
+          const thumbAbs = resolveStorageKey(asset.thumbnailKey)
+          if (thumbAbs && fs.existsSync(thumbAbs)) {
+            try { fs.unlinkSync(thumbAbs) } catch (_) {}
+          }
+        }
+        try {
+          await run('DELETE FROM audios WHERE id = ? AND project_id = ?', [asset.id, req.project.id])
+          await run('DELETE FROM assets WHERE id = ? AND project_id = ?', [asset.id, req.project.id])
+        } catch (_) {}
+      }
+      throw saveErr
     }
 
     res.status(200).json({ assets: savedAssets.map(formatAsset) })
   } catch (err) {
     cleanupFiles()
+    if (err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED') {
+      return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs })
+    }
     console.error('Upload assets error:', err)
-    sendError(res, 500, 'INTERNAL_ERROR', err.message || 'Lỗi lưu trữ tệp')
+    sendError(res, err.statusCode || 500, err.code || 'INTERNAL_ERROR', err.message || 'Lỗi lưu trữ tệp')
   }
 })
 
@@ -255,6 +309,9 @@ router.delete('/:id/assets/:assetId', requireProjectOwner, async (req, res) => {
 
     res.json({ message: 'Deleted', assetId: req.params.assetId })
   } catch (err) {
+    if (err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED') {
+      return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs })
+    }
     console.error('Delete asset error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
@@ -283,6 +340,9 @@ router.put('/:id/assets/reorder', requireProjectOwner, async (req, res) => {
     }
     res.json({ assets: updated.map(formatAsset) })
   } catch (err) {
+    if (err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED') {
+      return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs })
+    }
     console.error('Reorder assets error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
@@ -318,10 +378,14 @@ router.post('/:id/assets/:assetId/translate', requireProjectOwner, async (req, r
       targetLanguage,
       sourceLanguage,
       assetId: req.params.assetId,
+      projectId: req.project.id,
       userId: req.user.id,
     })
     res.json(result)
   } catch (err) {
+    if (err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED') {
+      return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs })
+    }
     console.error('Translate error:', err)
     sendError(res, err.statusCode || 500, err.code || 'TRANSLATE_FAILED', err.message || 'Lỗi dịch thuật văn bản')
   }
@@ -384,6 +448,9 @@ router.put('/:id/timeline', requireProjectOwner, async (req, res) => {
     })
     res.json(result)
   } catch (err) {
+    if (err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED') {
+      return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs })
+    }
     console.error('Save timeline error:', err)
     const status = err.statusCode || (err.code === 'INVALID_TIMELINE_DATA' ? 400 : 500)
     sendError(res, status, err.code || 'INTERNAL_ERROR', err.message || 'Lỗi lưu trạng thái timeline')

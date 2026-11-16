@@ -5,23 +5,57 @@ import { findSymlinkInPath, isPathInside } from '../lib/safePath.js'
 
 const SAFE_ID = '[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
 const VIDEO_EXTENSIONS = 'mp4|m4v|mov|mkv|webm'
+const MEDIA_EXTENSIONS = 'mp4|m4v|mov|mkv|webm|avi|jpg|jpeg|png|webp|gif|bmp|mp3|wav|ogg|m4a|aac|flac'
 const ALLOWED_PATHS = [
   new RegExp(`^uploads/${SAFE_ID}\\.(${VIDEO_EXTENSIONS})$`, 'i'),
   new RegExp(`^outputs/${SAFE_ID}\\.mp4$`, 'i'),
   new RegExp(`^outputs/thumbs/${SAFE_ID}\\.jpg$`, 'i'),
   new RegExp(`^projects/${SAFE_ID}/final\\.(mp4|mkv)$`, 'i'),
   new RegExp(`^projects/${SAFE_ID}/thumb\\.jpg$`, 'i'),
+  new RegExp(`^projects/${SAFE_ID}/assets/${SAFE_ID}\\.(${MEDIA_EXTENSIONS})$`, 'i'),
 ]
 
 function canonicalType(relativePath) {
   const extension = path.posix.extname(relativePath).toLowerCase()
-  if (extension === '.jpg') return 'image/jpeg'
-  if (extension === '.mp4') return 'video/mp4'
-  if (extension === '.m4v') return 'video/x-m4v'
-  if (extension === '.mov') return 'video/quicktime'
-  if (extension === '.mkv') return 'video/x-matroska'
-  if (extension === '.webm') return 'video/webm'
-  return null
+  switch (extension) {
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg'
+    case '.png':
+      return 'image/png'
+    case '.webp':
+      return 'image/webp'
+    case '.gif':
+      return 'image/gif'
+    case '.bmp':
+      return 'image/bmp'
+    case '.mp3':
+      return 'audio/mpeg'
+    case '.wav':
+      return 'audio/wav'
+    case '.ogg':
+      return 'audio/ogg'
+    case '.m4a':
+      return 'audio/mp4'
+    case '.aac':
+      return 'audio/aac'
+    case '.flac':
+      return 'audio/flac'
+    case '.mp4':
+      return 'video/mp4'
+    case '.m4v':
+      return 'video/x-m4v'
+    case '.mov':
+      return 'video/quicktime'
+    case '.mkv':
+      return 'video/x-matroska'
+    case '.webm':
+      return 'video/webm'
+    case '.avi':
+      return 'video/x-msvideo'
+    default:
+      return null
+  }
 }
 
 function safeRelativePath(requestPath) {

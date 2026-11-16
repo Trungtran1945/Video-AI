@@ -72,10 +72,11 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
           thresholdPx: 10,
         });
 
-        updateClip(clip.id, { start: snappedStart });
+        updateClip(clip.id, { start: snappedStart, start_at_sec: snappedStart });
         setSnappingGuide(snappedGuideTime);
       } else {
-        updateClip(clip.id, { start: Number(rawCandidateStart.toFixed(3)) });
+        const finalStart = Number(rawCandidateStart.toFixed(3));
+        updateClip(clip.id, { start: finalStart, start_at_sec: finalStart });
         setSnappingGuide(null);
       }
     };
@@ -126,10 +127,13 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
 
       rawStart = Math.max(0, Math.min(rawStart, fixedEnd - minDuration));
       const newDuration = Number((fixedEnd - rawStart).toFixed(3));
+      const inSec = Number(clip.in_sec ?? 0);
 
       updateClip(clip.id, {
         start: Number(rawStart.toFixed(3)),
+        start_at_sec: Number(rawStart.toFixed(3)),
         duration: newDuration,
+        out_sec: Number((inSec + newDuration).toFixed(3)),
       });
     };
 
@@ -179,8 +183,12 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
 
       rawEnd = Math.max(fixedStart + minDuration, rawEnd);
       const newDuration = Number((rawEnd - fixedStart).toFixed(3));
+      const inSec = Number(clip.in_sec ?? 0);
 
-      updateClip(clip.id, { duration: newDuration });
+      updateClip(clip.id, {
+        duration: newDuration,
+        out_sec: Number((inSec + newDuration).toFixed(3)),
+      });
     };
 
     const onPointerUp = () => {

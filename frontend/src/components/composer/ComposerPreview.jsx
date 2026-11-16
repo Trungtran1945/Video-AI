@@ -138,7 +138,7 @@ export default function ComposerPreview({
     const dur = bgVideoRef.current.duration;
     if (Number.isFinite(dur) && dur > 0) {
       const loopedTime = bgLoop ? (currentTime % dur) : Math.min(currentTime, dur);
-      if (Math.abs(bgVideoRef.current.currentTime - loopedTime) > 0.3) {
+      if (Math.abs(bgVideoRef.current.currentTime - loopedTime) > 0.08) {
         bgVideoRef.current.currentTime = loopedTime;
       }
     }
@@ -174,7 +174,7 @@ export default function ComposerPreview({
     if (!visualVideoRef.current || !isVisualVideo || !activeVisualClip) return;
     const clipStart = Number(activeVisualClip.start ?? activeVisualClip.start_at_sec ?? 0);
     const offset = Math.max(0, currentTime - clipStart);
-    if (Math.abs(visualVideoRef.current.currentTime - offset) > 0.3) {
+    if (Math.abs(visualVideoRef.current.currentTime - offset) > 0.08) {
       visualVideoRef.current.currentTime = offset;
     }
     const clipVol = Number.isFinite(Number(activeVisualClip.volume)) ? Number(activeVisualClip.volume) : 1.0;
@@ -191,112 +191,122 @@ export default function ComposerPreview({
       ? 'aspect-square max-h-[480px]'
       : 'aspect-[16/9] max-h-[480px]';
 
-  // Voiceover audio sync
+  // Dynamic audio pool to support multi-track, overlapping audio clips without dropouts
+  const audioPoolRef = useRef(new Map()); // Map<clipId, HTMLAudioElement>
+
+  const activeAudioClips = React.useMemo(() => {
+    return activeClips.filter((c) => {
+      const type = c.clip_type || c.type;
+      return type === 'voiceover' || type === 'music' || type === 'sfx';
+    });
+  }, [activeClips]);
+
+  // Synchronize audio playback for all active audio clips
   useEffect(() => {
-    if (!audioRef.current) return;
-    const voiceAsset = activeVoiceClip
-      ? assetMap.get(
-          activeVoiceClip.audio_id ||
-          activeVoiceClip.voice_audio_id ||
-          activeVoiceClip.audioId ||
-          activeVoiceClip.asset_id ||
-          activeVoiceClip.assetId
-        )
-      : null;
-    const audioUrl = voiceAsset?.url;
+    const currentPool = audioPoolRef.current;
+    const activeIds = new Set(activeAudioClips.map((c) => c.id));
 
-    if (audioUrl && isPlaying && !isVoiceMuted && voiceTrackVol > 0) {
-      const isSrcChanged =
-        audioRef.current.src !== window.location.origin + audioUrl &&
-        !audioRef.current.src.endsWith(audioUrl);
-      if (isSrcChanged) {
-        audioRef.current.src = audioUrl;
+    // Pause and cleanup inactive clips
+    for (const [id, audioEl] of currentPool.entries()) {
+      if (!activeIds.has(id) || !isPlaying) {
+        try {
+          audioEl.pause();
+        } catch (_) {}
+        if (!activeIds.has(id)) {
+          audioEl.src = '';
+          currentPool.delete(id);
+        }
       }
-      const clipStart = Number(activeVoiceClip.start ?? activeVoiceClip.start_at_sec ?? 0);
-      const offset = Math.max(0, currentTime - clipStart);
-      if (Math.abs(audioRef.current.currentTime - offset) > 0.3) {
-        audioRef.current.currentTime = offset;
-      }
-      const clipVol = Number.isFinite(Number(activeVoiceClip.volume)) ? Number(activeVoiceClip.volume) : 1.0;
-      audioRef.current.volume = Math.max(0, Math.min(1.0, clipVol * voiceTrackVol));
-      audioRef.current.play().catch(() => {});
-    } else {
-      audioRef.current.pause();
     }
-  }, [currentTime, isPlaying, activeVoiceClip, assetMap, isVoiceMuted, voiceTrackVol]);
 
-  // BGM audio sync & dynamic ducking
-  useEffect(() => {
-    if (!bgmAudioRef.current) return;
-    const bgmAsset = activeBgmClip
-      ? assetMap.get(
-          activeBgmClip.audio_id ||
-          activeBgmClip.audioId ||
-          activeBgmClip.asset_id ||
-          activeBgmClip.assetId
-        )
-      : null;
-    const bgmUrl = bgmAsset?.url;
+    if (!isPlaying) return;
 
-    if (bgmUrl && isPlaying && !isMusicMuted && musicTrackVol > 0) {
-      const isSrcChanged =
-        bgmAudioRef.current.src !== window.location.origin + bgmUrl &&
-        !bgmAudioRef.current.src.endsWith(bgmUrl);
-      if (isSrcChanged) {
-        bgmAudioRef.current.src = bgmUrl;
+    const hasVoice = activeAudioClips.some((c) => (c.clip_type || c.type) === 'voiceover');
+
+    for (const clip of activeAudioClips) {
+      const type = clip.clip_type || clip.type;
+      const asset = assetMap.get(
+        clip.audio_id || clip.voice_audio_id || clip.audioId || clip.asset_id || clip.assetId
+      );
+      const audioUrl = asset?.url;
+      if (!audioUrl) continue;
+
+      let isTrackMuted = muted;
+      let trackVol = 1.0;
+      if (type === 'voiceover') {
+        isTrackMuted = isVoiceMuted;
+        trackVol = voiceTrackVol;
+      } else if (type === 'music') {
+        isTrackMuted = isMusicMuted;
+        trackVol = musicTrackVol;
+      } else if (type === 'sfx') {
+        isTrackMuted = isSfxMuted;
+        trackVol = sfxTrackVol;
       }
-      bgmAudioRef.current.loop = activeBgmClip?.meta?.loop !== false;
 
-      const clipStart = Number(activeBgmClip.start ?? activeBgmClip.start_at_sec ?? 0);
+      if (isTrackMuted || trackVol <= 0) {
+        const existing = currentPool.get(clip.id);
+        if (existing && !existing.paused) {
+          existing.pause();
+        }
+        continue;
+      }
+
+      let el = currentPool.get(clip.id);
+      if (!el) {
+        el = new Audio();
+        el.preload = 'auto';
+        currentPool.set(clip.id, el);
+      }
+
+      const clipStart = Number(clip.start ?? clip.start_at_sec ?? 0);
       const offset = Math.max(0, currentTime - clipStart);
-      if (Math.abs(bgmAudioRef.current.currentTime - offset) > 0.3) {
-        bgmAudioRef.current.currentTime = offset;
-      }
-      const duckedBase = activeVoiceClip ? 0.25 : 0.8;
-      const clipVol = Number.isFinite(Number(activeBgmClip.volume)) ? Number(activeBgmClip.volume) : 0.8;
-      bgmAudioRef.current.volume = Math.max(0, Math.min(1.0, duckedBase * clipVol * musicTrackVol));
-      bgmAudioRef.current.play().catch(() => {});
-    } else {
-      bgmAudioRef.current.pause();
-    }
-  }, [currentTime, isPlaying, activeBgmClip, activeVoiceClip, assetMap, isMusicMuted, musicTrackVol]);
 
-  // SFX audio sync
-  useEffect(() => {
-    if (!sfxAudioRef.current) return;
-    const sfxAsset = activeSfxClip
-      ? assetMap.get(
-          activeSfxClip.audio_id ||
-          activeSfxClip.audioId ||
-          activeSfxClip.asset_id ||
-          activeSfxClip.assetId
-        )
-      : null;
-    const sfxUrl = sfxAsset?.url;
+      // Check src change
+      const fullUrl = audioUrl.startsWith('http') ? audioUrl : window.location.origin + audioUrl;
+      if (el.src !== fullUrl && !el.src.endsWith(audioUrl)) {
+        el.src = audioUrl;
+        const seekOnReady = () => {
+          try {
+            el.currentTime = offset;
+          } catch (_) {}
+          el.removeEventListener('loadedmetadata', seekOnReady);
+        };
+        el.addEventListener('loadedmetadata', seekOnReady, { once: true });
+      } else if (Math.abs(el.currentTime - offset) > 0.08) {
+        try {
+          el.currentTime = offset;
+        } catch (_) {}
+      }
 
-    if (sfxUrl && isPlaying && !isSfxMuted && sfxTrackVol > 0) {
-      const isSrcChanged =
-        sfxAudioRef.current.src !== window.location.origin + sfxUrl &&
-        !sfxAudioRef.current.src.endsWith(sfxUrl);
-      if (isSrcChanged) {
-        sfxAudioRef.current.src = sfxUrl;
+      // Loop setting
+      if (type === 'music') {
+        el.loop = clip?.meta?.loop !== false;
       }
-      const clipStart = Number(activeSfxClip.start ?? activeSfxClip.start_at_sec ?? 0);
-      const offset = Math.max(0, currentTime - clipStart);
-      if (Math.abs(sfxAudioRef.current.currentTime - offset) > 0.3) {
-        sfxAudioRef.current.currentTime = offset;
+
+      // Volume scaling and ducking
+      const clipVol = Number.isFinite(Number(clip.volume)) ? Number(clip.volume) : (type === 'music' ? 0.8 : 1.0);
+      let effectiveVol = clipVol * trackVol;
+      if (type === 'music' && hasVoice) {
+        effectiveVol *= 0.3; // Dynamic ducking during voiceover
       }
-      const clipVol = Number.isFinite(Number(activeSfxClip.volume)) ? Number(activeSfxClip.volume) : 1.0;
-      sfxAudioRef.current.volume = Math.max(0, Math.min(1.0, clipVol * sfxTrackVol));
-      sfxAudioRef.current.play().catch(() => {});
-    } else {
-      sfxAudioRef.current.pause();
+      el.muted = isTrackMuted;
+      el.volume = Math.max(0, Math.min(1.0, effectiveVol));
+
+      if (el.paused) {
+        el.play().catch(() => {});
+      }
     }
-  }, [currentTime, isPlaying, activeSfxClip, assetMap, isSfxMuted, sfxTrackVol]);
+  }, [currentTime, isPlaying, activeAudioClips, assetMap, muted, isVoiceMuted, isMusicMuted, isSfxMuted, voiceTrackVol, musicTrackVol, sfxTrackVol]);
 
   // Clean up media on pause
   useEffect(() => {
     if (!isPlaying) {
+      if (audioPoolRef.current) {
+        for (const el of audioPoolRef.current.values()) {
+          try { el.pause(); } catch (_) {}
+        }
+      }
       [audioRef, bgmAudioRef, sfxAudioRef, videoRef, bgVideoRef, visualVideoRef].forEach((ref) => {
         if (ref?.current) {
           try {
@@ -310,6 +320,15 @@ export default function ComposerPreview({
   // Clean up all media elements on unmount
   useEffect(() => {
     return () => {
+      if (audioPoolRef.current) {
+        for (const el of audioPoolRef.current.values()) {
+          try {
+            el.pause();
+            el.src = '';
+          } catch (_) {}
+        }
+        audioPoolRef.current.clear();
+      }
       [audioRef, bgmAudioRef, sfxAudioRef, videoRef, bgVideoRef, visualVideoRef].forEach((ref) => {
         if (ref?.current) {
           try {

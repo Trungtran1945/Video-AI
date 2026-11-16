@@ -182,6 +182,9 @@ try {
   })
   const page = await context.newPage()
 
+  page.on('console', (msg) => console.log(`[BROWSER CONSOLE] ${msg.type()}: ${msg.text()}`))
+  page.on('pageerror', (err) => console.error(`[BROWSER ERROR] ${err.message}`))
+
   // STEP 1: Verify Zero-Step Direct Entry Launcher (/composer -> /projects/:id)
   console.log(`\n--- Step 1: Testing Zero-Step Direct Entry via ${baseUrl}/composer ---`)
   await page.goto(`${baseUrl}/composer`, { waitUntil: 'networkidle', timeout: 15000 })

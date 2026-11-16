@@ -95,8 +95,26 @@ export default function MediaLibrary({
     return '*/*';
   };
 
+  const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500MB
+  const MAX_BATCH_SIZE = 1024 * 1024 * 1024; // 1GB
+  const MAX_FILES = 50;
+
   const uploadFiles = async (files) => {
     if (!files || !files.length) return;
+    if (files.length > MAX_FILES) {
+      setErrorMessage(`Chỉ được tải lên tối đa ${MAX_FILES} tệp trong một lần`);
+      return;
+    }
+    const oversized = files.find((f) => f.size > MAX_FILE_SIZE);
+    if (oversized) {
+      setErrorMessage(`Tệp "${oversized.name}" vượt quá dung lượng tối đa 500MB`);
+      return;
+    }
+    const totalSize = files.reduce((acc, f) => acc + (f.size || 0), 0);
+    if (totalSize > MAX_BATCH_SIZE) {
+      setErrorMessage('Tổng dung lượng các tệp vượt quá giới hạn 1GB trong một lần tải');
+      return;
+    }
     setErrorMessage(null);
     const abortCtrl = new AbortController();
     abortControllerRef.current = abortCtrl;
@@ -107,6 +125,8 @@ export default function MediaLibrary({
       let uploadKind = activeTab;
       if (activeTab === 'text') {
         uploadKind = 'image';
+      } else if (activeTab === 'all') {
+        uploadKind = 'all';
       }
       fd.append('kind', uploadKind);
       files.forEach((f) => fd.append('files', f));
@@ -135,10 +155,23 @@ export default function MediaLibrary({
       console.error('Upload failed:', err);
       let detailMsg = err?.response?.data?.message || err?.response?.data?.error?.message;
       if (!detailMsg) {
-        if (err?.code === 'ECONNABORTED' || err?.message?.includes('timeout')) {
+        const status = err?.response?.status;
+        if (status === 413) {
+          detailMsg = 'Tệp tải lên vượt quá dung lượng cho phép. Vui lòng chọn tệp nhỏ hơn.';
+        } else if (status === 400) {
+          detailMsg = 'Định dạng tệp không được hỗ trợ hoặc dữ liệu tải lên không hợp lệ.';
+        } else if (status === 401) {
+          detailMsg = 'Phiên làm việc đã hết hạn. Vui lòng tải lại trang hoặc đăng nhập lại.';
+        } else if (status === 403) {
+          detailMsg = 'Bạn không có quyền tải tệp lên dự án này.';
+        } else if (status === 404) {
+          detailMsg = 'Không tìm thấy dự án tương ứng để tải tệp lên.';
+        } else if (status >= 500) {
+          detailMsg = 'Máy chủ gặp sự cố khi lưu trữ tệp. Vui lòng thử lại sau.';
+        } else if (err?.code === 'ECONNABORTED' || err?.message?.includes('timeout')) {
           detailMsg = 'Quá thời gian tải lên (Upload timeout). Vui lòng thử lại với tệp nhỏ hơn hoặc kiểm tra kết nối mạng.';
-        } else if (err?.message === 'Network Error' || err?.code === 'ERR_NETWORK' || !err?.response) {
-          detailMsg = 'Lỗi kết nối mạng (Network Error). Vui lòng kiểm tra backend server đang chạy tại port 3001 và cấu hình CORS/Proxy.';
+        } else if (err?.message === 'Network Error' || err?.code === 'ERR_NETWORK') {
+          detailMsg = 'Lỗi kết nối tới máy chủ (Network Error). Vui lòng kiểm tra kết nối mạng hoặc thử lại.';
         } else {
           detailMsg = err.message || 'Lỗi không xác định khi tải tệp';
         }
@@ -593,7 +626,8 @@ export default function MediaLibrary({
                       onAddClipToTimeline?.({
                         trackType: trackType || (isVideoAsset ? 'video' : 'image'),
                         assetId: asset.id,
-                        duration: asset.durationSec || 4,
+                        audioId: isAudioAsset ? asset.id : undefined,
+                        duration: asset.durationSec ? Number(asset.durationSec) : 4,
                         content: asset.name,
                         textContent: asset.ocrText || asset.translationText || '',
                       });

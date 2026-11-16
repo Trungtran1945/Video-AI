@@ -170,7 +170,7 @@ export const config = {
   // when empty). Development allows local Vite/dev origins by default.
   corsOrigins: nodeEnv === 'production'
     ? parseOrigins(process.env.CORS_ORIGINS)
-    : parseOrigins(process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3000,http://localhost:4173'),
+    : parseOrigins(process.env.CORS_ORIGINS || 'http://localhost:5173,http://localhost:3000,http://localhost:4173,http://127.0.0.1:5173,http://127.0.0.1:3000,http://127.0.0.1:4173'),
   // Stale heartbeat timeout (minutes) for running projects without activity.
   recoveryStaleMinutes: Number(process.env.RECOVERY_STALE_MINUTES || 10),
   // Opt-in dev echo of the raw password-reset token in the forgot-password

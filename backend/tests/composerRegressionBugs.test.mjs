@@ -369,7 +369,7 @@ const dummyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADU
       status: 'queued',
     })
 
-    // Simulated request exceeding 200MB via Content-Length header using node http
+    // Simulated request exceeding 1GB via Content-Length header using node http
     const resOver = await new Promise((resolve, reject) => {
       const req = http.request(
         `http://127.0.0.1:${port}/api/v1/projects/${projId}/assets`,
@@ -378,7 +378,7 @@ const dummyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADU
           headers: {
             Authorization: `Bearer ${userToken}`,
             'Content-Type': 'multipart/form-data; boundary=----WebKitFormBoundaryXYZ',
-            'Content-Length': String(210 * 1024 * 1024), // 210MB
+            'Content-Length': String(1100 * 1024 * 1024), // 1.1GB (> 1GB limit)
           },
         },
         (res) => {
@@ -399,7 +399,7 @@ const dummyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADU
     assert.equal(resOver.status, 413, `Over-limit batch rejected with 413 (got ${resOver.status})`)
     const bodyOver = await resOver.json()
     assert.equal(bodyOver.error?.code, 'BATCH_TOO_LARGE', 'Returns code BATCH_TOO_LARGE')
-    console.log('✓ 200MB total size limit rejection verified: 413 BATCH_TOO_LARGE')
+    console.log('✓ 1GB total size limit rejection verified: 413 BATCH_TOO_LARGE')
   } finally {
     server.close()
   }

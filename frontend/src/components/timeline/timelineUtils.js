@@ -8,7 +8,7 @@ export function formatTimeCode(totalSeconds, fps = 30) {
 
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = Math.floor(totalSeconds % 60);
-  const frames = Math.floor((totalSeconds % 1) * fps);
+  const frames = Math.min(fps - 1, Math.round((totalSeconds % 1) * fps));
 
   const mm = String(minutes).padStart(2, '0');
   const ss = String(seconds).padStart(2, '0');

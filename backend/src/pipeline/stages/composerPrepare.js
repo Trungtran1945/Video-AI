@@ -78,7 +78,7 @@ export async function composerPrepare(ctx = {}) {
     try {
       await ffmpeg([
         '-y', '-i', srcPath,
-        '-vf', `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
+        '-vf', `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
         outPrepImage,
       ])
     } catch (err) {

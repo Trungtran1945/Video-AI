@@ -104,9 +104,10 @@ export default function ClipInspector({
     setDurationInput(val);
     const num = parseFloat(val);
     if (!isNaN(num) && num >= 0.1) {
+      const inSec = Number(selectedClip.in_sec ?? 0);
       onUpdateClip?.(selectedClip.id, {
         duration: num,
-        out_sec: num,
+        out_sec: Number((inSec + num).toFixed(3)),
       });
     }
   };
@@ -114,9 +115,10 @@ export default function ClipInspector({
   const handleDurationBlur = () => {
     const num = Math.max(0.1, parseFloat(durationInput) || 0.1);
     setDurationInput(String(Number(num.toFixed(2))));
+    const inSec = Number(selectedClip.in_sec ?? 0);
     onUpdateClip?.(selectedClip.id, {
       duration: num,
-      out_sec: num,
+      out_sec: Number((inSec + num).toFixed(3)),
     });
   };
 

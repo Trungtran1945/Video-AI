@@ -126,10 +126,46 @@ export default function VideoTimeline({
 
   const isControlledPlayback = propIsPlaying !== undefined;
 
-  // Use propCurrentTime directly as the single source of truth
-  // ProjectDetail pushes video.currentTime into the Zustand store via RAF loop
-  const activeCurrentTime = propCurrentTime;
+  // Use propCurrentTime directly as the single source of truth when controlled,
+  // falling back to Zustand storeCurrentTime when uncontrolled.
+  const activeCurrentTime = propCurrentTime !== undefined ? propCurrentTime : (storeCurrentTime ?? 0);
   const activeIsPlaying = isControlledPlayback ? propIsPlaying : storeIsPlaying;
+
+  // Calculate total timeline duration (placed before internal ticker to avoid TDZ)
+  const totalDuration = useMemo(() => {
+    let maxTime = propDuration > 0 ? propDuration : 35;
+    (clips || []).forEach((c) => {
+      const end = (c.start || 0) + (c.duration || 0);
+      if (end + 10 > maxTime) {
+        maxTime = end + 10;
+      }
+    });
+    return Math.max(maxTime, activeCurrentTime + 5, 20);
+  }, [clips, activeCurrentTime, propDuration]);
+
+  // Internal playback ticker when uncontrolled (no propIsPlaying / no parent RAF loop)
+  useEffect(() => {
+    if (isControlledPlayback || !activeIsPlaying) return;
+    let lastTime = performance.now();
+    let rafId;
+    const tick = (now) => {
+      const deltaSec = (now - lastTime) / 1000;
+      lastTime = now;
+      const speed = Number(propPlaybackSpeed ?? 1);
+      const current = useTimelineStore.getState().currentTime;
+      const maxDuration = propDuration > 0 ? propDuration : totalDuration;
+      const next = current + deltaSec * speed;
+      if (next >= maxDuration) {
+        setStoreIsPlaying(false);
+        setStoreCurrentTime(maxDuration);
+        return;
+      }
+      setStoreCurrentTime(next);
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [isControlledPlayback, activeIsPlaying, propDuration, totalDuration, propPlaybackSpeed, setStoreIsPlaying, setStoreCurrentTime]);
 
   // Sync custom tracks for MEDIA_COMPOSER (only when IDs or count change)
   useEffect(() => {
@@ -236,18 +272,6 @@ export default function VideoTimeline({
     }
   };
 
-  // Calculate total timeline duration
-  const totalDuration = useMemo(() => {
-    let maxTime = propDuration > 0 ? propDuration : 35;
-    clips.forEach((c) => {
-      const end = c.start + c.duration;
-      if (end + 10 > maxTime) {
-        maxTime = end + 10;
-      }
-    });
-    return Math.max(maxTime, activeCurrentTime + 5, 20);
-  }, [clips, activeCurrentTime, propDuration]);
-
   const totalContentWidth = Math.max(1200, Math.ceil(totalDuration * zoomLevel));
   const tracksHeight = tracks.length * 56;
   const totalRulerAndTracksHeight = tracksHeight + 36;
@@ -272,6 +296,22 @@ export default function VideoTimeline({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeCurrentTime, handleSeek, handleTogglePlay]);
+
+  // Auto-scroll timeline to keep playhead visible during playback
+  useEffect(() => {
+    if (!activeIsPlaying || !scrollContainerRef.current) return;
+    const container = scrollContainerRef.current;
+    const playheadPx = activeCurrentTime * zoomLevel;
+    const scrollLeft = container.scrollLeft;
+    const clientWidth = container.clientWidth;
+
+    // Follow playhead if it approaches the right edge (within 80px) or scrolls behind
+    if (playheadPx > scrollLeft + clientWidth - 80) {
+      container.scrollLeft = playheadPx - 80;
+    } else if (playheadPx < scrollLeft) {
+      container.scrollLeft = Math.max(0, playheadPx - 40);
+    }
+  }, [activeCurrentTime, activeIsPlaying, zoomLevel]);
 
   const handleTimelineBackgroundClick = (e) => {
     if (e.target.classList.contains('track-row') || e.target.classList.contains('tracks-canvas')) {
@@ -498,7 +538,7 @@ export default function VideoTimeline({
                 }}
               >
                 <TimeRuler totalDuration={totalDuration} onSeek={handleSeek} />
-                <Playhead height={totalRulerAndTracksHeight} onSeek={handleSeek} />
+                <Playhead height={totalRulerAndTracksHeight} onSeek={handleSeek} currentTime={activeCurrentTime} />
 
                 <div className="relative flex flex-col">
                   {tracks.map((track) => {

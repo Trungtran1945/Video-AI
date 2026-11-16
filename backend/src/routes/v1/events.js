@@ -42,7 +42,7 @@ router.post('/projects/:id/sse-ticket', authMiddleware, requireProjectOwner, asy
       logSseDiag('sse_ticket_cleanup_error', { projectId: req.project?.id, error: err })
     }
     await run(
-      `INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, 0)`,
+      `INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, FALSE)`,
       [uuidv4(), req.user.id, req.project.id, sha256(ticket), expiresAt]
     )
     res.json({ ticket, expiresAt })

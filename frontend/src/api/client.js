@@ -17,8 +17,13 @@ apiClient.interceptors.request.use((config) => {
   // FormData: để browser/axios tự sinh boundary multipart/form-data chuẩn
   if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
     if (config.headers) {
-      delete config.headers['Content-Type']
-      delete config.headers['content-type']
+      if (typeof config.headers.delete === 'function') {
+        config.headers.delete('Content-Type')
+        config.headers.delete('content-type')
+      } else {
+        delete config.headers['Content-Type']
+        delete config.headers['content-type']
+      }
     }
   }
   return config
