@@ -38,7 +38,12 @@ export default [
   {
     // Test scripts intentionally hold side-effect handles (inserted rows,
     // started servers); unused bindings there are harmless.
-    files: ['tests/**/*.mjs', 'scripts/**/*.mjs'],
+    files: [
+      'tests/**/*.mjs',
+      'scripts/**/*.mjs',
+      '**/tests/**/*.mjs',
+      '**/scripts/**/*.mjs',
+    ],
     rules: {
       'no-unused-vars': 'off',
     },
@@ -50,6 +55,18 @@ export default [
       'tests/**/*Playwright*.test.mjs',
       'tests/**/*browser*.test.mjs',
       'tests/**/*playwright*.test.mjs',
+      'tests/*Browser*.test.mjs',
+      'tests/*Playwright*.test.mjs',
+      'tests/*browser*.test.mjs',
+      'tests/*playwright*.test.mjs',
+      '**/tests/**/*Browser*.test.mjs',
+      '**/tests/**/*Playwright*.test.mjs',
+      '**/tests/**/*browser*.test.mjs',
+      '**/tests/**/*playwright*.test.mjs',
+      '**/tests/*Browser*.test.mjs',
+      '**/tests/*Playwright*.test.mjs',
+      '**/tests/*browser*.test.mjs',
+      '**/tests/*playwright*.test.mjs',
     ],
     languageOptions: {
       globals: {
