@@ -18,6 +18,8 @@ await initSchema()
 console.log('=== AI Media Composer Auto-Arrange & Timeline Tests ===\n')
 
 const testUserId = 'user-composer-arrange-1'
+await query('DELETE FROM projects WHERE user_id = ?', [testUserId])
+await query('DELETE FROM users WHERE id = ?', [testUserId])
 await insert('users', {
   id: testUserId,
   email: 'composer-arrange@test.local',
@@ -202,8 +204,8 @@ await insert('users', {
 
   // Verify updated track
   const updatedTrack = await queryOne('SELECT * FROM timeline_tracks WHERE id = ?', [imageTrack.id])
-  assert.equal(updatedTrack.muted, 1, 'Track is muted')
-  assert.equal(updatedTrack.locked, 1, 'Track is locked')
+  assert.equal(Boolean(updatedTrack.muted), true, 'Track is muted')
+  assert.equal(Boolean(updatedTrack.locked), true, 'Track is locked')
   assert.equal(updatedTrack.name, 'Main Visuals', 'Track name updated')
 
   // Verify updated clip

@@ -81,7 +81,7 @@ dub.ingest ➔ dub.stt ➔ dub.merge ➔ dub.translate ➔ dub.ttsAlign ➔ dub.
 - **Cơ chế chịu lỗi & Tự phục hồi (Fault-Tolerance & Recovery)**:
   - Dự án bị ngắt quãng do máy chủ khởi động lại sẽ được quét và tự động chuyển về hàng đợi để chạy tiếp từ công đoạn chưa hoàn thành (`firstRunnableStage`).
   - Hàng đợi dự phòng: Tự động hạ cấp sang polling nếu kết nối SSE bị gián đoạn.
-- **Kiến trúc cơ sở dữ liệu an toàn**: Sử dụng `sql.js` (WebAssembly SQLite) với cơ chế ghi atomic memory + disk boundary, writer lock heartbeat (`data.db.writer.lock`), hàng đợi tuần tự hóa các tác vụ ghi và sao lưu tự động.
+- **Kiến trúc cơ sở dữ liệu mạnh mẽ**: Sử dụng PostgreSQL 16+ với kết nối client/server qua connection pool (`pg.Pool`), transaction ACID nguyên tử, schema versioning và quan hệ toàn vẹn dữ liệu (Foreign Keys, JSONB, Timestamps).
 - **Bảo vệ tài nguyên & Rate Limit**: QuotaGuard cảnh báo ngưỡng sử dụng API, bộ nhớ đệm kết quả gọi nhà cung cấp AI (`provider_cache`) và cơ chế giãn cách gọi API (Rate Limit Margin) an toàn cho tài khoản Free Tier.
 
 ---
@@ -105,8 +105,8 @@ dub.ingest ➔ dub.stt ➔ dub.merge ➔ dub.translate ➔ dub.ttsAlign ➔ dub.
 │  └───────────┬───────────┘  └───────────────────────┘  │
 │              │                                         │
 │  ┌───────────▼───────────┐  ┌───────────────────────┐  │
-│  │   Provider Pattern    │  │   SQLite via sql.js   │  │
-│  │ Gemini/OpenAI/EdgeTTS │  │ Memory+Disk Atomic IO │  │
+│  │   Provider Pattern    │  │   PostgreSQL 16+      │  │
+│  │ Gemini/OpenAI/EdgeTTS │  │ Connection Pool (pg)  │  │
 │  └───────────────────────┘  └───────────────────────┘  │
 └──────────────┬───────────────────────────┬─────────────┘
                │                           │
@@ -137,7 +137,7 @@ Video_AI/
 ├── backend/                  # Máy chủ Node.js (Express ESM)
 │   ├── scripts/              # Script kiểm tra redis (check-redis.mjs), test runner (run-tests.mjs)
 │   ├── src/
-│   │   ├── db/               # sql.js wrapper, schema, migration, seed, query queue
+│   │   ├── db/               # PostgreSQL pool, schema migration, seed, query layer
 │   │   ├── lib/              # Tiện ích HTTP error, cache key, path validation, crypto
 │   │   ├── media/            # FFmpeg wrapper (render, probe, concat, scene detection)
 │   │   ├── middleware/       # JWT auth, project access, error handler, safe static media
@@ -230,7 +230,8 @@ GOOGLE_TRANSLATE_SCRIPT_URL=
 | `MASTER_KEY` | Khối master cho dữ liệu nhạy cảm (≥32 ký tự) |
 | `REDIS_HOST` / `REDIS_PORT` | Redis cho BullMQ (bắt buộc ở production — server exit(1) nếu không kết nối được) |
 | `STORAGE_DIR` | Gốc storage (mọi path cleanup bị khoá trong đây) |
-| `DB_PATH` | Đường dẫn SQLite (mặc định `backend/data.db`; hoặc `DATABASE_URL=file:...`) |
+| `DATABASE_URL` | Chuỗi kết nối PostgreSQL (vd: `postgresql://video_ai_user:pass@localhost:5433/video_ai`) |
+| `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` | Cấu hình kết nối PostgreSQL riêng lẻ |
 | `COOKIE_SECURE` | Tuỳ chọn: `true|false`, mặc định `true` khi `NODE_ENV=production` |
 
 > Production fail-fast khi thiếu secret (`assertProductionSecrets` trong `backend/src/config.js` từ chối boot với secret thiếu/ngắn/dạng placeholder). Không ghi secret thật vào README hay git.
@@ -281,7 +282,7 @@ npm run dev
 > - `FORBIDDEN_PATH` / `out_path outside OUTPUT_ROOT`: client cũ còn gửi `out_path`;
 >   backend hiện tại dùng binary response nên không gặp lỗi này.
 >
-> Server sẽ khởi chạy tại `http://localhost:3001`. Cơ sở dữ liệu SQLite sẽ tự động khởi tạo và nạp dữ liệu mẫu ban đầu:
+> Server sẽ khởi chạy tại `http://localhost:3001`. Cơ sở dữ liệu PostgreSQL sẽ tự động kiểm tra schema và nạp dữ liệu mẫu ban đầu:
 > - **Tài khoản Admin mặc định (CHỈ development/test)**: `admin@asf.local` / `admin1234` — production KHÔNG bao giờ seed credential này (thiếu `ADMIN_PASSWORD` → bỏ qua seed + warn, vẫn boot; `ADMIN_PASSWORD` yếu → fail-fast). Bootstrap admin production bằng `ADMIN_EMAIL`/`ADMIN_PASSWORD` (≥12 ký tự) — `docker-compose.yml` đã pass-through 2 biến này từ `.env`, nên muốn login lần đầu ở prod phải set trong `.env` **trước** `docker compose up -d --build`.
 > - **Dữ liệu**: Khởi tạo 13 phong cách dịch thuật `StylePreset`
 
@@ -312,8 +313,9 @@ docker compose up -d --build
 ```
 
 Dịch vụ bao gồm:
+- **`postgres`**: PostgreSQL 16 Alpine (cổng nội bộ `5432`, map ra `5433` cho host, volume `postgres_data`, healthcheck qua `pg_isready`)
 - **`redis`**: internal Docker network only (không publish port công khai; API dùng `REDIS_HOST=redis`. Dev cần host access: `docker compose -f docker-compose.yml -f docker-compose.redis-host.yml up` — bind `127.0.0.1` only)
-- **`api`**: Cổng `3001:3001` (đã tích hợp sẵn FFmpeg trong container)
+- **`api`**: Cổng `3001:3001` (đã tích hợp sẵn FFmpeg trong container, kết nối `postgres` và `redis`)
 - **`web`**: Cổng `80:80` (Nginx phục vụ Frontend SPA và đóng vai trò Reverse Proxy)
 - **`zerotts`**: local TTS inference (ONNX, keyless, không expose public port; api gọi `http://zerotts:5005`). HuggingFace model cache ở volume `zerotts_models`.
 

@@ -10,6 +10,27 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: video_ai
+          POSTGRES_USER: video_ai_user
+          POSTGRES_PASSWORD: VideoAI_Secure_Db_2026!
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://video_ai_user:VideoAI_Secure_Db_2026!@localhost:5433/video_ai
+      DB_HOST: localhost
+      DB_PORT: 5433
+      DB_NAME: video_ai
+      DB_USER: video_ai_user
+      DB_PASSWORD: VideoAI_Secure_Db_2026!
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -79,6 +100,27 @@ jobs:
   zerotts-e2e:
     runs-on: ubuntu-latest
     needs: lint-and-test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: video_ai
+          POSTGRES_USER: video_ai_user
+          POSTGRES_PASSWORD: VideoAI_Secure_Db_2026!
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://video_ai_user:VideoAI_Secure_Db_2026!@localhost:5433/video_ai
+      DB_HOST: localhost
+      DB_PORT: 5433
+      DB_NAME: video_ai
+      DB_USER: video_ai_user
+      DB_PASSWORD: VideoAI_Secure_Db_2026!
     steps:
       - name: Checkout
         uses: actions/checkout@v7

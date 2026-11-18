@@ -102,6 +102,7 @@ assert.deepEqual(sanitizeParams([1, { a: 2 }, undefined]), [1, '{"a":2}', null])
 console.log('✓ Parameter Sanitizer PASSED')
 
 // 4. Basic Query & QueryOne
+await run("INSERT INTO users (id, email, password, name) VALUES ('u-pg-access-init', 'pg_access_init@example.com', 'pw', 'Initial') ON CONFLICT DO NOTHING")
 const allUsers = await query('SELECT * FROM users ORDER BY created_date ASC LIMIT 5')
 assert.ok(Array.isArray(allUsers), 'query() should return array')
 assert.ok(allUsers.length > 0, 'should return rows')

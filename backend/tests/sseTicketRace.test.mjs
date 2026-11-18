@@ -23,7 +23,7 @@ process.env.NODE_ENV = 'test'
 // Must be set before any src import — config.js reads env at module load.
 
 const { initSchema } = await import('../src/db/schema.js')
-const { insert, run } = await import('../src/db/query.js')
+const { insert, run, query } = await import('../src/db/query.js')
 const { sha256 } = await import('../src/lib/crypto.js')
 const { sseAuthMiddleware } = await import('../src/middleware/auth.js')
 
@@ -50,6 +50,8 @@ const server = app.listen(0)
 await once(server, 'listening')
 const base = `http://127.0.0.1:${server.address().port}`
 
+await query("DELETE FROM projects WHERE user_id = 'ss-u1'")
+await query("DELETE FROM users WHERE id = 'ss-u1'")
 await insert('users', { id: 'ss-u1', email: 'sse-race@test.local', password: 'x', role: 'user', name: '' })
 await insert('projects', { id: 'ss-p1', user_id: 'ss-u1', mode: 'SUMMARY', title: 'race p1' })
 await insert('projects', { id: 'ss-p2', user_id: 'ss-u1', mode: 'SUMMARY', title: 'race p2' })
@@ -57,7 +59,7 @@ await insert('projects', { id: 'ss-p2', user_id: 'ss-u1', mode: 'SUMMARY', title
 const newTicket = async (projectId, expiresAt) => {
   const ticket = crypto.randomBytes(32).toString('hex')
   await run(
-    `INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, 0)`,
+    `INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, FALSE)`,
     ['ss-t-' + crypto.randomUUID(), 'ss-u1', projectId, sha256(ticket),
      expiresAt || new Date(Date.now() + 60 * 1000).toISOString()]
   )

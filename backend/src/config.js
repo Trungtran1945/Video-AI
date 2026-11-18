@@ -211,10 +211,6 @@ export function isOriginAllowed(origin, { nodeEnv: env = nodeEnv, corsOrigins = 
   return false
 }
 
-if (config.instanceMode !== 'single') {
-  throw new Error(`[Config] sql.js requires INSTANCE_MODE=single (got ${config.instanceMode})`)
-}
-
 // Ensure storage sub-directories exist
 for (const sub of ['uploads', 'outputs', 'tmp']) {
   const dir = path.join(config.storageDir, sub)

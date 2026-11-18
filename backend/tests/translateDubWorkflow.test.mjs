@@ -83,6 +83,8 @@ async function cols(table) {
 
   // DB: DRAFT bị loại, APPROVED được giữ
   const pid = 'proj-wf-render'
+  await run(`INSERT INTO users (id, email, password) VALUES ('u-wf', 'u-wf@test.local', 'pw') ON CONFLICT DO NOTHING`)
+  await run(`DELETE FROM projects WHERE id = ?`, [pid])
   await run(`INSERT INTO projects (id, user_id, mode, title) VALUES (?, ?, ?, ?)`, [pid, 'u-wf', 'TRANSLATE_DUB', 'wf'])
   await run(`INSERT INTO ocr_regions (id, project_id, start_sec, end_sec, ratio_x, ratio_y, ratio_w, ratio_h, source, status, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ['m-draft', pid, 0, 2, 0.1, 0.7, 0.8, 0.2, 'MANUAL', 'DRAFT', 1])

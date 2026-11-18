@@ -10,6 +10,7 @@ const { insert, run } = await import('../src/db/query.js')
 const { loadSubtitleRegions } = await import('../src/pipeline/stages/dubRender.js')
 
 await initSchema()
+await run(`INSERT INTO users (id, email, password) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`, ['u-fail', 'u-fail@test.local', 'pw'])
 
 let failures = 0
 function assert(cond, msg) {
@@ -104,8 +105,8 @@ await insert('projects', { id: pid, user_id: 'u-fail', mode: 'TRANSLATE_DUB', ti
 
 // 5. Database failure: simulate query failure -> throws BLOCK_RENDER: MASK_DATA_UNAVAILABLE (not swallowed to [])
 {
-  // Drop table to induce real SQLite failure
-  await run('DROP TABLE ocr_regions')
+  // Rename table to induce real DB failure safely and restore after
+  await run('ALTER TABLE ocr_regions RENAME TO ocr_regions_orig')
 
   let threw = false
   let errMsg = ''
@@ -120,6 +121,9 @@ await insert('projects', { id: pid, user_id: 'u-fail', mode: 'TRANSLATE_DUB', ti
   assert(threw === true, 'DB query failure throws instead of returning empty array []')
   assert(errCode === 'BLOCK_RENDER', `DB failure code is BLOCK_RENDER (got ${errCode})`)
   assert(errMsg.includes('BLOCK_RENDER: MASK_DATA_UNAVAILABLE'), `DB failure message is BLOCK_RENDER: MASK_DATA_UNAVAILABLE (got ${errMsg})`)
+
+  // Restore table
+  await run('ALTER TABLE ocr_regions_orig RENAME TO ocr_regions')
 }
 
 try { (await import('node:fs')).rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}

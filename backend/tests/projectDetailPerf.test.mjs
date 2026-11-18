@@ -18,6 +18,13 @@ await initSchema()
 const user = { id: 'perf-user', email: 'perf@test.local', role: 'user', password: 'test' }
 const projectId = 'perf-project-id'
 
+await query('DELETE FROM transcript_segments WHERE project_id = ?', [projectId])
+await query('DELETE FROM timeline_clips WHERE project_id = ?', [projectId])
+await query('DELETE FROM generation_jobs WHERE project_id = ?', [projectId])
+await query('DELETE FROM outputs WHERE project_id = ?', [projectId])
+await query('DELETE FROM projects WHERE id = ?', [projectId])
+await query('DELETE FROM users WHERE id = ?', [user.id])
+
 await insert('users', user)
 await insert('projects', {
   id: projectId,
@@ -34,7 +41,7 @@ await insert('projects', {
 // Insert 10 generation jobs
 for (let i = 0; i < 10; i++) {
   await insert('generation_jobs', {
-    id: `job-${i}`,
+    id: `perf-job-${i}`,
     project_id: projectId,
     type: `dub.step_${i}`,
     status: 'success',
@@ -45,7 +52,7 @@ for (let i = 0; i < 10; i++) {
 // Insert 20 timeline clips
 for (let i = 0; i < 20; i++) {
   await insert('timeline_clips', {
-    id: `clip-${i}`,
+    id: `perf-clip-${i}`,
     project_id: projectId,
     order_index: i,
     in_sec: i * 5,
@@ -55,7 +62,7 @@ for (let i = 0; i < 20; i++) {
 
 // Insert output
 await insert('outputs', {
-  id: 'output-1',
+  id: 'perf-output-1',
   project_id: projectId,
   storage_key: 'outputs/test.mp4',
   status: 'success',
@@ -66,7 +73,7 @@ await insert('outputs', {
 // Insert 300 transcript segments
 for (let i = 0; i < 300; i++) {
   await insert('transcript_segments', {
-    id: `seg-${i}`,
+    id: `perf-seg-${i}`,
     project_id: projectId,
     index_num: i,
     start_sec: i * 2,
@@ -81,13 +88,13 @@ for (let i = 0; i < 300; i++) {
 // Verify EXPLAIN QUERY PLAN
 console.log('\n--- EXPLAIN QUERY PLANS ---')
 const planProject = await query('EXPLAIN QUERY PLAN SELECT * FROM projects WHERE id = ?', [projectId])
-console.log('Project query plan:', planProject.map(p => p.detail).join(' | '))
+console.log('Project query plan:', planProject.map(p => p.detail || p['QUERY PLAN']).join(' | '))
 
 const planJobs = await query('EXPLAIN QUERY PLAN SELECT * FROM generation_jobs WHERE project_id = ? ORDER BY created_date ASC', [projectId])
-console.log('Jobs query plan:', planJobs.map(p => p.detail).join(' | '))
+console.log('Jobs query plan:', planJobs.map(p => p.detail || p['QUERY PLAN']).join(' | '))
 
 const planClips = await query('EXPLAIN QUERY PLAN SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [projectId])
-console.log('Timeline clips query plan:', planClips.map(p => p.detail).join(' | '))
+console.log('Timeline clips query plan:', planClips.map(p => p.detail || p['QUERY PLAN']).join(' | '))
 
 const planSegments = await query(`EXPLAIN QUERY PLAN SELECT p.id AS project_id, p.mode AS project_mode,
             p.transcript_version AS project_transcript_version,
@@ -99,7 +106,7 @@ const planSegments = await query(`EXPLAIN QUERY PLAN SELECT p.id AS project_id, 
      LEFT JOIN transcript_segments s ON s.project_id = p.id
      WHERE p.id = ?
      ORDER BY s.index_num ASC`, [projectId])
-console.log('Transcript segments query plan:', planSegments.map(p => p.detail).join(' | '))
+console.log('Transcript segments query plan:', planSegments.map(p => p.detail || p['QUERY PLAN']).join(' | '))
 
 const app = express()
 app.use(express.json())

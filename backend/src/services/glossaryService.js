@@ -13,7 +13,7 @@ export async function listGlossary(projectId) {
       [projectId]
     )
   } catch (err) {
-    // Table missing on old data.db files before migration — treat as empty.
+    // Table missing on unmigrated database — treat as empty.
     if (String(err?.message || '').includes('no such table')) return []
     throw err
   }

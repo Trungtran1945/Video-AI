@@ -37,10 +37,12 @@ function assert(cond, msg) {
 // 2. Ticket lifecycle: insert → lookup → single-use delete → expiry cleanup
 {
   const { sha256 } = await import('../src/lib/crypto.js')
+  await run(`INSERT INTO users (id, email, password) VALUES ('u1', 'u1@test.local', 'pw') ON CONFLICT DO NOTHING`)
+  await run(`INSERT INTO projects (id, user_id, mode, title) VALUES ('p1', 'u1', 'SUMMARY', 'P1') ON CONFLICT DO NOTHING`)
   const h = sha256('ticket-abc')
   const future = new Date(Date.now() + 60 * 1000).toISOString()
   const past = new Date(Date.now() - 1000).toISOString()
-  await run(`INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, 0)`,
+  await run(`INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, FALSE)`,
     ['t1', 'u1', 'p1', h, future])
   const found = await query(`SELECT * FROM sse_tickets WHERE ticket_hash = ?`, [h])
   assert(found.length === 1 && found[0].project_id === 'p1', 'ticket lookup theo hash + gắn project')
@@ -49,7 +51,7 @@ function assert(cond, msg) {
   const gone = await query(`SELECT * FROM sse_tickets WHERE ticket_hash = ?`, [h])
   assert(gone.length === 0, 'ticket single-use (delete sau dùng)')
   // expiry
-  await run(`INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, 0)`,
+  await run(`INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, FALSE)`,
     ['t2', 'u1', 'p1', sha256('old'), past])
   await run(`DELETE FROM sse_tickets WHERE expires_at < ?`, [new Date().toISOString()])
   const expired = await query(`SELECT * FROM sse_tickets WHERE ticket_hash = ?`, [sha256('old')])

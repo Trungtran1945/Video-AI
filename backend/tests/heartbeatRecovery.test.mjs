@@ -10,11 +10,12 @@ process.env.DB_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'video-ai-
 process.env.NODE_ENV = process.env.NODE_ENV || 'test'
 
 const { initSchema } = await import('../src/db/schema.js')
-const { queryOne, insert } = await import('../src/db/query.js')
+const { queryOne, query, insert } = await import('../src/db/query.js')
 const { recoverStaleProjects } = await import('../src/pipeline/recovery.js')
 const { touchHeartbeat } = await import('../src/pipeline/runner.js')
 
 await initSchema()
+await query("DELETE FROM projects WHERE id LIKE 'rec-%'")
 
 let failures = 0
 const assert = (c, m) => { if (c) console.log('PASS:', m); else { failures++; console.error('FAIL:', m) } }

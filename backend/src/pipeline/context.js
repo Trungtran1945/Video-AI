@@ -1,8 +1,8 @@
 import path from 'path'
 import fs from 'node:fs'
 import { config } from '../config.js'
-import { getDb, captureMemorySnapshot, persistOrRollback, isPostgresMode, getPool } from '../db.js'
-import { queryOne, run, withWriteLock, sanitizeVal } from '../db/query.js'
+import { getPool } from '../db.js'
+import { queryOne, run, sanitizeVal } from '../db/query.js'
 import { resolveSafePath, isPathInside, UnsafeStoragePathError } from '../lib/safePath.js'
 import { normalizeJobStatus } from '../lib/projectStatus.js'
 
@@ -106,36 +106,18 @@ export async function getUserSettings(userId) {
 
 export async function insertMany(table, objects) {
   if (!objects || !objects.length) return
-  if (isPostgresMode()) {
-    const pool = getPool()
-    const cols = Object.keys(objects[0])
-    const params = []
-    const rowPlaceholders = objects.map((obj) => {
-      const rowSlots = cols.map((c) => {
-        params.push(sanitizeVal(obj[c]))
-        return `$${params.length}`
-      })
-      return `(${rowSlots.join(', ')})`
+  const pool = getPool()
+  const cols = Object.keys(objects[0])
+  const params = []
+  const rowPlaceholders = objects.map((obj) => {
+    const rowSlots = cols.map((c) => {
+      params.push(sanitizeVal(obj[c]))
+      return `$${params.length}`
     })
-    const sql = `INSERT INTO "${table}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES ${rowPlaceholders.join(', ')}`
-    await pool.query(sql, params)
-    return
-  }
-  return withWriteLock(async () => {
-    const db = await getDb()
-    const snapshot = captureMemorySnapshot()
-    const cols = Object.keys(objects[0])
-    const placeholderRow = `(${cols.map(() => '?').join(',')})`
-    const sql = `INSERT INTO ${table} (${cols.join(',')}) VALUES ${objects.map(() => placeholderRow).join(',')}`
-    const params = []
-    for (const obj of objects) {
-      for (const c of cols) params.push(obj[c] ?? null)
-    }
-    db.run(sql, params)
-    // Atomic: a failed save rolls the whole bulk insert back instead of
-    // leaving rows that a later recovery save would silently persist.
-    persistOrRollback(snapshot)
+    return `(${rowSlots.join(', ')})`
   })
+  const sql = `INSERT INTO "${table}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES ${rowPlaceholders.join(', ')}`
+  await pool.query(sql, params)
 }
 
 export function clamp(n, min, max) {

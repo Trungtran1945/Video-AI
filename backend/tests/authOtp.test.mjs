@@ -62,7 +62,7 @@ console.log('\n--- 1. Gửi OTP thành công & Hash lưu trữ an toàn ---')
 
   const dbRow = await queryOne('SELECT * FROM email_otps WHERE email = ?', [testEmail])
   assert(dbRow !== null, 'DB đã lưu record vào bảng email_otps')
-  assert(dbRow.used === 0, 'Record mới có used = 0')
+  assert(dbRow.used === 0 || dbRow.used === false, 'Record mới có used = 0')
   assert(dbRow.attempts === 0, 'Record mới có attempts = 0')
   assert(dbRow.max_attempts === 5, 'Record mới có max_attempts = 5')
   assert(dbRow.purpose === 'login', 'Record có purpose = login')
@@ -121,8 +121,8 @@ console.log('\n--- 4. Vô hiệu hóa OTP cũ khi yêu cầu mã mới ---')
   // Kiểm tra trong DB: record cũ đã được set used = 1
   const rows = await query('SELECT * FROM email_otps WHERE email = ? ORDER BY created_date ASC', [email])
   assert(rows.length === 2, 'DB có 2 records cho email')
-  assert(rows[0].used === 1, 'Record OTP cũ (otp1) đã bị vô hiệu hóa (used = 1)')
-  assert(rows[1].used === 0, 'Record OTP mới (otp2) còn hiệu lực (used = 0)')
+  assert(rows[0].used === 1 || rows[0].used === true, 'Record OTP cũ (otp1) đã bị vô hiệu hóa (used = 1)')
+  assert(rows[1].used === 0 || rows[1].used === false, 'Record OTP mới (otp2) còn hiệu lực (used = 0)')
 
   // Thử verify bằng mã cũ otp1 -> thất bại
   const verifyOld = await post('/otp/verify', { email, otp: otp1 })
@@ -222,7 +222,7 @@ console.log('\n--- 7. Passwordless Auto-provisioning khi user chưa tồn tại 
 
   // Kiểm tra OTP đã chuyển thành used = 1
   const otpRow = await queryOne('SELECT * FROM email_otps WHERE email = ?', [newEmail])
-  assert(otpRow.used === 1, 'Mã OTP đã được đánh dấu used = 1')
+  assert(otpRow.used === 1 || otpRow.used === true, 'Mã OTP đã được đánh dấu used = 1')
 
   // Không thể tái sử dụng lại mã OTP này
   const reuse = await post('/otp/verify', { email: newEmail, otp })

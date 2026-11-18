@@ -70,7 +70,7 @@ console.log('\n--- 1. Gửi OTP Đăng ký (POST /register/send-otp) ---')
 
   const otpRecord = await queryOne('SELECT * FROM email_otps WHERE email = ? AND purpose = ?', [email, 'register'])
   assert(!!otpRecord, 'DB đã lưu record vào bảng email_otps với purpose = register')
-  assert(otpRecord.used === 0, 'Record mới có used = 0')
+  assert(otpRecord.used === 0 || otpRecord.used === false, 'Record mới có used = 0')
   assert(otpRecord.attempts === 0, 'Record mới có attempts = 0')
   assert(otpRecord.max_attempts === 5, 'Record mới có max_attempts = 5')
   assert(otpRecord.otp_hash === hashOtp(body.devOtp), 'DB lưu đúng sha256 hash của mã OTP')
@@ -150,7 +150,7 @@ console.log('\n--- 3. Xác thực OTP & Hoàn tất Đăng ký (POST /register/v
   assert(Boolean(dbUser.email_verified) === true, 'DB user có email_verified = true')
 
   const dbOtp = await queryOne('SELECT * FROM email_otps WHERE email = ? AND purpose = ?', [email, 'register'])
-  assert(dbOtp.used === 1, 'Mã OTP đăng ký đã được đánh dấu used = 1')
+  assert(dbOtp.used === 1 || dbOtp.used === true, 'Mã OTP đăng ký đã được đánh dấu used = 1')
 
   // Thử dùng lại mã OTP đã used -> bị từ chối
   const reuseRes = await post('/register/verify-otp', {

@@ -13,7 +13,7 @@ import { once } from 'node:events'
 process.env.DB_PATH = path.join(os.tmpdir(), `vidai_sse_cleanup_fail_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
-const { insert, run, queryOne } = await import('../src/db/query.js')
+const { insert, run, queryOne, query } = await import('../src/db/query.js')
 const { generateAccessToken } = await import('../src/middleware/auth.js')
 const eventsRouter = (await import('../src/routes/v1/events.js')).default
 
@@ -26,6 +26,7 @@ function assert(cond, msg) {
 }
 
 const user = { id: 'u-sse-cleanfail', email: 'cleanfail@test.local', role: 'user', password: 'pw' }
+await query('DELETE FROM users WHERE id = ?', [user.id])
 await insert('users', user)
 const token = generateAccessToken(user)
 const pid = `p-cleanfail-${Date.now()}`
@@ -66,10 +67,13 @@ async function postTicket() {
     project_id: pid,
     ticket_hash: 'expired-hash-placeholder',
     expires_at: new Date(Date.now() - 60 * 1000).toISOString(),
-    used: 0,
+    used: false,
   })
+  await run(`CREATE OR REPLACE FUNCTION sse_cleanup_fail_fn() RETURNS TRIGGER AS $$
+    BEGIN RAISE EXCEPTION 'cleanup boom'; END;
+    $$ LANGUAGE plpgsql`)
   await run(`CREATE TRIGGER sse_cleanup_fail BEFORE DELETE ON sse_tickets
-    BEGIN SELECT RAISE(ABORT, 'cleanup boom'); END`)
+    FOR EACH ROW EXECUTE FUNCTION sse_cleanup_fail_fn()`)
 
   const warnings = []
   const origWarn = console.warn
@@ -91,7 +95,8 @@ async function postTicket() {
   const row = await queryOne('SELECT * FROM sse_tickets WHERE ticket_hash = ?', [sha256(result.body.ticket)])
   assert(row && row.project_id === pid, 'issued ticket row persisted despite cleanup failure')
 
-  await run('DROP TRIGGER sse_cleanup_fail')
+  await run('DROP TRIGGER IF EXISTS sse_cleanup_fail ON sse_tickets')
+  await run('DROP FUNCTION IF EXISTS sse_cleanup_fail_fn()')
 }
 
 // 3. Normal issuance still works after trigger removal.

@@ -83,7 +83,6 @@ services:
       - VOICESTUDIO_TIMEOUT_MS=${VOICESTUDIO_TIMEOUT_MS:-60000}
     volumes:
       - storage_data:/app/storage
-      - db_data:/app/data
     depends_on:
       redis:
         condition: service_healthy
@@ -112,11 +111,9 @@ services:
       retries: 10
       start_period: 60s
 
-  # NOTE: there is deliberately NO separate `worker` service. The API service
-  # runs queue workers in-process (server.js, INSTANCE_MODE=single) — a second
-  # container sharing the sql.js volume cannot take writer ownership, so it
-  # would crash-loop. Scale workers by running more API containers only after
-  # replacing sql.js with a real client/server database.
+  # NOTE: Queue workers run in-process within the API service (server.js).
+  # With PostgreSQL client/server architecture, additional worker containers
+  # or API replicas can be scaled if needed.
 
   web:
     build:
@@ -139,6 +136,5 @@ volumes:
   redis_data:
   postgres_data:
   storage_data:
-  db_data:
   voicestudio_data:
   voicestudio_models:

@@ -61,7 +61,8 @@ for (const s of ['completed', 'failed', 'success']) {
 }
 for (const s of ['running', 'pending', 'queued', 'cancelled']) {
   const row = await queryOne('SELECT expires_at FROM projects WHERE id = ?', [`clstat-${s}`])
-  assert(row && row.expires_at === old, `${s} untouched (expires_at retained)`)
+  const val = row?.expires_at instanceof Date ? row.expires_at.toISOString() : row?.expires_at
+  assert(row && val === old, `${s} untouched (expires_at retained)`)
 }
 
 // ── 2) failure retains retry signal ──
@@ -86,7 +87,8 @@ assert(r2.cleaned === 0, `failure cleans nothing (got ${r2.cleaned})`)
 assert((r2.failed || []).includes('clstat-fail'), 'failed project reported in result.failed')
 {
   const row = await queryOne('SELECT expires_at, next_cleanup_attempt_at FROM projects WHERE id = ?', ['clstat-fail'])
-  assert(row && row.expires_at === old, 'failure RETAINS expires_at (retry signal kept)')
+  const val = row?.expires_at instanceof Date ? row.expires_at.toISOString() : row?.expires_at
+  assert(row && val === old, 'failure RETAINS expires_at (retry signal kept)')
   assert(row && row.next_cleanup_attempt_at && new Date(row.next_cleanup_attempt_at).getTime() > Date.now(),
     'failure sets future next_cleanup_attempt_at backoff')
 }

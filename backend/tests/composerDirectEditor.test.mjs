@@ -25,6 +25,8 @@ try { connection.disconnect() } catch (_) {}
 console.log('=== AI Media Composer Direct Studio Editor & Persistence Tests ===\n')
 
 const testUser = { id: 'user-direct-1', email: 'direct1@test.local', role: 'user' }
+await query('DELETE FROM projects WHERE user_id = ?', [testUser.id])
+await query('DELETE FROM users WHERE id = ?', [testUser.id])
 await insert('users', { id: testUser.id, email: testUser.email, role: 'user', password: 'hash' })
 
 const pId = 'proj-composer-direct-1'
@@ -237,7 +239,7 @@ try {
   })
 
   // F5 recovery check
-  const reloadedBgClips = await query('SELECT * FROM timeline_clips WHERE project_id = ? AND clip_type = "background"', [pId])
+  const reloadedBgClips = await query("SELECT * FROM timeline_clips WHERE project_id = ? AND clip_type = 'background'", [pId])
   assert.equal(reloadedBgClips.length, 1, 'Background clip persisted in DB')
   const loadedMeta = typeof reloadedBgClips[0].meta === 'string' ? JSON.parse(reloadedBgClips[0].meta) : reloadedBgClips[0].meta
   assert.equal(loadedMeta.fit, 'contain', 'Meta fit=contain preserved across reload')

@@ -22,18 +22,15 @@ const ALLOWED = [
   'voice_provider',
   'aspect_ratio',
 ]
-// Booleans/ints stored as INTEGER in SQLite
-const INT_FIELDS = new Set(['default_duration', 'max_retries', 'auto_upload_youtube', 'notify_on_complete'])
+// Booleans/ints stored in settings
+const BOOL_FIELDS = new Set(['auto_upload_youtube', 'notify_on_complete'])
+const INT_FIELDS = new Set(['default_duration', 'max_retries'])
 
 async function getOrCreateSettings(userId) {
   let s = await queryOne('SELECT * FROM settings WHERE user_id = ?', [userId])
   if (!s) {
-    // INSERT OR IGNORE avoids the rowid-race of the generic insert() helper;
-    // two concurrent GETs then both land on the single canonical row. The
-    // result row is read in the same write-lock slot BEFORE persisting, so a
-    // rejection here can never mean "inserted but reported failed".
     s = await runReturningOne(
-      'INSERT OR IGNORE INTO settings (user_id) VALUES (?)',
+      'INSERT INTO settings (user_id) VALUES (?) ON CONFLICT DO NOTHING',
       [userId],
       'SELECT * FROM settings WHERE user_id = ?',
       [userId],
@@ -49,12 +46,16 @@ function normalize(patch) {
   const out = {}
   for (const f of ALLOWED) {
     if (patch[f] === undefined) continue
+    if (BOOL_FIELDS.has(f)) {
+      out[f] = Boolean(patch[f])
+      continue
+    }
     if (INT_FIELDS.has(f)) {
-      out[f] = patch[f] === true ? 1 : patch[f] === false || patch[f] === null ? 0 : Number(patch[f]) || 0
+      out[f] = Number(patch[f]) || 0
       continue
     }
     const s = String(patch[f])
-    // Không phình data.db bằng string MBs: mỗi field ≤1KB, quá → 400.
+    // Không phình database bằng string MBs: mỗi field ≤1KB, quá → 400.
     if (s.length > MAX_STRING_LEN) {
       const err = new Error(`Field '${f}' exceeds ${MAX_STRING_LEN} characters`)
       err.code = 'FIELD_TOO_LONG'

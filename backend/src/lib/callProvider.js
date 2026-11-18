@@ -66,8 +66,7 @@ function inputHash(provider, type, model, input) {
  * @param {*} input
  * @returns {Promise<null|*>} cached result or null
  */
-// Process-local single-flight for cacheable calls (INSTANCE_MODE=single,
-// sql.js single-writer). Same cache key → first request calls provider,
+// Process-local single-flight for cacheable calls. Same cache key → first request calls provider,
 // later concurrent requests await the same promise. No distributed lock.
 const inFlightProviderCalls = new Map()
 
@@ -328,7 +327,7 @@ async function resolveRateLimitOpts(provider, userId, rateLimitOpts) {
     const row = await queryOne(
       `SELECT requests_per_minute, requests_per_day, concurrency FROM provider_rate_limits
        WHERE provider = ? AND (user_id = ? OR user_id IS NULL)
-       ORDER BY user_id DESC LIMIT 1`,
+       ORDER BY user_id DESC NULLS LAST LIMIT 1`,
       [provider, userId || null]
     )
     if (!row) return { requestsPerMinute: 10, requestsPerDay: null, concurrency: 1 }

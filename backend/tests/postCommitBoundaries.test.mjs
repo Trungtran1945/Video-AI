@@ -33,6 +33,9 @@ const scenario = async (name, fn) => {
   try { await fn() } catch (e) { failures++; console.error(`FAIL: ${name} threw — ${e?.stack || e}`) }
 }
 
+await run("DELETE FROM provider_logs WHERE id LIKE 'pcb-%'").catch(() => {})
+await run("DELETE FROM projects WHERE id LIKE 'pcb-%'").catch(() => {})
+await run("DELETE FROM users WHERE id = 'pcb-user'").catch(() => {})
 const user = { id: 'pcb-user', email: 'pcb@test.local', role: 'user', password: 'x' }
 await insert('users', user)
 

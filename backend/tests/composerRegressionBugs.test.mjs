@@ -332,7 +332,7 @@ const dummyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADU
   const assContent = fs.readFileSync(prepWithSub.assPath, 'utf8')
   assert.ok(!assContent.includes('{test}'), 'ASS curly braces were escaped to prevent malformed tags')
 
-  const subRows = await query('SELECT * FROM subtitles WHERE project_id = ? AND format = "ass"', [projId])
+  const subRows = await query("SELECT * FROM subtitles WHERE project_id = ? AND format = 'ass'", [projId])
   assert.equal(subRows.length, 1, 'One ASS subtitle row persisted in database')
 
   // Case 4B: Remove text clips -> prepare cleans up ASS file and clears DB rows
@@ -342,7 +342,7 @@ const dummyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADU
   assert.equal(prepWithoutSub.assStorageKey, null, 'assStorageKey is null when 0 text clips remain')
   assert.ok(!fs.existsSync(prepWithSub.assPath), 'Old subtitles.ass was cleanly unlinked from disk')
 
-  const subRowsAfter = await query('SELECT * FROM subtitles WHERE project_id = ? AND format = "ass"', [projId])
+  const subRowsAfter = await query("SELECT * FROM subtitles WHERE project_id = ? AND format = 'ass'", [projId])
   assert.equal(subRowsAfter.length, 0, 'Subtitles DB records cleaned up when text clips removed')
 
   console.log('✓ Subtitle lifecycle cleanup and ASS escaping verified')

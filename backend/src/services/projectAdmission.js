@@ -110,9 +110,13 @@ export async function createProjectWithAdmission(data, options = {}) {
         throw err
       }
     }
+    const userId = data.userId || data.user_id
+    if (userId) {
+      await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['user:' + userId])
+    }
     const active = await tx.queryOne(
       `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN (${EXECUTION_IN_LIST})`,
-      [data.userId || data.user_id]
+      [userId]
     )
     const runToken = Number(active?.count || 0) < maxConcurrent ? uuidv4() : null
     const status = runToken ? 'pending' : 'queued'
@@ -124,8 +128,13 @@ export async function createProjectWithAdmission(data, options = {}) {
 export async function claimQueuedProject(projectId, options = {}) {
   const maxConcurrent = limitFrom(options)
   return withTransaction(async (tx) => {
-    const project = await tx.queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
+    let project = await tx.queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
     if (!project || project.status !== 'queued') return { claimed: false, reason: 'not-queued' }
+    if (project.user_id) {
+      await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['user:' + project.user_id])
+      project = await tx.queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
+      if (!project || project.status !== 'queued') return { claimed: false, reason: 'not-queued' }
+    }
     if (Number(project.script_review_required || 0) === 1) return { claimed: false, reason: 'review-required' }
     const active = await tx.queryOne(
       `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN (${EXECUTION_IN_LIST})`,
@@ -137,7 +146,7 @@ export async function claimQueuedProject(projectId, options = {}) {
     const changed = await tx.runAffected(
       `UPDATE projects SET status = 'pending', run_token = ?, lease_expires_at = ?,
        started_at = NULL, last_heartbeat_at = ?, recovery_reason = NULL
-       WHERE id = ? AND status = 'queued' AND COALESCE(script_review_required, 0) = 0`,
+       WHERE id = ? AND status = 'queued' AND COALESCE(script_review_required, FALSE) = FALSE`,
       [token, leaseExpiry(), now, projectId]
     )
     if (changed !== 1) return { claimed: false, reason: 'race-lost' }
@@ -157,6 +166,11 @@ export async function acquireProjectRun(projectId, options = {}) {
   return withTransaction(async (tx) => {
     let project = await tx.queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
     if (!project) return { admitted: false, reason: 'not-found' }
+    if (project.user_id) {
+      await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['user:' + project.user_id])
+      project = await tx.queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
+      if (!project) return { admitted: false, reason: 'not-found' }
+    }
     if (project.status === 'running') {
       if (!options.reclaimExpiredRunning || leaseIsFresh(project)) {
         return { admitted: false, reason: 'running', project }

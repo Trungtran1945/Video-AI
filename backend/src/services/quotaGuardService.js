@@ -51,18 +51,16 @@ export function isQuotaCountingProviderLog(status) {
  *   cũ giữ backward-compat; percentUsed = max() cũ, DEPRECATED (dùng daily.percent).
  */
 /**
- * Format bound theo đúng SQLite datetime('now') ('YYYY-MM-DD HH:MM:SS', UTC).
- * So sánh trực tiếp ISO string ('...T...') với created_date ('... ...') sai vì
- * ' ' < 'T' — minute window sẽ không bao giờ khớp row nào (undercount hệ thống).
+ * Format UTC timestamp string ('YYYY-MM-DD HH:MM:SS', UTC).
  */
-function toSqliteUtc(date) {
+function toUtcTimestamp(date) {
   return new Date(date).toISOString().slice(0, 19).replace('T', ' ')
 }
 
 export async function getQuotaSnapshot(userId, provider) {
   const now = new Date()
-  const oneDayAgo = toSqliteUtc(new Date(now.getTime() - 24 * 60 * 60 * 1000))
-  const oneMinuteAgo = toSqliteUtc(new Date(now.getTime() - 60 * 1000))
+  const oneDayAgo = toUtcTimestamp(new Date(now.getTime() - 24 * 60 * 60 * 1000))
+  const oneMinuteAgo = toUtcTimestamp(new Date(now.getTime() - 60 * 1000))
 
   // BE-Q02: chỉ COUNT successful external requests (ok/success). cache_hit,
   // quota_exceeded, rate_limited, transient, error đều KHÔNG tính.
@@ -89,7 +87,7 @@ export async function getQuotaSnapshot(userId, provider) {
   const limit = await queryOne(
     `SELECT * FROM provider_rate_limits
      WHERE provider = ? AND (user_id = ? OR user_id IS NULL)
-     ORDER BY user_id DESC LIMIT 1`,
+     ORDER BY user_id DESC NULLS LAST LIMIT 1`,
     [provider, userId]
   )
   const limitToday = limit?.requests_per_day || null

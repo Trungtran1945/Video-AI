@@ -29,6 +29,7 @@ const assert = (condition, message) => {
 
 const sourceId = 'coverage-source'
 const targetId = 'coverage-target'
+await query("DELETE FROM projects WHERE user_id = 'coverage-user'")
 await insert('projects', { id: sourceId, user_id: 'coverage-user', mode: 'TRANSLATE_DUB', title: 'source' })
 await insert('projects', { id: targetId, user_id: 'coverage-user', mode: 'TRANSLATE_DUB', title: 'target' })
 await insert('transcript_segments', {
@@ -57,7 +58,7 @@ assert(imported.revision === 2, 'replacement import bumps once for changed trans
 const copied = await copyTranscript(sourceId, targetId)
 const copiedRows = await query('SELECT * FROM transcript_segments WHERE project_id = ? ORDER BY index_num', [targetId])
 assert(copied.inserted === 2 && copied.revision === 0, 'cache copy is an initial import at revision zero')
-assert(copiedRows[0].is_translation_manually_edited === 1 && copiedRows[0].tts_audio_id === null, 'cache copy preserves provenance but not derived audio links')
+assert(Boolean(copiedRows[0].is_translation_manually_edited) === true && copiedRows[0].tts_audio_id === null, 'cache copy preserves provenance but not derived audio links')
 
 await run('UPDATE transcript_segments SET text = ?, tts_audio_id = ? WHERE id = ?', ['changed', 'old-audio', 'coverage-a'])
 await run('UPDATE transcript_segments SET text = ?, start_sec = 1, end_sec = 3 WHERE id = ?', ['changed', 'coverage-b'])

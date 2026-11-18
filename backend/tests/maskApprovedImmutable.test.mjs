@@ -7,7 +7,7 @@ import { once } from 'node:events'
 process.env.DB_PATH = path.join(os.tmpdir(), `vidai_mask_immut_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
-const { insert, queryOne } = await import('../src/db/query.js')
+const { insert, queryOne, run } = await import('../src/db/query.js')
 const { generateAccessToken } = await import('../src/middleware/auth.js')
 const masksRouter = (await import('../src/routes/v1/masks.js')).default
 
@@ -20,6 +20,7 @@ function assert(cond, msg) {
 }
 
 const user = { id: 'u-mask-immut', email: 'mask-immut@test.local', role: 'user', password: 'pw' }
+await run('DELETE FROM users WHERE id = ?', [user.id]).catch(() => {})
 await insert('users', user)
 const token = generateAccessToken(user)
 
@@ -96,7 +97,7 @@ assert(unchanged.ratio_x === 0.1 && unchanged.start_sec === 1.0 && unchanged.sta
   assert(res.status === 200, 'APPROVED -> DISABLED succeeds (200)')
   assert(res.data.status === 'DISABLED' && res.data.enabled === false, 'status is DISABLED and enabled is false')
   const row = await queryOne(`SELECT status, enabled FROM ocr_regions WHERE id = ?`, [maskId])
-  assert(row.status === 'DISABLED' && row.enabled === 0, 'DB row is DISABLED + 0')
+  assert(row.status === 'DISABLED' && (row.enabled === 0 || row.enabled === false), 'DB row is DISABLED + 0 / false')
 }
 
 // 4. Status transition: DISABLED -> APPROVED (allowed)
@@ -105,7 +106,7 @@ assert(unchanged.ratio_x === 0.1 && unchanged.start_sec === 1.0 && unchanged.sta
   assert(res.status === 200, 'DISABLED -> APPROVED succeeds (200)')
   assert(res.data.status === 'APPROVED' && res.data.enabled === true, 'status is APPROVED and enabled is true')
   const row = await queryOne(`SELECT status, enabled FROM ocr_regions WHERE id = ?`, [maskId])
-  assert(row.status === 'APPROVED' && row.enabled === 1, 'DB row is APPROVED + 1')
+  assert(row.status === 'APPROVED' && (row.enabled === 1 || row.enabled === true), 'DB row is APPROVED + 1 / true')
 }
 
 // 5. Explicit reset to DRAFT -> edit -> re-approve

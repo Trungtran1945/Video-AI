@@ -45,6 +45,7 @@ try {
   // Setup users
   const userId1 = uuidv4()
   const userId2 = uuidv4()
+  await query('DELETE FROM users WHERE email IN (?, ?)', ['user1@test.local', 'user2@test.local'])
   await insert('users', {
     id: userId1,
     email: 'user1@test.local',
@@ -200,7 +201,7 @@ try {
   // T5 & T6: Resume runs the right stage & double start guard
   console.log('\n--- T5 & T6: Resume runs right stage and double-start ---')
   // Free up concurrency by marking busy project completed
-  await run('UPDATE projects SET status = "completed", run_token = NULL WHERE id = ?', [pBusyId])
+  await run("UPDATE projects SET status = 'completed', run_token = NULL WHERE id = ?", [pBusyId])
 
   const p5Id = uuidv4()
   await insert('projects', {

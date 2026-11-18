@@ -30,7 +30,7 @@ function assert(cond, msg) {
 // 1. ticket expiration: expired row rejected + cleaned.
 {
   const past = new Date(Date.now() - 5000).toISOString()
-  await run(`INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, 0)`,
+  await run(`INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, FALSE)`,
     ['exp-1', 'u1', 'p1', sha256('expired-ticket'), past])
   const row = await queryOne(`SELECT * FROM sse_tickets WHERE ticket_hash = ?`, [sha256('expired-ticket')])
   const isExpired = row?.expires_at && new Date(row.expires_at).getTime() < Date.now()
@@ -43,7 +43,7 @@ function assert(cond, msg) {
 // 2. ticket reuse rejection: consume = delete, second use fails.
 {
   const future = new Date(Date.now() + 60 * 1000).toISOString()
-  await run(`INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, 0)`,
+  await run(`INSERT INTO sse_tickets (id, user_id, project_id, ticket_hash, expires_at, used) VALUES (?, ?, ?, ?, ?, FALSE)`,
     ['use-1', 'u1', 'p1', sha256('once-ticket'), future])
   const first = await queryOne(`SELECT * FROM sse_tickets WHERE ticket_hash = ?`, [sha256('once-ticket')])
   assert(!!first && !first.used, 'valid ticket found before use')

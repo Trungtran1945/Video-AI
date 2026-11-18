@@ -5,8 +5,11 @@ import { config } from '../config.js'
 export const RECOVERY_REASON_RESTART = 'Pipeline interrupted — server restarted, queued for resume'
 export const RECOVERY_REASON_STALE = 'Pipeline stale (heartbeat timeout) — queued for resume'
 
-function cutoffIso(timeoutMin, nowMs) {
-  return new Date(nowMs - timeoutMin * 60 * 1000).toISOString()
+function toMs(val) {
+  if (!val) return null
+  if (val instanceof Date) return val.getTime()
+  const t = new Date(val).getTime()
+  return Number.isNaN(t) ? null : t
 }
 
 function heartbeatOf(project) {
@@ -19,7 +22,7 @@ export async function recoverStaleProjects({
   reason = RECOVERY_REASON_STALE,
   isActive = isPipelineRunning,
 } = {}) {
-  const cutoff = cutoffIso(timeoutMin, nowMs)
+  const cutoffMs = nowMs - timeoutMin * 60 * 1000
   const force = timeoutMin === 0
   const candidates = await query(
     `SELECT id, title, user_id, created_date, started_at, last_heartbeat_at, lease_expires_at,
@@ -40,12 +43,14 @@ export async function recoverStaleProjects({
 
     const leaseFresh = project.lease_expires_at && new Date(project.lease_expires_at).getTime() > nowMs
     const ageReference = heartbeatOf(project) || project.created_date
+    const ageMs = toMs(ageReference)
     if (!force && leaseFresh) continue
-    if (!force && ageReference && ageReference >= cutoff) continue
+    if (!force && ageMs !== null && ageMs >= cutoffMs) continue
 
+    const ageIso = ageReference instanceof Date ? ageReference.toISOString() : ageReference
     const reasonText = project.status === 'pending'
       ? `${reason} (pending lease expired)`
-      : `${reason} (last activity: ${ageReference || 'unknown'})`
+      : `${reason} (last activity: ${ageIso || 'unknown'})`
     const changed = await withTransaction(async (tx) => {
       const tokenPredicate = project.run_token ? 'AND run_token = ?' : 'AND run_token IS NULL'
       const affected = await tx.runAffected(

@@ -1,18 +1,16 @@
-// Concurrency: transaction serialization + write gate for sql.js (§§4.1-4.3).
+// Concurrency: transaction serialization + row lock concurrency for PostgreSQL.
 // - only one write transaction active (strict ordering, no A-BEGIN/B-BEGIN interleave)
 // - rollback releases mutex, queue survives failures
 // - ordinary run() serialized with withTransaction (no uncontrolled interleave)
 // - 100 concurrent writes don't corrupt DB (COUNT + integrity_check)
 // Chạy: node tests/concurrentWrites.test.mjs
-import path from 'node:path'
-import os from 'node:os'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_concWrites_${Date.now()}.db`)
-
+const { closePool } = await import('../src/db.js')
 const { initSchema } = await import('../src/db/schema.js')
 const { query, queryOne, run, withTransaction, withWriteLock, getWriteQueueStats } = await import('../src/db/query.js')
 
 await initSchema()
+await run(`INSERT INTO users (id, email, password) VALUES (?, ?, ?) ON CONFLICT DO NOTHING`, ['u1', 'u1@example.com', 'pw'])
 
 let failures = 0
 function assert(cond, msg) {
@@ -72,8 +70,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   const order = []
   const txn = withTransaction(async (tx) => {
     order.push('TXN-begin')
-    await sleep(50)
     await tx.run(`UPDATE projects SET title = ? WHERE id = ?`, ['TXN', 'p-mix'])
+    await sleep(50)
     order.push('TXN-end')
   })
   const w1 = (async () => { await sleep(5); await run(`UPDATE projects SET title = ? WHERE id = ?`, ['W1', 'p-mix']); order.push('W1'); })()
@@ -115,7 +113,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   void before
 }
 
-try { const fs = await import('node:fs'); fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
+await closePool()
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

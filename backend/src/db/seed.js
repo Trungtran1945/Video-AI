@@ -20,11 +20,6 @@ export const STYLE_PRESETS = [
   { slug: 'sat-nghia', name: 'Sát nghĩa (Nguyên gốc)', description: 'Dịch sát nguyên gốc, giữ nguyên cấu trúc', system_prompt: 'Bạn là dịch giả TRUNG THÀNH. Dịch SÁT NGHĨA bản gốc nhất có thể: giữ nguyên cấu trúc câu, thứ tự ý, sắc thái và mức độ trang trọng của người nói. KHÔNG thêm thắt, KHÔNG rút gọn, KHÔNG diễn giải, KHÔNG thay đổi ý. Chỉ chỉnh đủ cho đúng ngữ pháp tiếng Việt và tự nhiên khi lồng tiếng. TUYỆT ĐỐI không sáng tạo lại nội dung.' },
 ]
 
-// Seed per docs/02 §4: default admin user + default settings row + 13 StylePreset.
-// Production guard (decision 4.A): predictable dev credentials must never be
-// created in production. If ADMIN_PASSWORD is absent in production, skip admin
-// seeding with a loud warning and keep booting. If present but weak
-// (<12 chars), fail fast. Dev/test keep the documented fallback.
 const PROD_ADMIN_MIN_PASSWORD_LENGTH = 12
 export function resolveAdminSeed({ nodeEnv = process.env.NODE_ENV, adminEmail, adminPassword } = {}) {
   const email = adminEmail ?? process.env.ADMIN_EMAIL
@@ -41,7 +36,6 @@ export function resolveAdminSeed({ nodeEnv = process.env.NODE_ENV, adminEmail, a
   return { action: 'create', email: email || 'admin@asf.local', password: password || 'admin1234' }
 }
 
-// NOTE: users.credits is a legacy column — intentionally NOT seeded/exposed anymore.
 export async function seed() {
   const decision = resolveAdminSeed()
   const email = decision.email
@@ -50,7 +44,7 @@ export async function seed() {
   if (decision.action === 'skip') {
     console.warn(`[DB] Skipping admin seed in production: ${decision.reason}. Set ADMIN_EMAIL/ADMIN_PASSWORD to bootstrap an admin.`)
   } else if (email && password) {
-    admin = await queryOne('SELECT id FROM users WHERE email = ?', [email])
+    admin = await queryOne('SELECT id FROM users WHERE email = $1', [email])
     if (!admin) {
       const hashed = await bcrypt.hash(password, 10)
       admin = await insert('users', {
@@ -59,13 +53,14 @@ export async function seed() {
         password: hashed,
         role: 'admin',
         name: 'Admin',
+        email_verified: true,
       })
       console.log(`[DB] Seeded admin user: ${email}`)
     }
   }
 
   if (admin) {
-    const settings = await queryOne('SELECT user_id FROM settings WHERE user_id = ?', [admin.id])
+    const settings = await queryOne('SELECT user_id FROM settings WHERE user_id = $1', [admin.id])
     if (!settings) {
       await insert('settings', { user_id: admin.id })
       console.log('[DB] Seeded default settings for admin')
@@ -83,11 +78,33 @@ export async function seed() {
       name: p.name,
       description: p.description,
       system_prompt: p.system_prompt,
-      is_system: 1,
+      is_system: true,
     })
     added++
   }
   if (added) console.log(`[DB] Seeded ${added} style presets`)
+
+  const defaultLimits = [
+    { id: 'gemini-free', provider: 'gemini', tier: 'free', requests_per_minute: 10, requests_per_day: 250, concurrency: 1 },
+    { id: 'openai-free', provider: 'openai', tier: 'free', requests_per_minute: 3, requests_per_day: 200, concurrency: 1 },
+    { id: 'elevenlabs-free', provider: 'elevenlabs', tier: 'free', requests_per_minute: 2, requests_per_day: null, concurrency: 1 },
+    { id: 'huggingface-free', provider: 'huggingface', tier: 'free', requests_per_minute: 5, requests_per_day: null, concurrency: 1 },
+    { id: 'azure_tts-free', provider: 'azure_tts', tier: 'free', requests_per_minute: 20, requests_per_day: null, concurrency: 2 },
+  ]
+  const existingLimits = await query('SELECT id FROM provider_rate_limits')
+  const existingLimitIds = new Set(existingLimits.map((l) => l.id))
+  for (const lim of defaultLimits) {
+    if (existingLimitIds.has(lim.id)) continue
+    await insert('provider_rate_limits', {
+      id: lim.id,
+      provider: lim.provider,
+      tier: lim.tier,
+      requests_per_minute: lim.requests_per_minute,
+      requests_per_day: lim.requests_per_day,
+      concurrency: lim.concurrency,
+      user_id: null,
+    })
+  }
 }
 
-export default { seed }
+export default { seed, resolveAdminSeed, STYLE_PRESETS }

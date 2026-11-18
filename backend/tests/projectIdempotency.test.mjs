@@ -54,6 +54,8 @@ if (typeof deps.runPipeline === 'function') {
 }
 
 const user = { id: 'idem-user', email: 'idem@test.local', role: 'user', password: 'x' }
+await query('DELETE FROM projects WHERE user_id = ?', [user.id])
+await query('DELETE FROM users WHERE id = ?', [user.id])
 await insert('users', user)
 const token = generateAccessToken(user)
 
@@ -103,10 +105,15 @@ const dubBody = (title) => ({
 
 // Source project for the transcript cache-copy path (same user + video_hash,
 // completed, params compatible with dubBody()).
-await insert('style_presets', {
-  id: 'preset-satnghia', slug: 'sat-nghia', name: 'Sat nghia',
-  description: 'seed', system_prompt: 'seed', is_system: 1,
-})
+const existingPreset = await queryOne('SELECT id FROM style_presets WHERE slug = ?', ['sat-nghia'])
+if (!existingPreset) {
+  await insert('style_presets', {
+    id: 'preset-satnghia', slug: 'sat-nghia', name: 'Sat nghia',
+    description: 'seed', system_prompt: 'seed', is_system: true,
+  })
+}
+await query('DELETE FROM transcript_segments WHERE project_id = ?', ['idem-src'])
+await query('DELETE FROM projects WHERE id = ?', ['idem-src'])
 await insert('projects', {
   id: 'idem-src', user_id: user.id, mode: 'TRANSLATE_DUB', title: 'src',
   status: 'completed', video_hash: 'vh-copy',

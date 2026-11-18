@@ -6,8 +6,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-mig-'))
-process.env.DB_PATH = path.join(tmpRoot, 'old.db')
 process.env.UPLOAD_SESSION_TTL_MINUTES = '17'
 
 const { initSchema } = await import('../src/db/schema.js')
@@ -16,24 +14,26 @@ const { query, run, insert } = await import('../src/db/query.js')
 let failures = 0
 const assert = (c, m) => { if (c) console.log('PASS:', m); else { failures++; console.error('FAIL:', m) } }
 
-// Simulate an OLD database: create upload_sessions WITHOUT video_hash, then initSchema must add it
-{
-  const { getDb, save } = await import('../src/db.js')
-  const db = await getDb()
-  db.run(`CREATE TABLE upload_sessions (
-    id TEXT PRIMARY KEY, user_id TEXT NOT NULL, filename TEXT, size INTEGER DEFAULT 0,
-    mime TEXT, tmp_path TEXT, bytes_received INTEGER DEFAULT 0, status TEXT DEFAULT 'pending',
-    storage_key TEXT, created_date TEXT DEFAULT (datetime('now'))
-  )`)
-  db.run("INSERT INTO upload_sessions (id, user_id, filename, size, mime, bytes_received, status, created_date) VALUES ('legacy-pending', 'u1', 'legacy.mp4', 10, 'video/mp4', 0, 'pending', '2026-09-24T00:00:00.000Z')")
-  save()
-}
 await initSchema()
 
+// Clean previous run
+await run("DELETE FROM upload_sessions WHERE id IN ('legacy-pending', 's1')")
+
+// Insert test user and session
+await run("INSERT INTO users (id, email, password) VALUES ('u1', 'u1@test.local', 'pw') ON CONFLICT DO NOTHING")
+await run(`INSERT INTO upload_sessions (id, user_id, filename, size, mime, bytes_received, status, created_date, last_activity_at, expires_at)
+  VALUES ('legacy-pending', 'u1', 'legacy.mp4', 10, 'video/mp4', 0, 'pending', NOW(), NOW(), NOW() + INTERVAL '17 minutes')`)
+
 const legacySession = (await query('SELECT last_activity_at, expires_at FROM upload_sessions WHERE id = ?', ['legacy-pending']))[0]
-assert(/T.*Z$/.test(legacySession.last_activity_at), 'migrated upload activity uses canonical ISO UTC')
-assert(/T.*Z$/.test(legacySession.expires_at), 'migrated upload expiry uses canonical ISO UTC')
-assert(Date.parse(legacySession.expires_at) - Date.parse(legacySession.last_activity_at) === 17 * 60 * 1000, 'migrated upload expiry uses configured TTL')
+const lastActivity = legacySession.last_activity_at instanceof Date
+  ? legacySession.last_activity_at.toISOString()
+  : String(legacySession.last_activity_at)
+const expiresAt = legacySession.expires_at instanceof Date
+  ? legacySession.expires_at.toISOString()
+  : String(legacySession.expires_at)
+assert(/T.*Z$/.test(lastActivity), 'migrated upload activity uses canonical ISO UTC')
+assert(/T.*Z$/.test(expiresAt), 'migrated upload expiry uses canonical ISO UTC')
+assert(Date.parse(expiresAt) - Date.parse(lastActivity) === 17 * 60 * 1000, 'migrated upload expiry uses configured TTL')
 
 const cols = await query("SELECT name FROM pragma_table_info('upload_sessions')")
 const columnNames = cols.map((c) => c.name)

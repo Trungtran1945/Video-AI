@@ -27,11 +27,11 @@ const userId = randomUUID()
 const keyLo = { id: randomUUID(), priority: 0 }
 const keyHi = { id: randomUUID(), priority: 1 }
 await run(
-  `INSERT INTO api_keys (id, user_id, provider, label, encrypted_key, is_active, priority) VALUES (?, ?, 'gemini', 'lo', ?, 1, ?)`,
+  `INSERT INTO api_keys (id, user_id, provider, label, encrypted_key, is_active, priority) VALUES (?, ?, 'gemini', 'lo', ?, TRUE, ?)`,
   [keyLo.id, userId, encrypt('key-lo'), keyLo.priority]
 )
 await run(
-  `INSERT INTO api_keys (id, user_id, provider, label, encrypted_key, is_active, priority) VALUES (?, ?, 'gemini', 'hi', ?, 1, ?)`,
+  `INSERT INTO api_keys (id, user_id, provider, label, encrypted_key, is_active, priority) VALUES (?, ?, 'gemini', 'hi', ?, TRUE, ?)`,
   [keyHi.id, userId, encrypt('key-hi'), keyHi.priority]
 )
 
@@ -84,10 +84,10 @@ await run(
 // 5. Key is_active=0 bị bỏ qua.
 {
   clearProviderHealthForTests()
-  await run(`UPDATE api_keys SET is_active = 0 WHERE id = ?`, [keyLo.id])
+  await run(`UPDATE api_keys SET is_active = FALSE WHERE id = ?`, [keyLo.id])
   const { apiKey } = await selectBestApiKey(userId, 'gemini')
   assert(apiKey?.id === keyHi.id, `bỏ qua key inactive (got ${apiKey?.id})`)
-  await run(`UPDATE api_keys SET is_active = 1 WHERE id = ?`, [keyLo.id])
+  await run(`UPDATE api_keys SET is_active = TRUE WHERE id = ?`, [keyLo.id])
 }
 
 clearProviderHealthForTests()

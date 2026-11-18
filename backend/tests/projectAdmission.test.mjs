@@ -9,6 +9,7 @@ const { query, queryOne, run } = await import('../src/db/query.js')
 const { createProjectWithAdmission, claimQueuedProject, markProjectRunning, updateProjectOwned, acquireProjectRun, updateGenerationJobOwned, runProjectOwned, insertProjectOwned } = await import('../src/services/projectAdmission.js')
 
 await initSchema()
+await query("DELETE FROM projects WHERE user_id IN ('admission-user', 'owned-user')")
 
 let failures = 0
 const assert = (condition, message) => {

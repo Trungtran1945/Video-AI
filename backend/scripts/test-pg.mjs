@@ -1,25 +1,29 @@
 import pg from 'pg'
+import dotenv from 'dotenv'
+
+dotenv.config()
 
 const { Pool } = pg
 const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: Number(process.env.DB_PORT || 5433),
-  user: process.env.DB_USER || 'video_ai_user',
-  password: process.env.DB_PASSWORD || 'VideoAI_Secure_Db_2026!',
-  database: process.env.DB_NAME || 'video_ai',
+  connectionString: process.env.DATABASE_URL || 'postgresql://video_ai_user:VideoAI_Secure_Db_2026!@localhost:5433/video_ai',
 })
 
 try {
   const res = await pool.query(`
-    SELECT current_database(), current_user, count(*)::int as tables 
+    SELECT table_name 
     FROM information_schema.tables 
     WHERE table_schema = 'public' 
-    GROUP BY 1, 2
+    ORDER BY table_name
   `)
-  console.log('[PG TEST SUCCESS]', res.rows[0])
+  console.log('[PG TABLES COUNT]', res.rows.length)
+  for (const row of res.rows) {
+    const countRes = await pool.query(`SELECT count(*)::int as cnt FROM "${row.table_name}"`)
+    console.log(`  ${row.table_name.padEnd(25)}: ${countRes.rows[0].cnt}`)
+  }
 } catch (err) {
   console.error('[PG TEST ERROR]', err)
   process.exit(1)
 } finally {
   await pool.end()
 }
+

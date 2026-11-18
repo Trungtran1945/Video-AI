@@ -43,7 +43,8 @@ function assert(cond, msg) {
     fn: async () => { calls++; return { text: 'ok' } },
     userId: 'u-obs',
   })
-  // Corrupt the stored result
+  // Corrupt the stored result (temporarily allow non-JSON text in provider_cache to test parse error handling)
+  await run(`ALTER TABLE provider_cache ALTER COLUMN result TYPE TEXT`)
   await run(`UPDATE provider_cache SET result = 'not-json-corrupted' WHERE provider = 'test_obs' AND type = 'llm'`)
   const warnings = []
   const origWarn = console.warn
@@ -60,6 +61,8 @@ function assert(cond, msg) {
     assert(!warnings.some((w) => /bearer|apikey|secret/i.test(w)), 'diagnostic contains no secrets')
   } finally {
     console.warn = origWarn
+    await run(`DELETE FROM provider_cache WHERE provider = 'test_obs'`)
+    await run(`ALTER TABLE provider_cache ALTER COLUMN result TYPE JSONB USING result::jsonb`).catch(() => {})
   }
 }
 

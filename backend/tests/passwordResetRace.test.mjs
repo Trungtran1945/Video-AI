@@ -73,6 +73,8 @@ const post = (p, body) => fetch(`${base}${p}`, {
 
 const USER_ID = 'prace-u1'
 const EMAIL = 'resetrace@test.local'
+await run('DELETE FROM reset_tokens WHERE email = ?', [EMAIL]).catch(() => {})
+await run('DELETE FROM users WHERE id = ?', [USER_ID]).catch(() => {})
 await insert('users', { id: USER_ID, email: EMAIL, password: 'x', role: 'user', name: '' })
 
 // forgot-password → devToken
@@ -128,10 +130,15 @@ await storeRefreshToken(USER_ID, oldRefresh)
 {
   const row = await queryOne('SELECT token FROM reset_tokens WHERE email = ?', [EMAIL])
   assert(!!row && row.token === sha256(devToken), 'DB stores only sha256(devToken) for the consumed token')
-  const bytes = fs.readFileSync(process.env.DB_PATH)
-  const raw = Buffer.from(devToken, 'utf8')
-  const rawUtf16 = Buffer.from(devToken, 'utf16le')
-  assert(!bytes.includes(raw) && !bytes.includes(rawUtf16), 'raw devToken appears nowhere in the persisted DB bytes')
+  if (process.env.DB_PATH && fs.existsSync(process.env.DB_PATH)) {
+    const bytes = fs.readFileSync(process.env.DB_PATH)
+    const raw = Buffer.from(devToken, 'utf8')
+    const rawUtf16 = Buffer.from(devToken, 'utf16le')
+    assert(!bytes.includes(raw) && !bytes.includes(rawUtf16), 'raw devToken appears nowhere in the persisted DB bytes')
+  } else {
+    const rawRow = await queryOne('SELECT token FROM reset_tokens WHERE token = ?', [devToken])
+    assert(!rawRow, 'raw devToken is never stored in DB')
+  }
 }
 
 // cleanup
