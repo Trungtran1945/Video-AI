@@ -93,13 +93,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg && ffmpeg -version
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libportaudio2 && ffmpeg -version
 
       - name: Install backend dependencies
         run: cd backend && npm ci
 
       - name: Install ZeroTTS locked deps
-        run: pip install "onnxruntime>=1.17" "numpy>=1.26" "soundfile>=0.12"
+        run: pip install "onnxruntime>=1.17" "numpy>=1.26" "soundfile>=0.12" zerotts
 
       - name: Cache ZeroTTS model (~900MB)
         uses: actions/cache@v6
