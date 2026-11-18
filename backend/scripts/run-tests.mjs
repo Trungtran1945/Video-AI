@@ -15,8 +15,19 @@ let failed = []
 for (const f of files) {
   const full = path.join(testsDir, f)
   console.log(`\n=== ${f} ===`)
-  const r = spawnSync(process.execPath, [full], { stdio: 'inherit', env: { ...process.env, RUN_TESTS_RUNNER: '1' } })
-  if (r.status !== 0) {
+  const r = spawnSync(process.execPath, [full], {
+    stdio: 'inherit',
+    timeout: 45000,
+    killSignal: 'SIGKILL',
+    env: { ...process.env, RUN_TESTS_RUNNER: '1' },
+  })
+  if (r.error && r.error.code === 'ETIMEDOUT') {
+    failed.push(f)
+    console.error(`FAIL: ${f} (timed out after 45s)`)
+    if (process.env.GITHUB_ACTIONS) {
+      console.log(`::error file=backend/tests/${f},title=Test Timeout::${f} timed out after 45s`)
+    }
+  } else if (r.status !== 0) {
     failed.push(f)
     console.error(`FAIL: ${f} (exit ${r.status})`)
     if (process.env.GITHUB_ACTIONS) {
