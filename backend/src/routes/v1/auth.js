@@ -22,23 +22,40 @@ import {
   __setGoogleOAuthClientForTest,
   __resetGoogleOAuthClientForTest,
 } from '../../services/googleAuthService.js'
+import { validateBody } from '../../middleware/validate.js'
+import {
+  registerSchema,
+  loginSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+} from '../../validation/schemas.js'
+import {
+  REFRESH_COOKIE,
+  getRefreshCookieOptions,
+  getClearRefreshCookieOptions,
+} from '../../lib/cookieOptions.js'
+import {
+  hashPassword,
+  comparePassword,
+  validatePasswordPolicy,
+  needsRehash,
+  DUMMY_BCRYPT_HASH,
+} from '../../lib/password.js'
+import { resetAllRateLimits, getClientIp } from '../../middleware/rateLimiter.js'
+import { canonicalizeEmail } from '../../lib/emailCanonical.js'
+import { sanitizeUserDto } from '../../lib/responseSanitizer.js'
+import { sensitiveNoCache } from '../../middleware/securityHeaders.js'
 
 const router = Router()
+router.use(sensitiveNoCache)
+
+// In-memory tracker for atomic refresh rotation grace window (prevents concurrent tab races from invalidating winner session)
+const recentRotations = new Map()
 
 function publicUser(u) {
   // users.credits is a legacy column — no longer exposed (hệ Xu đã bỏ, docs/00 §2.2)
-  return {
-    id: u.id,
-    email: u.email,
-    role: u.role,
-    name: u.name || '',
-    email_verified: Boolean(u.email_verified),
-    avatar: u.avatar || null,
-  }
+  return sanitizeUserDto(u)
 }
-
-const REFRESH_COOKIE = 'refresh_token'
-const REFRESH_COOKIE_PATH = '/api/v1/auth'
 
 function readRefreshCookie(req) {
   const header = req.headers.cookie
@@ -52,17 +69,12 @@ function readRefreshCookie(req) {
   return null
 }
 
-function setRefreshCookie(res, token) {
-  res.cookie(REFRESH_COOKIE, token, {
-    httpOnly: true, secure: config.cookieSecure, sameSite: 'lax',
-    path: REFRESH_COOKIE_PATH, maxAge: 7 * 24 * 60 * 60 * 1000,
-  })
+function setRefreshCookie(res, token, overrides = {}) {
+  res.cookie(REFRESH_COOKIE, token, getRefreshCookieOptions(overrides))
 }
 
-function clearRefreshCookie(res) {
-  res.clearCookie(REFRESH_COOKIE, {
-    httpOnly: true, secure: config.cookieSecure, sameSite: 'lax', path: REFRESH_COOKIE_PATH,
-  })
+function clearRefreshCookie(res, overrides = {}) {
+  res.clearCookie(REFRESH_COOKIE, getClearRefreshCookieOptions(overrides))
 }
 
 // Cookie là nguồn chính; body/x-refresh-token là fallback DEPRECATED
@@ -130,6 +142,7 @@ export function __resetAuthRateLimitsForTests() {
   registerOtpHitsByEmail.clear()
   registerOtpHitsByIp.clear()
   googleHitsByIp.clear()
+  resetAllRateLimits()
 }
 export const __resetForgotRateLimitForTests = __resetAuthRateLimitsForTests
 export const __resetOtpRateLimitForTests = __resetAuthRateLimitsForTests
@@ -146,9 +159,9 @@ export {
 export const verifyGoogleToken = verifyGoogleIdToken
 
 // POST /api/v1/auth/register
-router.post('/register', async (req, res) => {
+router.post('/register', validateBody(registerSchema), async (req, res) => {
   try {
-    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown'
+    const ip = getClientIp(req)
     const ipWait = hitRateLimit(registerHitsByIp, String(ip), 10, 15 * 60 * 1000)
     if (ipWait) {
       return sendError(res, 429, 'RATE_LIMITED', 'Quá nhiều yêu cầu đăng ký từ địa chỉ IP này. Vui lòng thử lại sau.', { retryAfterSec: ipWait })
@@ -158,10 +171,15 @@ router.post('/register', async (req, res) => {
     if (!email || !password) {
       return sendError(res, 400, ERR.VALIDATION, 'Email and password are required', { field: 'email,password' })
     }
-    const normalizedEmail = String(email).trim().toLowerCase()
+    const normalizedEmail = canonicalizeEmail(email)
     const existing = await queryOne(`SELECT id FROM users WHERE email = ?`, [normalizedEmail])
     if (existing) {
       return sendError(res, 409, 'EMAIL_EXISTS', 'Email already registered', { field: 'email' })
+    }
+
+    const requireOtp = process.env.REQUIRE_REGISTRATION_OTP === 'true'
+    if (requireOtp && !otp) {
+      return sendError(res, 400, 'OTP_REQUIRED', 'Mã xác thực OTP là bắt buộc để hoàn tất đăng ký.', { field: 'otp' })
     }
 
     let isEmailVerified = false
@@ -174,10 +192,16 @@ router.post('/register', async (req, res) => {
       if (otpRow && hashOtp(cleanOtp) === otpRow.otp_hash && new Date(otpRow.expires_at) >= new Date()) {
         await run(`UPDATE email_otps SET used = 1 WHERE id = ?`, [otpRow.id])
         isEmailVerified = true
+      } else if (requireOtp) {
+        return sendError(res, 400, 'INVALID_OTP', 'Mã xác thực OTP không hợp lệ hoặc đã hết hạn.', { field: 'otp' })
       }
     }
 
-    const hashed = await bcrypt.hash(password, 10)
+    const pwCheck = validatePasswordPolicy(password)
+    if (!pwCheck.valid) {
+      return sendError(res, 400, 'INVALID_PASSWORD', pwCheck.message, { field: 'password' })
+    }
+    const hashed = await hashPassword(password, 10)
     const user = await insert('users', {
       id: uuidv4(),
       email: normalizedEmail,
@@ -192,6 +216,9 @@ router.post('/register', async (req, res) => {
     setRefreshCookie(res, refreshToken)
     res.json({ accessToken, user: publicUser(user) })
   } catch (err) {
+    if (err?.code === 'INVALID_PASSWORD') {
+      return sendError(res, 400, 'INVALID_PASSWORD', err.message, { field: 'password' })
+    }
     console.error('Register error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
@@ -204,12 +231,13 @@ router.post('/register/send-otp', async (req, res) => {
     if (!email || !isValidEmail(email)) {
       return sendError(res, 400, ERR.VALIDATION, 'Email không hợp lệ hoặc bị thiếu', { field: 'email' })
     }
-    if (!password || typeof password !== 'string' || password.length < 6) {
-      return sendError(res, 400, ERR.VALIDATION, 'Mật khẩu phải có ít nhất 6 ký tự', { field: 'password' })
+    const pwCheck = validatePasswordPolicy(password)
+    if (!pwCheck.valid) {
+      return sendError(res, 400, ERR.VALIDATION, pwCheck.message, { field: 'password' })
     }
 
-    const normalizedEmail = String(email).trim().toLowerCase()
-    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown'
+    const normalizedEmail = canonicalizeEmail(email)
+    const ip = getClientIp(req)
     const now = Date.now()
 
     const existing = await queryOne(`SELECT id FROM users WHERE email = ?`, [normalizedEmail])
@@ -288,7 +316,7 @@ router.post('/register/verify-otp', async (req, res) => {
       return sendError(res, 400, ERR.VALIDATION, 'Email, mật khẩu và mã OTP là bắt buộc', { field: 'email,otp,password' })
     }
 
-    const normalizedEmail = String(email).trim().toLowerCase()
+    const normalizedEmail = canonicalizeEmail(email)
     const cleanOtp = String(otp).trim()
 
     if (!isValidEmail(normalizedEmail)) {
@@ -297,8 +325,9 @@ router.post('/register/verify-otp', async (req, res) => {
     if (!/^\d{6}$/.test(cleanOtp)) {
       return sendError(res, 400, ERR.VALIDATION, 'Mã OTP phải gồm 6 chữ số', { field: 'otp' })
     }
-    if (typeof password !== 'string' || password.length < 6) {
-      return sendError(res, 400, ERR.VALIDATION, 'Mật khẩu phải có ít nhất 6 ký tự', { field: 'password' })
+    const pwCheck = validatePasswordPolicy(password)
+    if (!pwCheck.valid) {
+      return sendError(res, 400, 'INVALID_PASSWORD', pwCheck.message, { field: 'password' })
     }
 
     const existing = await queryOne(`SELECT id FROM users WHERE email = ?`, [normalizedEmail])
@@ -331,6 +360,7 @@ router.post('/register/verify-otp', async (req, res) => {
       return sendError(res, 400, 'INVALID_OTP', 'Mã OTP không chính xác', { remainingAttempts: remaining })
     }
 
+    const hashed = await hashPassword(password, 10)
     let user
     try {
       await withTransaction(async (tx) => {
@@ -352,7 +382,6 @@ router.post('/register/verify-otp', async (req, res) => {
           throw err
         }
 
-        const hashed = await bcrypt.hash(password, 10)
         user = await tx.insert('users', {
           id: uuidv4(),
           email: normalizedEmail,
@@ -378,21 +407,24 @@ router.post('/register/verify-otp', async (req, res) => {
       user: publicUser(user),
     })
   } catch (err) {
+    if (err?.code === 'INVALID_PASSWORD') {
+      return sendError(res, 400, 'INVALID_PASSWORD', err.message, { field: 'password' })
+    }
     console.error('Verify registration OTP error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
 })
 
 // POST /api/v1/auth/login
-router.post('/login', async (req, res) => {
+router.post('/login', validateBody(loginSchema), async (req, res) => {
   try {
     const { email, password } = req.body
     if (!email || !password) {
       return sendError(res, 400, ERR.VALIDATION, 'Email and password are required', { field: 'email,password' })
     }
 
-    const normalizedEmail = String(email).trim().toLowerCase()
-    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown'
+    const normalizedEmail = canonicalizeEmail(email)
+    const ip = getClientIp(req)
     const now = Date.now()
 
     const ipWait = checkRateLimit(loginFailHitsByIp, String(ip), 10, 15 * 60 * 1000, now)
@@ -405,13 +437,26 @@ router.post('/login', async (req, res) => {
     }
 
     const user = await queryOne(`SELECT * FROM users WHERE email = ?`, [normalizedEmail])
-    if (!user || !(await bcrypt.compare(password, user.password))) {
+    // SEC-03: Mitigate login timing attacks / user enumeration by running bcrypt compare even on unknown user
+    const passwordMatch = user
+      ? await comparePassword(password, user.password)
+      : await comparePassword(password, DUMMY_BCRYPT_HASH)
+
+    if (!user || !passwordMatch) {
       recordRateLimitHit(loginFailHitsByIp, String(ip), 15 * 60 * 1000, now)
       recordRateLimitHit(loginFailHitsByEmail, normalizedEmail, 15 * 60 * 1000, now)
       return sendError(res, 401, 'INVALID_CREDENTIALS', 'Invalid email or password')
     }
 
     loginFailHitsByEmail.delete(normalizedEmail)
+
+    // Transparently upgrade / rehash if the stored hash used weaker cost factor
+    if (needsRehash(user.password, 10)) {
+      try {
+        const upgraded = await hashPassword(password, 10)
+        await run('UPDATE users SET password = ? WHERE id = ?', [upgraded, user.id])
+      } catch (_) {}
+    }
 
     const accessToken = generateAccessToken(user)
     const refreshToken = generateRefreshToken(user)
@@ -435,7 +480,7 @@ router.post('/google', async (req, res) => {
       return sendError(res, 400, ERR.VALIDATION, 'Google ID Token is required', { field: 'credential' })
     }
 
-    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown'
+    const ip = getClientIp(req)
     const ipWait = hitRateLimit(googleHitsByIp, String(ip), 10, 15 * 60 * 1000)
     if (ipWait) {
       return sendError(res, 429, 'RATE_LIMITED', 'Quá nhiều yêu cầu đăng nhập Google từ IP này. Vui lòng thử lại sau.', { retryAfterSec: ipWait })
@@ -526,14 +571,30 @@ router.post('/refresh', cookieCsrf, async (req, res) => {
     const { sha256 } = await import('../../lib/crypto.js')
     let decoded
     try {
-      decoded = jwt.verify(token, config.jwtRefreshSecret)
+      decoded = jwt.verify(token, config.jwtRefreshSecret, {
+        algorithms: ['HS256'],
+      })
     } catch (_) {
       return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid refresh token')
     }
     const user = await queryOne(`SELECT * FROM users WHERE id = ?`, [decoded.id])
-    const oldHash = sha256(token)
-    if (!user || user.refresh_token !== oldHash) {
+    if (!user) {
       return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid refresh token')
+    }
+
+    const oldHash = sha256(token)
+    if (user.refresh_token !== oldHash) {
+      // Check if this is a concurrent request within the 2.5s rotation grace window
+      const recent = recentRotations.get(user.id)
+      const isRecentRace = recent && recent.oldHash === oldHash && (Date.now() - recent.rotatedAt < 2500)
+      if (isRecentRace) {
+        return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid refresh token')
+      }
+
+      // Reused / stolen token detected outside race window: invalidate session
+      await clearRefreshToken(user.id)
+      clearRefreshCookie(res)
+      return sendError(res, 401, 'REFRESH_TOKEN_REUSED', 'Invalid or reused refresh token')
     }
     if (user.refresh_expires && new Date(user.refresh_expires) < new Date()) {
       return sendError(res, 401, ERR.AUTH_TOKEN, 'Refresh token expired')
@@ -542,6 +603,7 @@ router.post('/refresh', cookieCsrf, async (req, res) => {
     const newRefresh = generateRefreshToken(user)
     const rotated = await rotateRefreshToken(user.id, oldHash, newRefresh)
     if (!rotated) return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid refresh token')
+    recentRotations.set(user.id, { oldHash, rotatedAt: Date.now() })
     setRefreshCookie(res, newRefresh)
     res.json({ accessToken, user: publicUser(user) })
   } catch (err) {
@@ -565,7 +627,7 @@ router.post('/logout', cookieCsrf, async (req, res) => {
     }
     if (!userId && cookieToken) {
       const jwt = (await import('jsonwebtoken')).default
-      try { userId = jwt.verify(cookieToken, config.jwtRefreshSecret).id } catch (_) {}
+      try { userId = jwt.verify(cookieToken, config.jwtRefreshSecret, { algorithms: ['HS256'] }).id } catch (_) {}
     }
     if (userId) await clearRefreshToken(userId)
     clearRefreshCookie(res)
@@ -589,23 +651,24 @@ router.get('/me', authMiddleware, async (req, res) => {
 // stored: the DB keeps only sha256(token))
 // Rate-limit (single-process in-memory, matches eventBus design): >5 req/IP/10min
 // hoặc >3 req/email/1h → 429 RATE_LIMITED + retryAfterSec, không insert row mới.
-router.post('/forgot-password', async (req, res) => {
+router.post('/forgot-password', validateBody(forgotPasswordSchema), async (req, res) => {
   try {
     const { email } = req.body
     if (!email) return sendError(res, 400, ERR.VALIDATION, 'Email is required', { field: 'email' })
-    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown'
+    const ip = getClientIp(req)
     const ipWait = hitRateLimit(forgotHitsByIp, String(ip), 5, 10 * 60 * 1000)
     if (ipWait) return sendError(res, 429, 'RATE_LIMITED', 'Quá nhiều yêu cầu đặt lại mật khẩu, thử lại sau.', { retryAfterSec: ipWait })
-    const emailWait = hitRateLimit(forgotHitsByEmail, String(email).toLowerCase(), 3, 60 * 60 * 1000)
+    const normalizedEmail = canonicalizeEmail(email)
+    const emailWait = hitRateLimit(forgotHitsByEmail, normalizedEmail, 3, 60 * 60 * 1000)
     if (emailWait) return sendError(res, 429, 'RATE_LIMITED', 'Quá nhiều yêu cầu đặt lại mật khẩu, thử lại sau.', { retryAfterSec: emailWait })
-    const user = await queryOne(`SELECT id FROM users WHERE email = ?`, [email])
-    const out = { message: 'Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.' }
+    const user = await queryOne(`SELECT id FROM users WHERE email = ?`, [normalizedEmail])
+    const out = { message: 'Nếu email tồn tại trong hệ thống, hướng dẫn đặt lại mật khẩu đã được gửi.' }
     if (user) {
       const { sha256 } = await import('../../lib/crypto.js')
       const { config } = await import('../../config.js')
       const token = uuidv4() + uuidv4().replace(/-/g, '')
       const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString()
-      await insert('reset_tokens', { email, token: sha256(token), expires_at: expires, used: 0 })
+      await insert('reset_tokens', { email: normalizedEmail, token: sha256(token), expires_at: expires, used: 0 })
       if (config.authDevResetTokenInResponse) out.devToken = token
     }
     // Always return the same message to avoid leaking account existence
@@ -620,15 +683,20 @@ router.post('/forgot-password', async (req, res) => {
 // claim (UPDATE ... used=1 WHERE used=0 AND expires_at>now) quyết định đúng 1
 // người thắng; password update trong CÙNG transaction → fail là ROLLBACK (token
 // không bị cháy). Đổi mật khẩu đồng thời thu hồi refresh token hiện tại.
-router.post('/reset-password', async (req, res) => {
+router.post('/reset-password', validateBody(resetPasswordSchema), async (req, res) => {
   try {
-    const { token, newPassword } = req.body
+    const token = req.body.token
+    const newPassword = req.body.newPassword || req.body.password
     if (!token || !newPassword) {
       return sendError(res, 400, ERR.VALIDATION, 'Token and new password are required', { field: 'token,newPassword' })
     }
+    const pwCheck = validatePasswordPolicy(newPassword)
+    if (!pwCheck.valid) {
+      return sendError(res, 400, 'INVALID_PASSWORD', pwCheck.message, { field: 'newPassword' })
+    }
     const { sha256 } = await import('../../lib/crypto.js')
     const tokenHash = sha256(token)
-    const hashed = await bcrypt.hash(newPassword, 10)
+    const hashed = await hashPassword(newPassword, 10)
     try {
       await withTransaction(async (tx) => {
         const claimed = await tx.runAffected(
@@ -658,8 +726,12 @@ router.post('/reset-password', async (req, res) => {
       if (e?.code === 'INVALID_TOKEN') return sendError(res, 400, 'INVALID_TOKEN', e.message)
       throw e
     }
+    clearRefreshCookie(res)
     res.json({ message: 'Mật khẩu đã được cập nhật.' })
   } catch (err) {
+    if (err?.code === 'INVALID_PASSWORD') {
+      return sendError(res, 400, 'INVALID_PASSWORD', err.message, { field: 'newPassword' })
+    }
     console.error('Reset password error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
   }
@@ -673,8 +745,8 @@ router.post('/otp/send', async (req, res) => {
       return sendError(res, 400, ERR.VALIDATION, 'Email không hợp lệ hoặc bị thiếu', { field: 'email' })
     }
 
-    const normalizedEmail = String(email).trim().toLowerCase()
-    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown'
+    const normalizedEmail = canonicalizeEmail(email)
+    const ip = getClientIp(req)
     const now = Date.now()
 
     // 1. Cooldown 60s per email
@@ -752,7 +824,7 @@ router.post('/otp/verify', async (req, res) => {
       return sendError(res, 400, ERR.VALIDATION, 'Email và mã OTP là bắt buộc', { field: 'email,otp' })
     }
 
-    const normalizedEmail = String(email).trim().toLowerCase()
+    const normalizedEmail = canonicalizeEmail(email)
     const cleanOtp = String(otp).trim()
 
     if (!/^\d{6}$/.test(cleanOtp)) {

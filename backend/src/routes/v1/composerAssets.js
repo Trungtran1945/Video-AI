@@ -10,6 +10,7 @@ import { query, queryOne, run, withTransaction } from '../../db/query.js'
 import { resolveStorageKey, ensureDir } from '../../pipeline/context.js'
 import { config } from '../../config.js'
 import composerService from '../../services/composerService.js'
+import { detectFileSignature, isDangerousSignature } from '../../lib/fileValidation.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -57,67 +58,23 @@ function uploadHandler(req, res, next) {
   })
 }
 
-function checkMediaSignature(filePath) {
+export function checkMediaSignature(filePath) {
   if (!filePath || !fs.existsSync(filePath)) return false
   let fd
   try {
     fd = fs.openSync(filePath, 'r')
-    const buf = Buffer.alloc(64)
-    const bytesRead = fs.readSync(fd, buf, 0, 64, 0)
+    const buf = Buffer.alloc(512)
+    const bytesRead = fs.readSync(fd, buf, 0, 512, 0)
     if (bytesRead < 2) return false
 
-    // JPEG: FF D8 FF
-    if (bytesRead >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true
-    // PNG: 89 50 4E 47
-    if (bytesRead >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return true
-    // GIF: GIF8 (47 49 46 38)
-    if (bytesRead >= 4 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return true
-    // BMP: BM (42 4D)
-    if (bytesRead >= 2 && buf[0] === 0x42 && buf[1] === 0x4d) return true
-    // RIFF (WEBP / WAV / AVI)
-    if (bytesRead >= 4 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46) {
-      if (bytesRead >= 12) {
-        const typeStr = buf.toString('ascii', 8, 12)
-        if (typeStr === 'WEBP' || typeStr === 'WAVE' || typeStr === 'AVI ') return true
-      }
-      return true
-    }
-    // MP3: ID3 or sync frame FF FB / FF F3 / FF F2 / FF E0
-    if (bytesRead >= 3 && buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) return true
-    if (bytesRead >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return true
-    // AAC (ADTS frame header: FF F1 or FF F9)
-    if (bytesRead >= 2 && buf[0] === 0xff && (buf[1] === 0xf1 || buf[1] === 0xf9)) return true
-    // FLAC: 66 4C 61 43 (fLaC)
-    if (bytesRead >= 4 && buf[0] === 0x66 && buf[1] === 0x4c && buf[2] === 0x61 && buf[3] === 0x43) return true
-    // OGG: OggS
-    if (bytesRead >= 4 && buf[0] === 0x4f && buf[1] === 0x67 && buf[2] === 0x67 && buf[3] === 0x53) return true
-    // EBML (WebM / MKV): 1A 45 DF A3
-    if (bytesRead >= 4 && buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return true
+    const header = buf.subarray(0, bytesRead)
+    const dangerous = isDangerousSignature(header)
+    if (dangerous.dangerous) return false
 
-    // MP4 / QuickTime (MOV, M4A, MP4) atoms: ftyp, moov, wide, free, skip, mdat
-    const latinStr = buf.toString('latin1', 0, bytesRead)
-    if (
-      latinStr.includes('ftyp') ||
-      latinStr.includes('moov') ||
-      latinStr.includes('wide') ||
-      latinStr.includes('free') ||
-      latinStr.includes('skip') ||
-      latinStr.includes('mdat')
-    ) {
-      return true
-    }
+    const detected = detectFileSignature(header)
+    if (!detected || detected.dangerous) return false
 
-    // SVG / XML vector graphics
-    const utf8Str = buf.toString('utf8', 0, bytesRead).trim().toLowerCase()
-    if (
-      utf8Str.startsWith('<svg') ||
-      utf8Str.startsWith('<?xml') ||
-      utf8Str.includes('<svg')
-    ) {
-      return true
-    }
-
-    return false
+    return ['image', 'audio', 'video'].includes(detected.type)
   } catch (_) {
     return false
   } finally {

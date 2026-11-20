@@ -3,6 +3,7 @@ import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import { query } from '../../db/query.js'
 import { projectDir, ensureDir, toStorageKey, round2, insertMany } from '../context.js'
+import { sanitizeSubtitleText } from '../../lib/xssSanitizer.js'
 
 const MIN_CUE_SEC = 1.0
 
@@ -49,7 +50,7 @@ export function buildCuesFromWindows(windows) {
 }
 
 export function toSrt(cues) {
-  return cues.map((c, i) => `${i + 1}\n${srtTimestamp(c.start)} --> ${srtTimestamp(c.end)}\n${c.text}\n`).join('\n')
+  return cues.map((c, i) => `${i + 1}\n${srtTimestamp(c.start)} --> ${srtTimestamp(c.end)}\n${sanitizeSubtitleText(c.text, 'srt')}\n`).join('\n')
 }
 
 export async function summarySubtitle(ctx) {

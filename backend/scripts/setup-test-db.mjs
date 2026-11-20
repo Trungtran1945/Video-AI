@@ -52,7 +52,22 @@ export async function ensureTestDatabase(testDbUrl) {
 export async function cleanTestDatabase(testDbUrl) {
   process.env.DATABASE_URL = testDbUrl
   const { run } = await import('../src/db/query.js')
-  await run('TRUNCATE TABLE projects, users, provider_cache, provider_logs, project_cleanup_tasks, reset_tokens, sse_tickets, youtube_accounts, youtube_oauth_states, email_otps, otp_codes CASCADE;')
+  let lastErr = null
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await run('TRUNCATE TABLE projects, users, provider_cache, provider_logs, project_cleanup_tasks, reset_tokens, sse_tickets, youtube_accounts, youtube_oauth_states, email_otps, otp_codes CASCADE;')
+      lastErr = null
+      break
+    } catch (err) {
+      lastErr = err
+      if (attempt < 3 && (err.code === '40P01' || err.code === '55P03' || err.message?.includes('deadlock'))) {
+        await new Promise((r) => setTimeout(r, 150 * attempt))
+      } else {
+        throw err
+      }
+    }
+  }
+  if (lastErr) throw lastErr
   const { seed } = await import('../src/db/seed.js')
   await seed()
 }

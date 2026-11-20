@@ -2,9 +2,14 @@ import { Router } from 'express'
 import { queryOne, runReturningOne } from '../../db/query.js'
 import { authMiddleware } from '../../middleware/auth.js'
 import { sendError } from '../../lib/httpError.js'
+import { validateBody } from '../../middleware/validate.js'
+import { updateSettingsSchema } from '../../validation/schemas.js'
+import { protectFields } from '../../middleware/massAssignment.js'
+import { sensitiveNoCache } from '../../middleware/securityHeaders.js'
 
 const router = Router()
 router.use(authMiddleware)
+router.use(sensitiveNoCache)
 
 // settings PK is user_id (no id column) — always SELECT/UPDATE by user_id.
 const ALLOWED = [
@@ -87,7 +92,7 @@ router.get('/', async (req, res) => {
 // NOTE: auto_upload_youtube/notify_on_complete được lưu nhưng chưa có consumer
 // (gỡ khỏi UI Settings.jsx) — giữ cột để tương thích, không mở rộng thêm flag
 // không-consumer mới.
-router.put('/', async (req, res) => {
+router.put('/', validateBody(updateSettingsSchema), protectFields(['user_id', 'id', 'role']), async (req, res) => {
   try {
     await getOrCreateSettings(req.user.id)
     let patch

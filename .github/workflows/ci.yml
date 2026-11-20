@@ -40,11 +40,26 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Gitleaks Secret Scanner
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: false
+
+      - name: Repository Secret Scan
+        run: cd backend && node scripts/scan-secrets.mjs
+
       - name: Install backend dependencies
         run: cd backend && npm ci
 
       - name: Install frontend dependencies
         run: cd frontend && npm ci
+
+      - name: Audit backend dependencies (DevSecOps High/Critical Gate)
+        run: cd backend && npm audit --audit-level=high
+
+      - name: Audit frontend dependencies (DevSecOps High/Critical Gate)
+        run: cd frontend && npm audit --audit-level=high
 
       - name: Lint backend
         run: cd backend && npm run lint

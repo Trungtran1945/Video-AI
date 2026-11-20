@@ -2,7 +2,7 @@ import { Router } from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
 import { v4 as uuidv4 } from 'uuid'
-import { query, queryOne, run, insert, withTransaction } from '../../db/query.js'
+import { query, queryOne, run, insert, withTransaction, buildSafeOrderBy, validatePagination } from '../../db/query.js'
 import { getProvider, listProvidersForCapability } from '../../providers/registry.js'
 import { sanitizeSegmentId, applyVoiceOverride } from '../../pipeline/stages/dubTtsAlign.js'
 import { createProjectWithAdmission, acquireProjectRun, updateProjectOwned } from '../../services/projectAdmission.js'
@@ -28,6 +28,9 @@ import {
 } from '../../services/scriptUploadService.js'
 import { isPathInside } from '../../lib/safePath.js'
 import { formatAsset } from './composerAssets.js'
+import { validateBody, validateParams } from '../../middleware/validate.js'
+import { createProjectSchema, idParamSchema } from '../../validation/schemas.js'
+import { protectFields } from '../../middleware/massAssignment.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -97,7 +100,7 @@ const isDubMode = (mode) => {
 }
 
 // POST /api/v1/projects
-router.post('/', async (req, res) => {
+router.post('/', validateBody(createProjectSchema), protectFields(['user_id', 'role']), async (req, res) => {
   let createdProjectId = null
   try {
     const b = req.body || {}
@@ -440,13 +443,20 @@ router.get('/', async (req, res) => {
       sql += (params.length ? ' AND' : ' WHERE') + ' mode = ?'
       params.push(normalizeMode(req.query.mode))
     }
-    sql += ' ORDER BY created_date DESC'
+    const sortClause = buildSafeOrderBy(
+      req.query.sortBy,
+      req.query.sortDir,
+      ['created_date', 'title', 'mode', 'status', 'updated_date'],
+      'created_date DESC'
+    )
+    sql += ` ORDER BY ${sortClause}`
     const limit = Number(req.query.limit)
     const page = Number(req.query.page)
     const hasPaging = Number.isInteger(limit) && limit > 0
     if (hasPaging) {
+      const pagination = validatePagination(limit, Number.isInteger(page) && page > 1 ? (page - 1) * limit : 0)
       sql += ' LIMIT ? OFFSET ?'
-      params.push(limit, Number.isInteger(page) && page > 1 ? (page - 1) * limit : 0)
+      params.push(pagination.limit, pagination.offset)
     }
     const rows = await query(sql, params)
     res.json(rows)
@@ -457,11 +467,14 @@ router.get('/', async (req, res) => {
 })
 
 // GET /api/v1/projects/:id (with jobs, timeline, output, extras)
-router.get('/:id', async (req, res) => {
+router.get('/:id', validateParams(idParamSchema), async (req, res) => {
   try {
     const project = await queryOne('SELECT * FROM projects WHERE id = ?', [req.params.id])
     if (!project) return sendError(res, 404, ERR.PROJECT_NOT_FOUND, 'Project not found')
     if (project.user_id !== req.user.id && req.user.role !== 'admin') {
+      if (process.env.STRICT_IDOR_404 === 'true') {
+        return sendError(res, 404, ERR.PROJECT_NOT_FOUND, 'Project not found')
+      }
       return sendError(res, 403, ERR.AUTH_FORBIDDEN, 'Forbidden')
     }
     const jobs = await query('SELECT * FROM generation_jobs WHERE project_id = ? ORDER BY created_date ASC', [project.id])
@@ -515,7 +528,12 @@ router.get('/:id', async (req, res) => {
 })
 
 // PATCH /api/v1/projects/:id (rename project title, update frame aspect ratio & params)
-router.patch('/:id', requireProjectOwner, async (req, res) => {
+router.patch(
+  '/:id',
+  validateParams(idParamSchema),
+  requireProjectOwner,
+  protectFields(['id', 'user_id', 'status', 'role', 'run_token', 'lease_expires_at', 'created_date']),
+  async (req, res) => {
   try {
     const b = req.body || {}
     const hasTitle = b.title !== undefined
@@ -547,7 +565,13 @@ router.patch('/:id', requireProjectOwner, async (req, res) => {
     } catch (_) {}
 
     if (b.params && typeof b.params === 'object') {
-      existingParams = { ...existingParams, ...b.params }
+      const cleanParams = { ...b.params }
+      delete cleanParams.user_id
+      delete cleanParams.id
+      delete cleanParams.status
+      delete cleanParams.role
+      delete cleanParams.run_token
+      existingParams = { ...existingParams, ...cleanParams }
     }
     if (hasResolution && typeof b.resolution === 'string') {
       existingParams.resolution = b.resolution
@@ -1251,11 +1275,14 @@ router.patch('/:id/dubbing', requireProjectOwner, async (req, res) => {
 })
 
 // DELETE /api/v1/projects/:id
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', validateParams(idParamSchema), async (req, res) => {
   try {
     const project = await queryOne('SELECT * FROM projects WHERE id = ?', [req.params.id])
     if (!project) return sendError(res, 404, ERR.PROJECT_NOT_FOUND, 'Project not found')
     if (project.user_id !== req.user.id && req.user.role !== 'admin') {
+      if (process.env.STRICT_IDOR_404 === 'true') {
+        return sendError(res, 404, ERR.PROJECT_NOT_FOUND, 'Project not found')
+      }
       return sendError(res, 403, ERR.AUTH_FORBIDDEN, 'Forbidden')
     }
     // Deleting mid-run would leave the pipeline writing into removed folders/rows.

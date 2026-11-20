@@ -10,11 +10,12 @@ import { drainQueue } from '../../queue/drainQueue.js'
 import { notifyQueue } from '../../queue/notifyQueue.js'
 import { cleanupQueue } from '../../queue/cleanupQueue.js'
 import { getCleanupStats } from '../../services/projectCleanup.js'
+import { sensitiveNoCache } from '../../middleware/securityHeaders.js'
 
 const CLEANUP_COLUMNS = 'id, project_id, operation, operation_key, status, attempts, next_attempt_at, last_error, created_date, updated_date'
 
 const router = Router()
-router.use(authMiddleware, requireRole('admin'))
+router.use(authMiddleware, requireRole('admin'), sensitiveNoCache)
 
 // GET /api/v1/admin/users
 router.get('/users', async (req, res) => {

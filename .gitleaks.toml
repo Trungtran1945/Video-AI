@@ -1,0 +1,72 @@
+# Gitleaks Configuration for Video AI
+# Documentation: https://github.com/gitleaks/gitleaks
+
+title = "Video AI Secret Scanner Configuration"
+
+[extend]
+# Use default gitleaks rules as base if available
+
+[[rules]]
+id = "generic-private-key"
+description = "Unencrypted Private Key detected"
+regex = '''(?i)-----BEGIN[ A-Z0-9_-]*PRIVATE KEY-----'''
+keywords = ["BEGIN PRIVATE KEY", "BEGIN RSA PRIVATE KEY", "BEGIN EC PRIVATE KEY", "BEGIN OPENSSH PRIVATE KEY"]
+
+[[rules]]
+id = "openai-api-key"
+description = "OpenAI API Key detected"
+regex = '''\b(sk-[a-zA-Z0-9]{48})\b'''
+keywords = ["sk-"]
+
+[[rules]]
+id = "google-gemini-api-key"
+description = "Google / Gemini API Key detected"
+regex = '''\b(AIza[0-9A-Za-z\\-_]{35})\b'''
+keywords = ["AIza"]
+
+[[rules]]
+id = "aws-access-key-id"
+description = "AWS Access Key ID detected"
+regex = '''\b((?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16})\b'''
+keywords = ["AKIA", "ABIA", "ACCA", "ASIA"]
+
+[[rules]]
+id = "github-personal-access-token"
+description = "GitHub Personal Access Token detected"
+regex = '''\b(ghp_[a-zA-Z0-9]{36})\b'''
+keywords = ["ghp_"]
+
+[[rules]]
+id = "slack-webhook-url"
+description = "Slack Incoming Webhook URL detected"
+regex = '''https://hooks\.slack\.com/services/T[a-zA-Z0-9_]{8}/B[a-zA-Z0-9_]{8,12}/[a-zA-Z0-9_]{24}'''
+keywords = ["hooks.slack.com"]
+
+[[rules]]
+id = "database-password-in-uri"
+description = "Database URI with exposed real credentials detected"
+regex = '''(?:postgres(?:ql)?|mysql|redis):\/\/[a-zA-Z0-9_-]+:([^@\s:/?#]{8,})@[a-zA-Z0-9.-]+'''
+keywords = ["postgresql://", "postgres://", "redis://", "mysql://"]
+
+[allowlist]
+description = "Global allowlist for non-production placeholders, mock values, and examples"
+paths = [
+    '''\.env\.example$''',
+    '''\.env\.production\.example$''',
+    '''backend/tests/.*''',
+    '''docs/.*''',
+    '''\.gitleaks\.toml$''',
+]
+stopwords = [
+    "VideoAI_Secure_Db_2026!",
+    "video-ai-dev-access-secret",
+    "video-ai-dev-refresh-secret",
+    "dev-master-key",
+    "change-me-in-production",
+    "replace-with-",
+    "example",
+    "dummy",
+    "test-access-secret",
+    "test-refresh-secret",
+    "test-master-key",
+]

@@ -2,6 +2,7 @@ import pg from 'pg'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { assertDatabaseSecrets, redactSensitiveString } from './config.js'
 
 const { Pool: PgPool, types: pgTypes } = pg
 
@@ -17,27 +18,46 @@ export function isPostgresMode() {
 
 let pgPool = null
 
+export function getDatabasePoolConfig() {
+  const connectionString = process.env.DATABASE_URL
+  const ssl = process.env.DB_SSL === 'true'
+    ? { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' }
+    : false
+
+  const baseConfig = connectionString
+    ? { connectionString }
+    : {
+        host: process.env.DB_HOST || 'localhost',
+        port: Number(process.env.DB_PORT || 5433),
+        user: process.env.DB_USER || 'video_ai_user',
+        password: process.env.DB_PASSWORD || 'VideoAI_Secure_Db_2026!',
+        database: process.env.DB_NAME || 'video_ai',
+      }
+
+  return {
+    ...baseConfig,
+    ...(ssl ? { ssl } : {}),
+    max: Number(process.env.DB_POOL_MAX || 20),
+    idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS || 10000),
+    connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT_MS || 5000),
+    statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS || 30000),
+    query_timeout: Number(process.env.DB_QUERY_TIMEOUT_MS || 30000),
+    allowExitOnIdle: true,
+  }
+}
+
 export function getPool() {
   if (!pgPool) {
-    const connectionString = process.env.DATABASE_URL
-    const poolConfig = connectionString
-      ? { connectionString }
-      : {
-          host: process.env.DB_HOST || 'localhost',
-          port: Number(process.env.DB_PORT || 5433),
-          user: process.env.DB_USER || 'video_ai_user',
-          password: process.env.DB_PASSWORD || 'VideoAI_Secure_Db_2026!',
-          database: process.env.DB_NAME || 'video_ai',
-        }
-    pgPool = new PgPool({
-      ...poolConfig,
-      max: Number(process.env.DB_POOL_MAX || 20),
-      idleTimeoutMillis: 10000,
-      connectionTimeoutMillis: 5000,
-      allowExitOnIdle: true,
+    assertDatabaseSecrets({
+      nodeEnv: process.env.NODE_ENV,
+      dbPassword: process.env.DB_PASSWORD,
+      databaseUrl: process.env.DATABASE_URL,
+      strictSecrets: process.env.STRICT_SECRETS === 'true',
     })
+    const poolConfig = getDatabasePoolConfig()
+    pgPool = new PgPool(poolConfig)
     pgPool.on('error', (err) => {
-      console.error('[PostgreSQL Pool Error]', err?.message || err)
+      console.error('[PostgreSQL Pool Error]', redactSensitiveString(err?.message || err))
     })
   }
   return pgPool
@@ -141,10 +161,38 @@ process.once('SIGTERM', () => {
   process.exit(143)
 })
 
+export async function verifyDatabaseConstraints() {
+  const pool = getPool()
+  const res = await pool.query(`
+    SELECT conname, contype, conrelid::regclass AS table_name
+    FROM pg_constraint
+    WHERE contype IN ('f', 'p', 'u')
+      AND connamespace = 'public'::regnamespace
+    LIMIT 20;
+  `)
+  return {
+    constraintsActive: res.rows.length > 0,
+    sampleCount: res.rows.length,
+  }
+}
+
+export async function verifyDatabaseBackupReadiness() {
+  const pool = getPool()
+  const res = await pool.query('SELECT pg_is_in_recovery() AS in_recovery, current_database() AS current_db;')
+  return {
+    ready: true,
+    inRecovery: Boolean(res.rows[0]?.in_recovery),
+    database: res.rows[0]?.current_db || 'unknown',
+  }
+}
+
 export default {
   isPostgresMode,
   getPool,
+  getDatabasePoolConfig,
   closePool,
+  verifyDatabaseConstraints,
+  verifyDatabaseBackupReadiness,
   getDb,
   getDbPersistenceStats,
   getDbPersistenceHealth,

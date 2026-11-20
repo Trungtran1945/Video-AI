@@ -11,14 +11,20 @@ const storageDir = path.resolve(__dirname, '..', process.env.STORAGE_DIR || './s
 export const DEV_ACCESS_SECRET = 'video-ai-dev-access-secret'
 export const DEV_REFRESH_SECRET = 'video-ai-dev-refresh-secret'
 export const DEV_MASTER_KEY = 'dev-master-key'
+export const DEV_DB_PASSWORD = 'VideoAI_Secure_Db_2026!'
 export const MIN_SECRET_LENGTH = 32
+export const MIN_DB_PASSWORD_LENGTH = 16
 const PLACEHOLDER_SECRETS = new Set([
   DEV_ACCESS_SECRET,
   DEV_REFRESH_SECRET,
   DEV_MASTER_KEY,
+  DEV_DB_PASSWORD,
   'change-me-in-production',
   'changeme',
   'dev',
+  'password',
+  'postgres',
+  'admin',
   '',
 ])
 
@@ -26,10 +32,36 @@ export function isPlaceholderSecret(value) {
   return !value || PLACEHOLDER_SECRETS.has(String(value))
 }
 
+export function maskSecret(key, keepStart = 2, keepEnd = 2) {
+  if (!key) return ''
+  const s = String(key)
+  if (s.length <= (keepStart + keepEnd + 2)) return '****'
+  return s.slice(0, keepStart) + '****' + s.slice(-keepEnd)
+}
+
+export function redactSensitiveString(str) {
+  if (!str) return ''
+  return String(str)
+    // Redact password in postgres/mysql/redis URLs: postgresql://user:password@host
+    .replace(/(postgres(?:ql)?:\/\/[^:]+:)([^@]+)(@)/gi, '$1[REDACTED]$3')
+    .replace(/(redis(?:s)?:\/\/(?:[^:]*:)?)([^@]+)(@)/gi, '$1[REDACTED]$3')
+    // Redact Bearer tokens
+    .replace(/(Bearer\s+)[A-Za-z0-9_\-\.]{8,}/gi, '$1[REDACTED]')
+    // Redact API keys: key=..., apiKey=..., secret=...
+    .replace(/((?:api[_-]?key|secret|password|token)\s*[:=]\s*["']?)([^"'&\s]{4,})(["']?)/gi, '$1[REDACTED]$3')
+}
+
 // Pure validator (unit-testable without rebooting the process).
-// Throws in production when secrets are missing, too short, or dev defaults.
-export function assertProductionSecrets({ nodeEnv, jwtAccessSecret, jwtRefreshSecret, masterKey } = {}) {
-  if (nodeEnv !== 'production') return
+// Throws in production or when strictSecrets=true when secrets are missing, too short, or dev defaults.
+export function assertProductionSecrets({
+  nodeEnv,
+  jwtAccessSecret,
+  jwtRefreshSecret,
+  masterKey,
+  strictSecrets = (process.env.STRICT_SECRETS === 'true'),
+} = {}) {
+  const isStrict = nodeEnv === 'production' || strictSecrets === true || strictSecrets === 'true'
+  if (!isStrict) return
   const bad = []
   for (const [name, value] of [
     ['JWT_ACCESS_SECRET', jwtAccessSecret],
@@ -54,6 +86,60 @@ export function assertProductionSecrets({ nodeEnv, jwtAccessSecret, jwtRefreshSe
     throw new Error(
       `[Config] FATAL: missing or unsafe secrets in production: ${bad.join(', ')}. ` +
       `Set JWT_ACCESS_SECRET (>=${MIN_SECRET_LENGTH} chars), JWT_REFRESH_SECRET, MASTER_KEY via environment.`
+    )
+  }
+}
+
+export function assertDatabaseSecrets({
+  nodeEnv = process.env.NODE_ENV,
+  dbPassword,
+  databaseUrl,
+  strictSecrets = (process.env.STRICT_SECRETS === 'true'),
+} = {}) {
+  const isStrict = nodeEnv === 'production' || strictSecrets === true || strictSecrets === 'true'
+  if (!isStrict) return
+
+  // Determine what to check: if caller provided explicit databaseUrl/dbPassword, prioritize that
+  const urlToCheck = databaseUrl !== undefined ? databaseUrl : (dbPassword === undefined ? process.env.DATABASE_URL : null)
+
+  // In test environments where DATABASE_URL targets video_ai_test (and not explicitly strictSecrets=true),
+  // allow test harness to run without requiring a mock production password.
+  const isTestDb = urlToCheck && /\/video_ai_test(\?.*)?$/.test(urlToCheck)
+  if (isTestDb && strictSecrets !== true && strictSecrets !== 'true') {
+    return
+  }
+
+  // Check databaseUrl if provided / active
+  if (urlToCheck) {
+    let parsedPassword = ''
+    try {
+      const u = new URL(urlToCheck)
+      parsedPassword = decodeURIComponent(u.password || '')
+    } catch (_) {
+      const match = urlToCheck.match(/password=([^;\s]+)/i) || urlToCheck.match(/:([^:@]+)@/)
+      if (match) parsedPassword = match[1]
+    }
+
+    if (!parsedPassword || isPlaceholderSecret(parsedPassword) || parsedPassword.length < MIN_DB_PASSWORD_LENGTH) {
+      console.error(
+        '[Config] LỖI: Mật khẩu database trong DATABASE_URL là mật khẩu mặc định, placeholder hoặc quá ngắn (<16 ký tự) trong production/strict mode.\n' +
+        '- Cấu hình DB_PASSWORD an toàn (>=16 ký tự, ngẫu nhiên) và cập nhật DATABASE_URL.\n' +
+        '- Tuyệt đối không dùng mật khẩu mặc định trong production.'
+      )
+      throw new Error('[Config] FATAL: DATABASE_URL contains default, placeholder, or unsafe password in production.')
+    }
+    return
+  }
+
+  // If no databaseUrl, check dbPassword
+  const passToCheck = dbPassword !== undefined ? dbPassword : process.env.DB_PASSWORD
+  if (!passToCheck || isPlaceholderSecret(passToCheck) || String(passToCheck).length < MIN_DB_PASSWORD_LENGTH) {
+    console.error(
+      `[Config] LỖI: Thiếu hoặc mật khẩu DB_PASSWORD không an toàn trong production/strict mode (tối thiểu ${MIN_DB_PASSWORD_LENGTH} ký tự, không dùng mặc định).\n` +
+      `- Cấu hình DB_PASSWORD trong .env.`
+    )
+    throw new Error(
+      `[Config] FATAL: missing or unsafe database password in production: DB_PASSWORD. Set DB_PASSWORD (>=${MIN_DB_PASSWORD_LENGTH} chars) via environment.`
     )
   }
 }
@@ -175,15 +261,20 @@ export const config = {
   // Stale heartbeat timeout (minutes) for running projects without activity.
   recoveryStaleMinutes: Number(process.env.RECOVERY_STALE_MINUTES || 10),
   // Opt-in dev echo of the raw password-reset token in the forgot-password
-  // response (dev has no real SMTP). Forced off in production regardless of env.
+  // response (dev has no real SMTP). Forced off in production or strict mode regardless of env.
   authDevResetTokenInResponse:
-    nodeEnv !== 'production' && process.env.AUTH_DEV_RESET_TOKEN_IN_RESPONSE === 'true',
+    nodeEnv !== 'production' &&
+    process.env.STRICT_SECRETS !== 'true' &&
+    process.env.AUTH_DEV_RESET_TOKEN_IN_RESPONSE === 'true',
   // Refresh cookie: Secure ở production (RFC: cookie Secure chỉ gửi qua HTTPS;
   // localhost được browser miễn trừ). Ghi đè bằng COOKIE_SECURE=true|false.
   cookieSecure:
     process.env.COOKIE_SECURE !== undefined && process.env.COOKIE_SECURE !== ''
       ? String(process.env.COOKIE_SECURE).toLowerCase() === 'true'
       : nodeEnv === 'production',
+  // HTTPS enforcement and proxy trust (SEC-12 & OWASP ASVS L2)
+  trustProxy: process.env.TRUST_PROXY ? (isNaN(process.env.TRUST_PROXY) ? process.env.TRUST_PROXY : Number(process.env.TRUST_PROXY)) : 1,
+  forceHttps: process.env.FORCE_HTTPS === 'true' || (nodeEnv === 'production' && process.env.DISABLE_FORCE_HTTPS !== 'true'),
 }
 
 // Boot-time observability (1 lần, không spam mỗi request; không log secret):

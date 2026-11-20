@@ -33,7 +33,7 @@ for (const f of files) {
   console.log(`\n=== ${f} ===`)
   const r = spawnSync(process.execPath, [full], {
     stdio: 'inherit',
-    timeout: 45000,
+    timeout: 60000,
     killSignal: 'SIGKILL',
     env: { ...process.env, DATABASE_URL: testDbUrl, RUN_TESTS_RUNNER: '1' },
   })

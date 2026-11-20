@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { isDangerousSignature } from '../lib/fileValidation.js'
 
 const VIDEO_FORMATS = new Map([
   ['.mp4', { mime: 'video/mp4', aliases: ['video/mp4'], container: 'isobmff' }],
@@ -66,7 +67,8 @@ export async function assertVideoFile(filePath, extension, { probe = null } = {}
   }
   const isIsoBmff = header.length >= 12 && header.toString('ascii', 4, 8) === 'ftyp'
   const isEbml = header.length >= 4 && header.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))
-  if ((format.container === 'isobmff' && !isIsoBmff) || (format.container === 'ebml' && !isEbml)) {
+  const dangerous = isDangerousSignature(header)
+  if (dangerous.dangerous || ((format.container === 'isobmff' && !isIsoBmff) || (format.container === 'ebml' && !isEbml))) {
     throw new MediaValidationError('File content does not match the video extension', { extension })
   }
   let metadata = null

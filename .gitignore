@@ -4,6 +4,20 @@
 !.env.example
 !.env.production.example
 
+# ===== Certificates, Keys & Credentials =====
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+*.keystore
+id_rsa
+id_ecdsa
+id_ed25519
+*.id_rsa
+*.id_ed25519
+
 # ===== Dependencies =====
 node_modules/
 

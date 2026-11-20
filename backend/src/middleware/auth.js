@@ -9,7 +9,7 @@ export function generateAccessToken(user) {
   return jwt.sign(
     { id: user.id, email: user.email, role: user.role },
     config.jwtAccessSecret,
-    { expiresIn: config.jwtAccessExpiresIn }
+    { expiresIn: config.jwtAccessExpiresIn, algorithm: 'HS256' }
   )
 }
 
@@ -20,7 +20,7 @@ export function generateRefreshToken(user) {
   return jwt.sign(
     { id: user.id, email: user.email, role: user.role },
     config.jwtRefreshSecret,
-    { expiresIn: config.jwtRefreshExpiresIn, jwtid: randomUUID() }
+    { expiresIn: config.jwtRefreshExpiresIn, jwtid: randomUUID(), algorithm: 'HS256' }
   )
 }
 
@@ -64,20 +64,67 @@ export function extractBearerToken(req, { allowQueryToken = false } = {}) {
 }
 
 export function verifyAccessToken(token) {
-  return jwt.verify(token, config.jwtAccessSecret)
+  return jwt.verify(token, config.jwtAccessSecret, {
+    algorithms: ['HS256'],
+  })
 }
 
-// Verify access token
+// Verify access token strictly (HS256 allowlist, extracted verified payload claims)
 export function authMiddleware(req, res, next) {
   const token = extractBearerToken(req)
   if (!token) {
     return sendError(res, 401, ERR.AUTH_TOKEN, 'Authentication required')
   }
   try {
-    req.user = verifyAccessToken(token)
+    const decoded = verifyAccessToken(token)
+    const userId = decoded?.userId || decoded?.id
+    if (!decoded || typeof decoded !== 'object' || !userId) {
+      return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid token payload')
+    }
+    // Only trust cryptographically verified claims, never client-supplied fields
+    req.user = {
+      id: String(userId),
+      email: decoded.email ? String(decoded.email) : '',
+      role: decoded.role || 'user',
+    }
     next()
   } catch (err) {
     return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid or expired token')
+  }
+}
+
+// Optional auth middleware: verifies token if present, proceeds unauthenticated if absent or invalid
+export function optionalAuth(req, res, next) {
+  const token = extractBearerToken(req)
+  if (!token) return next()
+  try {
+    const decoded = verifyAccessToken(token)
+    const userId = decoded?.userId || decoded?.id
+    if (userId) {
+      req.user = {
+        id: String(userId),
+        email: decoded.email ? String(decoded.email) : '',
+        role: decoded.role || 'user',
+      }
+    }
+  } catch (_) {}
+  next()
+}
+
+// Server-side active user check middleware: verify user still exists in DB
+export async function requireActiveUser(req, res, next) {
+  if (!req.user?.id) {
+    return sendError(res, 401, ERR.AUTH_TOKEN, 'Authentication required')
+  }
+  try {
+    const user = await queryOne('SELECT id, role, email FROM users WHERE id = ?', [req.user.id])
+    if (!user) {
+      return sendError(res, 401, ERR.AUTH_TOKEN, 'User account no longer exists')
+    }
+    req.user.role = user.role
+    next()
+  } catch (err) {
+    return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to verify user status')
   }
 }
 
@@ -163,6 +210,8 @@ export default {
   extractBearerToken,
   verifyAccessToken,
   authMiddleware,
+  optionalAuth,
   sseAuthMiddleware,
   requireRole,
+  requireActiveUser,
 }

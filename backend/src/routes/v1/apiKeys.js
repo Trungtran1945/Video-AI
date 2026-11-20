@@ -4,9 +4,14 @@ import { query, queryOne, insert, run, runReturningOne } from '../../db/query.js
 import { authMiddleware } from '../../middleware/auth.js'
 import { encrypt, decrypt } from '../../lib/crypto.js'
 import { sendError, ERR } from '../../lib/httpError.js'
+import { validateBody, validateParams } from '../../middleware/validate.js'
+import { createApiKeySchema, idParamSchema } from '../../validation/schemas.js'
+import { protectFields } from '../../middleware/massAssignment.js'
+import { sensitiveNoCache } from '../../middleware/securityHeaders.js'
 
 const router = Router()
 router.use(authMiddleware)
+router.use(sensitiveNoCache)
 
 function mask(key) {
   if (!key) return ''
@@ -49,7 +54,7 @@ router.get('/', async (req, res) => {
 })
 
 // POST /api/v1/api-keys
-router.post('/', async (req, res) => {
+router.post('/', validateBody(createApiKeySchema), async (req, res) => {
   const { provider, label, key, tier, priority } = req.body || {}
   if (!provider || !key) return sendError(res, 400, ERR.VALIDATION, 'provider and key are required', { field: 'provider,key' })
   if (!KNOWN_PROVIDERS.has(String(provider))) {
@@ -69,16 +74,22 @@ router.post('/', async (req, res) => {
 })
 
 // DELETE /api/v1/api-keys/:id
-router.delete('/:id', async (req, res) => {
-  const row = await queryOne('SELECT * FROM api_keys WHERE id = ? AND user_id = ?', [req.params.id, req.user.id])
+router.delete('/:id', validateParams(idParamSchema), async (req, res) => {
+  const isAdmin = req.user.role === 'admin'
+  const row = isAdmin
+    ? await queryOne('SELECT * FROM api_keys WHERE id = ?', [req.params.id])
+    : await queryOne('SELECT * FROM api_keys WHERE id = ? AND user_id = ?', [req.params.id, req.user.id])
   if (!row) return sendError(res, 404, 'NOT_FOUND', 'Not found')
   await run('DELETE FROM api_keys WHERE id = ?', [req.params.id])
   res.json({ message: 'Deleted' })
 })
 
 // PUT /api/v1/api-keys/:id  (toggle active / update label/tier/priority)
-router.put('/:id', async (req, res) => {
-  const row = await queryOne('SELECT * FROM api_keys WHERE id = ? AND user_id = ?', [req.params.id, req.user.id])
+router.put('/:id', validateParams(idParamSchema), protectFields(['id', 'user_id', 'created_date']), async (req, res) => {
+  const isAdmin = req.user.role === 'admin'
+  const row = isAdmin
+    ? await queryOne('SELECT * FROM api_keys WHERE id = ?', [req.params.id])
+    : await queryOne('SELECT * FROM api_keys WHERE id = ? AND user_id = ?', [req.params.id, req.user.id])
   if (!row) return sendError(res, 404, 'NOT_FOUND', 'Not found')
   const patch = {}
   if (typeof req.body?.isActive === 'boolean') patch.is_active = req.body.isActive ? 1 : 0

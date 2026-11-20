@@ -92,7 +92,12 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   const o = await queryOne(`${OUTPUT_SELECT} WHERE o.id = ?`, [req.params.id])
   if (!o) return sendError(res, 404, 'NOT_FOUND', 'Output not found')
-  if (o.user_id !== req.user.id && req.user.role !== 'admin') return sendError(res, 403, ERR.AUTH_FORBIDDEN, 'Forbidden')
+  if (o.user_id !== req.user.id && req.user.role !== 'admin') {
+    if (process.env.STRICT_IDOR_404 === 'true') {
+      return sendError(res, 404, 'NOT_FOUND', 'Output not found')
+    }
+    return sendError(res, 403, ERR.AUTH_FORBIDDEN, 'Forbidden')
+  }
   const [enriched] = await attachYoutubeUploads([o])
   res.json(enriched)
 })

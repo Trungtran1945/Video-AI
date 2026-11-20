@@ -21,7 +21,7 @@ router.get('/', async (req, res) => {
                 COUNT(*) as calls,
                 SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) as ok_calls
          FROM provider_logs
-         WHERE created_date >= datetime('now', '-30 days')
+         WHERE created_date >= NOW() - INTERVAL '30 days'
          GROUP BY provider`
       )
     } catch (_) { /* bảng trống/chưa có cột created_date → bỏ qua health */ }

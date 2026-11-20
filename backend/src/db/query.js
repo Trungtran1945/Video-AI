@@ -1,4 +1,19 @@
 import { getPool, save, getDbPersistenceHealth, PERSISTENCE_STATES } from '../db.js'
+import {
+  ALLOWED_TABLES,
+  assertValidTable,
+  assertValidColumnName,
+  buildSafeOrderBy,
+  validatePagination,
+} from '../lib/sqlHelpers.js'
+
+export {
+  ALLOWED_TABLES,
+  assertValidTable,
+  assertValidColumnName,
+  buildSafeOrderBy,
+  validatePagination,
+}
 
 function checkPersistenceGate(op = 'write') {
   const health = getDbPersistenceHealth()
@@ -181,29 +196,42 @@ export async function runReturningOne(sql, params = [], selectSql, selectParams 
 
 export async function insert(table, obj) {
   checkPersistenceGate('insert')
+  const validTable = assertValidTable(table)
   const pool = getPool()
-  const cols = Object.keys(obj)
+  const rawCols = Object.keys(obj || {})
+  if (rawCols.length === 0) {
+    throw new Error('Cannot insert empty object')
+  }
+  const cols = rawCols.map(assertValidColumnName)
   const params = cols.map((c) => sanitizeVal(obj[c]))
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ')
-  const sql = `INSERT INTO "${table}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES (${placeholders}) RETURNING *`
+  const sql = `INSERT INTO "${validTable}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES (${placeholders}) RETURNING *`
   const res = await pool.query(sql, params)
   return res.rows[0] || null
 }
 
 export async function updateById(table, id, obj) {
   checkPersistenceGate('updateById')
+  const validTable = assertValidTable(table)
   const pool = getPool()
-  const cols = Object.keys(obj)
-  const params = cols.map((c) => sanitizeVal(obj[c]))
+  const cleanObj = { ...obj }
+  delete cleanObj.id
+  const rawCols = Object.keys(cleanObj)
+  if (rawCols.length === 0) {
+    return findById(validTable, id)
+  }
+  const cols = rawCols.map(assertValidColumnName)
+  const params = cols.map((c) => sanitizeVal(cleanObj[c]))
   const sets = cols.map((c, i) => `"${c}" = $${i + 1}`).join(', ')
   params.push(id)
-  const sql = `UPDATE "${table}" SET ${sets} WHERE id = $${params.length} RETURNING *`
+  const sql = `UPDATE "${validTable}" SET ${sets} WHERE id = $${params.length} RETURNING *`
   const res = await pool.query(sql, params)
   return res.rows[0] || null
 }
 
 export async function findById(table, id) {
-  return queryOne(`SELECT * FROM "${table}" WHERE id = $1`, [id])
+  const validTable = assertValidTable(table)
+  return queryOne(`SELECT * FROM "${validTable}" WHERE id = $1`, [id])
 }
 
 export async function withTransaction(fn, options = {}) {
@@ -230,19 +258,31 @@ export async function withTransaction(fn, options = {}) {
           return res.rowCount ?? 0
         },
         async insert(table, obj) {
-          const cols = Object.keys(obj)
+          const validTable = assertValidTable(table)
+          const rawCols = Object.keys(obj || {})
+          if (rawCols.length === 0) {
+            throw new Error('Cannot insert empty object')
+          }
+          const cols = rawCols.map(assertValidColumnName)
           const params = cols.map((c) => sanitizeVal(obj[c]))
           const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ')
-          const sql = `INSERT INTO "${table}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES (${placeholders}) RETURNING *`
+          const sql = `INSERT INTO "${validTable}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES (${placeholders}) RETURNING *`
           const res = await client.query(sql, params)
           return res.rows[0] || null
         },
         async updateById(table, id, obj) {
-          const cols = Object.keys(obj)
-          const params = cols.map((c) => sanitizeVal(obj[c]))
+          const validTable = assertValidTable(table)
+          const cleanObj = { ...obj }
+          delete cleanObj.id
+          const rawCols = Object.keys(cleanObj)
+          if (rawCols.length === 0) {
+            return this.queryOne(`SELECT * FROM "${validTable}" WHERE id = $1`, [id])
+          }
+          const cols = rawCols.map(assertValidColumnName)
+          const params = cols.map((c) => sanitizeVal(cleanObj[c]))
           const sets = cols.map((c, i) => `"${c}" = $${i + 1}`).join(', ')
           params.push(id)
-          const sql = `UPDATE "${table}" SET ${sets} WHERE id = $${params.length} RETURNING *`
+          const sql = `UPDATE "${validTable}" SET ${sets} WHERE id = $${params.length} RETURNING *`
           const res = await client.query(sql, params)
           return res.rows[0] || null
         },
@@ -260,6 +300,81 @@ export async function withTransaction(fn, options = {}) {
       client.release()
     }
   }, options)
+}
+
+/**
+ * Executes a function within an isolated tenant session context using PostgreSQL RLS.
+ * Sets transaction-local variables `app.current_user_id` and `app.current_user_role`.
+ * When transaction completes (COMMIT/ROLLBACK), variables are automatically cleared.
+ *
+ * Supports both signatures:
+ *   withUserContext({ userId, role }, fn, options)
+ *   withUserContext(userId, role, fn, options)
+ *   withUserContext(userId, fn, options)
+ *
+ * @param {string|Object} userContextOrUserId - Tenant User ID or context object `{ userId, role }`
+ * @param {string|Function} [roleOrFn='user'] - User role or async callback
+ * @param {Function|Object} [fnOrOptions] - Async callback receiving scoped tx, or transaction options
+ * @param {Object} [maybeOptions={}] - Transaction options (e.g. op name)
+ */
+export async function withUserContext(userContextOrUserId, roleOrFn, fnOrOptions, maybeOptions = {}) {
+  let effectiveUserId = ''
+  let effectiveRole = 'user'
+  let fn
+  let options = {}
+
+  if (typeof userContextOrUserId === 'object' && userContextOrUserId !== null) {
+    effectiveUserId = userContextOrUserId.userId || ''
+    effectiveRole = userContextOrUserId.role || 'user'
+    fn = roleOrFn
+    options = fnOrOptions || {}
+  } else if (typeof roleOrFn === 'function') {
+    effectiveUserId = userContextOrUserId || ''
+    effectiveRole = 'user'
+    fn = roleOrFn
+    options = fnOrOptions || {}
+  } else {
+    effectiveUserId = userContextOrUserId || ''
+    effectiveRole = roleOrFn || 'user'
+    fn = fnOrOptions
+    options = maybeOptions || {}
+  }
+
+  if (typeof fn !== 'function') {
+    throw new TypeError('withUserContext requires a function as callback')
+  }
+
+  return withTransaction(async (tx) => {
+    // If connected as superuser, switch to unprivileged app role so PostgreSQL enforces RLS
+    // (PostgreSQL superusers bypass RLS policies by engine design).
+    try {
+      await tx.query('SET LOCAL ROLE video_ai_app;')
+    } catch (_) {}
+
+    await tx.query(
+      "SELECT set_config('app.current_user_id', $1, true), set_config('app.current_user_role', $2, true);",
+      [effectiveUserId, effectiveRole]
+    )
+    tx.userId = effectiveUserId
+    tx.role = effectiveRole
+    return fn(tx)
+  }, options)
+}
+
+/**
+ * Inspects current PostgreSQL session tenant context settings.
+ *
+ * @param {Object} [clientOrTx] - Optional active client or tx object
+ * @returns {Promise<{userId: string, role: string}>}
+ */
+export async function getTenantContext(clientOrTx) {
+  const queryFn = clientOrTx?.query ? clientOrTx.query.bind(clientOrTx) : query
+  const res = await queryFn("SELECT current_setting('app.current_user_id', true) AS user_id, current_setting('app.current_user_role', true) AS role;")
+  const row = Array.isArray(res) ? res[0] : res?.rows?.[0]
+  return {
+    userId: row?.user_id || '',
+    role: row?.role || '',
+  }
 }
 
 // Concurrency queue & telemetry management
@@ -346,6 +461,8 @@ export default {
   updateById,
   findById,
   withTransaction,
+  withUserContext,
+  getTenantContext,
   withWriteLock,
   configureWriteQueue,
   getWriteQueueStats,

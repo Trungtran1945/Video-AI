@@ -51,6 +51,51 @@ export async function initSchema() {
   } else {
     console.log(`[DB] PostgreSQL schema is up-to-date (${migrationVersion})`)
   }
+
+  // 3. Check and apply RLS Tenant Isolation Policies (002_rls_tenant_isolation)
+  const rlsMigrationVersion = '002_rls_tenant_isolation'
+  const rlsCheck = await pool.query(
+    'SELECT version FROM schema_migrations WHERE version = $1',
+    [rlsMigrationVersion]
+  )
+  if (rlsCheck.rows.length === 0) {
+    const rlsSqlPath = path.join(__dirname, 'rlsPolicies.sql')
+    if (fs.existsSync(rlsSqlPath)) {
+      const rlsDdl = fs.readFileSync(rlsSqlPath, 'utf8')
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        await client.query(rlsDdl)
+        await client.query(
+          'INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING',
+          [rlsMigrationVersion]
+        )
+        await client.query('COMMIT')
+        console.log(`[DB] RLS Tenant Isolation policies applied (${rlsMigrationVersion})`)
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {})
+        console.error('[DB] RLS migration failed:', err.message)
+        throw err
+      } finally {
+        client.release()
+      }
+    }
+  } else {
+    try {
+      await pool.query(`
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'video_ai_app') THEN
+            GRANT USAGE ON SCHEMA public TO video_ai_app;
+            GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO video_ai_app;
+            GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO video_ai_app;
+            GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO video_ai_app;
+          END IF;
+        END $$;
+      `)
+    } catch (_) {}
+    console.log(`[DB] RLS Tenant Isolation is up-to-date (${rlsMigrationVersion})`)
+  }
 }
 
 export default { initSchema }

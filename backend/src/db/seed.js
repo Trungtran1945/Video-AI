@@ -46,24 +46,36 @@ export async function seed() {
   } else if (email && password) {
     admin = await queryOne('SELECT id FROM users WHERE email = $1', [email])
     if (!admin) {
-      const hashed = await bcrypt.hash(password, 10)
-      admin = await insert('users', {
-        id: uuidv4(),
-        email,
-        password: hashed,
-        role: 'admin',
-        name: 'Admin',
-        email_verified: true,
-      })
-      console.log(`[DB] Seeded admin user: ${email}`)
+      try {
+        const hashed = await bcrypt.hash(password, 10)
+        admin = await insert('users', {
+          id: uuidv4(),
+          email,
+          password: hashed,
+          role: 'admin',
+          name: 'Admin',
+          email_verified: true,
+        })
+        console.log(`[DB] Seeded admin user: ${email}`)
+      } catch (err) {
+        if (err?.code === '23505') {
+          admin = await queryOne('SELECT id FROM users WHERE email = $1', [email])
+        } else {
+          throw err
+        }
+      }
     }
   }
 
   if (admin) {
     const settings = await queryOne('SELECT user_id FROM settings WHERE user_id = $1', [admin.id])
     if (!settings) {
-      await insert('settings', { user_id: admin.id })
-      console.log('[DB] Seeded default settings for admin')
+      try {
+        await insert('settings', { user_id: admin.id })
+        console.log('[DB] Seeded default settings for admin')
+      } catch (err) {
+        if (err?.code !== '23505') throw err
+      }
     }
   }
 
@@ -72,15 +84,19 @@ export async function seed() {
   let added = 0
   for (const p of STYLE_PRESETS) {
     if (existing.has(p.slug)) continue
-    await insert('style_presets', {
-      id: uuidv4(),
-      slug: p.slug,
-      name: p.name,
-      description: p.description,
-      system_prompt: p.system_prompt,
-      is_system: true,
-    })
-    added++
+    try {
+      await insert('style_presets', {
+        id: uuidv4(),
+        slug: p.slug,
+        name: p.name,
+        description: p.description,
+        system_prompt: p.system_prompt,
+        is_system: true,
+      })
+      added++
+    } catch (err) {
+      if (err?.code !== '23505') throw err
+    }
   }
   if (added) console.log(`[DB] Seeded ${added} style presets`)
 

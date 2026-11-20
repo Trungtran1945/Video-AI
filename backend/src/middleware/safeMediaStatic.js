@@ -83,7 +83,8 @@ export function createSafeMediaStatic({ storageDir, fileSystem = fs } = {}) {
     setHeaders(res) {
       res.setHeader('X-Content-Type-Options', 'nosniff')
       res.setHeader('Content-Disposition', 'inline')
-      res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+      res.setHeader('Access-Control-Allow-Origin', '*')
     },
   })
 

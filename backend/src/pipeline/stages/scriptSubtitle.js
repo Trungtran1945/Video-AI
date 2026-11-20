@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { query, run } from '../../db/query.js'
 import { projectDir, ensureDir, toStorageKey, dimsForAspect } from '../context.js'
 import { buildCuesFromWindows, toSrt } from './summarySubtitle.js'
+import { sanitizeSubtitleText } from '../../lib/xssSanitizer.js'
 
 function assTimestamp(sec) {
   const totalCs = Math.max(0, Math.round(Number(sec) * 100))
@@ -17,11 +18,7 @@ function assTimestamp(sec) {
 }
 
 function escapeAssText(text) {
-  return String(text ?? '')
-    .replace(/\\/g, '\\\\')
-    .replace(/\{/g, '\\{')
-    .replace(/\}/g, '\\}')
-    .replace(/\r?\n/g, '\\N')
+  return sanitizeSubtitleText(text, 'ass')
 }
 
 export function toAss(cues, { width = 1920, height = 1080 } = {}) {

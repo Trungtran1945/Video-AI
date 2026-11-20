@@ -16,6 +16,9 @@ import { ffmpegAvailable } from './src/media/ffmpeg.js'
 import { createSafeMediaStatic } from './src/middleware/safeMediaStatic.js'
 import { resumableUploadService } from './src/services/resumableUploadService.js'
 import { sweepProjectCleanupTasks } from './src/services/projectCleanup.js'
+import { responseSanitizerMiddleware, sanitizeStringContent } from './src/lib/responseSanitizer.js'
+import { securityHeadersMiddleware, httpsEnforcementMiddleware } from './src/middleware/securityHeaders.js'
+import { sendError } from './src/lib/httpError.js'
 
 import v1Router from './src/routes/v1/index.js'
 
@@ -26,7 +29,12 @@ let cleanupWorker = null
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
+app.set('trust proxy', config.trustProxy ?? 1)
+app.disable('x-powered-by')
 const PORT = config.port
+
+app.use(httpsEnforcementMiddleware({ forceHttps: config.forceHttps }))
+app.use(securityHeadersMiddleware())
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -44,6 +52,7 @@ app.use(cors({
 // PATCH /segments/:id/translation từng câu (không PUT 1.2MB một lần).
 app.use(express.json({ limit: '1mb' }))
 app.use(express.urlencoded({ extended: true, limit: '1mb' }))
+app.use(responseSanitizerMiddleware)
 
 // Serve uploaded / generated files
 app.use('/storage', createSafeMediaStatic({ storageDir: config.storageDir }))
@@ -52,6 +61,7 @@ app.use('/api/v1', v1Router)
 
 // Oversized JSON (vd PUT /transcript >1MB) → 413 JSON có hướng dẫn chunked-edit,
 // thay vì HTML mặc định của Express.
+// Global catch-all error handler (SEC-10: Mask 500 error stack traces and internal paths)
 app.use((err, req, res, next) => {
   if (err?.type === 'entity.too.large') {
     return res.status(413).json({
@@ -61,7 +71,17 @@ app.use((err, req, res, next) => {
       },
     })
   }
-  return next(err)
+  if (res.headersSent) {
+    return next(err)
+  }
+  const status = typeof err?.status === 'number' && err.status >= 400 && err.status < 600
+    ? err.status
+    : typeof err?.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 600
+      ? err.statusCode
+      : 500
+  const code = err?.code || (status >= 500 ? 'INTERNAL_ERROR' : 'BAD_REQUEST')
+  const message = err?.message || 'Internal server error'
+  return sendError(res, status, code, message)
 })
 
 app.get('/health', async (req, res) => {
@@ -100,7 +120,7 @@ app.get('/health', async (req, res) => {
       persistenceState: health.state,
       consecutiveSaveFailures: health.consecutiveSaveFailures,
       lastSuccessfulSaveAt: health.lastSuccessfulSaveAt,
-      lastSaveError: health.lastSaveError,
+      lastSaveError: sanitizeStringContent(health.lastSaveError),
       maxSaveFailures: health.maxSaveFailures,
     },
     writes,
@@ -126,7 +146,7 @@ app.get('/ready', async (req, res) => {
       persistenceState: health.state,
       consecutiveSaveFailures: health.consecutiveSaveFailures,
       lastSuccessfulSaveAt: health.lastSuccessfulSaveAt,
-      lastSaveError: health.lastSaveError,
+      lastSaveError: sanitizeStringContent(health.lastSaveError),
     },
     redis: redisOk ? 'connected' : 'disconnected',
   }

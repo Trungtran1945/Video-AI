@@ -11,6 +11,7 @@
     "start": "node server.js",
     "check:redis": "node scripts/check-redis.mjs",
     "test": "node scripts/run-tests.mjs",
+    "check:secrets": "node scripts/scan-secrets.mjs",
     "lint": "eslint src tests scripts --quiet",
     "test:zerotts": "node tests/zeroTtsIntegration.test.mjs",
     "test:voicestudio": "node tests/voiceStudioProvider.test.mjs"
@@ -27,10 +28,17 @@
     "ioredis": "^5.4.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.4.0",
-    "nodemailer": "^9.1.1",
+    "nodemailer": "^10.6.0",
     "pg": "^8.23.1",
     "uuid": "^11.1.1",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "^4.6.7"
+  },
+  "overrides": {
+    "form-data": "^4.0.2",
+    "tough-cookie": "^4.1.4",
+    "qs": "^6.16.1",
+    "nodemailer": "^10.6.0"
   },
   "devDependencies": {
     "eslint": "^9.39.5",
