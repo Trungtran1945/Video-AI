@@ -150,7 +150,7 @@ export function httpsEnforcementMiddleware(options = {}) {
  * Route-level middleware to enforce strict no-cache on sensitive responses.
  * @type {import('express').RequestHandler}
  */
-export function sensitiveNoCache(req, res, next) {
+export function sensitiveNoCache(_req, res, next) {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
   res.setHeader('Pragma', 'no-cache')
   res.setHeader('Expires', '0')

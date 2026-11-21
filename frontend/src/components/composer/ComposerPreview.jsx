@@ -18,61 +18,63 @@ export function getOverlayStyle(clip) {
   const fit = meta.fit || 'contain';
   const autoFit = meta.autoFit !== false;
   const scale = Number.isFinite(Number(meta.scale)) ? Number(meta.scale) : 1.0;
-  const posX = Number.isFinite(Number(meta.posX)) ? Number(meta.posX) : (Number.isFinite(Number(meta.x)) ? Number(meta.x) : 0);
-  const posY = Number.isFinite(Number(meta.posY)) ? Number(meta.posY) : (Number.isFinite(Number(meta.y)) ? Number(meta.y) : 0);
-  const align = meta.align || 'center';
+  const rawPosX = Number.isFinite(Number(meta.posX)) ? Number(meta.posX) : (Number.isFinite(Number(meta.x)) ? Number(meta.x) : 0);
+  const rawPosY = Number.isFinite(Number(meta.posY)) ? Number(meta.posY) : (Number.isFinite(Number(meta.y)) ? Number(meta.y) : 0);
+  const align = String(meta.align || 'center').toLowerCase().replace(/[\s_]+/g, '-');
   const opacity = Number.isFinite(Number(meta.opacity)) ? Number(meta.opacity) : 1.0;
 
-  // Compute CSS anchor and translation
-  let top = '50%';
-  let left = '50%';
+  // Base anchors matching FFmpeg composerRender.js
+  let baseTop = '50%';
+  let baseLeft = '50%';
   let baseTranslateX = '-50%';
   let baseTranslateY = '-50%';
 
-  if (align === 'top-left') {
-    top = '0%';
-    left = '0%';
+  if (align === 'top-left' || align === 'topleft') {
+    baseTop = '0%';
+    baseLeft = '0%';
     baseTranslateX = '0%';
     baseTranslateY = '0%';
-  } else if (align === 'top' || align === 'top-center') {
-    top = '0%';
-    left = '50%';
+  } else if (align === 'top' || align === 'top-center' || align === 'topcenter') {
+    baseTop = '0%';
+    baseLeft = '50%';
     baseTranslateX = '-50%';
     baseTranslateY = '0%';
-  } else if (align === 'top-right') {
-    top = '0%';
-    left = '100%';
+  } else if (align === 'top-right' || align === 'topright') {
+    baseTop = '0%';
+    baseLeft = '100%';
     baseTranslateX = '-100%';
     baseTranslateY = '0%';
-  } else if (align === 'left' || align === 'center-left') {
-    top = '50%';
-    left = '0%';
+  } else if (align === 'left' || align === 'center-left' || align === 'centerleft') {
+    baseTop = '50%';
+    baseLeft = '0%';
     baseTranslateX = '0%';
     baseTranslateY = '-50%';
-  } else if (align === 'right' || align === 'center-right') {
-    top = '50%';
-    left = '100%';
+  } else if (align === 'right' || align === 'center-right' || align === 'centerright') {
+    baseTop = '50%';
+    baseLeft = '100%';
     baseTranslateX = '-100%';
     baseTranslateY = '-50%';
-  } else if (align === 'bottom-left') {
-    top = '100%';
-    left = '0%';
+  } else if (align === 'bottom-left' || align === 'bottomleft') {
+    baseTop = '100%';
+    baseLeft = '0%';
     baseTranslateX = '0%';
     baseTranslateY = '-100%';
-  } else if (align === 'bottom' || align === 'bottom-center') {
-    top = '100%';
-    left = '50%';
+  } else if (align === 'bottom' || align === 'bottom-center' || align === 'bottomcenter') {
+    baseTop = '100%';
+    baseLeft = '50%';
     baseTranslateX = '-50%';
     baseTranslateY = '-100%';
-  } else if (align === 'bottom-right') {
-    top = '100%';
-    left = '100%';
+  } else if (align === 'bottom-right' || align === 'bottomright') {
+    baseTop = '100%';
+    baseLeft = '100%';
     baseTranslateX = '-100%';
     baseTranslateY = '-100%';
   }
 
-  // Combine anchor base translation with custom percentage offsets (posX, posY)
-  const transform = `translate(calc(${baseTranslateX} + ${posX}%), calc(${baseTranslateY} + ${posY}%)) scale(${scale})`;
+  // Anchor offset is calculated on parent container canvas space (matching FFmpeg finalX = baseX + normX * width)
+  const top = `calc(${baseTop} + ${rawPosY}%)`;
+  const left = `calc(${baseLeft} + ${rawPosX}%)`;
+  const transform = `translate(${baseTranslateX}, ${baseTranslateY}) scale(${scale})`;
 
   return {
     wrapperStyle: {
@@ -183,15 +185,6 @@ export default function ComposerPreview({
   const activeTextClips = activeClips.filter(
     (c) => c.clip_type === 'text' || (!c.clip_type && c.type === 'text') || Boolean(c.textContent || c.text_content)
   );
-  const activeVoiceClip = activeClips.find(
-    (c) => c.clip_type === 'voiceover' || (!c.clip_type && c.type === 'voiceover')
-  );
-  const activeBgmClip = activeClips.find(
-    (c) => c.clip_type === 'music' || (!c.clip_type && c.type === 'music')
-  );
-  const activeSfxClip = activeClips.find(
-    (c) => c.clip_type === 'sfx' || (!c.clip_type && c.type === 'sfx')
-  );
 
   // Background visual layer
   const bgAsset = activeBgClip
@@ -256,10 +249,15 @@ export default function ComposerPreview({
       const clip = activeVisualClips.find((c) => c.id === clipId);
       if (!clip) continue;
       const clipStart = Number(clip.start ?? clip.start_at_sec ?? 0);
-      const offset = Math.max(0, currentTime - clipStart);
+      const inSec = Number(clip.in_sec || 0);
+      const speed = Number(clip.speed || 1);
+      const offset = inSec + Math.max(0, currentTime - clipStart) * speed;
       if (Math.abs(vEl.currentTime - offset) > 0.08) {
         vEl.currentTime = offset;
       }
+      try {
+        vEl.playbackRate = speed;
+      } catch {}
       const clipVol = Number.isFinite(Number(clip.volume)) ? Number(clip.volume) : 1.0;
       vEl.muted = isVideoTrackMuted;
       vEl.volume = isVideoTrackMuted ? 0 : Math.max(0, Math.min(1.0, clipVol * videoTrackVol));
@@ -314,7 +312,7 @@ export default function ComposerPreview({
       if (!activeIds.has(id) || !isPlaying) {
         try {
           audioEl.pause();
-        } catch (_) {}
+        } catch {}
         if (!activeIds.has(id)) {
           audioEl.src = '';
           currentPool.delete(id);
@@ -322,7 +320,7 @@ export default function ComposerPreview({
       }
     }
 
-    if (!isPlaying) return;
+    if (!isPlaying || previewMode === 'video') return;
 
     const hasVoice = activeAudioClips.some((c) => (c.clip_type || c.type) === 'voiceover');
 
@@ -363,7 +361,9 @@ export default function ComposerPreview({
       }
 
       const clipStart = Number(clip.start ?? clip.start_at_sec ?? 0);
-      const offset = Math.max(0, currentTime - clipStart);
+      const inSec = Number(clip.in_sec || 0);
+      const speed = Number(clip.speed || 1);
+      const offset = inSec + Math.max(0, currentTime - clipStart) * speed;
 
       // Check src change
       const fullUrl = audioUrl.startsWith('http') ? audioUrl : window.location.origin + audioUrl;
@@ -372,14 +372,20 @@ export default function ComposerPreview({
         const seekOnReady = () => {
           try {
             el.currentTime = offset;
-          } catch (_) {}
+            el.playbackRate = speed;
+          } catch {}
           el.removeEventListener('loadedmetadata', seekOnReady);
         };
         el.addEventListener('loadedmetadata', seekOnReady, { once: true });
       } else if (Math.abs(el.currentTime - offset) > 0.08) {
         try {
           el.currentTime = offset;
-        } catch (_) {}
+          el.playbackRate = speed;
+        } catch {}
+      } else {
+        try {
+          el.playbackRate = speed;
+        } catch {}
       }
 
       // Loop setting
@@ -402,32 +408,51 @@ export default function ComposerPreview({
     }
   }, [currentTime, isPlaying, activeAudioClips, assetMap, muted, isVoiceMuted, isMusicMuted, isSfxMuted, voiceTrackVol, musicTrackVol, sfxTrackVol]);
 
-  // Clean up media on pause
+  // Clean up media on pause (pause only, do NOT wipe src which would blank the video canvas)
   useEffect(() => {
     if (!isPlaying) {
       if (audioPoolRef.current) {
         for (const el of audioPoolRef.current.values()) {
-          try { el.pause(); } catch (_) {}
+          try { el.pause(); } catch {}
         }
       }
       if (visualVideoMapRef.current) {
         for (const vEl of visualVideoMapRef.current.values()) {
           try {
             vEl.pause();
-            vEl.src = '';
-          } catch (_) {}
+          } catch {}
         }
-        visualVideoMapRef.current.clear();
       }
       [audioRef, bgmAudioRef, sfxAudioRef, videoRef, bgVideoRef, visualVideoRef].forEach((ref) => {
         if (ref?.current) {
           try {
             ref.current.pause();
-          } catch (_) {}
+          } catch {}
         }
       });
     }
   }, [isPlaying]);
+
+  // Synchronize rendered MP4 video element when previewMode is 'video'
+  useEffect(() => {
+    if (previewMode !== 'video' || !videoRef.current) return;
+    const v = videoRef.current;
+    if (isPlaying) {
+      v.play().catch(() => {});
+    } else {
+      v.pause();
+    }
+  }, [isPlaying, previewMode]);
+
+  useEffect(() => {
+    if (previewMode !== 'video' || !videoRef.current) return;
+    const v = videoRef.current;
+    if (Math.abs(v.currentTime - currentTime) > 0.15) {
+      try {
+        v.currentTime = currentTime;
+      } catch {}
+    }
+  }, [currentTime, previewMode]);
 
   // Clean up all media elements on unmount
   useEffect(() => {
@@ -437,7 +462,7 @@ export default function ComposerPreview({
           try {
             el.pause();
             el.src = '';
-          } catch (_) {}
+          } catch {}
         }
         audioPoolRef.current.clear();
       }
@@ -446,7 +471,7 @@ export default function ComposerPreview({
           try {
             vEl.pause();
             vEl.src = '';
-          } catch (_) {}
+          } catch {}
         }
         visualVideoMapRef.current.clear();
       }
@@ -456,7 +481,7 @@ export default function ComposerPreview({
             ref.current.pause();
             ref.current.src = '';
             ref.current.load();
-          } catch (_) {}
+          } catch {}
         }
       });
     };
@@ -658,7 +683,7 @@ export default function ComposerPreview({
                 } else if (clip.style && typeof clip.style === 'object') {
                   style = { ...style, ...clip.style };
                 }
-              } catch (_) {}
+              } catch {}
 
               const posClass =
                 style.position === 'top'

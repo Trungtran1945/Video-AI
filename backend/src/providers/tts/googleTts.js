@@ -13,7 +13,7 @@ export class GoogleTts {
     this.apiKey = null // không cần key
   }
 
-  async synthesize({ text, outPath, speed = 1, lang }) {
+  async synthesize({ text, outPath, speed: _speed = 1, lang }) {
     const language = lang || this.voice
     fs.mkdirSync(path.dirname(outPath), { recursive: true })
     await saveWithRetry(String(text || ''), language, outPath)

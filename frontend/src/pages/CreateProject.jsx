@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Check, ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Upload, Film, Clapperboard, FileText, Languages, AlertCircle, AudioLines, AlertTriangle, Search, RotateCcw } from 'lucide-react';
+import { ChevronRight, ChevronLeft, Globe, Clock, Palette, Mic, Wand2, Loader2, Film, Clapperboard, Languages, AlertCircle, AudioLines, Search } from 'lucide-react';
 import {
   LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS,
   MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES,
@@ -11,25 +11,15 @@ import { projectsApi } from '@/api/projects';
 import { uploadApi } from '@/api/upload';
 import { VIDEO_ACCEPT, canonicalVideoMimeType, videoExtension } from '@/lib/videoFiles';
 import Layout from '@/components/Layout';
-
-function FreeTierWarning({ mode, estimatedDuration }) {
-  const thresholds = { SUMMARY: 60 * 60, TRANSLATE_DUB: 20 * 60 };
-  const threshold = thresholds[mode];
-  if (!threshold || !estimatedDuration || estimatedDuration <= threshold) return null;
-
-  return (
-    <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 mb-4 text-left">
-      <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-      <div>
-        <p className="text-sm text-amber-800 dark:text-amber-300 font-semibold">Cảnh báo hạn mức miễn phí (Free Tier)</p>
-        <p className="text-xs text-amber-700/80 dark:text-amber-300/70 mt-1 leading-relaxed">
-          Với API key miễn phí, xử lý nội dung dài có thể chậm hơn nhiều do giới hạn tốc độ của nhà cung cấp.
-          Khuyến nghị thử nghiệm với clip ngắn (≤ 10 phút) trước.
-        </p>
-      </div>
-    </div>
-  );
-}
+import {
+  FreeTierWarning,
+  UploadStatus,
+  StepIndicator,
+  OptionCard,
+  ModeCard,
+  UploadBlock,
+  VoiceStep,
+} from '@/components/create-project';
 
 const SUMMARY_DURATIONS = [
   { value: 1200, label: '20 phút', desc: 'Ngắn gọn, súc tích' },
@@ -77,7 +67,6 @@ export default function CreateProject() {
   const [copyrightAck, setCopyrightAck] = useState(false);
   // F6: duration video thật cho nhánh dub (probe sau upload). null → FreeTierWarning ẩn.
   const [videoDurationSec, setVideoDurationSec] = useState(null);
-  const [scriptUploading, setScriptUploading] = useState(false);
   const [form, setForm] = useState({
     mode: null,
     title: '',
@@ -97,16 +86,6 @@ export default function CreateProject() {
     voiceProvider: 'elevenlabs',
     voiceName: '',
     subPosition: 'bottom',
-    scriptUploadId: null,
-    scriptFileName: '',
-    scriptCharCount: 0,
-    scriptByteSize: 0,
-    scriptPreview: '',
-    aspectRatio: '16:9',
-    resolution: '1080p',
-    fps: 30,
-    defaultBackground: '#0F1117',
-    burnSubtitles: true,
   });
 
   const update = (key, val) => setForm((f) => ({ ...f, [key]: val }));
@@ -126,14 +105,8 @@ export default function CreateProject() {
     { key: 'dubbing', label: 'Lồng tiếng AI', icon: Mic },
     { key: 'generate', label: 'Tạo video', icon: Wand2 },
   ];
-  const scriptSteps = [
-    { key: 'script', label: 'Kịch bản', icon: FileText },
-    { key: 'config', label: 'Cấu hình video', icon: Palette },
-    { key: 'generate', label: 'Tạo video', icon: Wand2 },
-  ];
   const isDub = form.mode === 'TRANSLATE_DUB';
-  const isScript = form.mode === 'SCRIPT_TO_VIDEO' || form.mode === 'AI_VIDEO';
-  const steps = form.mode === 'SUMMARY' ? summarySteps : isScript ? scriptSteps : dubSteps;
+  const steps = form.mode === 'SUMMARY' ? summarySteps : dubSteps;
 
   useEffect(() => {
     if (form.mode === 'MEDIA_COMPOSER') {
@@ -265,48 +238,6 @@ export default function CreateProject() {
     uploadController?.abort?.();
   };
 
-  const handleScriptFile = async (e) => {
-    const file = e.target?.files?.[0];
-    if (!file) return;
-    const ext = '.' + file.name.split('.').pop().toLowerCase();
-    if (!['.txt', '.md'].includes(ext)) {
-      setError('Chỉ hỗ trợ file kịch bản định dạng .txt hoặc .md');
-      return;
-    }
-    if (file.size > 2 * 1024 * 1024) {
-      setError('File kịch bản không được vượt quá 2MB');
-      return;
-    }
-    setScriptUploading(true);
-    setError('');
-    try {
-      const res = await projectsApi.uploadScript(file);
-      update('scriptUploadId', res.id);
-      update('scriptFileName', res.filename);
-      update('scriptCharCount', res.charCount);
-      update('scriptByteSize', res.byteSize);
-      update('scriptPreview', res.preview);
-      if (!form.title) {
-        update('title', res.filename.replace(/\.[^/.]+$/, ''));
-      }
-    } catch (err) {
-      setError(err?.response?.data?.message || err.message || 'Lỗi tải lên kịch bản');
-    } finally {
-      setScriptUploading(false);
-    }
-  };
-
-  const handleResetScriptFile = () => {
-    update('scriptUploadId', null);
-    update('scriptFileName', '');
-    update('scriptCharCount', 0);
-    update('scriptByteSize', 0);
-    update('scriptPreview', '');
-    setError('');
-    const input = document.getElementById('script-file-input');
-    if (input) input.value = '';
-  };
-
   const handleRetryUpload = () => {
     if (!selectedFile || uploading) return;
     setError('');
@@ -314,11 +245,6 @@ export default function CreateProject() {
   };
 
   const canNext = () => {
-    if (isScript) {
-      if (step === 0) return !!form.scriptUploadId && !scriptUploading;
-      if (step === 1) return !!form.aspectRatio && !!form.voiceProvider;
-      return true;
-    }
     if (form.mode === 'SUMMARY') {
       if (step === 0) return !!form.sourceVideoKey;
       // B3 Option A: gate bước ngôn ngữ = đã có video (BE bắt buộc sourceVideoKey,
@@ -349,23 +275,7 @@ export default function CreateProject() {
         return;
       }
       let payload;
-      if (isScript) {
-        payload = {
-          mode: 'SCRIPT_TO_VIDEO',
-          title: form.title.trim() || form.scriptFileName?.replace(/\.[^/.]+$/, '') || 'Video từ kịch bản',
-          scriptUploadId: form.scriptUploadId,
-          aspectRatio: form.aspectRatio || '16:9',
-          copyrightAcknowledged: copyrightAck,
-          params: {
-            aspectRatio: form.aspectRatio || '16:9',
-            voiceProvider: form.voiceProvider || 'edge_tts',
-            voiceId: form.voiceName || undefined,
-            voiceName: form.voiceName || undefined,
-            burnSubtitles: form.burnSubtitles !== false,
-            imageProvider: 'slide',
-          },
-        };
-      } else if (form.mode === 'SUMMARY') {
+      if (form.mode === 'SUMMARY') {
         payload = {
           mode: 'SUMMARY',
           title: form.title.trim() || 'Review phim mới',
@@ -428,33 +338,22 @@ export default function CreateProject() {
     return (
       <Layout>
         <div className="max-w-3xl mx-auto p-6 lg:p-8">
-          <div className="mb-8">
-            <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Tạo Dự Án Mới</h1>
-            <p className="text-sm text-muted-foreground mt-1.5">Chọn chế độ sản xuất video tự động bằng trí tuệ nhân tạo</p>
+          <div className="mb-6">
+            <h1 className="text-xl sm:text-2xl font-medium text-foreground tracking-tight">Tạo dự án mới</h1>
+            <p className="text-xs sm:text-sm text-muted-foreground mt-1">Chọn chế độ sản xuất video tự động bằng trí tuệ nhân tạo</p>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-            <ModeCard
-              onClick={() => {
-                update('mode', 'SCRIPT_TO_VIDEO');
-                update('aspectRatio', '16:9');
-                update('voiceProvider', 'edge_tts');
-                update('burnSubtitles', true);
-              }}
-              icon={FileText}
-              title="Tạo Video Từ Kịch Bản"
-              desc="Tải kịch bản TXT/MD, AI tự động phân đoạn ngữ nghĩa, sinh giọng đọc và tạo slide video hoàn chỉnh."
-            />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <ModeCard
               onClick={() => navigate('/composer')}
               icon={Clapperboard}
               title="AI Media Composer"
-              desc="Mở ngay không gian biên tập video Studio: tải ảnh, nhạc, video nền, quét OCR, lồng giọng AI và kéo thả timeline đa rãnh."
+              desc="Không gian biên tập video Studio: tải ảnh, nhạc, video nền, quét OCR, lồng giọng AI và timeline đa rãnh."
             />
             <ModeCard
               onClick={() => update('mode', 'TRANSLATE_DUB')}
               icon={Languages}
-              title="Dịch Thuật & Lồng Tiếng"
-              desc="Tải video nước ngoài có phụ đề cứng, dịch tiếng Việt theo 13 phong cách, tuỳ chọn lồng giọng AI. Tự khoanh vùng che chữ trên editor."
+              title="Dịch thuật & lồng tiếng"
+              desc="Dịch phụ đề video sang tiếng Việt theo 13 phong cách biên tập, tùy chọn lồng giọng AI và xóa phụ đề gốc."
             />
           </div>
         </div>
@@ -485,198 +384,6 @@ export default function CreateProject() {
               exit={{ opacity: 0, x: -16 }}
               transition={{ duration: 0.18 }}
             >
-              {isScript && step === 0 && (
-                <div className="space-y-4">
-                  <input
-                    type="file"
-                    id="script-file-input"
-                    accept=".txt,.md"
-                    onChange={handleScriptFile}
-                    className="hidden"
-                  />
-                  {!form.scriptUploadId ? (
-                    <div className="rounded-xl border-2 border-dashed border-border/80 hover:border-primary/50 transition p-6 text-center">
-                      <label htmlFor="script-file-input" className="cursor-pointer block">
-                        <FileText className="w-10 h-10 text-primary mx-auto mb-2" />
-                        <span className="text-sm font-semibold text-foreground block">
-                          Chọn file kịch bản (.txt, .md)
-                        </span>
-                        <span className="text-xs text-muted-foreground mt-1 block">
-                          Tối đa 2MB và 60.000 ký tự UTF-8
-                        </span>
-                      </label>
-                    </div>
-                  ) : (
-                    <div className="rounded-xl bg-muted/40 border border-border p-4 space-y-3 text-left">
-                      <div className="flex items-center justify-between text-xs text-muted-foreground font-medium">
-                        <span className="flex items-center gap-1.5 text-foreground font-semibold">
-                          <FileText className="w-4 h-4 text-primary shrink-0" />
-                          <span>{form.scriptFileName}</span>
-                        </span>
-                        <span className="font-mono">{form.scriptCharCount?.toLocaleString()} ký tự ({Math.round((form.scriptByteSize || 0) / 1024)} KB)</span>
-                      </div>
-                      {form.scriptPreview && (
-                        <div className="p-3 bg-background rounded-lg border border-border text-xs text-muted-foreground font-mono max-h-36 overflow-y-auto whitespace-pre-wrap">
-                          {form.scriptPreview}
-                        </div>
-                      )}
-                      <div className="flex items-center justify-between pt-1 border-t border-border/60">
-                        <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
-                          <Check className="w-3.5 h-3.5" /> File kịch bản đã sẵn sàng
-                        </span>
-                        <button
-                          type="button"
-                          onClick={handleResetScriptFile}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-xs font-semibold text-foreground transition"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          <span>Thay đổi file kịch bản</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {scriptUploading && (
-                    <div className="flex items-center justify-center gap-2 text-sm text-primary py-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Đang đọc và kiểm tra kịch bản...</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {isScript && step === 1 && (
-                <div className="space-y-5 text-left">
-                  <div>
-                    <label className="text-sm font-semibold text-foreground mb-2 block">
-                      1. Tỉ lệ khung hình video
-                    </label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <OptionCard
-                        selected={form.aspectRatio === '16:9'}
-                        onClick={() => update('aspectRatio', '16:9')}
-                        title="16:9 (Ngang)"
-                        desc="Phù hợp YouTube, Facebook, Web"
-                      />
-                      <OptionCard
-                        selected={form.aspectRatio === '9:16'}
-                        onClick={() => update('aspectRatio', '9:16')}
-                        title="9:16 (Dọc)"
-                        desc="Phù hợp TikTok, Reels, Shorts"
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-sm font-semibold text-foreground mb-2 block">
-                      2. Nhà cung cấp giọng đọc (TTS)
-                    </label>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <OptionCard
-                        selected={form.voiceProvider === 'edge_tts'}
-                        onClick={() => {
-                          update('voiceProvider', 'edge_tts');
-                          update('voiceName', '');
-                        }}
-                        title="Edge-TTS"
-                        desc="Miễn phí, giọng đọc mượt mà tự nhiên"
-                      />
-                      <OptionCard
-                        selected={form.voiceProvider === 'voicestudio'}
-                        onClick={() => {
-                          update('voiceProvider', 'voicestudio');
-                          update('voiceName', '');
-                        }}
-                        title="VoiceStudio"
-                        desc="Local TTS offline, độ trễ thấp"
-                      />
-                      <OptionCard
-                        selected={form.voiceProvider === 'elevenlabs'}
-                        onClick={() => {
-                          update('voiceProvider', 'elevenlabs');
-                          update('voiceName', '');
-                        }}
-                        title="ElevenLabs"
-                        desc="Giọng đọc AI cao cấp biểu cảm"
-                      />
-                    </div>
-                  </div>
-
-                  {SAMPLE_VOICES[form.voiceProvider]?.length > 0 && (
-                    <div className="p-3.5 rounded-xl bg-muted/40 border border-border space-y-2">
-                      <div className="flex items-center justify-between">
-                        <label className="text-xs font-semibold text-foreground">
-                          Chọn giọng đọc mẫu ({VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider}):
-                        </label>
-                        {form.voiceProvider === 'voicestudio' && (
-                          <span className="text-[11px] text-muted-foreground font-mono">http://localhost:3900</span>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {SAMPLE_VOICES[form.voiceProvider].map((v) => (
-                          <button
-                            key={v.id}
-                            type="button"
-                            onClick={() => update('voiceName', form.voiceName === v.id ? '' : v.id)}
-                            className={`px-2.5 py-1 text-xs rounded-md border transition-all ${
-                              form.voiceName === v.id
-                                ? 'bg-primary text-primary-foreground border-primary font-medium shadow-xs'
-                                : 'bg-background hover:bg-muted text-muted-foreground hover:text-foreground border-border'
-                            }`}
-                          >
-                            {v.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between p-3.5 rounded-xl bg-muted/40 border border-border">
-                    <div>
-                      <span className="text-sm font-medium text-foreground block">Đóng dấu phụ đề vào video (Burn-in Subtitles)</span>
-                      <span className="text-xs text-muted-foreground">Ghép phụ đề trực tiếp vào MP4 bằng định dạng ASS</span>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={form.burnSubtitles !== false}
-                      onChange={(e) => update('burnSubtitles', e.target.checked)}
-                      className="w-4 h-4 rounded text-primary focus:ring-primary"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {isScript && step === 2 && (
-                <div className="space-y-4 text-left">
-                  <div>
-                    <label className="text-sm font-semibold text-foreground mb-1 block">Tiêu đề video</label>
-                    <input
-                      type="text"
-                      value={form.title}
-                      onChange={(e) => update('title', e.target.value)}
-                      placeholder="Nhập tên dự án..."
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-background border border-border text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
-                    />
-                  </div>
-                  <div className="rounded-xl bg-muted/40 border border-border p-4 space-y-2 text-xs text-muted-foreground">
-                    <div className="flex justify-between"><span>Kịch bản:</span><strong className="text-foreground">{form.scriptFileName}</strong></div>
-                    <div className="flex justify-between"><span>Độ dài:</span><strong className="text-foreground">{form.scriptCharCount?.toLocaleString()} ký tự</strong></div>
-                    <div className="flex justify-between"><span>Tỉ lệ:</span><strong className="text-foreground">{form.aspectRatio}</strong></div>
-                    <div className="flex justify-between"><span>Giọng đọc:</span><strong className="text-foreground">{VOICE_PROVIDER_LABELS[form.voiceProvider] || form.voiceProvider}{form.voiceName ? ` (${form.voiceName})` : ''}</strong></div>
-                    <div className="flex justify-between"><span>Phụ đề:</span><strong className="text-foreground">{form.burnSubtitles !== false ? 'Có (Burn-in ASS)' : 'Không'}</strong></div>
-                  </div>
-                  <div className="flex items-start gap-2 pt-2">
-                    <input
-                      type="checkbox"
-                      id="script-copyright-ack"
-                      checked={copyrightAck}
-                      onChange={(e) => setCopyrightAck(e.target.checked)}
-                      className="mt-0.5 w-4 h-4 rounded text-primary focus:ring-primary"
-                    />
-                    <label htmlFor="script-copyright-ack" className="text-xs text-muted-foreground cursor-pointer">
-                      Tôi xác nhận nội dung kịch bản tuân thủ quyền sở hữu trí tuệ và điều khoản dịch vụ.
-                    </label>
-                  </div>
-                </div>
-              )}
-
               {form.mode === 'SUMMARY' && step === 0 && (
                 <div className="space-y-4">
                   <UploadBlock
@@ -1116,213 +823,5 @@ export default function CreateProject() {
         </div>
       </div>
     </Layout>
-  );
-}
-
-// ── Shared Subcomponents ──
-// R1: tiến trình upload + nút Hủy (giữa chừng) / Thử lại (resume cùng session).
-function UploadStatus({ uploading, uploadPercent, canRetry, onCancel, onRetry }) {
-  if (!uploading && !canRetry) return null;
-  return (
-    <div className="space-y-1.5">
-      {uploading && (
-        <>
-          <div className="h-2 rounded-full bg-muted overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all"
-              style={{ width: `${uploadPercent}%` }}
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-muted-foreground">{uploadPercent}% — rớt mạng sẽ tự tiếp tục</p>
-            <button
-              type="button"
-              onClick={onCancel}
-              className="text-xs font-semibold text-destructive hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded px-1"
-            >
-              Hủy tải lên
-            </button>
-          </div>
-        </>
-      )}
-      {!uploading && canRetry && (
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={onRetry}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <span>Thử lại (tiếp tục từ chỗ đã dừng)</span>
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StepIndicator({ steps, step }) {
-  return (
-    <div className="flex items-center justify-center gap-1 mb-6 sm:mb-8 overflow-x-auto pb-2">
-      {steps.map((s, i) => (
-        <div key={s.key} className="flex items-center gap-1 shrink-0">
-          <div
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold transition-colors ${
-              i === step
-                ? 'bg-primary text-primary-foreground shadow-xs'
-                : i < step
-                ? 'bg-primary/10 text-primary'
-                : 'bg-muted text-muted-foreground'
-            }`}
-          >
-            {i < step ? <Check className="w-3.5 h-3.5" /> : <s.icon className="w-3.5 h-3.5" />}
-            <span className="hidden sm:inline">{s.label}</span>
-          </div>
-          {i < steps.length - 1 && <ChevronRight className="w-3 h-3 text-muted-foreground/40" />}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function OptionCard({ selected, onClick, title, desc, children }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`text-left p-3.5 rounded-lg border transition-colors w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-        selected
-          ? 'border-primary bg-primary/10 text-foreground font-semibold shadow-xs'
-          : 'border-border bg-card hover:bg-muted/40 hover:border-border/90'
-      }`}
-    >
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="text-xs sm:text-sm font-semibold text-foreground">{title}</div>
-          {desc && <div className="text-xs text-muted-foreground mt-0.5 leading-relaxed font-normal">{desc}</div>}
-        </div>
-        {selected && <Check className="w-4 h-4 text-primary shrink-0 ml-2" />}
-      </div>
-      {children}
-    </button>
-  );
-}
-
-function ModeCard({ onClick, icon: Icon, title, desc }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="text-left p-5 sm:p-6 rounded-xl border border-border bg-card hover:border-primary/50 hover:bg-primary/[0.03] transition-all group shadow-xs hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <div className="w-10 h-10 rounded-lg bg-primary/10 text-primary flex items-center justify-center mb-3.5 group-hover:scale-105 transition-transform">
-        <Icon className="w-5 h-5" />
-      </div>
-      <div className="text-base sm:text-lg font-bold text-foreground group-hover:text-primary transition-colors">{title}</div>
-      <p className="text-xs sm:text-sm text-muted-foreground mt-1.5 leading-relaxed">{desc}</p>
-    </button>
-  );
-}
-
-function UploadBlock({ label, fileName, onChange, accept, multiple, uploading, hint }) {
-  return (
-    <div>
-      <label className="text-xs sm:text-sm font-semibold text-foreground mb-2 block">{label}</label>
-      <label
-        className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl py-8 sm:py-10 transition-colors ${
-          uploading ? 'pointer-events-none opacity-60' : 'cursor-pointer'
-        } ${
-          fileName
-            ? 'border-primary/50 bg-primary/5'
-            : 'border-border hover:border-border/90 bg-muted/20'
-        }`}
-      >
-        <Upload className="w-7 h-7 text-primary/70" />
-        <span className="text-xs sm:text-sm font-semibold text-foreground text-center px-4">{fileName || 'Nhấn hoặc kéo thả tệp video vào đây'}</span>
-        {hint && <span className="text-xs text-muted-foreground text-center px-4">{hint}</span>}
-        {uploading && <Loader2 className="w-5 h-5 animate-spin text-primary mt-2" />}
-        <input type="file" accept={accept} multiple={multiple} onChange={onChange} className="hidden" />
-      </label>
-    </div>
-  );
-}
-
-const SAMPLE_VOICES = {
-  voicestudio: [
-    { id: 'default', label: 'Default (Chuẩn)' },
-    { id: 'alloy', label: 'Alloy (Cân bằng)' },
-    { id: 'echo', label: 'Echo (Ấm áp)' },
-    { id: 'fable', label: 'Fable (Diễn cảm)' },
-    { id: 'onyx', label: 'Onyx (Trầm ấm)' },
-    { id: 'nova', label: 'Nova (Trẻ trung)' },
-    { id: 'shimmer', label: 'Shimmer (Rõ ràng)' },
-  ],
-  edge_tts: [
-    { id: 'vi-VN-HoaiMyNeural', label: 'Hoài My (Nữ)' },
-    { id: 'vi-VN-NamMinhNeural', label: 'Nam Minh (Nam)' },
-  ],
-  elevenlabs: [
-    { id: 'Rachel', label: 'Rachel' },
-    { id: 'Adam', label: 'Adam' },
-    { id: 'Josh', label: 'Josh' },
-  ],
-};
-
-function VoiceStep({ form, update, optional }) {
-  const currentSamples = SAMPLE_VOICES[form.voiceProvider] || [];
-
-  return (
-    <div className="space-y-4">
-      <div>
-        <label className="text-xs sm:text-sm font-semibold text-foreground mb-2 block">
-          {optional ? 'Giọng đọc (tuỳ chọn)' : 'Nhà cung cấp giọng đọc AI'}
-        </label>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {Object.entries(VOICE_PROVIDER_LABELS).map(([code, label]) => (
-            <OptionCard
-              key={code}
-              selected={form.voiceProvider === code}
-              onClick={() => update('voiceProvider', code)}
-              title={label}
-            />
-          ))}
-        </div>
-      </div>
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <label className="text-xs sm:text-sm font-semibold text-foreground">Tên giọng / Voice ID (tuỳ chọn)</label>
-          {form.voiceProvider === 'voicestudio' && (
-            <span className="text-[11px] text-muted-foreground font-mono">VoiceStudio: http://localhost:3900</span>
-          )}
-        </div>
-        <input
-          value={form.voiceName}
-          onChange={(e) => update('voiceName', e.target.value)}
-          placeholder={form.voiceProvider === 'voicestudio' ? 'VD: default, alloy, echo, onyx...' : 'VD: Rachel, Adam, Josh...'}
-          className="w-full px-3.5 py-2 rounded-lg bg-background border border-input text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-        />
-
-        {currentSamples.length > 0 && (
-          <div className="mt-2.5">
-            <span className="text-xs text-muted-foreground block mb-1.5">Giọng mẫu khả dụng:</span>
-            <div className="flex flex-wrap gap-1.5">
-              {currentSamples.map((v) => (
-                <button
-                  key={v.id}
-                  type="button"
-                  onClick={() => update('voiceName', v.id)}
-                  className={`px-2.5 py-1 text-xs rounded-md border transition-all ${
-                    form.voiceName === v.id
-                      ? 'bg-primary text-primary-foreground border-primary font-medium shadow-xs'
-                      : 'bg-muted/40 hover:bg-muted text-muted-foreground hover:text-foreground border-border'
-                  }`}
-                >
-                  {v.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
   );
 }

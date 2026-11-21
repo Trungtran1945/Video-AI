@@ -370,7 +370,7 @@ async function migrate() {
         const valuePlaceholders = []
         const flatValues = []
 
-        chunk.forEach((row, rowIdx) => {
+        chunk.forEach((row) => {
           const rowParams = []
           columns.forEach((col) => {
             let val = row[col]
@@ -432,7 +432,7 @@ async function migrate() {
     let totalPg = 0
     let totalSkipped = 0
 
-    for (const [table, s] of Object.entries(stats)) {
+    for (const s of Object.values(stats)) {
       totalSqlite += s.sqlite
       totalPg += s.inserted
       totalSkipped += s.skipped

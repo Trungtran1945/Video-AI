@@ -117,20 +117,20 @@ export default function Settings() {
     <Layout>
       <div className="p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
         <PageHeader
-          title="Cài Đặt"
+          title="Cài đặt chung"
           subtitle="Cấu hình hệ thống và tùy chọn mặc định cho dự án mới"
           action={
             <button
               onClick={handleSave}
               disabled={saving}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition shadow-xs disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-medium transition-colors disabled:opacity-50"
             >
               {saving ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : savedSuccess ? (
-                <Check className="w-4 h-4 text-white" />
+                <Check className="w-3.5 h-3.5 text-white" />
               ) : (
-                <Save className="w-4 h-4" />
+                <Save className="w-3.5 h-3.5" />
               )}
               <span>{savedSuccess ? 'Đã lưu' : 'Lưu thay đổi'}</span>
             </button>

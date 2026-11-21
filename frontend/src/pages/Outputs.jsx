@@ -16,7 +16,6 @@ export default function Outputs() {
   const [loading, setLoading] = useState(true);
   const [outputs, setOutputs] = useState([]);
   const [search, setSearch] = useState('');
-  const [uploadingYoutubeId, setUploadingYoutubeId] = useState(null);
   const [youtubeStatusById, setYoutubeStatusById] = useState({});
   const [publishTarget, setPublishTarget] = useState(null);
   const [publishing, setPublishing] = useState(false);
@@ -61,7 +60,7 @@ export default function Outputs() {
     setPublishTarget(output);
   };
 
-  const handleExecutePublish = async ({ title, description, tags, privacy, confirmed }) => {
+  const handleExecutePublish = async ({ title, description, tags, privacy }) => {
     if (!publishTarget || publishing) return;
     setPublishing(true);
     const outputId = publishTarget.id;
@@ -116,42 +115,6 @@ export default function Outputs() {
     }
   };
 
-  const legacyUpload = async (output) => {
-    try {
-      const res = await outputsApi.youtube(output.id, 'private');
-      toast({
-        title: 'Đã xếp hàng tải lên YouTube',
-        description: res?.message || 'Yêu cầu tải lên đang được xử lý ở chế độ Riêng tư (Private).',
-      });
-      // Poll youtubeStatus 3s/timeout 60s — không để pending vô hạn.
-      // 'none' (chưa có row youtube_uploads) KHÔNG phải terminal — loại khỏi done.
-      const deadline = Date.now() + 60000;
-      const poll = async () => {
-        try {
-          const st = await outputsApi.youtubeStatus(output.id);
-          setYoutubeStatusById((prev) => ({ ...prev, [output.id]: st?.status || 'unknown' }));
-          const done = ['done', 'failed'].includes(st?.status);
-          if (!done && Date.now() < deadline) setTimeout(poll, 3000);
-        } catch {
-          setYoutubeStatusById((prev) => ({ ...prev, [output.id]: 'unknown' }));
-        }
-      };
-      poll();
-    } catch (err) {
-      const code = err?.response?.data?.code || err?.response?.data?.error?.code;
-      if (err?.response?.status === 501 || code === 'YOUTUBE_NOT_IMPLEMENTED') {
-        setYoutubeStatusById((prev) => ({ ...prev, [output.id]: 'not_implemented' }));
-      }
-      toast({
-        variant: 'destructive',
-        title: 'Lỗi tải lên YouTube',
-        description: err?.response?.data?.message || err.message,
-      });
-    } finally {
-      setUploadingYoutubeId(null);
-    }
-  };
-
   const filtered = (outputs || []).filter(o => {
     const title = o.project_title || o.title || '';
     return title.toLowerCase().includes(search.toLowerCase());
@@ -161,7 +124,7 @@ export default function Outputs() {
     <Layout>
       <div className="p-6 lg:p-8 max-w-6xl mx-auto space-y-6">
         <PageHeader
-          title="Đầu Ra Video"
+          title="Đầu ra video"
           subtitle={`${outputs.length} video đã hoàn thành và sẵn sàng xuất bản`}
         />
 
@@ -192,7 +155,7 @@ export default function Outputs() {
             {filtered.map((o, i) => {
               const projectId = o.project_id || o.id;
               const title = o.project_title || o.title;
-              const isUploading = uploadingYoutubeId === o.id;
+              const isUploading = publishing && publishTarget?.id === o.id;
               const isStale = Boolean(o.outputStale);
               const ytNotImplemented = youtubeStatusById[o.id] === 'not_implemented';
 

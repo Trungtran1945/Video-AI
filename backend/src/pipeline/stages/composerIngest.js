@@ -1,16 +1,8 @@
 import fs from 'node:fs'
 import { query, run } from '../../db/query.js'
-import { isProjectRunOwned, updateProjectOwned } from '../../services/projectAdmission.js'
+import { updateProjectOwned, assertRunOwner } from '../../services/projectAdmission.js'
 import { resolveStorageKey, round2 } from '../context.js'
 import composerService from '../../services/composerService.js'
-
-async function assertRunOwner(projectId, runToken) {
-  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
-    const error = new Error('RUN_ABORTED')
-    error.code = 'RUN_ABORTED'
-    throw error
-  }
-}
 
 export async function composerIngest(ctx = {}) {
   const { project, setProgress = () => {}, signal, runToken } = ctx

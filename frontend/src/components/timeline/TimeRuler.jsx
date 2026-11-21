@@ -33,7 +33,7 @@ export default function TimeRuler({ totalDuration, onSeek, fps = 30 }) {
       const updateSeek = (clientX) => {
         const rect = target.getBoundingClientRect();
         const offsetX = clientX - rect.left;
-        const targetSec = Math.max(0, offsetX / zoomLevel);
+        const targetSec = Math.min(totalDuration, Math.max(0, offsetX / zoomLevel));
         setCurrentTime(targetSec);
         onSeek?.(targetSec);
       };

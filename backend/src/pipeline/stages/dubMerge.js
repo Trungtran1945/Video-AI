@@ -5,11 +5,7 @@ import { logProviderCall } from '../../providers/tracked.js'
 import { hasHardTranslationError } from './dubTranslate.js'
 import { dedupeTranscriptSegments as mutateDedupeTranscriptSegments, sanitizeTranscriptOverlaps as mutateSanitizeTranscriptOverlaps, findDuplicateGroups } from '../../services/transcriptMutationService.js'
 import { validateNoOverlap } from '../forcedAlignService.js'
-import { projectDir } from '../context.js'
-
-function parseParams(raw) {
-  try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
-}
+import { projectDir, parseParams } from '../context.js'
 
 export { findDuplicateGroups }
 

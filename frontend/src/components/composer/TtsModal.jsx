@@ -51,7 +51,7 @@ export default function TtsModal({ isOpen, onClose, projectId, onAddVoiceover })
         try {
           audioRef.current.pause();
           audioRef.current.src = '';
-        } catch (_) {}
+        } catch {}
       }
     };
   }, []);
@@ -111,7 +111,7 @@ export default function TtsModal({ isOpen, onClose, projectId, onAddVoiceover })
     if (audioRef.current) {
       try {
         audioRef.current.pause();
-      } catch (_) {}
+      } catch {}
     }
     setIsPlaying(false);
     onClose();

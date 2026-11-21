@@ -27,8 +27,8 @@ try { connection.disconnect() } catch (_) {}
 
 console.log('=== AI Media Composer Audit Fixes Verification Tests ===\n')
 
-const testUser1 = { id: 'user-fixes-1', email: 'fixes-1@test.local', role: 'user' }
-const testUser2 = { id: 'user-fixes-2', email: 'fixes-2@test.local', role: 'user' }
+const testUser1 = { id: `user-fixes-1-${Date.now()}`, email: `fixes-1-${Date.now()}@test.local`, role: 'user' }
+const testUser2 = { id: `user-fixes-2-${Date.now()}`, email: `fixes-2-${Date.now()}@test.local`, role: 'user' }
 await insert('users', { id: testUser1.id, email: testUser1.email, role: 'user', password: 'hash' })
 await insert('users', { id: testUser2.id, email: testUser2.email, role: 'user', password: 'hash' })
 

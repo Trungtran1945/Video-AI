@@ -7,14 +7,10 @@ import { callProvider } from '../../lib/callProvider.js';
 import { withProviderFailover } from '../../lib/providerFailover.js';
 import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js';
 import { extractMaskFrames, probe } from '../../media/mediaService.js';
-import { projectDir, ensureDir, requireSourceFile, round3 } from '../context.js';
+import { projectDir, ensureDir, requireSourceFile, round3, parseParams, sleepMs } from '../context.js';
 import { isProjectRunOwned, runProjectOwned } from '../../services/projectAdmission.js';
 import { assertTranslateComplete } from './dubTranslate.js';
 import { queryOne } from '../../db/query.js';
-
-function sleepMs(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
 
 // Đều khắp video, bỏ 1s đầu/cuối tránh fade. Trả về [t1, t2, ...] giây (round3).
 export function planMaskFrames(durationSec, { maxFrames = 8, minGapSec = 5 } = {}) {
@@ -116,10 +112,6 @@ export function buildStaticMaskRow({ projectId, durationSec, ratio, params, avgC
     source: 'AUTO',
     is_static: 1,
   };
-}
-
-function parseParams(raw) {
-  try { return raw ? JSON.parse(raw) : {}; } catch (_) { return {}; }
 }
 
 /**

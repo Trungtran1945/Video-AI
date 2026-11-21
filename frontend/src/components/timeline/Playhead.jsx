@@ -5,10 +5,11 @@ import { formatTimeCode } from './timelineUtils';
 export default function Playhead({ height, onSeek, currentTime: propCurrentTime, fps = 30 }) {
   const { currentTime: storeCurrentTime, zoomLevel, setCurrentTime, snappingGuide } = useTimelineStore();
   const [isDragging, setIsDragging] = useState(false);
+  const [isHovering, setIsHovering] = useState(false);
   const handleRef = useRef(null);
 
   const currentTime = propCurrentTime !== undefined ? propCurrentTime : storeCurrentTime;
-  const leftPx = currentTime * zoomLevel;
+  const leftPx = Math.max(0, (currentTime || 0) * zoomLevel);
 
   const handlePointerDown = useCallback(
     (e) => {
@@ -19,7 +20,6 @@ export default function Playhead({ height, onSeek, currentTime: propCurrentTime,
       handleElem.setPointerCapture(e.pointerId);
 
       const parentScrollContainer = handleElem.closest('.timeline-scroll-container');
-      const scrollLeft = parentScrollContainer ? parentScrollContainer.scrollLeft : 0;
 
       const updatePlayhead = (clientX) => {
         if (!parentScrollContainer) return;
@@ -51,7 +51,7 @@ export default function Playhead({ height, onSeek, currentTime: propCurrentTime,
       window.addEventListener('pointerup', onPointerUp);
       window.addEventListener('pointercancel', onPointerUp);
     },
-    [zoomLevel, setCurrentTime]
+    [zoomLevel, setCurrentTime, onSeek]
   );
 
   return (
@@ -87,19 +87,21 @@ export default function Playhead({ height, onSeek, currentTime: propCurrentTime,
         <div
           ref={handleRef}
           onPointerDown={handlePointerDown}
+          onPointerEnter={() => setIsHovering(true)}
+          onPointerLeave={() => setIsHovering(false)}
           className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-0.5 cursor-ew-resize pointer-events-auto flex flex-col items-center select-none"
         >
-          {/* Tooltip: Small black badge displaying MM:SS:FF while dragging (or hovering) */}
-          {(isDragging || true) && (
-            <div
-              className={`absolute -top-7 left-1/2 -translate-x-1/2 bg-black/95 text-white border border-red-500/40 text-[11px] font-mono px-2 py-0.5 rounded shadow-xl whitespace-nowrap transition-opacity duration-150 pointer-events-none flex items-center gap-1.5 ${
-                isDragging ? 'opacity-100 scale-105' : 'opacity-85 hover:opacity-100'
-              }`}
-            >
-              <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-              <span>{formatTimeCode(currentTime, fps)}</span>
-            </div>
-          )}
+          {/* Tooltip: Small black badge displaying MM:SS:FF while dragging or hovering */}
+          <div
+            className={`absolute -top-7 left-1/2 -translate-x-1/2 bg-black/95 text-white border border-red-500/40 text-[11px] font-mono px-2 py-0.5 rounded shadow-xl whitespace-nowrap transition-all duration-150 pointer-events-none flex items-center gap-1.5 ${
+              isDragging || isHovering
+                ? 'opacity-100 scale-100'
+                : 'opacity-0 scale-90 pointer-events-none'
+            }`}
+          >
+            <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+            <span>{formatTimeCode(currentTime, fps)}</span>
+          </div>
 
           {/* CapCut Style Inverted Pentagon / Marker Handle — R2: hit-area
               24×32px trên mobile, visual giữ nguyên */}

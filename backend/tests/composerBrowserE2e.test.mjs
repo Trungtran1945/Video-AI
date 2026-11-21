@@ -26,10 +26,10 @@ await initSchema()
 
 console.log('=== AI Media Composer 16-Step Browser & Integration E2E Test ===\n')
 
-const testUserId = 'user-composer-e2e-1'
+const testUserId = `user-composer-e2e-${Date.now()}`
 await insert('users', {
   id: testUserId,
-  email: 'composer-e2e@test.local',
+  email: `composer-e2e-${Date.now()}@test.local`,
   role: 'user',
   password: 'hash',
 })
@@ -88,7 +88,7 @@ function createTestAudio(filename, durationSec = 3, freq = 440) {
 // STEP 2: Background Asset Upload
 console.log('--- Step 2: Upload Background Image Asset ---')
 const bgPath = createTestImage('bg_dark_slate.png', '#0B192C')
-const bgAssetId = 'asset-bg-1'
+const bgAssetId = `${projectId}-bg-1`
 await insert('assets', {
   id: bgAssetId,
   project_id: projectId,
@@ -106,7 +106,7 @@ const slideColors = ['#E63946', '#F1FAEE', '#A8DADC', '#457B9D', '#1D3557']
 const slideAssetIds = []
 for (let i = 1; i <= 5; i++) {
   const sPath = createTestImage(`slide_${i}.png`, slideColors[i - 1])
-  const aId = `asset-slide-${i}`
+  const aId = `${projectId}-slide-${i}`
   slideAssetIds.push(aId)
   await insert('assets', {
     id: aId,
@@ -135,7 +135,7 @@ assert.equal(orderedAssets[0].name, 'Slide 4.png', 'Step 4 PASS: Slide 4 moved t
 // STEP 5: Upload BGM Asset (Short 3s loop test)
 console.log('--- Step 5: Upload BGM Music Asset ---')
 const bgmPath = createTestAudio('bgm_ambient.mp3', 3, 220)
-const bgmAssetId = 'asset-bgm-1'
+const bgmAssetId = `${projectId}-bgm-1`
 await insert('assets', {
   id: bgmAssetId,
   project_id: projectId,
@@ -151,7 +151,7 @@ assert.ok(fs.existsSync(bgmPath), 'Step 5 PASS: BGM asset created')
 // STEP 6: Upload Voiceover Asset (6s duration)
 console.log('--- Step 6: Upload Voiceover Audio Asset ---')
 const voPath = createTestAudio('vo_narration.mp3', 6, 440)
-const voAssetId = 'asset-vo-1'
+const voAssetId = `${projectId}-vo-1`
 await insert('assets', {
   id: voAssetId,
   project_id: projectId,
@@ -189,7 +189,7 @@ assert.equal(trRes.translatedText, 'Khuyến mãi đặc biệt 50%', 'Step 7 PA
 console.log('--- Step 8: Add Text Overlay Clip to Timeline ---')
 const textTrack = defaultTracks.find((t) => t.track_type === 'text')
 await insert('timeline_clips', {
-  id: 'clip-text-discount',
+  id: `${projectId}-clip-text-discount`,
   project_id: projectId,
   track_id: textTrack.id,
   clip_type: 'text',
@@ -226,7 +226,7 @@ await saveTimeline({
   clips: [
     ...clips,
     {
-      id: 'clip-text-discount',
+      id: `${projectId}-clip-text-discount`,
       track_id: textTrack.id,
       clip_type: 'text',
       start_at_sec: 1.0,

@@ -96,7 +96,7 @@ export default function ProviderSettings() {
     <Layout>
       <div className="p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
         <PageHeader
-          title="Nhà Cung Cấp AI"
+          title="Nhà cung cấp AI"
           subtitle="Chỉ định nhà cung cấp dịch vụ AI hoạt động cho từng phân hệ xử lý"
         />
 

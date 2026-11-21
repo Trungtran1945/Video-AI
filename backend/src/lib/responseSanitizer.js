@@ -195,7 +195,7 @@ export function sanitizeApiKeyDto(key) {
  * Express middleware that intercepts res.json() to guarantee all outgoing
  * HTTP JSON responses are stripped of sensitive fields and server paths.
  */
-export function responseSanitizerMiddleware(req, res, next) {
+export function responseSanitizerMiddleware(_req, res, next) {
   const originalJson = res.json.bind(res)
 
   res.json = function(data) {

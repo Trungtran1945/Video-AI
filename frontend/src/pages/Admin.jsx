@@ -123,15 +123,15 @@ export default function Admin() {
     <Layout>
       <div className="p-6 lg:p-8 max-w-6xl mx-auto space-y-6">
         <PageHeader
-          title="Bảng Quản Trị Hệ Thống"
+          title="Quản trị hệ thống"
           subtitle="Giám sát người dùng, tổng thể dự án và trạng thái các dịch vụ cốt lõi"
           action={
             <button
               onClick={handleRefresh}
               disabled={refreshing}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-card border border-border hover:bg-muted text-foreground text-xs sm:text-sm font-medium transition shadow-xs disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-secondary border border-border hover:bg-secondary/80 text-foreground text-xs sm:text-sm font-normal transition-colors disabled:opacity-50"
             >
-              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-primary' : 'text-muted-foreground'}`} />
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin text-primary' : 'text-muted-foreground'}`} />
               <span>{refreshing ? 'Đang cập nhật...' : 'Làm mới'}</span>
             </button>
           }

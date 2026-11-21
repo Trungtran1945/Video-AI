@@ -72,7 +72,7 @@ export async function verifyGoogleIdToken(idToken, options = {}) {
       idToken: tokenStr,
       audience: expectedAudience || undefined,
     })
-  } catch (err) {
+  } catch (_err) {
     // Verification failed (signature invalid, expired, aud mismatch, etc.)
     return null
   }

@@ -17,6 +17,92 @@ export const ALLOWED_MEDIA_EXTENSIONS = new Set([
   '.mp4', '.mov', '.webm', '.avi', '.mkv',
 ])
 
+export function formatTrack(t) {
+  if (!t) return null
+  const isMuted = Boolean(t.muted)
+  const isLocked = Boolean(t.locked)
+  const trackType = t.track_type || t.type
+  return {
+    id: t.id,
+    projectId: t.project_id || t.projectId,
+    project_id: t.project_id || t.projectId,
+    type: trackType,
+    trackType,
+    track_type: trackType,
+    name: t.name || '',
+    order: Number(t.order_index ?? t.order ?? 0),
+    orderIndex: Number(t.order_index ?? t.order ?? 0),
+    order_index: Number(t.order_index ?? t.order ?? 0),
+    muted: isMuted,
+    isMuted,
+    locked: isLocked,
+    isLocked,
+    volume: Number(t.volume ?? 1.0),
+  }
+}
+
+export function formatClip(c) {
+  if (!c) return null
+  const inSec = Number(c.in_sec ?? 0)
+  const outSec = Number(c.out_sec ?? (inSec + 4))
+  const startAtSec = Number(c.start_at_sec ?? c.start ?? 0)
+  const duration = Math.max(0.1, Math.round((outSec - inSec) * 1000) / 1000)
+
+  let styleObj = null
+  try {
+    styleObj = typeof c.style_json === 'string' ? JSON.parse(c.style_json) : (c.style || c.style_json || null)
+  } catch (_) {}
+
+  let metaObj = null
+  try {
+    metaObj = typeof c.meta === 'string' ? JSON.parse(c.meta) : (c.meta || null)
+  } catch (_) {}
+
+  const clipType = c.clip_type || c.type || 'image'
+  const trackId = c.track_id || c.trackId || null
+  const assetId = c.asset_id || c.assetId || null
+  const voiceAudioId = c.voice_audio_id || c.audio_id || c.audioId || null
+  const textContent = c.text_content ?? c.content ?? c.textContent ?? null
+
+  return {
+    id: c.id,
+    projectId: c.project_id || c.projectId,
+    project_id: c.project_id || c.projectId,
+    trackId,
+    track_id: trackId,
+    type: clipType,
+    clipType,
+    clip_type: clipType,
+    assetId,
+    asset_id: assetId,
+    voiceAudioId,
+    voice_audio_id: voiceAudioId,
+    audioId: voiceAudioId,
+    audio_id: voiceAudioId,
+    start: startAtSec,
+    start_at_sec: startAtSec,
+    inSec,
+    in_sec: inSec,
+    outSec,
+    out_sec: outSec,
+    duration,
+    speed: Number(c.speed ?? 1.0),
+    volume: Number(c.volume ?? 1.0),
+    fadeInSec: Number(c.fade_in_sec ?? 0),
+    fade_in_sec: Number(c.fade_in_sec ?? 0),
+    fadeOutSec: Number(c.fade_out_sec ?? 0),
+    fade_out_sec: Number(c.fade_out_sec ?? 0),
+    content: textContent,
+    textContent,
+    text_content: textContent,
+    style: styleObj,
+    style_json: typeof c.style_json === 'string' ? c.style_json : (styleObj ? JSON.stringify(styleObj) : null),
+    meta: metaObj,
+    orderIndex: Number(c.order_index ?? 0),
+    order_index: Number(c.order_index ?? 0),
+  }
+}
+
 export async function ensureDefaultTracks(projectId) {
   let tracks = await query('SELECT * FROM timeline_tracks WHERE project_id = ? ORDER BY order_index ASC', [projectId])
   if (tracks.length === 0) {
@@ -44,7 +130,7 @@ export async function ensureDefaultTracks(projectId) {
     }
     tracks = await query('SELECT * FROM timeline_tracks WHERE project_id = ? ORDER BY order_index ASC', [projectId])
   }
-  return tracks
+  return tracks.map(formatTrack)
 }
 
 export async function saveUploadedAsset({ projectId, userId, file, kind = 'image', orderIndex = 0 }) {
@@ -632,11 +718,13 @@ export async function autoArrangeTimeline({ projectId, options = {}, ...rest }) 
       }
     })
     const savedClips = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [projectId])
+    const formattedTracks = tracks.map(formatTrack)
+    const formattedClips = savedClips.map(formatClip)
     return {
       projectId,
-      tracks,
-      clips: savedClips,
-      timeline: savedClips,
+      tracks: formattedTracks,
+      clips: formattedClips,
+      timeline: formattedClips,
       totalDuration: 10,
       message: 'Không có tài nguyên hình ảnh hoặc âm thanh để sắp xếp tự động. Hãy thêm tài nguyên từ Thư viện Media.',
     }
@@ -786,9 +874,12 @@ export async function autoArrangeTimeline({ projectId, options = {}, ...rest }) 
   })
 
   const savedClips = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [projectId])
+  const formattedTracks = tracks.map(formatTrack)
+  const formattedClips = savedClips.map(formatClip)
   return {
-    tracks,
-    clips: savedClips,
+    tracks: formattedTracks,
+    clips: formattedClips,
+    timeline: formattedClips,
     totalDuration,
   }
 }
@@ -977,13 +1068,18 @@ export async function saveTimeline({ projectId, tracks = [], clips = [] }) {
 
   const updatedClips = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [projectId])
   const updatedTracks = await query('SELECT * FROM timeline_tracks WHERE project_id = ? ORDER BY order_index ASC', [projectId])
+  const formattedTracks = updatedTracks.map(formatTrack)
+  const formattedClips = updatedClips.map(formatClip)
   return {
-    tracks: updatedTracks,
-    clips: updatedClips,
+    tracks: formattedTracks,
+    clips: formattedClips,
+    timeline: formattedClips,
   }
 }
 
 export default {
+  formatTrack,
+  formatClip,
   ensureDefaultTracks,
   saveUploadedAsset,
   processOcr,

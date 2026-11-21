@@ -28,6 +28,7 @@ import {
 } from '../../services/scriptUploadService.js'
 import { isPathInside } from '../../lib/safePath.js'
 import { formatAsset } from './composerAssets.js'
+import { formatClip, formatTrack } from '../../services/composerService.js'
 import { validateBody, validateParams } from '../../middleware/validate.js'
 import { createProjectSchema, idParamSchema } from '../../validation/schemas.js'
 import { protectFields } from '../../middleware/massAssignment.js'
@@ -478,7 +479,8 @@ router.get('/:id', validateParams(idParamSchema), async (req, res) => {
       return sendError(res, 403, ERR.AUTH_FORBIDDEN, 'Forbidden')
     }
     const jobs = await query('SELECT * FROM generation_jobs WHERE project_id = ? ORDER BY created_date ASC', [project.id])
-    const timeline = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [project.id])
+    const rawClips = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [project.id])
+    const timeline = (rawClips || []).map(formatClip)
     const outputState = await getOutputState(project.id)
     const latestOutput = outputState.output
     // §1: pipeline đang chạy (pending/queued/running/generating) thì KHÔNG expose
@@ -499,7 +501,8 @@ router.get('/:id', validateParams(idParamSchema), async (req, res) => {
       // TRANSLATE_DUB mode - no extra data needed
     } else if (project.mode === 'MEDIA_COMPOSER') {
       try {
-        extras.tracks = await query('SELECT * FROM timeline_tracks WHERE project_id = ? ORDER BY order_index ASC', [project.id])
+        const rawTracks = await query('SELECT * FROM timeline_tracks WHERE project_id = ? ORDER BY order_index ASC', [project.id])
+        extras.tracks = (rawTracks || []).map(formatTrack)
       } catch (trackErr) {
         console.warn(`[Projects] Failed to query tracks for project ${project.id}:`, trackErr?.message || trackErr)
         extras.tracks = []
@@ -625,7 +628,8 @@ router.patch(
 
 // GET /api/v1/projects/:id/timeline
 router.get('/:id/timeline', requireProjectOwner, async (req, res) => {
-  const timeline = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [req.params.id])
+  const rawClips = await query('SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC', [req.params.id])
+  const timeline = (rawClips || []).map(formatClip)
   res.json(timeline)
 })
 

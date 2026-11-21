@@ -12,35 +12,15 @@ import {
 import { ffmpeg } from '../../media/ffmpeg.js'
 import { createOutput } from '../../services/outputService.js'
 import { config } from '../../config.js'
-import { isProjectRunOwned } from '../../services/projectAdmission.js'
+import { assertRunOwner } from '../../services/projectAdmission.js'
 import {
   tmpDirOf,
   ensureDir,
   resolveStorageKey,
   dimsForAspect,
   round2,
+  mapWithConcurrency,
 } from '../context.js'
-
-async function assertRunOwner(projectId, runToken) {
-  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
-    const error = new Error('RUN_ABORTED')
-    error.code = 'RUN_ABORTED'
-    throw error
-  }
-}
-
-async function mapWithConcurrency(items, limit, worker) {
-  const results = new Array(items.length)
-  let next = 0
-  async function lane() {
-    while (next < items.length) {
-      const idx = next++
-      results[idx] = await worker(items[idx], idx)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane))
-  return results
-}
 
 export async function composerRender(ctx = {}) {
   const { project, setProgress = () => {}, signal, runToken } = ctx
@@ -180,7 +160,7 @@ export async function composerRender(ctx = {}) {
         '-pix_fmt', 'yuv420p',
         '-an',
         bgVideoPath,
-      ])
+      ], { signal })
 
       // If user enabled audio on video background (muted === false) and source has audio
       if (bgMeta.muted === false && bgInfo?.hasAudio) {
@@ -196,7 +176,7 @@ export async function composerRender(ctx = {}) {
             '-af', `volume=${Math.max(0, Math.min(2.0, bgVol))}`,
             '-c:a', 'pcm_s16le',
             candidateAudio,
-          ])
+          ], { signal })
           if (fs.existsSync(candidateAudio)) {
             bgAudioFile = candidateAudio
           }
@@ -219,7 +199,7 @@ export async function composerRender(ctx = {}) {
           '-pix_fmt', 'yuv420p',
           '-an',
           bgVideoPath,
-        ])
+        ], { signal })
       } else {
         // Image Background: Apply subtle cinematic motion across total duration
         await applyMotionImage({
@@ -229,6 +209,7 @@ export async function composerRender(ctx = {}) {
           width,
           height,
           zoomMax: 1.02,
+          signal,
         })
       }
     }
@@ -242,7 +223,7 @@ export async function composerRender(ctx = {}) {
       '-i', `color=c=${solidColor}:s=${width}x${height}:d=${round2(totalDuration)}:r=30`,
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
       bgVideoPath,
-    ])
+    ], { signal })
   }
 
   // 2. Build Visual Track (Timeline Absolute Positioning for Image & Video Clips)
@@ -340,7 +321,7 @@ export async function composerRender(ctx = {}) {
           '-pix_fmt', 'yuv420p',
           '-an',
           out,
-        ])
+        ], { signal })
         rendered = { file: out, durationSec }
 
         // Audio extraction for video clip if track not muted
@@ -376,7 +357,7 @@ export async function composerRender(ctx = {}) {
                 '-af', af.join(','),
                 '-c:a', 'pcm_s16le',
                 vidAudioOut,
-              ])
+              ], { signal })
               if (fs.existsSync(vidAudioOut)) {
                 videoAudioEntries.push({
                   file: vidAudioOut,
@@ -398,6 +379,7 @@ export async function composerRender(ctx = {}) {
             width: targetW,
             height: targetH,
             zoomMax: 1.05,
+            signal,
           })
         } else if (fitMode === 'fill') {
           await ffmpeg([
@@ -412,7 +394,7 @@ export async function composerRender(ctx = {}) {
             '-pix_fmt', 'yuv420p',
             '-an',
             out,
-          ])
+          ], { signal })
           rendered = { file: out, durationSec }
         } else {
           // Static contained image
@@ -428,7 +410,7 @@ export async function composerRender(ctx = {}) {
             '-pix_fmt', 'yuv420p',
             '-an',
             out,
-          ])
+          ], { signal })
           rendered = { file: out, durationSec }
         }
       }
@@ -467,16 +449,16 @@ export async function composerRender(ctx = {}) {
         baseX = width - segW; baseY = height - segH
       }
 
-      const rawX = Number(clipMeta.posX) || 0
+      const rawX = Number(clipMeta.posX ?? clipMeta.x) || 0
       const normX = Math.abs(rawX) > 1.0 ? rawX / 100 : rawX
-      const rawY = Number(clipMeta.posY) || 0
+      const rawY = Number(clipMeta.posY ?? clipMeta.y) || 0
       const normY = Math.abs(rawY) > 1.0 ? rawY / 100 : rawY
 
       const offsetX = Math.round(normX * width)
       const offsetY = Math.round(normY * height)
 
-      const finalX = Math.round(baseX + offsetX)
-      const finalY = Math.round(baseY + offsetY)
+      const finalX = Number.isFinite(Math.round(baseX + offsetX)) ? Math.round(baseX + offsetX) : 0
+      const finalY = Number.isFinite(Math.round(baseY + offsetY)) ? Math.round(baseY + offsetY) : 0
       const opacity = Number.isFinite(Number(clipMeta.opacity)) ? Math.max(0, Math.min(1.0, Number(clipMeta.opacity))) : 1.0
 
       return {
@@ -533,7 +515,7 @@ export async function composerRender(ctx = {}) {
       '-crf', '20',
       '-pix_fmt', 'yuv420p',
       compositeFile,
-    ])
+    ], { signal })
 
     visualTrackFile = compositeFile
   }
@@ -600,7 +582,7 @@ export async function composerRender(ctx = {}) {
   const voiceTrack = path.join(tmp, 'voice.wav')
   const hasVoice = voiceEntries.length > 0
   if (hasVoice) {
-    await buildVoiceTrack(voiceEntries, totalDuration + 0.5, voiceTrack)
+    await buildVoiceTrack(voiceEntries, totalDuration + 0.5, voiceTrack, { signal })
   }
 
   const sfxTrack = path.join(tmp, 'sfx.wav')
@@ -629,7 +611,7 @@ export async function composerRender(ctx = {}) {
       '-ac', '2', '-ar', '48000',
       '-c:a', 'pcm_s16le',
       sfxTrack,
-    ])
+    ], { signal })
   }
 
   // Find BGM Music (Respect track mute, track volume, multiple clips with timing offsets)
@@ -665,6 +647,8 @@ export async function composerRender(ctx = {}) {
             offsetSec: Math.max(0, Number(mc.start_at_sec) || 0),
             durationSec: dur,
             volume: effectiveVol,
+            fadeInSec: Number(mc.fade_in_sec || 0),
+            fadeOutSec: Number(mc.fade_out_sec || 0),
             loop: clipMeta.loop !== false,
           })
         }
@@ -676,6 +660,8 @@ export async function composerRender(ctx = {}) {
       offsetSec: 0,
       durationSec: totalDuration,
       volume: 1.0,
+      fadeInSec: 0,
+      fadeOutSec: 0,
       loop: false,
     })
   }
@@ -692,7 +678,15 @@ export async function composerRender(ctx = {}) {
       const vol = Number.isFinite(e.volume) ? e.volume : 0.8
       const dur = e.durationSec ? Math.max(0.5, e.durationSec) : (totalDuration - (e.offsetSec || 0))
       const loopPart = e.loop ? `aloop=loop=-1:size=2e+09,atrim=0:${round2(dur)},` : `atrim=0:${round2(dur)},`
-      musFilters.push(`[${i}:a]aresample=48000,${loopPart}volume=${vol},adelay=${delayMs}:all=1[m${i}]`)
+      const af = [`aresample=48000`, `${loopPart}volume=${vol}`]
+      if (e.fadeInSec > 0) {
+        af.push(`afade=t=in:ss=0:d=${round2(Math.min(e.fadeInSec, dur / 2))}`)
+      }
+      if (e.fadeOutSec > 0 && dur > e.fadeOutSec) {
+        af.push(`afade=t=out:st=${round2(dur - e.fadeOutSec)}:d=${round2(e.fadeOutSec)}`)
+      }
+      af.push(`adelay=${delayMs}:all=1`)
+      musFilters.push(`[${i}:a]${af.join(',')}[m${i}]`)
       musLabels.push(`[m${i}]`)
     })
     if (musicEntries.length > 1) {
@@ -708,7 +702,7 @@ export async function composerRender(ctx = {}) {
       '-ac', '2', '-ar', '48000',
       '-c:a', 'pcm_s16le',
       musicTrack,
-    ])
+    ], { signal })
   }
 
   setProgress(75)
@@ -742,24 +736,24 @@ export async function composerRender(ctx = {}) {
     if (isDuckingEnabled) {
       audioFilter += `[${voiceIdx}:a]aresample=48000,asplit=2[v_side][v_mix];`
       audioFilter += `[${musicIdx}:a][v_side]sidechaincompress=threshold=0.03:ratio=6:attack=50:release=300[ducked_bgm];`
-      audioFilter += `[v_mix][ducked_bgm]amix=inputs=2:duration=first:normalize=0[vm_mix];`
+      audioFilter += `[v_mix][ducked_bgm]amix=inputs=2:duration=longest:normalize=0[vm_mix];`
     } else {
-      audioFilter += `[${voiceIdx}:a][${musicIdx}:a]amix=inputs=2:duration=first:normalize=0[vm_mix];`
+      audioFilter += `[${voiceIdx}:a][${musicIdx}:a]amix=inputs=2:duration=longest:normalize=0[vm_mix];`
     }
     if (sfxIdx !== -1) {
-      audioFilter += `[vm_mix][${sfxIdx}:a]amix=inputs=2:duration=first:normalize=0,${tail}`
+      audioFilter += `[vm_mix][${sfxIdx}:a]amix=inputs=2:duration=longest:normalize=0,${tail}`
     } else {
       audioFilter += `[vm_mix]${tail}`
     }
   } else if (voiceIdx !== -1) {
     if (sfxIdx !== -1) {
-      audioFilter += `[${voiceIdx}:a][${sfxIdx}:a]amix=inputs=2:duration=first:normalize=0,${tail}`
+      audioFilter += `[${voiceIdx}:a][${sfxIdx}:a]amix=inputs=2:duration=longest:normalize=0,${tail}`
     } else {
       audioFilter += `[${voiceIdx}:a]${tail}`
     }
   } else if (musicIdx !== -1) {
     if (sfxIdx !== -1) {
-      audioFilter += `[${musicIdx}:a][${sfxIdx}:a]amix=inputs=2:duration=first:normalize=0,${tail}`
+      audioFilter += `[${musicIdx}:a][${sfxIdx}:a]amix=inputs=2:duration=longest:normalize=0,${tail}`
     } else {
       audioFilter += `[${musicIdx}:a]${tail}`
     }
@@ -779,7 +773,7 @@ export async function composerRender(ctx = {}) {
       '-shortest',
       '-movflags', '+faststart',
       mixed,
-    ])
+    ], { signal })
   } else {
     // No voice, no music, no sfx: add silent audio track
     await ffmpeg([
@@ -793,7 +787,7 @@ export async function composerRender(ctx = {}) {
       '-t', String(roundDuration),
       '-movflags', '+faststart',
       mixed,
-    ])
+    ], { signal })
   }
 
   setProgress(85)
@@ -801,7 +795,7 @@ export async function composerRender(ctx = {}) {
 
   // 4. Burn Text Overlays (Strict: Do not burn if 0 text clips, throw on burn failure)
   const assRow = await query(
-    `SELECT storage_key FROM subtitles WHERE project_id = ? AND format = 'ass' ORDER BY rowid DESC LIMIT 1`,
+    `SELECT storage_key FROM subtitles WHERE project_id = ? AND format = 'ass' ORDER BY created_date DESC, id DESC LIMIT 1`,
     [project.id]
   )
   const assAbs = assRow[0] ? resolveStorageKey(assRow[0].storage_key) : path.join(prepDir, 'subtitles.ass')
@@ -814,7 +808,7 @@ export async function composerRender(ctx = {}) {
 
   if (burnSubtitles) {
     try {
-      await burnSubtitlesStyled(mixed, assAbs, finalPath)
+      await burnSubtitlesStyled(mixed, assAbs, finalPath, { signal })
     } catch (burnErr) {
       console.error(`[composerRender] Subtitle burn failed: ${burnErr.message}`)
       const err = new Error(`Lỗi kết xuất phụ đề văn bản: ${burnErr.message}`)
@@ -840,7 +834,7 @@ export async function composerRender(ctx = {}) {
   const thumbsAbs = ensureDir(path.join(outputsAbs, 'thumbs'))
   const thumbRel = `outputs/thumbs/${outId}.jpg`
   try {
-    await makeThumbnail(finalPath, Math.min(2, info.durationSec / 2), path.join(thumbsAbs, `${outId}.jpg`))
+    await makeThumbnail(finalPath, Math.min(2, info.durationSec / 2), path.join(thumbsAbs, `${outId}.jpg`), { signal })
   } catch (err) {
     console.warn(`[composerRender] makeThumbnail failed: ${err.message}`)
   }
@@ -856,6 +850,16 @@ export async function composerRender(ctx = {}) {
     thumbnailKey: thumbRel,
     runToken,
   })
+
+  // Intermediate cleanup of temporary files in segments/ and tmp/
+  try {
+    fs.rmSync(segDir, { recursive: true, force: true })
+    for (const f of [bgVideoPath, visualTrackFile, voiceTrack, sfxTrack, musicTrack, mixed]) {
+      if (f && fs.existsSync(f)) {
+        try { fs.unlinkSync(f) } catch (_) {}
+      }
+    }
+  } catch (_) {}
 
   setProgress(100)
   return {

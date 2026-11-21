@@ -18,8 +18,8 @@ router.use(authMiddleware)
 const tmpUploadsDir = ensureDir(path.join(config.storageDir, 'tmp_uploads'))
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, tmpUploadsDir),
-  filename: (req, file, cb) => {
+  destination: (_req, _file, cb) => cb(null, tmpUploadsDir),
+  filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname || '').toLowerCase()
     cb(null, `${uuidv4()}${ext}`)
   },

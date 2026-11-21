@@ -13,7 +13,7 @@ import {
 } from '../../media/mediaService.js'
 import { createOutput } from '../../services/outputService.js'
 import { config } from '../../config.js'
-import { isProjectRunOwned } from '../../services/projectAdmission.js'
+import { assertRunOwner } from '../../services/projectAdmission.js'
 import {
   tmpDirOf,
   ensureDir,
@@ -21,28 +21,8 @@ import {
   dimsForAspect,
   parseJsonSafe,
   round2,
+  mapWithConcurrency,
 } from '../context.js'
-
-async function assertRunOwner(projectId, runToken) {
-  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
-    const error = new Error('RUN_ABORTED')
-    error.code = 'RUN_ABORTED'
-    throw error
-  }
-}
-
-async function mapWithConcurrency(items, limit, worker) {
-  const results = new Array(items.length)
-  let next = 0
-  async function lane() {
-    while (next < items.length) {
-      const idx = next++
-      results[idx] = await worker(items[idx], idx)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane))
-  return results
-}
 
 // script.render — motion slides → concat → voice track → mix → optional ASS
 // burn → probe. The output row is inserted only AFTER every validation passes,

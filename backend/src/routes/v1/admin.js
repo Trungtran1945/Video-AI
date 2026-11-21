@@ -18,7 +18,7 @@ const router = Router()
 router.use(authMiddleware, requireRole('admin'), sensitiveNoCache)
 
 // GET /api/v1/admin/users
-router.get('/users', async (req, res) => {
+router.get('/users', async (_req, res) => {
   const users = await query('SELECT id, email, role, name, created_date FROM users ORDER BY created_date DESC')
   res.json(users)
 })
@@ -50,7 +50,7 @@ const ENV_KEY_NAMES = {
 }
 
 // GET /api/v1/admin/providers
-router.get('/providers', async (req, res) => {
+router.get('/providers', async (_req, res) => {
   const capabilities = Object.entries(CAPABILITY_PROVIDERS).map(([capability, ids]) => ({
     capability,
     providers: ids.map((id) => {
@@ -136,7 +136,7 @@ async function queueSnapshot(queue) {
     return { error: 'REDIS_UNAVAILABLE' }
   }
 }
-router.get('/queue-metrics', async (req, res) => {
+router.get('/queue-metrics', async (_req, res) => {
   const redisReady = isRedisReady()
   const defs = [
     ['projects', projectQueue],

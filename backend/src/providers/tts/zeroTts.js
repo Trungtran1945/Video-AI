@@ -18,7 +18,7 @@ import { ERROR_CODES } from '../../lib/providerErrors.js'
  *   → throw PROVIDER_UNAVAILABLE/RESPONSE_MALFORMED; verify header/ffprobe trước return.
  */
 export class ZeroTts {
-  constructor(apiKey) {
+  constructor(_apiKey) {
     this.id = 'zerotts'
     this.model = process.env.ZEROTTS_MODEL || process.env.ZEROTTS_MODEL_DIR || process.env.ZEROTTS_MODEL_ID || 'zerotts'
     this.voice = process.env.ZEROTTS_VOICE || 'maichi'

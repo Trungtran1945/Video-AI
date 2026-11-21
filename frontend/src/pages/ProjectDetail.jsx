@@ -141,7 +141,7 @@ export default function ProjectDetail() {
   // AI Media Composer state
   const [composerAssets, setComposerAssets] = useState([]);
   const [composerTracks, setComposerTracks] = useState([]);
-  const [composerClips, setComposerClips] = useState([]);
+  const [_composerClips, setComposerClips] = useState([]);
   const [savingComposerTimeline, setSavingComposerTimeline] = useState(false);
   const [arrangingTimeline, setArrangingTimeline] = useState(false);
   const [confirmResetTimeline, setConfirmResetTimeline] = useState(false);
@@ -156,6 +156,8 @@ export default function ProjectDetail() {
   const storeTracks = useTimelineStore((s) => s.tracks);
   const storeClips = useTimelineStore((s) => s.clips);
   const storeSelectedClipId = useTimelineStore((s) => s.selectedClipId);
+  const storeIsDirty = useTimelineStore((s) => s.isDirty);
+  const setStoreIsDirty = useTimelineStore((s) => s.setIsDirty);
   const setStoreClips = useTimelineStore((s) => s.setClips);
   const setStoreTracks = useTimelineStore((s) => s.setTracks);
   const setSelectedClipId = useTimelineStore((s) => s.setSelectedClipId);
@@ -372,7 +374,7 @@ export default function ProjectDetail() {
     if (video && video.src) {
       try {
         video.currentTime = clamped;
-      } catch (_) {}
+      } catch {}
     }
     setCurrentTime(clamped);
     setStoreCurrentTime(clamped);
@@ -381,7 +383,7 @@ export default function ProjectDetail() {
   const handleSpeedChange = useCallback((speed) => {
     const video = videoRef.current || document.getElementById('output-video');
     if (video) {
-      try { video.playbackRate = speed; } catch (_) {}
+      try { video.playbackRate = speed; } catch {}
     }
     setPlaybackSpeed(speed);
   }, []);
@@ -394,7 +396,7 @@ export default function ProjectDetail() {
         if (vol > 0 && muted) {
           video.muted = false;
         }
-      } catch (_) {}
+      } catch {}
     }
     setVolume(vol);
     if (vol > 0 && muted) {
@@ -405,7 +407,7 @@ export default function ProjectDetail() {
   const handleMuteToggle = useCallback(() => {
     const video = videoRef.current || document.getElementById('output-video');
     if (video) {
-      try { video.muted = !video.muted; } catch (_) {}
+      try { video.muted = !video.muted; } catch {}
     }
     setMuted(!muted);
   }, [muted]);
@@ -648,14 +650,14 @@ export default function ProjectDetail() {
             text_content: c.text_content || c.content || c.textContent || '',
             style: (() => {
               if (typeof c.style_json === 'string') {
-                try { return JSON.parse(c.style_json); } catch (_) { return c.style || {}; }
+                try { return JSON.parse(c.style_json); } catch { return c.style || {}; }
               }
               return c.style || {};
             })(),
             style_json: typeof c.style_json === 'string' ? c.style_json : (c.style ? JSON.stringify(c.style) : null),
             meta: (() => {
               if (typeof c.meta === 'string') {
-                try { return JSON.parse(c.meta); } catch (_) { return c.meta || {}; }
+                try { return JSON.parse(c.meta); } catch { return c.meta || {}; }
               }
               return c.meta || {};
             })(),
@@ -672,6 +674,7 @@ export default function ProjectDetail() {
           setComposerClips(normClips);
           if (normTracks.length > 0) setStoreTracks(normTracks);
           setStoreClips(normClips);
+          setStoreIsDirty(false);
         }
         setComposerAssets(normalizeAssets(p.assets));
       }
@@ -709,6 +712,19 @@ export default function ProjectDetail() {
       cancelled = true;
     };
   }, [load, loadDubData]);
+
+  // Cảnh báo người dùng khi thoát trang nếu timeline đang có thay đổi chưa lưu
+  useEffect(() => {
+    if (!isComposer || !storeIsDirty) return;
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [isComposer, storeIsDirty]);
 
   const loadGlossary = useCallback(async () => {
     if (!id) return;
@@ -1097,6 +1113,7 @@ export default function ProjectDetail() {
         });
       }
       composerInitialLoadedRef.current = false;
+      setStoreIsDirty(false);
       await load();
     } catch (err) {
       toast({
@@ -1114,6 +1131,7 @@ export default function ProjectDetail() {
       setResettingTimeline(true);
       setStoreClips([]);
       setSelectedClipId(null);
+      setStoreIsDirty(false);
       await projectsApi.saveTimeline(id, {
         tracks: storeTracks && storeTracks.length > 0 ? storeTracks : composerTracks,
         clips: [],
@@ -1141,6 +1159,7 @@ export default function ProjectDetail() {
         tracks: storeTracks && storeTracks.length > 0 ? storeTracks : composerTracks,
         clips: storeClips,
       });
+      setStoreIsDirty(false);
       toast({
         title: 'Đã lưu Timeline',
         description: 'Tất cả thay đổi trên các track và clip đã được đồng bộ.',
@@ -1530,13 +1549,10 @@ export default function ProjectDetail() {
     if (!seg?.id || retranslatingSegmentId || redubbingSegmentId) return;
     setRedubbingSegmentId(seg.id);
     try {
-      let res = null;
       try {
-        res = await projectsApi.redubSegment(id, seg.id);
+        await projectsApi.redubSegment(id, seg.id);
       } catch (err) {
-        if (err?.response?.status === 404) {
-          res = { success: true };
-        } else {
+        if (err?.response?.status !== 404) {
           throw err;
         }
       }
@@ -1794,10 +1810,18 @@ export default function ProjectDetail() {
                 type="button"
                 onClick={handleSaveComposerTimeline}
                 disabled={savingComposerTimeline || isPipelineActivelyRunning}
-                className="px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-muted text-foreground text-xs font-semibold transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-xs"
+                className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-xs ${
+                  storeIsDirty
+                    ? 'border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
+                    : 'border-border bg-card hover:bg-muted text-foreground'
+                }`}
+                title={storeIsDirty ? 'Có thay đổi chưa lưu trên timeline' : 'Dòng thời gian đã được lưu'}
               >
                 {savingComposerTimeline ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
                 <span>Lưu Timeline</span>
+                {storeIsDirty && (
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" title="Chưa lưu" />
+                )}
               </button>
 
               <button
@@ -3510,7 +3534,7 @@ function ScriptSegmentsShowcase({ segments, aspectRatio, projectId, scriptVersio
           description: `Đã sao chép lời thoại của ${segments.length} phân đoạn vào clipboard.`,
         });
       }
-    } catch (_) {
+    } catch {
       if (toast) {
         toast({
           variant: 'destructive',
@@ -3879,7 +3903,7 @@ function YoutubePublishDialog({ project, open, onClose, toast, onPublished }) {
             return;
           }
           if (Date.now() < deadline) setTimeout(poll, 3000);
-        } catch (_) {}
+        } catch {}
       };
       poll();
     } catch (err) {
@@ -4057,7 +4081,7 @@ function TranscriptEditor({
   redubbing,
   disabled,
   error,
-  compact = false,
+  compact: _compact = false,
   targetLanguage = 'vi',
   onLanguageChange,
   activeSegmentId = null,

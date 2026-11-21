@@ -114,7 +114,6 @@ export default function OcrTranslateModal({ isOpen, onClose, asset, projectId, o
     return () => {
       cancelled = true;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, asset?.id]);
 
   const handleRunOcr = async () => {

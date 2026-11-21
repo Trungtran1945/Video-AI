@@ -257,9 +257,8 @@ export default function Login() {
   return (
     <AuthLayout
       icon={LogIn}
-      title="Chào mừng trở lại"
-      subtitle="Đăng nhập vào tài khoản AI Shorts Factory của bạn"
-      shapeType="crystalTorus"
+      title="Đăng nhập"
+      subtitle="Truy cập hệ thống biên tập và sản xuất video"
     >
       {/* Tabs chuyển đổi giữa Mật khẩu và Email OTP */}
       <Tabs value={authMode} onValueChange={handleTabChange} className="w-full">

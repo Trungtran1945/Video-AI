@@ -36,7 +36,7 @@ const RETENTION_WHERE_STATUSES = [...PROJECT_RETAINABLE_STATUSES, 'success']
  * (retry ở sweep sau qua next_cleanup_attempt_at), KHÔNG tăng cleaned.
  * Chỉ success mới SET expires_at=NULL.
  */
-export async function processCleanup(job) {
+export async function processCleanup(_job) {
   const startedAt = Date.now()
   const uploadRecovery = await resumableUploadService.recoverUploadSessions()
   const uploads = await resumableUploadService.cleanupExpiredUploadSessions()
@@ -225,11 +225,11 @@ export async function startCleanupWorker(opts = {}) {
     logWorkerError(`[Cleanup] Worker error: ${err.message}`)
   })
 
-  worker.on('failed', (job, err) => {
+  worker.on('failed', (_job, err) => {
     console.error('[Cleanup] Job failed:', err.message)
   })
 
-  worker.on('completed', (job, result) => {
+  worker.on('completed', (_job, result) => {
     console.log(JSON.stringify({ event: 'cleanup_completed', ...result }))
   })
 

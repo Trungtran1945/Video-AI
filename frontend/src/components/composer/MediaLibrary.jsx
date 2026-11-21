@@ -280,7 +280,7 @@ export default function MediaLibrary({
         try {
           audioPreviewRef.current.pause();
           audioPreviewRef.current.src = '';
-        } catch (_) {}
+        } catch {}
       }
     };
   }, []);

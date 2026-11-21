@@ -67,22 +67,22 @@ console.log('--- Điểm 1: Frontend API Client (api/projects.js, api/extra.js) 
 }
 
 // -------------------------------------------------------------
-// Điểm 2: Wizard CreateProject 3rd Mode
+// Điểm 2: Wizard CreateProject 2-Mode Selection
 // -------------------------------------------------------------
-console.log('\n--- Điểm 2: Wizard CreateProject 3rd Mode (CreateProject.jsx) ---')
+console.log('\n--- Điểm 2: Wizard CreateProject 2-Mode Selection (CreateProject.jsx) ---')
 {
   const createProjectSrc = read('frontend/src/pages/CreateProject.jsx')
 
   assertCheck(
-    createProjectSrc.includes('SCRIPT_TO_VIDEO') || createProjectSrc.includes('AI_VIDEO'),
-    '2.1 SCRIPT_TO_VIDEO mode option exists',
-    'CreateProject.jsx chưa có lựa chọn mode SCRIPT_TO_VIDEO'
+    !createProjectSrc.includes('SCRIPT_TO_VIDEO') && !createProjectSrc.includes('AI_VIDEO'),
+    '2.1 SCRIPT_TO_VIDEO mode option removed from CreateProject.jsx',
+    'CreateProject.jsx vẫn còn chứa lựa chọn mode SCRIPT_TO_VIDEO'
   )
 
   assertCheck(
-    createProjectSrc.includes('scriptUploadId') || createProjectSrc.includes('uploadScript'),
-    '2.2 Script file upload handling exists',
-    'CreateProject.jsx chưa xử lý tải lên file kịch bản TXT/MD'
+    createProjectSrc.includes('TRANSLATE_DUB') && (createProjectSrc.includes('AI Media Composer') || createProjectSrc.includes('/composer')),
+    '2.2 Two modes retained: AI Media Composer and TRANSLATE_DUB',
+    'CreateProject.jsx chưa hỗ trợ đủ 2 chế độ AI Media Composer và TRANSLATE_DUB'
   )
 }
 

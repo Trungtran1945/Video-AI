@@ -44,18 +44,18 @@ export default function TimelineDemo() {
           </Link>
           <div className="w-[1px] h-5 bg-white/10" />
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-red-600 to-amber-500 flex items-center justify-center shadow-lg shadow-red-500/20">
-              <Film size={18} className="text-white" />
+            <div className="w-8 h-8 rounded-lg bg-secondary border border-white/10 flex items-center justify-center text-primary">
+              <Film size={16} />
             </div>
             <div>
-              <h1 className="text-sm font-bold tracking-tight text-white flex items-center gap-2">
-                <span>CapCut Timeline Studio</span>
-                <span className="text-[10px] font-mono font-normal bg-red-500/20 text-red-400 border border-red-500/30 px-1.5 py-0.2 rounded">
-                  PRO
+              <h1 className="text-sm font-medium tracking-tight text-white flex items-center gap-2">
+                <span>Studio Timeline Editor</span>
+                <span className="text-[10px] font-mono font-normal bg-secondary text-zinc-300 border border-white/10 px-1.5 py-0.5 rounded">
+                  Demo
                 </span>
               </h1>
               <p className="text-[11px] text-zinc-400">
-                Interactive Multi-track Video Editing Timeline
+                Trình biên tập đa rãnh tương tác thời gian thực
               </p>
             </div>
           </div>

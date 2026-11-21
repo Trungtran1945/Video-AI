@@ -65,13 +65,13 @@ export function createUploadRouter({
       throw error
     }
   }
-  const ensureLegacyStaging = (req, res, next) => {
+  const ensureLegacyStaging = (_req, _res, next) => {
     ensureUploadDirectory(path.join('tmp', 'legacy_uploads')).then(() => next()).catch(next)
   }
 
   const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, legacyRoot),
-    filename: (req, file, cb) => {
+    destination: (_req, _file, cb) => cb(null, legacyRoot),
+    filename: (req, _file, cb) => {
       const filename = `${legacyUuid()}.upload`
       req.legacyUploadPath = path.join(legacyRoot, filename)
       markLegacyUploadActive(req.legacyUploadPath)

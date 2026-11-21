@@ -75,7 +75,15 @@ export default function ClipInspector({
   const isVisualClip = clipType === 'image' || clipType === 'video';
   const isVideoClip = clipType === 'video';
 
-  const meta = selectedClip.meta || {};
+  let meta = {};
+  try {
+    if (typeof selectedClip.meta === 'string') {
+      meta = JSON.parse(selectedClip.meta);
+    } else if (selectedClip.meta && typeof selectedClip.meta === 'object') {
+      meta = selectedClip.meta;
+    }
+  } catch {}
+
   const currentAsset = (assets || []).find(
     (a) => a.id === (selectedClip.asset_id || selectedClip.assetId || selectedClip.audio_id || selectedClip.voice_audio_id)
   );
@@ -96,7 +104,7 @@ export default function ClipInspector({
     } else if (selectedClip.style && typeof selectedClip.style === 'object') {
       textStyle = { ...textStyle, ...selectedClip.style };
     }
-  } catch (_) {}
+  } catch {}
 
   const handleStartChange = (val) => {
     setStartInput(val);
@@ -246,6 +254,36 @@ export default function ClipInspector({
               />
             </div>
           </div>
+
+          {(Number(selectedClip.in_sec) > 0 || (selectedClip.out_sec != null && Number(selectedClip.out_sec) !== Number(selectedClip.duration))) && (
+            <div className="pt-2 border-t border-border/50 flex items-center justify-between text-[10px] text-muted-foreground font-mono">
+              <span>Đoạn cắt gốc (Trim in/out):</span>
+              <span>
+                {Number(selectedClip.in_sec || 0).toFixed(1)}s → {Number(selectedClip.out_sec || 0).toFixed(1)}s
+              </span>
+            </div>
+          )}
+
+          {(isVideoClip || isAudioClip) && (
+            <div className="pt-2 border-t border-border/50 flex items-center justify-between">
+              <span className="text-[11px] text-muted-foreground">Tốc độ phát (Speed):</span>
+              <select
+                value={String(selectedClip.speed ?? 1.0)}
+                onChange={(e) =>
+                  onUpdateClip?.(selectedClip.id, {
+                    speed: parseFloat(e.target.value) || 1.0,
+                  })
+                }
+                className="px-2 py-0.5 text-xs rounded-md bg-background border border-border text-foreground font-mono focus:outline-none cursor-pointer"
+              >
+                {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => (
+                  <option key={s} value={s}>
+                    {s}x
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         {/* Visual Clip Controls (Image or Video) */}

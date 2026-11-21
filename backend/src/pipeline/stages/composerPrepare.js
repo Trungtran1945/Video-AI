@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import { query, insert, run } from '../../db/query.js'
-import { isProjectRunOwned } from '../../services/projectAdmission.js'
+import { assertRunOwner } from '../../services/projectAdmission.js'
 import { ffmpeg } from '../../media/ffmpeg.js'
 import {
   tmpDirOf,
@@ -11,14 +11,6 @@ import {
   toStorageKey,
   dimsForAspect,
 } from '../context.js'
-
-async function assertRunOwner(projectId, runToken) {
-  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
-    const error = new Error('RUN_ABORTED')
-    error.code = 'RUN_ABORTED'
-    throw error
-  }
-}
 
 function fmtAssTime(sec) {
   const s = Math.max(0, Number(sec) || 0)
@@ -99,7 +91,7 @@ export async function composerPrepare(ctx = {}) {
         '-y', '-i', srcPath,
         '-vf', `scale=w=${width}:h=${height}:force_original_aspect_ratio=decrease:force_divisible_by=2`,
         outPrepImage,
-      ])
+      ], { signal })
     } catch (err) {
       console.warn(`[composerPrepare] Scale image failed for ${c.id}: ${err.message}`)
       try { fs.copyFileSync(srcPath, outPrepImage) } catch (_) {}
@@ -216,7 +208,7 @@ export async function composerPrepare(ctx = {}) {
 
     const outPrepWav = path.join(prepDir, `voice_${ac.id}.wav`)
     try {
-      await ffmpeg(['-y', '-i', srcAudio, '-ar', '48000', '-ac', '2', outPrepWav])
+      await ffmpeg(['-y', '-i', srcAudio, '-ar', '48000', '-ac', '2', outPrepWav], { signal })
     } catch (err) {
       console.warn(`[composerPrepare] Resample audio failed for ${ac.id}: ${err.message}`)
     }

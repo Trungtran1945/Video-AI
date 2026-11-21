@@ -6,6 +6,7 @@ import {
   ZoomIn,
   ZoomOut,
   Magnet,
+  Scissors,
   SkipBack,
   SkipForward,
   ChevronDown,
@@ -62,6 +63,7 @@ export default function VideoTimeline({
     setIsPlaying: setStoreIsPlaying,
     snappingEnabled,
     toggleSnapping,
+    splitClip,
   } = useTimelineStore();
 
   const scrollContainerRef = useRef(null);
@@ -278,7 +280,32 @@ export default function VideoTimeline({
   const tracksHeight = tracks.length * 56;
   const totalRulerAndTracksHeight = tracksHeight + 36;
 
-  // Global Keyboard Shortcuts (Space: Play/Pause, Arrow: scrub)
+  const handleSplit = useCallback(() => {
+    if (readOnly) return;
+    const currentClips = clips || [];
+    let target = currentClips.find((c) => c.id === selectedClipId);
+    if (!target) {
+      // Find clip under playhead
+      target = currentClips.find((c) => {
+        const start = Number(c.start ?? c.start_at_sec ?? 0);
+        const inSec = Number(c.in_sec ?? 0);
+        const dur = Number(c.duration ?? (c.out_sec != null ? c.out_sec - inSec : 4));
+        return activeCurrentTime > start + 0.15 && activeCurrentTime < start + dur - 0.15;
+      });
+    }
+    if (target) {
+      const start = Number(target.start ?? target.start_at_sec ?? 0);
+      const inSec = Number(target.in_sec ?? 0);
+      const dur = Number(target.duration ?? (target.out_sec != null ? target.out_sec - inSec : 4));
+      const splitTime =
+        activeCurrentTime > start + 0.15 && activeCurrentTime < start + dur - 0.15
+          ? activeCurrentTime
+          : start + dur / 2;
+      splitClip(target.id, splitTime);
+    }
+  }, [readOnly, clips, selectedClipId, activeCurrentTime, splitClip]);
+
+  // Global Keyboard Shortcuts (Space: Play/Pause, Arrow: scrub, S: Split)
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
@@ -292,12 +319,15 @@ export default function VideoTimeline({
       } else if (e.key === 'ArrowRight') {
         e.preventDefault();
         handleSeek(activeCurrentTime + (e.shiftKey ? 1 : 0.1));
+      } else if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        handleSplit();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeCurrentTime, handleSeek, handleTogglePlay]);
+  }, [activeCurrentTime, handleSeek, handleTogglePlay, handleSplit]);
 
   // Auto-scroll timeline to keep playhead visible during playback
   useEffect(() => {
@@ -430,6 +460,16 @@ export default function VideoTimeline({
                 {propMuted ? 'Tắt tiếng' : 'Tiếng'}
               </button>
             )}
+            <button
+              type="button"
+              onClick={handleSplit}
+              title="Tách clip tại vị trí con trỏ (S)"
+              aria-label="Tách clip tại vị trí con trỏ"
+              className="flex items-center gap-1.5 px-2.5 py-2 sm:py-1 min-h-[36px] rounded-lg text-xs font-semibold border transition-colors bg-background hover:bg-muted border-border/60 text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring cursor-pointer"
+            >
+              <Scissors size={12} />
+              <span className="hidden sm:inline">Tách clip (S)</span>
+            </button>
             <button
               type="button"
               onClick={toggleSnapping}
@@ -599,6 +639,13 @@ export default function VideoTimeline({
                   ←/→
                 </kbd>
                 <span>Scrub</span>
+              </span>
+
+              <span className="flex items-center gap-1">
+                <kbd className="px-1 py-0.2 bg-background border border-border rounded text-[9px] font-mono text-foreground">
+                  S
+                </kbd>
+                <span>Tách clip</span>
               </span>
             </div>
 

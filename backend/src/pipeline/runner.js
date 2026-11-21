@@ -27,6 +27,7 @@ import {
   runProjectOwned,
   touchProjectLease,
   isProjectRunOwned,
+  assertRunOwner,
 } from '../services/projectAdmission.js'
 
 function isRateLimitError(err) {
@@ -199,7 +200,7 @@ export async function resolveGenerationSnapshot(projectId, effectiveFrom, projec
   return current
 }
 
-async function startDubSequential(project, setProgress, results, signal, runToken = null, forceTranscript = false, generation = { transcriptVersionSnapshot: null }) {
+async function startDubSequential(project, _setProgress, results, signal, runToken = null, forceTranscript = false, generation = { transcriptVersionSnapshot: null }) {
   const projectId = project.id
   const firstStage = 'dub.stt'
 
@@ -444,14 +445,6 @@ async function estimateStageRequests(project, stageType) {
   return 10
 }
 
-async function assertRunOwner(projectId, runToken) {
-  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
-    const error = new Error('RUN_ABORTED')
-    error.code = 'RUN_ABORTED'
-    throw error
-  }
-}
-
 async function runOwnedSql(projectId, runToken, sql, params = []) {
   const updated = await runProjectOwned(projectId, runToken, sql, params)
   if (runToken && !updated) {
@@ -548,6 +541,10 @@ async function clearArtifacts(projectId, kinds, runToken = null) {
 }
 
 function checkInputs(project) {
+  // MEDIA_COMPOSER has no source video — its inputs are timeline clips and uploaded media assets.
+  if (isComposerMode(project.mode)) {
+    return
+  }
   // SCRIPT_TO_VIDEO has no source video — its input is the normalized script.
   if (isScriptProject(project)) {
     const scriptAbs = resolveStorageKey(project.script_key)

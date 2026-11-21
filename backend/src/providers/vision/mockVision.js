@@ -22,7 +22,7 @@ export class MockVision {
    * @param {Buffer|string} image
    * @returns {Promise<{description: string}>}
    */
-  async analyze(image) {
+  async analyze(_image) {
     return { description: 'Mock image analysis: placeholder description' }
   }
 

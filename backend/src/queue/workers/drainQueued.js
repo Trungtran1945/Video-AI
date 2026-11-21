@@ -19,7 +19,7 @@ const logWorkerError = createThrottledLogger(30000)
  * cũ nhất khi user đó có slot RUNNING trống.
  * Đồng thời dọn các project stuck 'running' quá lâu (backend crash mid-pipeline).
  */
-async function processDrainQueued(job) {
+async function processDrainQueued(_job) {
   const maxConcurrent = config.maxConcurrentProjectsPerUser
 
   // ── 1. Recover stale projects via the shared service ──
@@ -37,7 +37,7 @@ async function processDrainQueued(job) {
   // ── 2. Drain queued projects ──
   // Review-parked script projects are waiting for the user, not for a slot.
   const usersWithQueued = await queryOne(
-    `SELECT DISTINCT user_id FROM projects WHERE status = 'queued' AND COALESCE(script_review_required, 0) = 0`
+    `SELECT DISTINCT user_id FROM projects WHERE status = 'queued' AND COALESCE(script_review_required, FALSE) = FALSE`
   )
 
   if (!usersWithQueued) return { drained: 0, recovered }
@@ -47,7 +47,7 @@ async function processDrainQueued(job) {
   // Get all unique user_ids with queued projects
   const rows = await query(
     `SELECT user_id, COUNT(*) as cnt FROM projects
-     WHERE status = 'queued' AND COALESCE(script_review_required, 0) = 0
+     WHERE status = 'queued' AND COALESCE(script_review_required, FALSE) = FALSE
      GROUP BY user_id`
   )
 
@@ -68,7 +68,7 @@ async function processDrainQueued(job) {
       // Get oldest queued project for this user
       const oldest = await queryOne(
         `SELECT id, mode FROM projects
-         WHERE user_id = ? AND status = 'queued' AND COALESCE(script_review_required, 0) = 0
+         WHERE user_id = ? AND status = 'queued' AND COALESCE(script_review_required, FALSE) = FALSE
          ORDER BY created_date ASC LIMIT 1`,
         [userId]
       )
@@ -128,11 +128,11 @@ export async function startDrainQueuedWorker(opts = {}) {
     logWorkerError(`[DrainQueued] Worker error: ${err.message}`)
   })
 
-  worker.on('failed', (job, err) => {
+  worker.on('failed', (_job, err) => {
     console.error('[DrainQueued] Job failed:', err.message)
   })
 
-  worker.on('completed', (job, result) => {
+  worker.on('completed', (_job, result) => {
     if (result.recovered > 0) {
       console.log(`[DrainQueued] Recovered ${result.recovered} stuck project(s)`)
     }

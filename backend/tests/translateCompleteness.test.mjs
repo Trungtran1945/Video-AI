@@ -102,6 +102,8 @@ let n = 0
 async function makeProject({ sources, presetSlug = null }) {
   n++
   const userId = `uc${n}`, projectId = `pc${n}`
+  await run('INSERT INTO users (id, email, password, role) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING',
+    [userId, `${userId}@test.local`, 'hash', 'user'])
   await run('INSERT OR IGNORE INTO settings (user_id, active_llm_provider, active_translate_provider) VALUES (?, ?, ?)',
     [userId, 'gemini', 'google_translate'])
   const params = { targetLanguage: 'vi', sourceLanguage: 'en', tier: 'free' }

@@ -10,6 +10,7 @@ import { Link } from 'react-router-dom';
 import { Video, Layers, ListOrdered, HardDrive, Cpu, Clock, ArrowRight, Plus, CheckCircle2, Film, Clapperboard, Pencil, Check, X, Loader2 } from 'lucide-react';
 import { STAGE_LABELS, formatDate, isCompletedStatus } from '@/lib/constants';
 import { useToast } from '@/components/ui/use-toast';
+import { useProjectRename } from '@/hooks/useProjectRename';
 
 export default function Dashboard() {
   const [loading, setLoading] = useState(true);
@@ -18,10 +19,23 @@ export default function Dashboard() {
   const [jobs, setJobs] = useState([]);
   const [logs, setLogs] = useState([]);
   const [providers, setProviders] = useState(null);
-  const [editingProjectId, setEditingProjectId] = useState(null);
-  const [editingTitle, setEditingTitle] = useState('');
-  const [savingRename, setSavingRename] = useState(false);
   const { toast } = useToast();
+  const {
+    editingProjectId,
+    editingTitle,
+    setEditingTitle,
+    savingRename,
+    handleStartRename,
+    handleCancelRename,
+    handleSaveRename,
+  } = useProjectRename({
+    onRenamed: (projectId, cleanTitle) => {
+      setProjects((prev) =>
+        (prev || []).map((p) => (p.id === projectId ? { ...p, title: cleanTitle } : p))
+      );
+    },
+    toast,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -63,79 +77,27 @@ export default function Dashboard() {
   // D4: đủ 7 bước TRANSLATE_DUB (gồm dub.mask), khớp DUB_STAGES_ALL ở ProjectDetail.
   const dubStages = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.mask', 'dub.ttsAlign', 'dub.render'].map(s => STAGE_LABELS[s]);
 
-  const handleStartRename = (e, project) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setEditingProjectId(project.id);
-    setEditingTitle(project.title);
-  };
-
-  const handleCancelRename = (e) => {
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-    setEditingProjectId(null);
-    setEditingTitle('');
-  };
-
-  const handleSaveRename = async (e, projectId) => {
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-    const cleanTitle = editingTitle.trim();
-    if (!cleanTitle) {
-      toast({
-        variant: 'destructive',
-        title: 'Tên dự án không được để trống',
-      });
-      return;
-    }
-    setSavingRename(true);
-    try {
-      await projectsApi.rename(projectId, cleanTitle);
-      setProjects((prev) =>
-        (prev || []).map((p) => (p.id === projectId ? { ...p, title: cleanTitle } : p))
-      );
-      toast({
-        title: 'Đã đổi tên dự án',
-        description: `Dự án đã được đổi tên thành “${cleanTitle}”.`,
-      });
-      setEditingProjectId(null);
-      setEditingTitle('');
-    } catch (err) {
-      toast({
-        variant: 'destructive',
-        title: 'Lỗi đổi tên dự án',
-        description: err?.response?.data?.message || err.message,
-      });
-    } finally {
-      setSavingRename(false);
-    }
-  };
-
   return (
     <Layout>
       <div className="p-6 lg:p-8 max-w-7xl mx-auto space-y-8">
         <PageHeader
-          title="Bảng Điều Khiển"
+          title="Bảng điều khiển"
           subtitle="Tổng quan hoạt động sản xuất video, tiến trình pipeline và trạng thái dịch vụ AI"
           action={
             <div className="flex items-center gap-2">
               <Link
                 to="/composer"
-                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs sm:text-sm font-semibold transition-colors shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border bg-secondary hover:bg-secondary/80 text-foreground text-xs sm:text-sm font-normal transition-colors"
               >
-                <Clapperboard className="w-4 h-4" />
-                <span>Mở AI Media Composer</span>
+                <Clapperboard className="w-4 h-4 text-primary" />
+                <span>Media Composer</span>
               </Link>
               <Link
                 to="/projects/new"
-                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-medium transition-colors"
               >
                 <Plus className="w-4 h-4" />
-                <span>Tạo Dự Án Mới</span>
+                <span>Tạo dự án mới</span>
               </Link>
             </div>
           }
@@ -156,7 +118,7 @@ export default function Dashboard() {
             <div>
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <h2 className="text-sm sm:text-base font-semibold text-foreground">Quy Trình Pipeline Tự Động</h2>
+                  <h2 className="text-sm sm:text-base font-medium text-foreground">Quy trình pipeline tự động</h2>
                   <p className="text-xs text-muted-foreground mt-0.5">Các công đoạn xử lý tuần tự theo từng chế độ sản xuất video</p>
                 </div>
               </div>
@@ -164,16 +126,16 @@ export default function Dashboard() {
               <div className="space-y-4">
                 {/* SUMMARY mode pipeline */}
                 <div>
-                  <div className="text-[11px] font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+                  <div className="text-[11px] font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-                    <span>Review Phim (SUMMARY — 8 bước)</span>
+                    <span>Review phim (SUMMARY — 8 bước)</span>
                   </div>
                   <div className="flex flex-wrap gap-1.5 sm:gap-2">
                     {summaryStages.map((stage, i) => (
                       <div key={i} className="flex items-center gap-1.5 sm:gap-2">
-                        <div className="flex items-center gap-2 px-2 py-1 rounded-lg bg-muted/50 border border-border/70 text-xs text-foreground">
-                          <span className="text-[10px] text-muted-foreground font-mono font-bold">{i + 1}</span>
-                          <span className="font-medium">{stage.label}</span>
+                        <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-secondary border border-border text-xs text-foreground">
+                          <span className="text-[10px] text-muted-foreground font-mono font-medium">{i + 1}</span>
+                          <span className="font-normal">{stage.label}</span>
                         </div>
                         {i < summaryStages.length - 1 && <ArrowRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />}
                       </div>
@@ -183,16 +145,16 @@ export default function Dashboard() {
 
                 {/* TRANSLATE_DUB mode pipeline */}
                 <div>
-                  <div className="text-[11px] font-semibold text-muted-foreground mb-2 flex items-center gap-1.5">
+                  <div className="text-[11px] font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    <span>Dịch &amp; Lồng Tiếng (TRANSLATE_DUB — 6 bước)</span>
+                    <span>Dịch &amp; lồng tiếng (TRANSLATE_DUB — 7 bước)</span>
                   </div>
                   <div className="flex flex-wrap gap-1.5 sm:gap-2">
                     {dubStages.map((stage, i) => (
                       <div key={i} className="flex items-center gap-1.5 sm:gap-2">
-                        <div className="flex items-center gap-2 px-2 py-1 rounded-lg bg-muted/50 border border-border/70 text-xs text-foreground">
-                          <span className="text-[10px] text-muted-foreground font-mono font-bold">{i + 1}</span>
-                          <span className="font-medium">{stage.label}</span>
+                        <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-secondary border border-border text-xs text-foreground">
+                          <span className="text-[10px] text-muted-foreground font-mono font-medium">{i + 1}</span>
+                          <span className="font-normal">{stage.label}</span>
                         </div>
                         {i < dubStages.length - 1 && <ArrowRight className="w-3 h-3 text-muted-foreground/40 shrink-0" />}
                       </div>
@@ -331,7 +293,7 @@ export default function Dashboard() {
                     <div key={name} className="flex items-center justify-between py-1.5 border-b border-border/40 last:border-0 text-xs">
                       <span className="text-muted-foreground font-medium">{name}</span>
                       <span className={`inline-flex items-center gap-1.5 font-semibold ${healthy ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-300'}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${healthy ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+                        <span className={`w-1.5 h-1.5 rounded-full ${healthy ? 'bg-emerald-500' : 'bg-amber-500'}`} />
                         <span>{healthy ? 'Sẵn sàng' : 'Gián đoạn'}</span>
                       </span>
                     </div>

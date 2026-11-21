@@ -41,7 +41,7 @@ export default function PipelineStatus({
   jobByStage = {},
   onRetry = null,
   retryingStage = null,
-  redisStatus = null, // 'connected' | 'disconnected' | null (từ GET /health)
+  redisStatus: _redisStatus = null, // 'connected' | 'disconnected' | null (từ GET /health)
 }) {
   // Find any failed/error stage to surface friendly error and quick retry
   const failedStageKey = stages.find((s) => ['failed', 'error', 'timeout'].includes(jobByStage[s]?.status));

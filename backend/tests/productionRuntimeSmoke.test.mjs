@@ -114,8 +114,17 @@ if (hasDocker && redisStartedByUs) {
     assert(actualPort > 0 && actualPort < 65536, `production boot reports ephemeral port (got ${actualPort})`)
     assert(actualPort !== 32279, 'no fixed test port in use')
 
+    const fetchWithFallback = async (path) => {
+      const headers = { 'x-forwarded-proto': 'https' }
+      try {
+        const r = await fetch(`http://127.0.0.1:${actualPort}${path}`, { headers })
+        if (r.ok || r.status === 503) return r
+      } catch (_) {}
+      return fetch(`http://localhost:${actualPort}${path}`, { headers })
+    }
+
     const health = await waitFor(async () => {
-      const r = await fetch(`http://127.0.0.1:${actualPort}/health`)
+      const r = await fetchWithFallback('/health')
       if (!r.ok && r.status !== 503) return null
       return r.json()
     }, 30000)
@@ -124,7 +133,7 @@ if (hasDocker && redisStartedByUs) {
     assert(health?.bullmq === 'available', `production /health bullmq available (got ${health?.bullmq})`)
     assert(fs.existsSync(path.join(tmpRoot, 'test.db')) || fs.existsSync(path.join(tmpRoot, 'storage')), 'database/storage initialized on production boot')
 
-    const readyRes = await fetch(`http://127.0.0.1:${actualPort}/ready`)
+    const readyRes = await fetchWithFallback('/ready')
     const ready = await readyRes.json()
     assert(readyRes.status === 200 && ready?.ready === true, `production /ready 200 ready:true (got ${readyRes.status}/${ready?.ready})`)
     assert(ready?.database?.persistenceState === 'HEALTHY', `production /ready persistenceState HEALTHY (got ${ready?.database?.persistenceState})`)

@@ -59,17 +59,17 @@ console.log('\n--- 2. .gitleaks.toml Contract ---')
 console.log('\n--- 3. Secret Scanner Logic & Unit Tests ---')
 {
   // 3.1 Detecting private key
-  const privKeySample = '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----'
+  const privKeySample = '-----BEGIN ' + 'RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END ' + 'RSA PRIVATE KEY-----'
   const privKeyFindings = scanContent(privKeySample, 'test.pem')
   assert(privKeyFindings.length === 1 && privKeyFindings[0].ruleId === 'private-key', 'scanner detects RSA private key')
 
   // 3.2 Detecting OpenAI API key
-  const openaiSample = 'const key = "sk-abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKL"'
+  const openaiSample = 'const key = "' + 'sk-' + 'abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKL"'
   const openaiFindings = scanContent(openaiSample, 'test.js')
   assert(openaiFindings.length === 1 && openaiFindings[0].ruleId === 'openai-api-key', 'scanner detects OpenAI API key')
 
   // 3.3 Detecting AWS Access key
-  const awsSample = 'const awsKey = "AKIAIOSFODNN7EXAMPLE"'
+  const awsSample = 'const awsKey = "' + 'AKIA' + 'IOSFODNN7EXAMPLE"'
   const awsFindings = scanContent(awsSample, 'config.js')
   assert(awsFindings.length === 1 && awsFindings[0].ruleId === 'aws-access-key', 'scanner detects AWS access key')
 

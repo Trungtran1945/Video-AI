@@ -45,7 +45,7 @@ export default function Logs() {
     <Layout>
       <div className="p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
         <PageHeader
-          title="Nhật Ký Lời Gọi"
+          title="Nhật ký hệ thống"
           subtitle={`${logs.length} bản ghi chi tiết các yêu cầu tới nhà cung cấp AI`}
         />
 

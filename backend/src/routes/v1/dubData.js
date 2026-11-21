@@ -51,7 +51,7 @@ function handleTranscriptError(res, error) {
   return sendError(res, 500, 'INTERNAL_ERROR', 'Không lưu được transcript')
 }
 
-router.get('/style-presets', async (req, res) => {
+router.get('/style-presets', async (_req, res) => {
   try {
     const rows = await query('SELECT slug, name, description FROM style_presets ORDER BY rowid ASC')
     res.json(rows)

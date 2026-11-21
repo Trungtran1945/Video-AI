@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { ArrowLeft, Trash2, XCircle, RotateCcw, Loader2, Play, Download, AlertCircle, ChevronDown, Youtube, AudioLines, Pencil, Check, X } from 'lucide-react';
 import { StatusBadge } from '@/lib/constants';
 import { projectsApi } from '@/api/projects';
+import { useProjectRename } from '@/hooks/useProjectRename';
 
 export default function ProjectHeader({
   project,
@@ -20,46 +21,40 @@ export default function ProjectHeader({
   onRename = null,
 }) {
   const [showRerunMenu, setShowRerunMenu] = useState(false);
-  const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [editingTitle, setEditingTitle] = useState('');
-  const [savingRename, setSavingRename] = useState(false);
   const [localTitle, setLocalTitle] = useState(project?.title || '');
   const menuRef = useRef(null);
+
+  const {
+    editingProjectId,
+    editingTitle,
+    setEditingTitle,
+    savingRename,
+    handleStartRename: startRenameHook,
+    handleCancelRename,
+    handleSaveRename: saveRenameHook,
+  } = useProjectRename({
+    onRenamed: (_id, cleanTitle) => {
+      setLocalTitle(cleanTitle);
+    },
+  });
+
+  const isEditingTitle = editingProjectId === (project?.id || 'header');
 
   useEffect(() => {
     setLocalTitle(project?.title || '');
   }, [project?.title]);
 
   const handleStartRename = () => {
-    setIsEditingTitle(true);
-    setEditingTitle(localTitle);
-  };
-
-  const handleCancelRename = () => {
-    setIsEditingTitle(false);
-    setEditingTitle('');
+    startRenameHook(null, { id: project?.id || 'header', title: localTitle });
   };
 
   const handleSaveRename = async () => {
     const cleanTitle = editingTitle.trim();
     if (!cleanTitle || cleanTitle === localTitle) {
-      setIsEditingTitle(false);
+      handleCancelRename();
       return;
     }
-    setSavingRename(true);
-    try {
-      if (onRename) {
-        await onRename(cleanTitle);
-      } else if (project?.id) {
-        await projectsApi.rename(project.id, cleanTitle);
-      }
-      setLocalTitle(cleanTitle);
-      setIsEditingTitle(false);
-    } catch (err) {
-      console.error('Rename error:', err);
-    } finally {
-      setSavingRename(false);
-    }
+    await saveRenameHook(null, project?.id, onRename || ((t) => projectsApi.rename(project.id, t)));
   };
 
   useEffect(() => {

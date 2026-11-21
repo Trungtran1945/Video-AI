@@ -23,6 +23,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { useToast } from '@/components/ui/use-toast';
+import { useProjectRename } from '@/hooks/useProjectRename';
 import ErrorState from '@/components/ErrorState';
 
 export default function Projects() {
@@ -33,11 +34,24 @@ export default function Projects() {
   const [modeFilter, setModeFilter] = useState('ALL'); // 'ALL' | 'SUMMARY' | 'TRANSLATE_DUB'
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
-  const [editingProjectId, setEditingProjectId] = useState(null);
-  const [editingTitle, setEditingTitle] = useState('');
-  const [savingRename, setSavingRename] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
+  const {
+    editingProjectId,
+    editingTitle,
+    setEditingTitle,
+    savingRename,
+    handleStartRename,
+    handleCancelRename,
+    handleSaveRename,
+  } = useProjectRename({
+    onRenamed: (projectId, cleanTitle) => {
+      setProjects((prev) =>
+        prev.map((p) => (p.id === projectId ? { ...p, title: cleanTitle } : p))
+      );
+    },
+    toast,
+  });
 
   useEffect(() => {
     (async () => {
@@ -74,51 +88,6 @@ export default function Projects() {
     }
   };
 
-  const handleStartRename = (e, project) => {
-    e.stopPropagation();
-    setEditingProjectId(project.id);
-    setEditingTitle(project.title);
-  };
-
-  const handleCancelRename = (e) => {
-    if (e) e.stopPropagation();
-    setEditingProjectId(null);
-    setEditingTitle('');
-  };
-
-  const handleSaveRename = async (e, projectId) => {
-    if (e) e.stopPropagation();
-    const cleanTitle = editingTitle.trim();
-    if (!cleanTitle) {
-      toast({
-        variant: 'destructive',
-        title: 'Tên dự án không được để trống',
-      });
-      return;
-    }
-    setSavingRename(true);
-    try {
-      await projectsApi.rename(projectId, cleanTitle);
-      setProjects((prev) =>
-        prev.map((p) => (p.id === projectId ? { ...p, title: cleanTitle } : p))
-      );
-      toast({
-        title: 'Đã đổi tên dự án',
-        description: `Dự án đã được đổi tên thành “${cleanTitle}”.`,
-      });
-      setEditingProjectId(null);
-      setEditingTitle('');
-    } catch (err) {
-      toast({
-        variant: 'destructive',
-        title: 'Lỗi đổi tên dự án',
-        description: err?.response?.data?.message || err.message,
-      });
-    } finally {
-      setSavingRename(false);
-    }
-  };
-
   const filtered = (projects || []).filter(p => {
     if (modeFilter !== 'ALL' && p.mode !== modeFilter) return false;
     return p.title?.toLowerCase().includes(search.toLowerCase());
@@ -130,15 +99,15 @@ export default function Projects() {
     <Layout>
       <div className="p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
         <PageHeader
-          title="Dự Án"
+          title="Danh sách dự án"
           subtitle={`${projects.length} dự án trong kho lưu trữ studio`}
           action={
             <Link
               to="/projects/new"
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-medium transition-colors"
             >
               <Plus className="w-4 h-4" />
-              <span>Tạo Dự Án Mới</span>
+              <span>Tạo dự án mới</span>
             </Link>
           }
         />

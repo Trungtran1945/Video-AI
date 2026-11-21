@@ -346,7 +346,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
             muted
             playsInline
             className="absolute inset-0 w-full h-full object-contain"
-            onLoadedMetadata={(e) => { measure(); }}
+            onLoadedMetadata={() => { measure(); }}
             onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime || 0)}
           />
         ) : (

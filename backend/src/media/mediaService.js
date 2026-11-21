@@ -67,9 +67,9 @@ export async function detectScenes(src, { threshold = 0.4, minSceneSec = 2 } = {
   return scenes
 }
 
-export async function makeThumbnail(src, atSec, out) {
+export async function makeThumbnail(src, atSec, out, { signal } = {}) {
   ensureDir(out)
-  await ffmpeg(['-y', '-ss', String(Math.max(0, atSec)), '-i', src, '-frames:v', '1', '-q:v', '3', out])
+  await ffmpeg(['-y', '-ss', String(Math.max(0, atSec)), '-i', src, '-frames:v', '1', '-q:v', '3', out], { signal })
   return out
 }
 
@@ -181,7 +181,7 @@ export async function concatClips(clips, out, { transitionDuration = 0.3 } = {})
   return out
 }
 
-export async function buildVoiceTrack(entries, totalSec, out) {
+export async function buildVoiceTrack(entries, totalSec, out, { signal } = {}) {
   ensureDir(out)
   if (!entries.length) throw new Error('Không có âm thanh giọng đọc để dựng track')
   const inputs = []
@@ -203,7 +203,7 @@ export async function buildVoiceTrack(entries, totalSec, out) {
     '-ac', '2', '-ar', '48000',
     '-c:a', 'pcm_s16le',
     out,
-  ])
+  ], { signal })
   return out
 }
 
@@ -288,7 +288,7 @@ export async function conformVideo({ src, inSec = 0, outSec, speed = 1, width, h
   return { file: out, durationSec: round3(await durationOf(out)) }
 }
 
-export async function applyMotionImage({ src, out, durationSec, width = 1080, height = 1920, zoomMax = 1.12, grade }) {
+export async function applyMotionImage({ src, out, durationSec, width = 1080, height = 1920, zoomMax = 1.12, grade, signal }) {
   ensureDir(out)
   const fps = 30
   const frames = Math.max(1, Math.round(durationSec * fps))
@@ -310,7 +310,7 @@ export async function applyMotionImage({ src, out, durationSec, width = 1080, he
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart',
     out,
-  ])
+  ], { signal })
   return { file: out, durationSec: round3(await durationOf(out)) }
 }
 
@@ -391,13 +391,13 @@ export async function normalizeLoudness(inFile, out, targetLufs = -16) {
 }
 
 // Burn-in phụ đề ASS có \pos định vị theo bbox cũ (docs/07 §2.14).
-export async function burnSubtitlesStyled(inFile, assPath, out, { timeout = 0 } = {}) {
+export async function burnSubtitlesStyled(inFile, assPath, out, { timeout = 0, signal } = {}) {
   ensureDir(out)
   const cwd = path.dirname(assPath)
   const base = path.basename(assPath)
   await ffmpeg(
     ['-y', '-i', inFile, '-vf', `ass=${base}`, ...(await encodeArgs()), '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out],
-    { cwd, timeout }
+    { cwd, timeout, signal }
   )
   return out
 }

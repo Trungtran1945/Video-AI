@@ -6,29 +6,29 @@ import { ThemeToggle } from '@/components/ThemeToggle';
 import QuotaBanner from '@/components/QuotaBanner';
 import {
   LayoutDashboard, FolderPlus, FolderKanban, ListOrdered, Film,
-  Settings, KeyRound, ScrollText, BarChart3, ShieldCheck, Sparkles,
+  Settings, KeyRound, ScrollText, BarChart3, ShieldCheck,
   LogOut, Menu, Cpu, X, User, Clapperboard
 } from 'lucide-react';
 
 const navItems = [
-  { label: 'Bảng Điều Khiển', path: '/dashboard', icon: LayoutDashboard },
-  { label: 'AI Media Composer', path: '/composer', icon: Clapperboard },
-  { label: 'Tạo Dự Án', path: '/projects/new', icon: FolderPlus },
-  { label: 'Dự Án', path: '/projects', icon: FolderKanban },
-  { label: 'Hàng Đợi Tạo', path: '/queue', icon: ListOrdered },
-  { label: 'Đầu Ra', path: '/outputs', icon: Film },
-  { label: 'Phân Tích', path: '/analytics', icon: BarChart3 },
+  { label: 'Bảng điều khiển', path: '/dashboard', icon: LayoutDashboard },
+  { label: 'Media Composer', path: '/composer', icon: Clapperboard },
+  { label: 'Tạo dự án mới', path: '/projects/new', icon: FolderPlus },
+  { label: 'Danh sách dự án', path: '/projects', icon: FolderKanban },
+  { label: 'Hàng đợi xử lý', path: '/queue', icon: ListOrdered },
+  { label: 'Đầu ra video', path: '/outputs', icon: Film },
+  { label: 'Phân tích & Thống kê', path: '/analytics', icon: BarChart3 },
 ];
 
 const settingsItems = [
-  { label: 'Cài Đặt', path: '/settings', icon: Settings },
-  { label: 'Nhà Cung Cấp', path: '/settings/providers', icon: Cpu },
-  { label: 'Khóa API', path: '/settings/api-keys', icon: KeyRound },
-  { label: 'Nhật Ký', path: '/logs', icon: ScrollText },
+  { label: 'Cài đặt chung', path: '/settings', icon: Settings },
+  { label: 'Nhà cung cấp AI', path: '/settings/providers', icon: Cpu },
+  { label: 'Quản lý khóa API', path: '/settings/api-keys', icon: KeyRound },
+  { label: 'Nhật ký hệ thống', path: '/logs', icon: ScrollText },
 ];
 
 const adminItems = [
-  { label: 'Bảng Admin', path: '/admin', icon: ShieldCheck },
+  { label: 'Quản trị hệ thống', path: '/admin', icon: ShieldCheck },
 ];
 
 const allRoutes = [...navItems, ...settingsItems, ...adminItems];
@@ -55,72 +55,69 @@ export default function Layout({ children }) {
         to={item.path}
         onClick={() => setMobileOpen(false)}
         aria-current={active ? 'page' : undefined}
-        className={`relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar ${
+        className={`relative flex items-center gap-2.5 px-3 py-2 rounded-md text-[13px] font-normal transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar ${
           active
-            ? 'bg-primary/10 text-primary font-semibold'
-            : 'text-sidebar-foreground/75 hover:text-sidebar-foreground hover:bg-sidebar-accent'
+            ? 'bg-sidebar-accent text-foreground font-medium'
+            : 'text-sidebar-foreground/75 hover:text-foreground hover:bg-sidebar-accent/60'
         }`}
       >
         <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-primary' : 'text-muted-foreground'}`} />
         <span className="truncate">{item.label}</span>
         {active && (
-          <motion.div
-            layoutId="sidebarActiveIndicator"
-            className="absolute left-0 top-1.5 bottom-1.5 w-1 rounded-r-full bg-primary"
-          />
+          <div className="absolute left-0 top-2 bottom-2 w-0.5 rounded-r bg-primary" />
         )}
       </Link>
     );
   };
 
   const SidebarContent = () => (
-    <div className="flex flex-col h-full w-[268px] bg-sidebar text-sidebar-foreground border-r border-sidebar-border select-none">
+    <div className="flex flex-col h-full w-[260px] bg-sidebar text-sidebar-foreground border-r border-sidebar-border select-none">
       {/* Brand logo */}
-      <div className="flex items-center justify-between px-5 h-16 border-b border-sidebar-border shrink-0">
-        <Link to="/dashboard" className="flex items-center gap-3 group">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-md shadow-blue-500/20 group-hover:scale-105 transition-transform">
-            <Sparkles className="w-5 h-5 text-white" />
+      <div className="flex items-center justify-between px-4 h-14 border-b border-sidebar-border shrink-0">
+        <Link to="/dashboard" className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-md bg-secondary border border-border/80 flex items-center justify-center text-primary">
+            <Film className="w-3.5 h-3.5" />
           </div>
           <div>
-            <div className="text-sm font-bold tracking-tight text-sidebar-foreground leading-tight">AI Shorts</div>
-            <div className="text-[10px] text-primary font-semibold tracking-wider uppercase">Factory Studio</div>
+            <div className="text-[13px] font-medium tracking-tight text-foreground leading-tight">AI Shorts Factory</div>
+            <div className="text-[10px] text-muted-foreground font-mono">studio v1.0</div>
           </div>
         </Link>
         <button
           onClick={() => setMobileOpen(false)}
-          className="lg:hidden p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-sidebar-accent"
+          className="lg:hidden p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-sidebar-accent"
           aria-label="Đóng thanh điều hướng"
         >
-          <X className="w-5 h-5" />
+          <X className="w-4 h-4" />
         </button>
       </div>
 
       {/* Navigation sections */}
-      <div className="flex-1 overflow-y-auto px-3.5 py-4 space-y-6">
+      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-5">
         <div>
-          <div className="px-3 mb-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-            Tổng Quan
+          <div className="px-3 mb-1.5 text-[11px] font-medium text-muted-foreground/80">
+            Tổng quan
           </div>
-          <div className="space-y-1">
+          <div className="space-y-0.5">
             {navItems.map(item => <NavLink key={item.path} item={item} />)}
           </div>
         </div>
 
         <div>
-          <div className="px-3 mb-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-            Cấu Hình
+          <div className="px-3 mb-1.5 text-[11px] font-medium text-muted-foreground/80">
+            Cấu hình
           </div>
-          <div className="space-y-1">
+          <div className="space-y-0.5">
             {settingsItems.map(item => <NavLink key={item.path} item={item} />)}
           </div>
         </div>
 
         {user?.role === 'admin' && (
         <div>
-          <div className="px-3 mb-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-            Hệ Thống
+          <div className="px-3 mb-1.5 text-[11px] font-medium text-muted-foreground/80">
+            Hệ thống
           </div>
-          <div className="space-y-1">
+          <div className="space-y-0.5">
             {adminItems.map(item => <NavLink key={item.path} item={item} />)}
           </div>
         </div>
@@ -190,27 +187,33 @@ export default function Layout({ children }) {
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Top Header Bar */}
-        <header className="h-14 lg:h-16 px-4 lg:px-8 border-b border-border bg-card/75 backdrop-blur-md flex items-center justify-between shrink-0 z-10">
+        <header className="h-14 px-4 lg:px-8 border-b border-border bg-card/60 backdrop-blur-md flex items-center justify-between shrink-0 z-10">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setMobileOpen(true)}
-              className="lg:hidden p-2 rounded-lg border border-border text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-primary"
+              className="lg:hidden p-1.5 rounded-md border border-border text-foreground hover:bg-secondary focus-visible:ring-2 focus-visible:ring-primary"
               aria-label="Mở menu điều hướng"
             >
-              <Menu className="w-5 h-5" />
+              <Menu className="w-4 h-4" />
             </button>
             <nav aria-label="Đường dẫn trang" className="hidden sm:flex items-center gap-2 text-xs">
-              <span className="text-muted-foreground font-medium">Video AI Studio</span>
-              <span className="text-muted-foreground/60">/</span>
-              <span className="font-semibold text-foreground">{currentRoute.label}</span>
+              <span className="text-muted-foreground">Video AI Studio</span>
+              <span className="text-muted-foreground/40">/</span>
+              <span className="font-medium text-foreground">{currentRoute.label}</span>
             </nav>
             <div className="sm:hidden flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-primary" />
-              <span className="text-sm font-bold text-foreground">{currentRoute.label}</span>
+              <Film className="w-3.5 h-3.5 text-primary" />
+              <span className="text-xs font-medium text-foreground">{currentRoute.label}</span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-3">
+            <div className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded border border-border/60 bg-secondary/60 text-[11px] font-mono text-muted-foreground">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block"></span>
+              <span>LIVE</span>
+              <span className="text-border">|</span>
+              <span className="text-foreground">REC 00:00:00</span>
+            </div>
             <ThemeToggle />
           </div>
         </header>

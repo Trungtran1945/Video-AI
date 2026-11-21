@@ -94,7 +94,7 @@ export async function startNotifyWorker(opts = {}) {
     logWorkerError(`[Notify] Worker error: ${err.message}`)
   })
 
-  worker.on('failed', (job, err) => {
+  worker.on('failed', (_job, err) => {
     console.error('[Notify] Job failed:', err.message)
   })
 

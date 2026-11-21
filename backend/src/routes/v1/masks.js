@@ -5,6 +5,7 @@ import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { sendError, ERR } from '../../lib/httpError.js'
 import { deriveAutoRegions } from '../../pipeline/stages/dubRender.js'
+import { parseParams } from '../../pipeline/context.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -139,9 +140,6 @@ export function validateMaskInput(body, { partial = false } = {}) {
   return { ok: true, value: out }
 }
 
-function parseParams(raw) {
-  try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
-}
 
 // Dựng mask legacy OCR suy ra từ transcript — single source of truth nằm ở
 // deriveAutoRegions (dubRender.js), route map sang JSON API với metadata rõ ràng.

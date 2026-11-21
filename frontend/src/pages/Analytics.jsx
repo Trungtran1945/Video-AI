@@ -103,7 +103,7 @@ export default function Analytics() {
     <Layout>
       <div className="p-6 lg:p-8 max-w-6xl mx-auto space-y-6">
         <PageHeader
-          title="Phân Tích &amp; Hiệu Suất"
+          title="Phân tích &amp; hiệu suất"
           subtitle="Thống kê lưu lượng sử dụng, tần suất tạo và chi phí nhà cung cấp"
         />
 

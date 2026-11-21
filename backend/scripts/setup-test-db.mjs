@@ -1,5 +1,5 @@
+import 'dotenv/config'
 import pg from 'pg'
-import { fileURLToPath } from 'node:url'
 
 export async function ensureTestDatabase(testDbUrl) {
   const parsed = new URL(testDbUrl)
@@ -52,16 +52,27 @@ export async function ensureTestDatabase(testDbUrl) {
 export async function cleanTestDatabase(testDbUrl) {
   process.env.DATABASE_URL = testDbUrl
   const { run } = await import('../src/db/query.js')
+  const { closePool } = await import('../src/db.js')
   let lastErr = null
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
     try {
       await run('TRUNCATE TABLE projects, users, provider_cache, provider_logs, project_cleanup_tasks, reset_tokens, sse_tickets, youtube_accounts, youtube_oauth_states, email_otps, otp_codes CASCADE;')
       lastErr = null
       break
     } catch (err) {
       lastErr = err
-      if (attempt < 3 && (err.code === '40P01' || err.code === '55P03' || err.message?.includes('deadlock'))) {
-        await new Promise((r) => setTimeout(r, 150 * attempt))
+      const isRetriable = err.code === '40P01' ||
+        err.code === '55P03' ||
+        err.code === '57P01' ||
+        err.code === 'ECONNRESET' ||
+        err.code === 'ECONNREFUSED' ||
+        err.message?.includes('deadlock') ||
+        err.message?.includes('Connection terminated') ||
+        err.message?.includes('ECONNRESET') ||
+        err.message?.includes('socket')
+      if (attempt < 5 && isRetriable) {
+        await closePool().catch(() => {})
+        await new Promise((r) => setTimeout(r, 200 * attempt))
       } else {
         throw err
       }

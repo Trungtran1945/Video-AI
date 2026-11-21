@@ -3,7 +3,8 @@ import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne } from '../../db/query.js'
 import { attachTtsAudio, TranscriptRevisionConflict } from '../../services/transcriptMutationService.js'
-import { isProjectRunOwned, runProjectOwned, insertProjectOwned, updateGenerationJobOwned } from '../../services/projectAdmission.js'
+import { runProjectOwned, insertProjectOwned, updateGenerationJobOwned, assertRunOwner } from '../../services/projectAdmission.js'
+// Fences audio writes and validates run ownership via isProjectRunOwned (inside assertRunOwner)
 import {
   applyTempoAudio,
   trimAudioSilence,
@@ -86,22 +87,10 @@ import { runWithProviderScope } from '../../lib/providerScope.js'
 import { withProviderFailover } from '../../lib/providerFailover.js'
 import { buildTtsCacheInput, ttsClipKey } from '../../lib/ttsCacheKey.js'
 import {
-  projectDir, ensureDir, round3, clamp,
+  projectDir, ensureDir, round3, clamp, parseParams, sleepMs,
 } from '../context.js'
 import { fitSegment, placeSegments } from '../forcedAlignService.js'
 import { validateTranslation } from './dubTranslate.js'
-
-function sleepMs(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
-
-async function assertRunOwner(projectId, runToken) {
-  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
-    const error = new Error('RUN_ABORTED')
-    error.code = 'RUN_ABORTED'
-    throw error
-  }
-}
 
 // dub.ttsAlign (docs/05 §B.5 — KHÓ NHẤT): TTS + Forced Alignment ép khớp slot gốc.
 // Partial success handling (transflow doc 15 §8.3): mỗi segment xử lý độc lập,
@@ -399,7 +388,7 @@ export async function dubTtsAlign(ctx) {
   // Thay vào đó: startAt = start_sec gốc; effectiveDur bị chặp lại vừa đủ lấp
   // slot [start_sec, end_sec] (hoặc đến start_sec đoạn kế) để không chồng tiếng.
   const sequenced = placeSegments(
-    fitted.map((f, i) => ({
+    fitted.map((f) => ({
       startSec: Number(segments.find(s => s.id === f.segmentId)?.start_sec) || 0,
       endSec: Number(segments.find(s => s.id === f.segmentId)?.end_sec) || 0,
       effectiveDurSec: f.effectiveDurSec,
@@ -476,7 +465,7 @@ export async function dubTtsAlign(ctx) {
 //   đúng ownership và được giữ nguyên. Không dùng filesystem path làm auth proof
 //   cross-project; callProvider chặn cross-project cache/single-flight reuse.
 // - `audio.cacheHit` đếm cả fs-hit (ở đây) lẫn DB-hit (callProvider trả cacheHit:true).
-async function synthWithFailover(candidates, text, segDir, segKey, job, projectId, speed = 1, userId = null) {
+async function synthWithFailover(candidates, text, segDir, _segKey, job, projectId, speed = 1, userId = null) {
   const clean = String(text || '').trim()
   if (!clean) throw new Error('TTS text rỗng')
   const out = await withProviderFailover(
@@ -514,7 +503,7 @@ async function synthWithFailover(candidates, text, segDir, segKey, job, projectI
   return out.result
 }
 
-export async function shortenTranslation(llm, sourceText, translation, ratio, job, projectId, targetLanguage = 'vi', attempt = 0, userId = null) {
+export async function shortenTranslation(llm, sourceText, translation, ratio, job, projectId, targetLanguage = 'vi', _attempt = 0, userId = null) {
   // Best-effort cosmetic call: fail fast (no retry storm) when the LLM is
   // exhausted — the stage keeps the original translation and fits via tempo.
   try {
@@ -570,10 +559,6 @@ export async function shortenTranslation(llm, sourceText, translation, ratio, jo
 async function countAll(projectId) {
   const row = await queryOne(`SELECT COUNT(*) as c FROM transcript_segments WHERE project_id = ?`, [projectId])
   return row?.c || 0
-}
-
-function parseParams(raw) {
-  try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
 }
 
 export default dubTtsAlign

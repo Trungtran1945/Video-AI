@@ -80,6 +80,27 @@ export function parseJsonSafe(text, fallback = null) {
   }
 }
 
+export function parseParams(raw) {
+  return parseJsonSafe(raw, {})
+}
+
+export function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+export async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length)
+  let next = 0
+  async function lane() {
+    while (next < items.length) {
+      const idx = next++
+      results[idx] = await worker(items[idx], idx)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane))
+  return results
+}
+
 export function extractJsonBlock(text) {
   if (!text) return null
   let t = String(text).trim()

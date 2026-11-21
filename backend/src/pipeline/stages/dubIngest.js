@@ -1,17 +1,9 @@
 import path from 'path'
 import fs from 'node:fs'
 import { updateById } from '../../db/query.js'
-import { updateProjectOwned, isProjectRunOwned } from '../../services/projectAdmission.js'
+import { updateProjectOwned, assertRunOwner } from '../../services/projectAdmission.js'
 import { probe, extractAudio, normalizeLoudness } from '../../media/mediaService.js'
 import { projectDir, tmpDirOf, ensureDir, requireSourceFile, toStorageKey } from '../context.js'
-
-async function assertRunOwner(projectId, runToken) {
-  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
-    const error = new Error('RUN_ABORTED')
-    error.code = 'RUN_ABORTED'
-    throw error
-  }
-}
 
 // dub.ingest (docs/05 §B.1): demux + chuẩn hoá LUFS cho STT.
 export async function dubIngest(ctx) {

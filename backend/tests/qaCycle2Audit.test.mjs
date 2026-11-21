@@ -34,7 +34,8 @@ console.log('=== QA Verification: Cycle 2 Audit (R1, R2, R3) ===\n')
 console.log('--- R1: Resumable Upload Resiliency ---')
 {
   const resumableSrc = read('frontend/src/api/resumableUpload.js')
-  const createProjSrc = read('frontend/src/pages/CreateProject.jsx')
+  const uploadStatusFile = path.resolve(__dirname, '../../frontend/src/components/create-project/UploadStatus.jsx')
+  const createProjSrc = read('frontend/src/pages/CreateProject.jsx') + (fs.existsSync(uploadStatusFile) ? '\n' + fs.readFileSync(uploadStatusFile, 'utf8') : '')
 
   // 1.1 Options & default budget
   assert(

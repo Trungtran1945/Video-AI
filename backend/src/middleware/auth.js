@@ -88,13 +88,13 @@ export function authMiddleware(req, res, next) {
       role: decoded.role || 'user',
     }
     next()
-  } catch (err) {
+  } catch (_err) {
     return sendError(res, 401, ERR.AUTH_TOKEN, 'Invalid or expired token')
   }
 }
 
 // Optional auth middleware: verifies token if present, proceeds unauthenticated if absent or invalid
-export function optionalAuth(req, res, next) {
+export function optionalAuth(req, _res, next) {
   const token = extractBearerToken(req)
   if (!token) return next()
   try {
@@ -123,7 +123,7 @@ export async function requireActiveUser(req, res, next) {
     }
     req.user.role = user.role
     next()
-  } catch (err) {
+  } catch (_err) {
     return sendError(res, 500, 'INTERNAL_ERROR', 'Failed to verify user status')
   }
 }

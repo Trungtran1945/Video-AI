@@ -14,35 +14,16 @@ import {
 import { TRANSITION_DURATION } from '../alignService.js'
 import { createOutput } from '../../services/outputService.js'
 import { config } from '../../config.js'
-import { isProjectRunOwned } from '../../services/projectAdmission.js'
+import { assertRunOwner } from '../../services/projectAdmission.js'
+// Checks run ownership via isProjectRunOwned (inside assertRunOwner)
 import {
   tmpDirOf,
   ensureDir,
   resolveStorageKey,
   requireSourceFile,
   round2,
+  mapWithConcurrency,
 } from '../context.js'
-
-async function assertRunOwner(projectId, runToken) {
-  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
-    const error = new Error('RUN_ABORTED')
-    error.code = 'RUN_ABORTED'
-    throw error
-  }
-}
-
-async function mapWithConcurrency(items, limit, worker) {
-  const results = new Array(items.length)
-  let next = 0
-  async function lane() {
-    while (next < items.length) {
-      const idx = next++
-      results[idx] = await worker(items[idx], idx)
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane))
-  return results
-}
 
 export async function summaryRender(ctx) {
   const { project, setProgress, signal, runToken, transcriptVersionSnapshot } = ctx

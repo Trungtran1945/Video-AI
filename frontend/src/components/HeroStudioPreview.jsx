@@ -20,12 +20,9 @@ export default function HeroStudioPreview() {
   }, [isPlaying]);
 
   return (
-    <div className="relative w-full max-w-5xl mx-auto mt-12 sm:mt-16 text-left">
-      {/* Ambient background glow behind the preview card */}
-      <div className="absolute -inset-1.5 bg-gradient-to-r from-blue-500/20 via-indigo-500/25 to-cyan-500/20 rounded-3xl blur-2xl opacity-70 pointer-events-none -z-10" />
-
+    <div className="relative w-full max-w-5xl mx-auto mt-12 sm:mt-14 text-left">
       {/* Main Studio Console Frame */}
-      <div className="relative rounded-2xl sm:rounded-3xl bg-card/85 dark:bg-card/75 border border-border/80 shadow-2xl backdrop-blur-xl overflow-hidden transition-all">
+      <div className="relative rounded-xl bg-card border border-border shadow-xs overflow-hidden transition-all">
         
         {/* Top Console Bar */}
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-3.5 border-b border-border/70 bg-muted/30">

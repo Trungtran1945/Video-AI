@@ -8,7 +8,7 @@ import { getProvider, listProvidersForCapability } from '../../providers/registr
 import { callProvider } from '../../lib/callProvider.js'
 import { withProviderFailover } from '../../lib/providerFailover.js'
 import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js'
-import { projectDir, extractJsonBlock } from '../context.js'
+import { projectDir, extractJsonBlock, parseParams, sleepMs } from '../context.js'
 import { TRANSLATION_VERSION } from '../../lib/cacheKey.js'
 import { buildSegmentTranslatePrompt, checkGlossaryCompliance } from '../translatePrompt.js'
 import { loadGlossaryForPrompt } from '../../services/glossaryService.js'
@@ -564,7 +564,7 @@ export async function dubTranslate(ctx) {
             prev: pool[si - 1]?.text || '', next: pool[si + 1]?.text || '',
             targetLanguage, system,
           }, { job, projectId: project.id, userId: project.user_id }) : null
-        } catch (e) {
+        } catch (_e) {
           fixed = null
           repairThrew = true
         }
@@ -654,7 +654,7 @@ export function assertTranslateComplete(segments, translations, unresolved) {
 // Runs deterministic guards always + best-effort AI judge when LLM exists.
 // BLOCK_RENDER issues merge into unresolved so assertTranslateComplete fails
 // the stage via the existing TRANSLATE_NEEDS_REVIEW quarantine.
-async function runQaAndMerge(pool, translations, unresolved, { llm, job, project, targetLanguage }) {
+async function runQaAndMerge(pool, translations, unresolved, { llm, job, project, targetLanguage: _targetLanguage }) {
   let qaIssues = []
   try {
     qaIssues = runDeterministicQa(pool, translations) || []
@@ -919,9 +919,6 @@ export function resolveFinalTranslation({ source, base, styled, targetLanguage =
   return null
 }
 
-function sleepMs(ms) {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 // Gọi restyleGroup với retry giới hạn cho lỗi TRANSIENT rồi fallback.
 // Không bao giờ throw: trả về { map, fallback } — caller dùng base cho
@@ -1382,9 +1379,6 @@ function groupByWindow(segments, windowSec) {
   return groups
 }
 
-function parseParams(raw) {
-  try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
-}
 
 function languageName(code) {
   const names = { vi: 'tiếng Việt', en: 'tiếng Anh' }

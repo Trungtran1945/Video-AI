@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import { v4 as uuidv4 } from 'uuid'
 import { query } from '../../db/query.js'
 import { createOutput } from '../../services/outputService.js'
-import { isProjectRunOwned } from '../../services/projectAdmission.js'
+import { assertRunOwner } from '../../services/projectAdmission.js'
 import {
   burnSubtitlesStyled,
   applySubtitleMasks,
@@ -14,7 +14,7 @@ import {
 } from '../../media/mediaService.js'
 import { ffmpeg } from '../../media/ffmpeg.js'
 import {
-  projectDir, ensureDir, requireSourceFile, toStorageKey, round3,
+  projectDir, ensureDir, requireSourceFile, toStorageKey, round3, parseParams,
 } from '../context.js'
 
 // dub.render (docs/05 §B.7, transflow doc 15 §5): mask/blur hardsub gốc → burn-in ASS → audio mix → mux NVENC.
@@ -23,14 +23,6 @@ import {
 const BURN_TIMEOUT = 20 * 60 * 1000
 const MASK_TIMEOUT = 20 * 60 * 1000
 const DUB_TRACK_TIMEOUT = 15 * 60 * 1000
-
-async function assertRunOwner(projectId, runToken) {
-  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
-    const error = new Error('RUN_ABORTED')
-    error.code = 'RUN_ABORTED'
-    throw error
-  }
-}
 
 export async function dubRender(ctx) {
   const { project, setProgress, signal, runToken } = ctx
@@ -480,10 +472,6 @@ function assTime(sec) {
   const h = Math.floor(total / 360000)
   const p2 = (n) => String(n).padStart(2, '0')
   return `${h}:${p2(m)}:${p2(s)}.${p2(cs)}`
-}
-
-function parseParams(raw) {
-  try { return raw ? JSON.parse(raw) : {} } catch (_) { return {} }
 }
 
 function parseAlignments(result) {

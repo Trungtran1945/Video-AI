@@ -141,7 +141,7 @@ async function auditDatabase(dbPath, label) {
       try {
         const nullRes = helper.get(`SELECT COUNT(*) as null_count FROM "${tableName}" WHERE "${c.name}" IS NULL`)
         nullCount = nullRes ? nullRes.null_count : 0
-      } catch (e) {
+      } catch (_e) {
         nullCount = 'error'
       }
 

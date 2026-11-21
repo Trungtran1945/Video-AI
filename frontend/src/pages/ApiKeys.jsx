@@ -58,7 +58,7 @@ export default function ApiKeys() {
     try {
       const q = await apiKeysApi.quota(provider);
       setQuotas(prev => ({ ...prev, [provider]: q }));
-    } catch (_) {}
+    } catch {}
   };
 
   useEffect(() => {
@@ -168,15 +168,15 @@ export default function ApiKeys() {
     <Layout>
       <div className="p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
         <PageHeader
-          title="Khóa API"
+          title="Quản lý khóa API"
           subtitle={`${keys.length} khóa nhà cung cấp được lưu mã hóa an toàn`}
           action={
             <button
               onClick={() => setShowAdd(!showAdd)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium transition shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-primary hover:bg-primary/90 text-primary-foreground text-xs sm:text-sm font-medium transition-colors"
             >
               <Plus className="w-4 h-4" />
-              <span>Thêm Khóa Mới</span>
+              <span>Thêm khóa mới</span>
             </button>
           }
         />

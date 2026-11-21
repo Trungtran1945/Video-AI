@@ -21,14 +21,21 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
   const clipRef = useRef(null);
 
   const isSelected = selectedClipId === clip.id;
-  const leftPx = clip.start * zoomLevel;
-  const widthPx = Math.max(20, clip.duration * zoomLevel);
+  const clipStart = Number(clip.start ?? clip.start_at_sec ?? 0);
+  const inSec = Math.max(0, Number(clip.in_sec ?? 0));
+  const clipDuration = Math.max(0.1, Number(clip.duration ?? (clip.out_sec != null ? clip.out_sec - inSec : 4)));
+  const leftPx = clipStart * zoomLevel;
+  const widthPx = Math.max(20, clipDuration * zoomLevel);
 
   const clipType = clip.clip_type || clip.type;
   const isEditable = clipType === 'translated' || clip.editable === true || ['background', 'video', 'image', 'voiceover', 'music', 'text'].includes(clipType);
 
   // Get clips on the same track for snapping (only same-layer snapping)
-  const sameTrackClips = clips.filter((c) => c.trackId === clip.trackId && c.id !== clip.id);
+  const sameTrackClips = clips.filter((c) => {
+    const tA = c.trackId || c.track_id;
+    const tB = clip.trackId || clip.track_id;
+    return tA && tB ? tA === tB && c.id !== clip.id : c.id !== clip.id;
+  });
 
   const handleClipPointerDown = (e) => {
     if (e.target.closest('.trim-handle') || e.target.closest('.floating-toolbar')) {
@@ -47,7 +54,7 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
     if (!isEditable || isTrackLocked) return;
 
     const startX = e.clientX;
-    const initialStart = clip.start;
+    const initialStart = clipStart;
     let hasMoved = false;
 
     const onPointerMove = (moveEvt) => {
@@ -64,7 +71,7 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
       if (snappingEnabled) {
         const { snappedStart, snappedGuideTime } = getMagneticSnap({
           candidateStart: rawCandidateStart,
-          duration: clip.duration,
+          duration: clipDuration,
           allClips: sameTrackClips,
           currentClipId: clip.id,
           currentTime,
@@ -102,8 +109,9 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
     setSelectedClipId(clip.id);
     setIsTrimming(true);
     const startX = e.clientX;
-    const initialStart = clip.start;
-    const fixedEnd = clip.start + clip.duration;
+    const initialStart = clipStart;
+    const initialInSec = inSec;
+    const fixedEnd = clipStart + clipDuration;
     const minDuration = 0.25;
 
     const onPointerMove = (moveEvt) => {
@@ -126,14 +134,17 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
       }
 
       rawStart = Math.max(0, Math.min(rawStart, fixedEnd - minDuration));
-      const newDuration = Number((fixedEnd - rawStart).toFixed(3));
-      const inSec = Number(clip.in_sec ?? 0);
+      const deltaSec = rawStart - initialStart;
+      const newInSec = Math.max(0, Number((initialInSec + deltaSec).toFixed(3)));
+      const newDuration = Math.max(minDuration, Number((fixedEnd - rawStart).toFixed(3)));
+      const newOutSec = Number((newInSec + newDuration).toFixed(3));
 
       updateClip(clip.id, {
         start: Number(rawStart.toFixed(3)),
         start_at_sec: Number(rawStart.toFixed(3)),
+        in_sec: newInSec,
         duration: newDuration,
-        out_sec: Number((inSec + newDuration).toFixed(3)),
+        out_sec: newOutSec,
       });
     };
 
@@ -158,8 +169,9 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
     setSelectedClipId(clip.id);
     setIsTrimming(true);
     const startX = e.clientX;
-    const fixedStart = clip.start;
-    const initialDuration = clip.duration;
+    const fixedStart = clipStart;
+    const initialDuration = clipDuration;
+    const currentInSec = inSec;
     const minDuration = 0.25;
 
     const onPointerMove = (moveEvt) => {
@@ -182,12 +194,11 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
       }
 
       rawEnd = Math.max(fixedStart + minDuration, rawEnd);
-      const newDuration = Number((rawEnd - fixedStart).toFixed(3));
-      const inSec = Number(clip.in_sec ?? 0);
+      const newDuration = Math.max(minDuration, Number((rawEnd - fixedStart).toFixed(3)));
 
       updateClip(clip.id, {
         duration: newDuration,
-        out_sec: Number((inSec + newDuration).toFixed(3)),
+        out_sec: Number((currentInSec + newDuration).toFixed(3)),
       });
     };
 
@@ -345,7 +356,7 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
             </span>
           )}
           <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border flex-shrink-0 ${badgeColor}`}>
-            {clip.duration.toFixed(1)}s
+            {clipDuration.toFixed(1)}s
           </span>
         </div>
       </div>

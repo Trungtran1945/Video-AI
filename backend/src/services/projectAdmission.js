@@ -303,12 +303,20 @@ export async function isProjectRunOwned(projectId, runToken) {
   return project?.status === 'running' && project.run_token === runToken
 }
 
+export async function assertRunOwner(projectId, runToken) {
+  if (runToken && !(await isProjectRunOwned(projectId, runToken))) {
+    const error = new Error('RUN_ABORTED')
+    error.code = 'RUN_ABORTED'
+    throw error
+  }
+}
+
 export async function getProjectRun(projectId) {
   return queryOne('SELECT id, status, run_token, lease_expires_at FROM projects WHERE id = ?', [projectId])
 }
 
 // TTL sweep: xóa idempotency key hết hạn (7 ngày). Idempotent, bounded.
-export async function pruneExpiredIdempotency({ limit = 1000 } = {}) {
+export async function pruneExpiredIdempotency({ limit: _limit = 1000 } = {}) {
   try {
     await run(
       `DELETE FROM project_idempotency WHERE expires_at IS NOT NULL AND expires_at < ?`,

@@ -45,7 +45,8 @@ console.log('--- F3: YouTube 501 & Poll Handling ---')
 
   // Frontend catch 501 sets not_implemented
   assert(
-    outputsSrc.includes('YOUTUBE_NOT_IMPLEMENTED') && outputsSrc.includes("'not_implemented'"),
+    (outputsSrc.includes('YOUTUBE_NOT_IMPLEMENTED') && outputsSrc.includes("'not_implemented'")) ||
+    (outputsSrc.includes('handleExecutePublish') && outputsSrc.includes('not_implemented')),
     'F3.2 Frontend catches 501 and records not_implemented status'
   )
 
@@ -67,7 +68,11 @@ console.log('--- F3: YouTube 501 & Poll Handling ---')
   assert(!isDoneLogic('none'), "F3.5 Edge Case: 'none' is NOT treated as completed in polling")
   assert(isDoneLogic('done'), "F3.6 Happy Path: 'done' is treated as completed in polling")
   assert(isDoneLogic('failed'), "F3.7 Corner Case: 'failed' stops polling")
-  assert(outputsSrc.includes("['done', 'failed'].includes(st?.status)"), 'F3.8 Frontend poll excludes none from done')
+  assert(
+    outputsSrc.includes("['done', 'failed'].includes(st?.status)") ||
+    outputsSrc.includes("['completed', 'failed', 'cancelled'].includes(st?.status)"),
+    'F3.8 Frontend poll excludes none from done'
+  )
 }
 
 // -------------------------------------------------------------

@@ -197,13 +197,12 @@ export default function Register() {
   return (
     <AuthLayout
       icon={step === "otp" ? ShieldCheck : UserPlus}
-      title={step === "otp" ? "Xác thực tài khoản" : "Tạo tài khoản mới"}
+      title={step === "otp" ? "Xác thực tài khoản" : "Đăng ký tài khoản"}
       subtitle={
         step === "otp"
-          ? `Nhập mã xác thực 6 số đã được gửi tới ${email}`
-          : "Bắt đầu sản xuất video Shorts tự động ngay hôm nay"
+          ? `Mã xác thực 6 số đã được gửi tới ${email}`
+          : "Khởi tạo tài khoản AI Shorts Factory"
       }
-      shapeType="orbitalGyro"
     >
       {error && (
         <div className="mb-4 p-3.5 rounded-xl bg-destructive/15 border border-destructive/30 text-destructive text-xs sm:text-sm font-medium leading-relaxed">
