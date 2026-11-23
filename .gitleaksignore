@@ -1,0 +1,5 @@
+# Gitleaks ignore list for false positive placeholders in historical commits
+8177b98aab5b59554833ef3bd63481077c6c89cb:backend/src/config.js:database-password-in-uri:45
+c51e42e92847680616e4bfbe2814360cb81297de:backend/scripts/run-tests.mjs:database-password-in-uri:23
+c51e42e92847680616e4bfbe2814360cb81297de:backend/scripts/setup-test-db.mjs:database-password-in-uri:64
+c51e42e92847680616e4bfbe2814360cb81297de:backend/scripts/verify_criteria_matrix.mjs:database-password-in-uri:64

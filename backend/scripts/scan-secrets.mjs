@@ -48,6 +48,7 @@ const ALLOWED_PATH_PATTERNS = [
   /\.env\.example$/i,
   /\.env\.production\.example$/i,
   /\.gitleaks\.toml$/i,
+  /\.gitleaksignore$/i,
   /package-lock\.json$/i,
   /\.min\.(js|css)$/i,
   /\.(png|jpg|jpeg|gif|webp|ico|svg|mp4|webm|wav|mp3|pdf|ttf|woff|woff2)$/i,
@@ -64,6 +65,8 @@ const ALLOWED_STOPWORDS = [
   'test-refresh-secret',
   'test-master-key',
   'AIzaSyD-abc1234567890xyz', // unit test mock
+  '6A5AA1D4EAFF4E9FB37E23D68491D6F4', // edge TTS public token
+  'video_ai_pass', // local test db pass
   'example',
   'dummy',
 ]

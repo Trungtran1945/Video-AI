@@ -61,7 +61,7 @@ async function verifyAll() {
   report.envHits = envHits;
 
   // 4. Check PostgreSQL database connectivity & schema
-  const dbUrl = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5433/video_ai';
+  const dbUrl = process.env.DATABASE_URL || 'postgresql://video_ai_user:video_ai_pass@localhost:5433/video_ai';
   const pool = new pg.Pool({ connectionString: dbUrl });
   try {
     const tablesRes = await pool.query(

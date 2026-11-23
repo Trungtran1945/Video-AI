@@ -42,7 +42,7 @@ export function maskSecret(key, keepStart = 2, keepEnd = 2) {
 export function redactSensitiveString(str) {
   if (!str) return ''
   return String(str)
-    // Redact password in postgres/mysql/redis URLs: postgresql://user:password@host
+    // Redact password in postgres/mysql/redis URLs: postgresql://user:pass@host
     .replace(/(postgres(?:ql)?:\/\/[^:]+:)([^@]+)(@)/gi, '$1[REDACTED]$3')
     .replace(/(redis(?:s)?:\/\/(?:[^:]*:)?)([^@]+)(@)/gi, '$1[REDACTED]$3')
     // Redact Cloudinary URL: cloudinary://key:secret@cloud_name
