@@ -96,6 +96,42 @@ export async function initSchema() {
     } catch (_) {}
     console.log(`[DB] RLS Tenant Isolation is up-to-date (${rlsMigrationVersion})`)
   }
+
+  // 4. Check and apply Cloudinary Metadata migration (003_cloudinary_metadata)
+  const cloudinaryMigrationVersion = '003_cloudinary_metadata'
+  const cloudinaryCheck = await pool.query(
+    'SELECT version FROM schema_migrations WHERE version = $1',
+    [cloudinaryMigrationVersion]
+  )
+  if (cloudinaryCheck.rows.length === 0) {
+    const migrationSqlPath = path.join(__dirname, 'migrations', '003_cloudinary_metadata.sql')
+    const fallbackSqlPath = path.join(__dirname, 'cloudinaryMetadata.sql')
+    const targetSqlPath = fs.existsSync(migrationSqlPath) ? migrationSqlPath : fallbackSqlPath
+    if (fs.existsSync(targetSqlPath)) {
+      const ddl = fs.readFileSync(targetSqlPath, 'utf8')
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        await client.query(ddl)
+        await client.query(
+          'INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING',
+          [cloudinaryMigrationVersion]
+        )
+        await client.query('COMMIT')
+        console.log(`[DB] Cloudinary metadata schema migration applied (${cloudinaryMigrationVersion})`)
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {})
+        console.error('[DB] Cloudinary metadata migration failed:', err.message)
+        throw err
+      } finally {
+        client.release()
+      }
+    } else {
+      console.warn(`[DB] Cloudinary metadata DDL file not found at ${targetSqlPath}`)
+    }
+  } else {
+    console.log(`[DB] Cloudinary metadata schema is up-to-date (${cloudinaryMigrationVersion})`)
+  }
 }
 
 export default { initSchema }

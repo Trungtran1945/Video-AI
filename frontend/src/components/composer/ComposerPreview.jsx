@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
+import { resolveStorageUrl, isMediaVideo } from '@/lib/apiBase';
 import {
   Play,
   Pause,
@@ -191,8 +192,9 @@ export default function ComposerPreview({
     ? assetMap.get(activeBgClip.asset_id || activeBgClip.assetId)
     : null;
   const defaultBgColor = project?.params?.defaultBackground || '#0F1117';
-  const bgUrl = bgAsset?.url || activeBgClip?.url || bgAsset?.thumbnailUrl;
+  const bgUrl = bgAsset?.secure_url || bgAsset?.url || activeBgClip?.url || bgAsset?.thumbnailUrl || resolveStorageUrl(bgAsset?.storageKey || bgAsset?.storage_key);
   const isBgVideo = Boolean(
+    isMediaVideo(bgAsset) ||
     bgAsset?.mimeType?.startsWith('video/') ||
     bgAsset?.mime_type?.startsWith('video/') ||
     activeBgClip?.mimeType?.startsWith('video/') ||
@@ -621,10 +623,11 @@ export default function ComposerPreview({
             {activeVisualClips.length > 0 ? (
               activeVisualClips.map((clip) => {
                 const asset = assetMap.get(clip.asset_id || clip.assetId);
-                const url = asset?.url || clip.url || asset?.thumbnailUrl;
+                const url = asset?.secure_url || asset?.url || clip.url || asset?.thumbnailUrl || resolveStorageUrl(asset?.storageKey || asset?.storage_key);
                 if (!url) return null;
 
                 const isVideo = Boolean(
+                  isMediaVideo(asset) ||
                   clip.clip_type === 'video' ||
                   clip.type === 'video' ||
                   asset?.mime_type?.startsWith('video/') ||

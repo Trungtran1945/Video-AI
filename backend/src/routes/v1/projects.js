@@ -275,6 +275,19 @@ router.post('/', validateBody(createProjectSchema), protectFields(['user_id', 'r
         scriptVersion: 0,
         scriptReviewRequired: false,
       }
+      if (admissionData.sourceVideoKey) {
+        try {
+          const uploadSession = await queryOne(
+            'SELECT storage_provider, cloudinary_public_id, secure_url FROM upload_sessions WHERE storage_key = ? LIMIT 1',
+            [admissionData.sourceVideoKey]
+          )
+          if (uploadSession) {
+            admissionData.sourceStorageProvider = uploadSession.storage_provider || 'local'
+            admissionData.sourceCloudinaryPublicId = uploadSession.cloudinary_public_id || null
+            admissionData.sourceSecureUrl = uploadSession.secure_url || null
+          }
+        } catch (_) {}
+      }
       const requestFingerprint = computeProjectFingerprint({
         mode: admissionData.mode,
         title: admissionData.title,
@@ -460,7 +473,10 @@ router.get('/', async (req, res) => {
       params.push(pagination.limit, pagination.offset)
     }
     const rows = await query(sql, params)
-    res.json(rows)
+    res.json(rows.map((p) => ({
+      ...p,
+      source_video_url: p.source_secure_url || (p.source_video_key ? `/storage/${p.source_video_key}` : null),
+    })))
   } catch (err) {
     console.error('List projects error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error')
@@ -521,7 +537,10 @@ router.get('/:id', validateParams(idParamSchema), async (req, res) => {
         }
       }
     }
-    const publicProject = { ...project }
+    const publicProject = {
+      ...project,
+      source_video_url: project.source_secure_url || (project.source_video_key ? `/storage/${project.source_video_key}` : null),
+    }
     delete publicProject.script_key
     res.json({ ...publicProject, params: project.params ? JSON.parse(project.params) : null, jobs, timeline, output, outputStale: outputState.outputStale, ...extras })
   } catch (err) {

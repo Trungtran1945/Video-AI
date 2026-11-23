@@ -7,6 +7,7 @@ import { query, queryOne, insert, run, runAffected } from '../db/query.js'
 import { ffmpegAvailable, probe as probeMedia } from '../media/ffmpeg.js'
 import { ensureSafeDirectory, findSymlinkInPath, isPathInside } from '../lib/safePath.js'
 import { assertVideoFile, MediaValidationError, validateVideoMetadata } from './mediaValidation.js'
+import { storageService } from './storage/index.js'
 
 export const CHUNK_SIZE = 8 * 1024 * 1024
 export const MAX_SIZE = 2 * 1024 * 1024 * 1024
@@ -104,6 +105,7 @@ export function createResumableUploadService({
   storageDir = config.storageDir,
   db = { query, queryOne, insert, run, runAffected },
   fileSystem = fs,
+  storage = storageService,
   now = () => Date.now(),
   uuid = uuidv4,
   hashFile = defaultHashFile,
@@ -248,10 +250,13 @@ export function createResumableUploadService({
   function responseFor(session) {
     return {
       storageKey: session.storage_key,
-      url: `/storage/${session.storage_key}`,
+      url: session.secure_url || `/storage/${session.storage_key}`,
       filename: session.filename,
       size: Number(session.size),
       videoHash: session.video_hash,
+      storageProvider: session.storage_provider || 'local',
+      cloudinaryPublicId: session.cloudinary_public_id || null,
+      secureUrl: session.secure_url || null,
     }
   }
 
@@ -300,13 +305,61 @@ export function createResumableUploadService({
       }
       if (tempStat?.isFile()) await fileSystem.promises.unlink(tempPath)
     }
+
+    let uploadRes = null
+    try {
+      if (storage && typeof storage.uploadLarge === 'function') {
+        uploadRes = await storage.uploadLarge(finalPath, {
+          key: storageKey,
+          mimeType: session.mime,
+          resourceType: 'video',
+          folder: 'uploads',
+        })
+      } else if (storage && typeof storage.upload === 'function') {
+        uploadRes = await storage.upload(finalPath, {
+          key: storageKey,
+          mimeType: session.mime,
+          resourceType: 'video',
+          folder: 'uploads',
+        })
+      }
+    } catch (uploadErr) {
+      logger.warn(JSON.stringify({ event: 'upload_storage_upload_warn', uploadId: shortId(session.id), error: uploadErr.message }))
+    }
+
     const completedAt = nowIso(now)
-    const affected = await db.runAffected("UPDATE upload_sessions SET status = 'completed', last_activity_at = ?, expires_at = NULL WHERE id = ? AND status = 'completing' AND storage_key = ?", [completedAt, session.id, storageKey], { op: 'complete.upload_session' })
+    let affected = 0
+    if (uploadRes && uploadRes.provider !== 'local') {
+      try {
+        affected = await db.runAffected(
+          "UPDATE upload_sessions SET status = 'completed', last_activity_at = ?, expires_at = NULL, storage_provider = ?, cloudinary_asset_id = ?, cloudinary_public_id = ?, secure_url = ? WHERE id = ? AND status = 'completing' AND storage_key = ?",
+          [completedAt, uploadRes.provider, uploadRes.assetId || null, uploadRes.publicId || null, uploadRes.secureUrl || null, session.id, storageKey],
+          { op: 'complete.upload_session' }
+        )
+      } catch (_) {
+        affected = await db.runAffected("UPDATE upload_sessions SET status = 'completed', last_activity_at = ?, expires_at = NULL WHERE id = ? AND status = 'completing' AND storage_key = ?", [completedAt, session.id, storageKey], { op: 'complete.upload_session' })
+      }
+    } else {
+      affected = await db.runAffected("UPDATE upload_sessions SET status = 'completed', last_activity_at = ?, expires_at = NULL WHERE id = ? AND status = 'completing' AND storage_key = ?", [completedAt, session.id, storageKey], { op: 'complete.upload_session' })
+    }
+
     if (affected !== 1) {
       const current = await db.queryOne('SELECT * FROM upload_sessions WHERE id = ?', [session.id])
       if (current?.status === 'completed') return current
       throw new UploadServiceError(409, 'UPLOAD_STATE_CHANGED', 'Upload state changed during completion')
     }
+
+    if (uploadRes?.provider === 'cloudinary' && uploadRes?.publicId) {
+      try {
+        await db.run(
+          `INSERT INTO cloudinary_assets (id, storage_key, storage_provider, cloudinary_asset_id, cloudinary_public_id, secure_url, resource_type, format, bytes, entity_type, entity_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (storage_key) DO UPDATE SET cloudinary_public_id = EXCLUDED.cloudinary_public_id, secure_url = EXCLUDED.secure_url`,
+          [uuid(), storageKey, 'cloudinary', uploadRes.assetId || null, uploadRes.publicId, uploadRes.secureUrl, 'video', uploadRes.format || 'mp4', uploadRes.bytes || null, 'upload_sessions', session.id]
+        )
+      } catch (_) {}
+    }
+
     return db.queryOne('SELECT * FROM upload_sessions WHERE id = ?', [session.id])
   }
 

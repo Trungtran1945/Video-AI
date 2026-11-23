@@ -3,6 +3,7 @@ import { Type, GripVertical, Film, Video, Zap, Sparkles, AlertTriangle, Loader2,
 import { useTimelineStore } from './timelineStore';
 import { getMagneticSnap, getHandleSnap } from './timelineUtils';
 import FloatingToolbar from './FloatingToolbar';
+import { getMediaThumbnailUrl } from '@/lib/apiBase';
 
 export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isActive = false }) {
   const {
@@ -319,11 +320,12 @@ export default function TimelineClip({ clip, isTrackLocked, onSegmentClick, isAc
 
       <div className={`w-full h-full rounded overflow-hidden relative flex items-center justify-between px-2.5 ${bgColor}`}>
         <div className="flex items-center gap-2 truncate">
-          {clip.thumbnailUrl ? (
+          {(clip.thumbnailUrl || getMediaThumbnailUrl(clip) || (clip.type === 'image' && clip.url)) ? (
             <img
-              src={clip.thumbnailUrl}
+              src={clip.thumbnailUrl || getMediaThumbnailUrl(clip) || (clip.type === 'image' && clip.url)}
               alt=""
               className="w-5 h-5 rounded object-cover border border-border shrink-0"
+              onError={(e) => { e.currentTarget.style.display = 'none'; }}
             />
           ) : (
             <div className={`w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 ${iconBg}`}>

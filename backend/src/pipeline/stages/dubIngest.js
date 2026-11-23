@@ -3,13 +3,13 @@ import fs from 'node:fs'
 import { updateById } from '../../db/query.js'
 import { updateProjectOwned, assertRunOwner } from '../../services/projectAdmission.js'
 import { probe, extractAudio, normalizeLoudness } from '../../media/mediaService.js'
-import { projectDir, tmpDirOf, ensureDir, requireSourceFile, toStorageKey } from '../context.js'
+import { projectDir, tmpDirOf, ensureDir, stageSourceMedia, toStorageKey } from '../context.js'
 
 // dub.ingest (docs/05 §B.1): demux + chuẩn hoá LUFS cho STT.
 export async function dubIngest(ctx) {
   const { project, setProgress, signal, runToken } = ctx
   await assertRunOwner(project.id, runToken)
-  const src = requireSourceFile(project.source_video_key, 'Video nguồn')
+  const src = await stageSourceMedia(project, ctx)
   const tmp = ensureDir(tmpDirOf(project.id))
   const dir = ensureDir(projectDir(project.id))
   setProgress(5)

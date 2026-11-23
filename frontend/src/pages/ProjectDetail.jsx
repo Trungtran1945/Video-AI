@@ -11,7 +11,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, FileText, Video, Mic, Captions, CheckCircle, Loader2, Circle, AlertCircle, AlertTriangle, Play, Pause, Download, RotateCcw, Scissors, Sparkles, Combine, Film, Trash2, FileAudio, Languages, AudioLines, XCircle, Clock, Search, Volume2, ArrowDownToLine, Info, BookOpen, Plus, Zap, Save, Youtube, ExternalLink, Pencil, Copy, ChevronDown, ChevronUp, EyeOff, SlidersHorizontal, Check, X, Settings2 } from 'lucide-react';
 import { STAGE_LABELS, SCRIPT_STAGES, COMPOSER_STAGES, StatusBadge, formatDate, LANGUAGE_LABELS, STYLE_LABELS, VOICE_PROVIDER_LABELS, MODE_LABELS, SOURCE_LANGUAGES, TARGET_LANGUAGES, AUDIO_MODE_LABELS, ACTIVE_STATUSES as SHARED_ACTIVE_STATUSES, isCompletedStatus } from '@/lib/constants';
 import { friendlyJobError } from '@/lib/providerErrorMessage';
-import { resolveStorageUrl } from '@/lib/apiBase';
+import { resolveStorageUrl, appendCacheBuster, getMediaDownloadUrl, downloadMedia, isMediaVideo } from '@/lib/apiBase';
 import { useJobEvents } from '@/hooks/useJobEvents';
 import ProjectHeader from '@/components/project/ProjectHeader';
 import PipelineStatus from '@/components/project/PipelineStatus';
@@ -324,16 +324,25 @@ export default function ProjectDetail() {
 
   // §1: output chỉ available khi pipeline COMPLETED + output success + artifact hợp lệ.
   // Lúc pending/queued/running/generating (hoặc failed) KHÔNG hiển thị output cũ.
+  const outputMedia = project?.output;
   const isOutputAvailable =
     effectiveStatus === 'completed' &&
-    !!project?.output?.storage_key &&
+    Boolean(outputMedia?.storage_key || outputMedia?.secure_url || outputMedia?.url) &&
     !outputStale &&
     project?.outputStale !== true &&
-    (project?.output?.status === 'success' || !project?.output?.status);
-  const outputUrl = isOutputAvailable ? `${resolveStorageUrl(project.output.storage_key)}?v=${project.output.id}` : null;
-  const isVideoOutput = /\.(mp4|webm|mov|m4v|mkv)$/i.test(project?.output?.storage_key || '');
+    (outputMedia?.status === 'success' || !outputMedia?.status);
+  const rawOutputUrl = isOutputAvailable
+    ? resolveStorageUrl(outputMedia?.secure_url || outputMedia?.url || outputMedia?.storage_key)
+    : null;
+  const outputUrl = rawOutputUrl ? appendCacheBuster(rawOutputUrl, outputMedia?.id || project?.id) : null;
+  const isVideoOutput = Boolean(
+    isMediaVideo(outputMedia) ||
+    (rawOutputUrl && isMediaVideo(rawOutputUrl)) ||
+    (!outputMedia?.resource_type && !/\.(mp3|wav|m4a|aac)(\?.*)?$/i.test(rawOutputUrl || outputMedia?.storage_key || ''))
+  );
   // Preview che chữ dùng video NGUỒN để thấy hardsub gốc (output đã blur + sub dịch).
-  const sourceUrl = project?.source_video_key ? resolveStorageUrl(project.source_video_key) : outputUrl;
+  const sourceMedia = project?.source_video_url || project?.source_secure_url || project?.source_video_key;
+  const sourceUrl = sourceMedia ? resolveStorageUrl(sourceMedia) : outputUrl;
 
   // Playback control functions
   const handlePlayPause = useCallback(() => {
@@ -1252,10 +1261,11 @@ export default function ProjectDetail() {
     );
 
     const isVideo = Boolean(
+      isMediaVideo(asset) ||
       asset.kind === 'video' ||
       asset.mimeType?.startsWith('video/') ||
       asset.mime_type?.startsWith('video/') ||
-      /\.(mp4|webm|mov|mkv)$/i.test(asset.storageKey || asset.storage_key || '')
+      /\.(mp4|webm|mov|mkv)(\?.*)?$/i.test(asset.secure_url || asset.url || asset.storageKey || asset.storage_key || '')
     );
 
     const defaultMeta = {
@@ -1845,9 +1855,15 @@ export default function ProjectDetail() {
 
               {outputUrl && isCompleted && (
                 <a
-                  href={outputUrl}
-                  download
-                  className="px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-xs font-semibold transition flex items-center gap-1.5 shadow-xs"
+                  href={getMediaDownloadUrl(outputUrl, `${project.title || 'video'}.mp4`)}
+                  download={`${project.title || 'video'}.mp4`}
+                  onClick={(e) => {
+                    if (/^https?:\/\//i.test(outputUrl) && !outputUrl.startsWith(window.location.origin)) {
+                      downloadMedia(outputUrl, `${project.title || 'video'}.mp4`);
+                      e.preventDefault();
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-xs font-semibold transition flex items-center gap-1.5 shadow-xs cursor-pointer"
                 >
                   <Download className="w-3.5 h-3.5" />
                   <span>Tải Video MP4</span>
@@ -3138,7 +3154,17 @@ export default function ProjectDetail() {
                 <a href={outputUrl} target="_blank" rel="noreferrer" className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold transition">
                   <Play className="w-4 h-4" /> Xem video
                 </a>
-                <a href={outputUrl} download className="flex items-center gap-2 px-4 py-2 rounded-xl border border-border hover:bg-muted text-foreground text-sm font-semibold transition">
+                <a
+                  href={getMediaDownloadUrl(outputUrl, `${project.title || 'video'}.mp4`)}
+                  download={`${project.title || 'video'}.mp4`}
+                  onClick={(e) => {
+                    if (/^https?:\/\//i.test(outputUrl) && !outputUrl.startsWith(window.location.origin)) {
+                      downloadMedia(outputUrl, `${project.title || 'video'}.mp4`);
+                      e.preventDefault();
+                    }
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl border border-border hover:bg-muted text-foreground text-sm font-semibold transition cursor-pointer"
+                >
                   <Download className="w-4 h-4" /> Tải về
                 </a>
                 <button

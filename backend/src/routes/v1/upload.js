@@ -11,6 +11,7 @@ import { ensureSafeDirectory as ensureSafeStorageDirectory, findSymlinkInPath, i
 import { markLegacyUploadActive, releaseLegacyUpload } from '../../services/legacyUploadRegistry.js'
 import { assertVideoFile, MediaValidationError, validateVideoMetadata } from '../../services/mediaValidation.js'
 import { CHUNK_SIZE, MAX_SIZE, resumableUploadService, UploadServiceError } from '../../services/resumableUploadService.js'
+import { storageService } from '../../services/storage/index.js'
 
 // Legacy multipart chỉ cho file nhỏ ≤50MB; file lớn dùng resumable TUS
 // (POST /uploads/init → PUT chunk 8MB → POST complete, limit 2GB duy nhất).
@@ -117,12 +118,26 @@ export function createUploadRouter({
         throw new UploadServiceError(409, 'UPLOAD_PATH_UNSAFE', 'Final upload path contains a symlink')
       }
       await legacyFileSystem.promises.rename(stagedPath, finalPath)
+      let uploadRes = null
+      try {
+        uploadRes = await storageService.upload(finalPath, {
+          key: storageKey,
+          mimeType: media.mime,
+          resourceType: 'video',
+          folder: 'uploads',
+        })
+      } catch (uploadErr) {
+        console.warn('[upload] StorageService upload warning:', uploadErr.message)
+      }
       return res.json({
         key: storageKey,
-        url: `/storage/${storageKey}`,
+        url: uploadRes?.secureUrl || uploadRes?.url || `/storage/${storageKey}`,
         filename: media.filename,
         size: req.file.size,
         mimetype: media.mime,
+        storageProvider: uploadRes?.provider || 'local',
+        cloudinaryPublicId: uploadRes?.publicId || null,
+        secureUrl: uploadRes?.secureUrl || null,
       })
     } catch (error) {
       await legacyFileSystem.promises.unlink(stagedPath).catch(() => {})

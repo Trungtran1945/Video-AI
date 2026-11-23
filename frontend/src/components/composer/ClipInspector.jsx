@@ -20,6 +20,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useTimelineStore } from '../timeline/timelineStore';
+import { resolveStorageUrl, getMediaThumbnailUrl, isMediaVideo } from '@/lib/apiBase';
 
 const ALIGN_OPTIONS = [
   { id: 'top-left', label: 'TL', title: 'Góc trên - Trái' },
@@ -90,10 +91,11 @@ export default function ClipInspector({
 
   const isVideoBg = Boolean(
     meta.isVideo ||
+    isMediaVideo(currentAsset) ||
     currentAsset?.kind === 'video' ||
     currentAsset?.mimeType?.startsWith('video/') ||
     currentAsset?.mime_type?.startsWith('video/') ||
-    /\.(mp4|webm|mov|mkv)$/i.test(currentAsset?.storageKey || currentAsset?.storage_key || '')
+    /\.(mp4|webm|mov|mkv)(\?.*)?$/i.test(currentAsset?.secure_url || currentAsset?.url || currentAsset?.storageKey || currentAsset?.storage_key || '')
   );
 
   // Parse style_json if available
@@ -302,29 +304,32 @@ export default function ClipInspector({
             </div>
 
             {/* Media Information Card */}
-            {currentAsset && (
-              <div className="flex items-center gap-2.5 p-2 rounded-lg bg-background/80 border border-border/80">
-                {currentAsset.thumbnailUrl || (currentAsset.kind === 'image' && currentAsset.url) ? (
-                  <img
-                    src={currentAsset.thumbnailUrl || currentAsset.url}
-                    alt={currentAsset.name}
-                    className="w-10 h-10 rounded object-cover border border-border bg-black/20 shrink-0"
-                  />
-                ) : (
-                  <div className="w-10 h-10 rounded bg-primary/10 flex items-center justify-center shrink-0 text-primary">
-                    {isVideoClip ? <Video className="w-5 h-5" /> : <ImageIcon className="w-5 h-5" />}
+            {currentAsset && (() => {
+              const thumbUrl = currentAsset.thumbnailUrl || getMediaThumbnailUrl(currentAsset) || (currentAsset.kind === 'image' && resolveStorageUrl(currentAsset.secure_url || currentAsset.url));
+              return (
+                <div className="flex items-center gap-2.5 p-2 rounded-lg bg-background/80 border border-border/80">
+                  {thumbUrl ? (
+                    <img
+                      src={thumbUrl}
+                      alt={currentAsset.name}
+                      className="w-10 h-10 rounded object-cover border border-border bg-black/20 shrink-0"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded bg-primary/10 flex items-center justify-center shrink-0 text-primary">
+                      {isVideoClip ? <Video className="w-5 h-5" /> : <ImageIcon className="w-5 h-5" />}
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[11px] font-semibold text-foreground truncate block">
+                      {currentAsset.name}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground font-mono">
+                      ID: {currentAsset.id.slice(0, 8)}...
+                    </span>
                   </div>
-                )}
-                <div className="flex-1 min-w-0">
-                  <span className="text-[11px] font-semibold text-foreground truncate block">
-                    {currentAsset.name}
-                  </span>
-                  <span className="text-[10px] text-muted-foreground font-mono">
-                    ID: {currentAsset.id.slice(0, 8)}...
-                  </span>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Low Resolution Quality Warning */}
             {currentAsset?.width && currentAsset?.height && (currentAsset.width < 1280 || currentAsset.height < 720) && (

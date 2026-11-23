@@ -6,7 +6,7 @@ import { callProvider } from '../../lib/callProvider.js'
 import { classifyProviderError } from '../../lib/providerErrors.js'
 import { runWithProviderScope } from '../../lib/providerScope.js'
 import { withProviderFailover } from '../../lib/providerFailover.js'
-import { projectDir, tmpDirOf, ensureDir, requireSourceFile, writeJson, toStorageKey, round2 } from '../context.js'
+import { projectDir, tmpDirOf, ensureDir, stageSourceMedia, writeJson, toStorageKey, round2 } from '../context.js'
 import {
   STT_CHUNK_SEC,
   STT_OVERLAP_SEC,
@@ -22,7 +22,7 @@ import { getWhisperEffectiveConfig } from '../../providers/asr/openaiWhisper.js'
 
 export async function summaryTranscribe(ctx) {
   const { project, job, setProgress, signal, forceTranscript } = ctx
-  const src = requireSourceFile(project.source_video_key, 'Video nguồn (phim)')
+  const src = await stageSourceMedia(project, ctx)
   const dir = projectDir(project.id)
   const tmp = ensureDir(tmpDirOf(project.id))
   setProgress(2)

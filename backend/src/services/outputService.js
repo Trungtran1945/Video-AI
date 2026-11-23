@@ -1,4 +1,9 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import { v4 as uuidv4 } from 'uuid'
 import { queryOne, withTransaction } from '../db/query.js'
+import { storageService } from './storage/index.js'
+import { resolveStorageKey } from '../pipeline/context.js'
 
 export class OutputRunConflict extends Error {
   constructor() {
@@ -76,7 +81,40 @@ async function insertOutput(tx, input) {
   if (mode === 'SCRIPT_TO_VIDEO' && (input.scriptVersion === undefined || scriptVersion === null)) {
     throw new Error('Script output requires a valid script version snapshot')
   }
-  return tx.insert('outputs', {
+
+  let uploadRes = null
+  let thumbRes = null
+  if (input.storageKey) {
+    const absPath = resolveStorageKey(input.storageKey)
+    if (absPath && fs.existsSync(absPath)) {
+      try {
+        uploadRes = await storageService.upload(absPath, {
+          key: input.storageKey,
+          resourceType: 'video',
+          folder: 'outputs',
+        })
+      } catch (err) {
+        console.warn(`[outputService] Output video storage upload skipped or failed: ${err.message}`)
+      }
+    }
+  }
+
+  if (input.thumbnailKey) {
+    const thumbAbs = resolveStorageKey(input.thumbnailKey)
+    if (thumbAbs && fs.existsSync(thumbAbs)) {
+      try {
+        thumbRes = await storageService.upload(thumbAbs, {
+          key: input.thumbnailKey,
+          resourceType: 'image',
+          folder: 'outputs/thumbs',
+        })
+      } catch (err) {
+        console.warn(`[outputService] Output thumbnail storage upload skipped or failed: ${err.message}`)
+      }
+    }
+  }
+
+  const outputRow = {
     id: input.id,
     project_id: projectId,
     storage_key: input.storageKey ?? null,
@@ -85,7 +123,40 @@ async function insertOutput(tx, input) {
     thumbnail_key: input.thumbnailKey ?? null,
     transcript_version: version,
     script_version: scriptVersion,
-  })
+    storage_provider: uploadRes?.provider || 'local',
+    cloudinary_asset_id: uploadRes?.assetId || null,
+    cloudinary_public_id: uploadRes?.publicId || null,
+    secure_url: uploadRes?.secureUrl || null,
+    resource_type: uploadRes?.resourceType || 'video',
+    format: uploadRes?.format || (input.storageKey ? path.extname(input.storageKey).replace(/^\./, '') : 'mp4'),
+    bytes: uploadRes?.bytes || null,
+    thumbnail_storage_provider: thumbRes?.provider || 'local',
+    thumbnail_cloudinary_public_id: thumbRes?.publicId || null,
+    thumbnail_secure_url: thumbRes?.secureUrl || null,
+  }
+
+  const created = await tx.insert('outputs', outputRow)
+
+  if (uploadRes?.provider === 'cloudinary' && uploadRes?.publicId) {
+    try {
+      await tx.insert('cloudinary_assets', {
+        id: uuidv4(),
+        storage_key: input.storageKey,
+        storage_provider: 'cloudinary',
+        cloudinary_asset_id: uploadRes.assetId || null,
+        cloudinary_public_id: uploadRes.publicId,
+        secure_url: uploadRes.secureUrl,
+        resource_type: uploadRes.resourceType || 'video',
+        format: uploadRes.format || 'mp4',
+        bytes: uploadRes.bytes || null,
+        entity_type: 'outputs',
+        entity_id: input.id,
+        project_id: projectId,
+      })
+    } catch (_) {}
+  }
+
+  return created
 }
 
 export async function createOutput(input, transaction = null) {

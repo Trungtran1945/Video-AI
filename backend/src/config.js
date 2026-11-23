@@ -45,6 +45,8 @@ export function redactSensitiveString(str) {
     // Redact password in postgres/mysql/redis URLs: postgresql://user:password@host
     .replace(/(postgres(?:ql)?:\/\/[^:]+:)([^@]+)(@)/gi, '$1[REDACTED]$3')
     .replace(/(redis(?:s)?:\/\/(?:[^:]*:)?)([^@]+)(@)/gi, '$1[REDACTED]$3')
+    // Redact Cloudinary URL: cloudinary://key:secret@cloud_name
+    .replace(/(cloudinary:\/\/[^:]+:)([^@]+)(@)/gi, '$1[REDACTED]$3')
     // Redact Bearer tokens
     .replace(/(Bearer\s+)[A-Za-z0-9_\-\.]{8,}/gi, '$1[REDACTED]')
     // Redact API keys: key=..., apiKey=..., secret=...
@@ -186,6 +188,17 @@ export const config = {
   },
   googleTranslateScriptUrl: process.env.GOOGLE_TRANSLATE_SCRIPT_URL || '',
   storageDir,
+  storage: {
+    provider: process.env.STORAGE_PROVIDER || ((process.env.CLOUDINARY_CLOUD_NAME || process.env.CLOUDINARY_URL) ? 'cloudinary' : 'local'),
+    cloudinary: {
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
+      apiKey: process.env.CLOUDINARY_API_KEY || '',
+      apiSecret: process.env.CLOUDINARY_API_SECRET || '',
+      url: process.env.CLOUDINARY_URL || '',
+      folderPrefix: process.env.CLOUDINARY_FOLDER_PREFIX || 'video_ai',
+    },
+    localDir: storageDir,
+  },
   // Group 1: BullMQ / Redis
   redis: {
     host: process.env.REDIS_HOST || '127.0.0.1',

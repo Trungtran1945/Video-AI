@@ -7,7 +7,7 @@ import { callProvider } from '../../lib/callProvider.js';
 import { withProviderFailover } from '../../lib/providerFailover.js';
 import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js';
 import { extractMaskFrames, probe } from '../../media/mediaService.js';
-import { projectDir, ensureDir, requireSourceFile, round3, parseParams, sleepMs } from '../context.js';
+import { projectDir, ensureDir, stageSourceMedia, round3, parseParams, sleepMs } from '../context.js';
 import { isProjectRunOwned, runProjectOwned } from '../../services/projectAdmission.js';
 import { assertTranslateComplete } from './dubTranslate.js';
 import { queryOne } from '../../db/query.js';
@@ -150,7 +150,7 @@ export async function dubMask(ctx) {
     e.code = 'RUN_ABORTED';
     throw e;
   }
-  const src = requireSourceFile(project.source_video_key, 'Video nguồn');
+  const src = await stageSourceMedia(project, ctx);
   const info = await probe(src);
   const durationSec = round3(info.durationSec || project.target_duration_sec || 0);
   if (!(durationSec > 0)) throw new Error('BLOCK_RENDER: INVALID_DURATION — không đo được duration video nguồn');

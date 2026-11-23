@@ -24,6 +24,7 @@ import {
   X,
 } from 'lucide-react';
 import { projectsApi } from '@/api/projects';
+import { resolveStorageUrl, getMediaThumbnailUrl, isMediaVideo, isMediaAudio } from '@/lib/apiBase';
 import OcrTranslateModal from './OcrTranslateModal';
 import TtsModal from './TtsModal';
 
@@ -266,7 +267,8 @@ export default function MediaLibrary({
       audioPreviewRef.current.pause();
       setPreviewingAudioId(null);
     } else {
-      audioPreviewRef.current.src = asset.url;
+      const audioUrl = resolveStorageUrl(asset.secure_url || asset.url || asset.storageKey || asset.storage_key);
+      audioPreviewRef.current.src = audioUrl || asset.url || '';
       audioPreviewRef.current.play()
         .then(() => setPreviewingAudioId(asset.id))
         .catch(() => setPreviewingAudioId(null));
@@ -473,16 +475,18 @@ export default function MediaLibrary({
         ) : (
           filteredAssets.map((asset, index) => {
             const isVideoAsset = Boolean(
+              isMediaVideo(asset) ||
               asset.kind === 'video' ||
               (asset.kind === 'background' &&
                 (asset.mimeType?.startsWith('video/') ||
                   asset.mime_type?.startsWith('video/') ||
-                  /\.(mp4|webm|mov|mkv)$/i.test(asset.storageKey || asset.storage_key || ''))) ||
+                  /\.(mp4|webm|mov|mkv)(\?.*)?$/i.test(asset.secure_url || asset.url || asset.storageKey || asset.storage_key || ''))) ||
               asset.mimeType?.startsWith('video/') ||
               asset.mime_type?.startsWith('video/')
             );
             const isBgAsset = asset.kind === 'background';
             const isAudioAsset = Boolean(
+              isMediaAudio(asset) ||
               asset.kind === 'voiceover' ||
               asset.kind === 'music' ||
               asset.kind === 'bgm' ||
@@ -491,6 +495,7 @@ export default function MediaLibrary({
               asset.mime_type?.startsWith('audio/')
             );
             const isPreviewingThisAudio = previewingAudioId === asset.id;
+            const thumbUrl = asset.thumbnailUrl || getMediaThumbnailUrl(asset) || (asset.kind === 'image' && resolveStorageUrl(asset.secure_url || asset.url));
 
             return (
               <div
@@ -500,9 +505,9 @@ export default function MediaLibrary({
                 {/* Thumbnail / Icon */}
                 {asset.kind === 'image' || isBgAsset || isVideoAsset ? (
                   <div className="w-14 h-14 rounded-lg bg-black/20 border border-border overflow-hidden shrink-0 relative flex items-center justify-center">
-                    {asset.thumbnailUrl || (asset.kind === 'image' && asset.url) ? (
+                    {thumbUrl ? (
                       <img
-                        src={asset.thumbnailUrl || asset.url}
+                        src={thumbUrl}
                         alt={asset.name}
                         className="w-full h-full object-cover"
                         loading="lazy"

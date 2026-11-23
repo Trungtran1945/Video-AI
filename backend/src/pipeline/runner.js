@@ -10,6 +10,7 @@ import {
   resolveStorageKey,
   parseJsonSafe,
   getUserSettings,
+  createJobStagingContext,
 } from './context.js'
 import eventBus from './eventBus.js'
 import { safeAddNotify } from '../queue/notifyQueue.js'
@@ -557,7 +558,14 @@ function checkInputs(project) {
   const keys = [project.source_video_key]
   for (const k of keys.filter(Boolean)) {
     const abs = resolveStorageKey(k)
-    if (!abs || !fs.existsSync(abs)) {
+    const existsLocally = abs && fs.existsSync(abs)
+    const hasRemoteSource = Boolean(
+      project.source_secure_url ||
+      project.source_cloudinary_public_id ||
+      project.source_storage_provider === 'cloudinary' ||
+      /^https?:\/\//i.test(k)
+    )
+    if (!existsLocally && !hasRemoteSource) {
       throw new Error(`Tệp nguồn không tồn tại trong kho lưu trữ: ${k}. Hãy upload lại tệp rồi Regenerate.`)
     }
   }
@@ -834,11 +842,32 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
         payload: JSON.stringify({ runToken, transcriptVersion: generation.transcriptVersionSnapshot }),
       }, runToken)
     }
-    const result = await withTimeout(
-      impl({ project, job, settings, setProgress, results, signal, runToken, transcriptVersionSnapshot: generation.transcriptVersionSnapshot, scriptVersionSnapshot: generation.scriptVersionSnapshot, forceTranscript }),
-      stageTimeout,
-      job.type
-    )
+    const stagingContext = createJobStagingContext(projectId, job.type)
+    if (signal) {
+      signal.addEventListener('abort', () => stagingContext.cleanup(), { once: true })
+    }
+    let result
+    try {
+      result = await withTimeout(
+        impl({
+          project,
+          job,
+          settings,
+          setProgress,
+          results,
+          signal,
+          runToken,
+          transcriptVersionSnapshot: generation.transcriptVersionSnapshot,
+          scriptVersionSnapshot: generation.scriptVersionSnapshot,
+          forceTranscript,
+          stagingContext,
+        }),
+        stageTimeout,
+        job.type
+      )
+    } finally {
+      await stagingContext.cleanup()
+    }
     results[job.type] = result
 
     // Merge quota_risk warning (if any) so FE stepper/banner can display it.

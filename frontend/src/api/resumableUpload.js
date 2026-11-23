@@ -201,7 +201,7 @@ export async function uploadResumableFile(file, {
   while (true) {
     try {
       const result = await completeSession(uploadId)
-      const key = result?.storageKey || result?.storage_key || result?.key
+      const key = result?.storageKey || result?.storage_key || result?.key || result?.secure_url || result?.url
       if (typeof key !== 'string' || !key.trim()) throw new Error('Máy chủ không trả về storage key')
       completed = { ...result, key }
       break
@@ -218,7 +218,9 @@ export async function uploadResumableFile(file, {
   }
   return {
     key: completed.key,
-    url: completed?.url,
+    storageKey: completed.key,
+    url: completed?.url || completed?.secure_url || completed?.secureUrl,
+    secure_url: completed?.secure_url || completed?.secureUrl || null,
     filename: file.name,
     size: file.size,
     videoHash: completed?.videoHash || completed?.video_hash || null,

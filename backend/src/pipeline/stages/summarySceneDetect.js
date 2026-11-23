@@ -1,12 +1,12 @@
 import { v4 as uuidv4 } from 'uuid'
 import { detectScenes } from '../../media/mediaService.js'
-import { requireSourceFile, insertMany, round2 } from '../context.js'
+import { stageSourceMedia, insertMany, round2 } from '../context.js'
 
 const MAX_SCENES = 600
 
 export async function summarySceneDetect(ctx) {
   const { project, setProgress, signal } = ctx
-  const src = requireSourceFile(project.source_video_key, 'Video nguồn (phim)')
+  const src = await stageSourceMedia(project, ctx)
 
   // Check abort signal
   if (signal?.aborted) throw new Error('Cancelled')

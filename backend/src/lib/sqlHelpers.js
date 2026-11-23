@@ -35,6 +35,8 @@ export const ALLOWED_TABLES = new Set([
   'youtube_oauth_states',
   'youtube_uploads',
   'schema_migrations',
+  'cloudinary_assets',
+  'media_migration_manifest',
 ])
 
 /**

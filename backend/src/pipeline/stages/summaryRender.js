@@ -20,7 +20,7 @@ import {
   tmpDirOf,
   ensureDir,
   resolveStorageKey,
-  requireSourceFile,
+  stageSourceMedia,
   round2,
   mapWithConcurrency,
 } from '../context.js'
@@ -28,7 +28,7 @@ import {
 export async function summaryRender(ctx) {
   const { project, setProgress, signal, runToken, transcriptVersionSnapshot } = ctx
   await assertRunOwner(project.id, runToken)
-  const src = requireSourceFile(project.source_video_key, 'Video nguồn (phim)')
+  const src = await stageSourceMedia(project, ctx)
   const clips = await query(
     'SELECT * FROM timeline_clips WHERE project_id = ? ORDER BY order_index ASC',
     [project.id]

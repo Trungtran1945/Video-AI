@@ -65,7 +65,9 @@ async function attachYoutubeUploads(outputRows) {
   return outputRows.map((r) => ({
     ...r,
     outputStale: staleFor(r),
-    url: r.storage_key ? `/storage/${r.storage_key}` : null,
+    url: r.secure_url || (r.storage_key ? `/storage/${r.storage_key}` : null),
+    thumbnailUrl: r.thumbnail_secure_url || (r.thumbnail_key ? `/storage/${r.thumbnail_key}` : null),
+    storageProvider: r.storage_provider || 'local',
     youtubeUpload: ytByOutput.get(r.id) || null,
   }))
 }

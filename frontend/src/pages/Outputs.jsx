@@ -8,8 +8,9 @@ import Loading from '@/components/Loading';
 import EmptyState from '@/components/EmptyState';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Film, Play, Youtube, Search, ArrowRight, AlertTriangle, Loader2, ExternalLink, AlertCircle } from 'lucide-react';
+import { Film, Play, Youtube, Search, ArrowRight, AlertTriangle, Loader2, ExternalLink, AlertCircle, Download } from 'lucide-react';
 import { formatDate, MODE_LABELS, isCompletedStatus } from '@/lib/constants';
+import { resolveStorageUrl, getMediaThumbnailUrl, getMediaDownloadUrl, downloadMedia } from '@/lib/apiBase';
 import { useToast } from '@/components/ui/use-toast';
 
 export default function Outputs() {
@@ -26,26 +27,42 @@ export default function Outputs() {
       try {
         const outData = await outputsApi.list().catch(() => []);
         if (Array.isArray(outData) && outData.length > 0) {
-          setOutputs(outData);
+          const enriched = outData.map((o) => {
+            const rawUrl = o.secure_url || o.url || (o.storage_key ? resolveStorageUrl(o.storage_key) : null);
+            const thumbUrl = o.thumbnail_url || getMediaThumbnailUrl(o) || (rawUrl ? getMediaThumbnailUrl(rawUrl) : null);
+            return {
+              ...o,
+              url: rawUrl,
+              thumbnail_url: thumbUrl,
+            };
+          });
+          setOutputs(enriched);
         } else {
           // Fallback to completed projects if outputs table is empty.
           // :id của POST .../youtube PHẢI là outputs.id — row thiếu output.id
           // (chỉ có project-id) bị loại để tránh 404 OUTPUT_NOT_FOUND khó hiểu.
           const pData = await projectsApi.list().catch(() => []);
           const completed = (pData || [])
-            .filter((p) => isCompletedStatus(p.status) && p.output?.storage_key && p.output?.id)
-            .map((p) => ({
-              id: p.output.id,
-              project_id: p.id,
-              project_title: p.title,
-              title: p.title,
-              language: p.language,
-              mode: p.mode,
-              storage_key: p.output?.storage_key,
-              duration_sec: p.target_duration_sec,
-              outputStale: p.outputStale,
-              created_date: p.output?.created_date || p.created_date,
-            }));
+            .filter((p) => isCompletedStatus(p.status) && (p.output?.storage_key || p.output?.secure_url || p.output?.url) && p.output?.id)
+            .map((p) => {
+              const rawUrl = p.output?.secure_url || p.output?.url || (p.output?.storage_key ? resolveStorageUrl(p.output.storage_key) : null);
+              const thumbUrl = p.output?.thumbnail_url || getMediaThumbnailUrl(p.output) || (rawUrl ? getMediaThumbnailUrl(rawUrl) : null);
+              return {
+                id: p.output.id,
+                project_id: p.id,
+                project_title: p.title,
+                title: p.title,
+                language: p.language,
+                mode: p.mode,
+                storage_key: p.output?.storage_key,
+                secure_url: p.output?.secure_url,
+                url: rawUrl,
+                thumbnail_url: thumbUrl,
+                duration_sec: p.target_duration_sec,
+                outputStale: p.outputStale,
+                created_date: p.output?.created_date || p.created_date,
+              };
+            });
           setOutputs(completed);
         }
       } catch (e) {
@@ -169,7 +186,17 @@ export default function Outputs() {
                 >
                   <div>
                     <div className="relative aspect-video bg-muted flex items-center justify-center overflow-hidden">
-                      <Film className="w-8 h-8 text-muted-foreground/50 group-hover:scale-105 transition-transform duration-200" />
+                      {o.thumbnail_url ? (
+                        <img
+                          src={o.thumbnail_url}
+                          alt={title}
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                          loading="lazy"
+                          onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        />
+                      ) : (
+                        <Film className="w-8 h-8 text-muted-foreground/50 group-hover:scale-105 transition-transform duration-200" />
+                      )}
                       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                         <Link
                           to={`/projects/${projectId}`}
@@ -217,13 +244,32 @@ export default function Outputs() {
                   </div>
 
                   <div className="px-4 pb-3.5 pt-2 flex items-center justify-between gap-2 border-t border-border/50">
-                    <Link
-                      to={`/projects/${projectId}`}
-                      className="text-xs font-semibold text-primary hover:underline flex items-center gap-1 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded shrink-0"
-                    >
-                      <span>Chi tiết</span>
-                      <ArrowRight className="w-3 h-3" />
-                    </Link>
+                    <div className="flex items-center gap-3">
+                      <Link
+                        to={`/projects/${projectId}`}
+                        className="text-xs font-semibold text-primary hover:underline flex items-center gap-1 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded shrink-0"
+                      >
+                        <span>Chi tiết</span>
+                        <ArrowRight className="w-3 h-3" />
+                      </Link>
+                      {o.url && (
+                        <a
+                          href={getMediaDownloadUrl(o.url, `${title || 'video'}.mp4`)}
+                          download={`${title || 'video'}.mp4`}
+                          onClick={(e) => {
+                            if (/^https?:\/\//i.test(o.url) && !o.url.startsWith(window.location.origin)) {
+                              downloadMedia(o.url, `${title || 'video'}.mp4`);
+                              e.preventDefault();
+                            }
+                          }}
+                          className="text-xs font-semibold text-muted-foreground hover:text-foreground flex items-center gap-1 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring rounded px-1 py-0.5 cursor-pointer transition-colors"
+                          title="Tải video thành phẩm"
+                        >
+                          <Download className="w-3 h-3" />
+                          <span>Tải</span>
+                        </a>
+                      )}
+                    </div>
 
                     {/* YouTube State & Action */}
                     {o.youtubeUpload?.status === 'completed' && o.youtubeUpload?.youtubeVideoUrl ? (

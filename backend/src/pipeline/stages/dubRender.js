@@ -14,7 +14,7 @@ import {
 } from '../../media/mediaService.js'
 import { ffmpeg } from '../../media/ffmpeg.js'
 import {
-  projectDir, ensureDir, requireSourceFile, toStorageKey, round3, parseParams,
+  projectDir, ensureDir, stageSourceMedia, toStorageKey, round3, parseParams,
 } from '../context.js'
 
 // dub.render (docs/05 §B.7, transflow doc 15 §5): mask/blur hardsub gốc → burn-in ASS → audio mix → mux NVENC.
@@ -39,7 +39,7 @@ export async function dubRender(ctx) {
   }
   await assertRunOwner(project.id, runToken)
   const params = parseParams(project.params)
-  const src = requireSourceFile(project.source_video_key, 'Video nguồn')
+  const src = await stageSourceMedia(project, ctx)
   const dir = ensureDir(projectDir(project.id))
 
   // Check abort signal

@@ -4,6 +4,7 @@ import { ArrowLeft, Trash2, XCircle, RotateCcw, Loader2, Play, Download, AlertCi
 import { StatusBadge } from '@/lib/constants';
 import { projectsApi } from '@/api/projects';
 import { useProjectRename } from '@/hooks/useProjectRename';
+import { getMediaDownloadUrl, downloadMedia } from '@/lib/apiBase';
 
 export default function ProjectHeader({
   project,
@@ -238,9 +239,15 @@ export default function ProjectHeader({
                 <Play className="w-3.5 h-3.5" /> Xem
               </a>
               <a
-                href={outputUrl}
-                download
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-foreground text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                href={getMediaDownloadUrl(outputUrl, `${project?.title || 'video'}.mp4`)}
+                download={`${project?.title || 'video'}.mp4`}
+                onClick={(e) => {
+                  if (/^https?:\/\//i.test(outputUrl) && !outputUrl.startsWith(window.location.origin)) {
+                    downloadMedia(outputUrl, `${project?.title || 'video'}.mp4`);
+                    e.preventDefault();
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-foreground text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" /> Tải
               </a>

@@ -194,7 +194,8 @@ export default function CreateProject() {
           }
         },
       });
-      update('sourceVideoKey', res.key ?? res.storageKey ?? null);
+      update('sourceVideoKey', res.key ?? res.storageKey ?? res.secure_url ?? res.url ?? null);
+      update('sourceVideoUrl', res.secure_url ?? res.url ?? null);
       update('sourceFileName', file.name);
       update('videoHash', res.videoHash || null);
       if (key) {

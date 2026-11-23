@@ -4,7 +4,7 @@ import { makeThumbnail } from '../../media/mediaService.js'
 import { getProvider } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
 import { textEmbedding } from '../alignService.js'
-import { projectDir, ensureDir, requireSourceFile, toStorageKey } from '../context.js'
+import { projectDir, ensureDir, stageSourceMedia, toStorageKey } from '../context.js'
 
 export function selectKeyScenes(rows) {
   if (rows.length <= 24) return rows.slice()
@@ -25,7 +25,7 @@ export function selectKeyScenes(rows) {
 
 export async function summaryAnalyze(ctx) {
   const { project, job, setProgress, signal } = ctx
-  const src = requireSourceFile(project.source_video_key, 'Video nguồn (phim)')
+  const src = await stageSourceMedia(project, ctx)
   const rows = await query('SELECT * FROM scenes WHERE project_id = ? ORDER BY start_sec ASC', [project.id])
   if (!rows.length) {
     throw new Error('Chưa có cảnh nào — hãy retry từ stage summary.sceneDetect')
