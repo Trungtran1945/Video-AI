@@ -1,5 +1,5 @@
 /**
- * Canonical whitelist of all 32 valid application tables in Video_AI.
+ * Canonical whitelist of all 34 valid application tables in Video_AI.
  * Protects against dynamic table injection in raw queries and CRUD helpers.
  */
 export const ALLOWED_TABLES = new Set([

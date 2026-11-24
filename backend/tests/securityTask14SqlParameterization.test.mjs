@@ -46,8 +46,10 @@ async function run() {
     assert.strictEqual(assertValidTable('users'), 'users')
     assert.strictEqual(assertValidTable('projects'), 'projects')
     assert.strictEqual(assertValidTable('settings'), 'settings')
+    assert.strictEqual(assertValidTable('cloudinary_assets'), 'cloudinary_assets')
+    assert.strictEqual(assertValidTable('media_migration_manifest'), 'media_migration_manifest')
     assert.strictEqual(assertValidTable('  Projects  '), 'projects')
-    assert.strictEqual(ALLOWED_TABLES.size, 32)
+    assert.strictEqual(ALLOWED_TABLES.size, 34)
   })
 
   test('assertValidTable rejects unauthorized or non-existent tables', () => {

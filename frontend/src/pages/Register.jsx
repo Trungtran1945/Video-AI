@@ -137,7 +137,7 @@ export default function Register() {
       );
       toast({
         title: "Đăng ký thành công!",
-        description: "Chào mừng bạn đến với AI Media Composer & Video AI Studio.",
+        description: "Chào mừng bạn đến với Video AI Studio.",
       });
       navigate("/dashboard");
     } catch (err) {
@@ -205,17 +205,17 @@ export default function Register() {
       }
     >
       {error && (
-        <div className="mb-4 p-3.5 rounded-xl bg-destructive/15 border border-destructive/30 text-destructive text-xs sm:text-sm font-medium leading-relaxed">
+        <div className="mb-3 p-2.5 rounded-lg bg-destructive/15 border border-destructive/30 text-destructive text-xs font-medium leading-relaxed">
           {error}
         </div>
       )}
 
       {/* DEV OTP Helper */}
       {devOtp && (
-        <div className="mb-4 p-3 rounded-xl bg-primary/10 border border-primary/20 text-xs text-foreground flex items-center justify-between">
+        <div className="mb-3 p-2 rounded-lg bg-primary/10 border border-primary/20 text-xs text-foreground flex items-center justify-between">
           <div className="flex items-center gap-1.5">
-            <CheckCircle2 className="w-4 h-4 text-primary shrink-0" />
-            <span>Mã OTP thử nghiệm (Dev mode): <strong className="font-mono text-primary text-sm">{devOtp}</strong></span>
+            <CheckCircle2 className="w-3.5 h-3.5 text-primary shrink-0" />
+            <span>Mã thử nghiệm (Dev): <strong className="font-mono text-primary text-xs sm:text-sm">{devOtp}</strong></span>
           </div>
           <button
             type="button"
@@ -231,14 +231,14 @@ export default function Register() {
       )}
 
       {step === "form" ? (
-        <div className="space-y-4">
-          <form onSubmit={handleFormSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="name" className="text-foreground font-semibold text-xs sm:text-sm">
+        <div className="space-y-2.5 sm:space-y-3">
+          <form onSubmit={handleFormSubmit} className="space-y-2.5 sm:space-y-3">
+            <div className="space-y-1">
+              <Label htmlFor="name" className="text-foreground font-medium text-xs">
                 Tên hiển thị <span className="font-normal text-muted-foreground">(tùy chọn)</span>
               </Label>
               <div className="relative">
-                <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
+                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
                 <Input
                   id="name"
                   type="text"
@@ -246,17 +246,17 @@ export default function Register() {
                   placeholder="Tên của bạn"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="pl-10 h-11 sm:h-12 bg-background/70 border-border/80 text-foreground placeholder:text-muted-foreground/70 focus:border-primary text-sm rounded-xl"
+                  className="pl-9 h-9.5 sm:h-10 bg-background/60 border-border/80 text-foreground placeholder:text-muted-foreground/60 focus:border-primary text-xs sm:text-sm rounded-lg"
                 />
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="email" className="text-foreground font-semibold text-xs sm:text-sm">
+            <div className="space-y-1">
+              <Label htmlFor="email" className="text-foreground font-medium text-xs">
                 Email
               </Label>
               <div className="relative">
-                <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
                 <Input
                   id="email"
                   type="email"
@@ -265,69 +265,72 @@ export default function Register() {
                   placeholder="you@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="pl-10 h-11 sm:h-12 bg-background/70 border-border/80 text-foreground placeholder:text-muted-foreground/70 focus:border-primary text-sm rounded-xl"
+                  className="pl-9 h-9.5 sm:h-10 bg-background/60 border-border/80 text-foreground placeholder:text-muted-foreground/60 focus:border-primary text-xs sm:text-sm rounded-lg"
                   required
                 />
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="password" className="text-foreground font-semibold text-xs sm:text-sm">
-                Mật khẩu
-              </Label>
-              <div className="relative">
-                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
-                <Input
-                  id="password"
-                  type={showPassword ? "text" : "password"}
-                  autoComplete="new-password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="pl-10 pr-10 h-11 sm:h-12 bg-background/70 border-border/80 text-foreground placeholder:text-muted-foreground/70 focus:border-primary text-sm rounded-xl"
-                  required
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition-colors cursor-pointer"
-                  aria-label={showPassword ? "Hide password" : "Show password"}
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
+            {/* Hai cột mật khẩu & xác nhận mật khẩu để tối ưu chiều cao */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-2.5">
+              <div className="space-y-1">
+                <Label htmlFor="password" className="text-foreground font-medium text-xs">
+                  Mật khẩu
+                </Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" aria-hidden="true" />
+                  <Input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    autoComplete="new-password"
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="pl-8.5 pr-8 h-9.5 sm:h-10 bg-background/60 border-border/80 text-foreground placeholder:text-muted-foreground/60 focus:border-primary text-xs sm:text-sm rounded-lg"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition-colors cursor-pointer"
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
               </div>
-            </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="confirm" className="text-foreground font-semibold text-xs sm:text-sm">
-                Xác nhận mật khẩu
-              </Label>
-              <div className="relative">
-                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" aria-hidden="true" />
-                <Input
-                  id="confirm"
-                  type={showConfirmPassword ? "text" : "password"}
-                  autoComplete="new-password"
-                  placeholder="••••••••"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="pl-10 pr-10 h-11 sm:h-12 bg-background/70 border-border/80 text-foreground placeholder:text-muted-foreground/70 focus:border-primary text-sm rounded-xl"
-                  required
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition-colors cursor-pointer"
-                  aria-label={showConfirmPassword ? "Hide password" : "Show password"}
-                >
-                  {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
+              <div className="space-y-1">
+                <Label htmlFor="confirm" className="text-foreground font-medium text-xs">
+                  Xác nhận lại
+                </Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" aria-hidden="true" />
+                  <Input
+                    id="confirm"
+                    type={showConfirmPassword ? "text" : "password"}
+                    autoComplete="new-password"
+                    placeholder="••••••••"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="pl-8.5 pr-8 h-9.5 sm:h-10 bg-background/60 border-border/80 text-foreground placeholder:text-muted-foreground/60 focus:border-primary text-xs sm:text-sm rounded-lg"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition-colors cursor-pointer"
+                    aria-label={showConfirmPassword ? "Hide password" : "Show password"}
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
               </div>
             </div>
 
             <Button
               type="submit"
-              className="w-full h-11 sm:h-12 font-bold text-sm sm:text-base rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 transition-all mt-2 cursor-pointer"
+              className="w-full h-9.5 sm:h-10 font-semibold text-xs sm:text-sm rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm shadow-primary/20 transition-all mt-1 cursor-pointer"
               disabled={loading}
             >
               {loading ? (
@@ -339,25 +342,14 @@ export default function Register() {
                 "Nhận mã OTP để đăng ký"
               )}
             </Button>
-
-            <Button
-              type="button"
-              variant="outline"
-              asChild
-              className="w-full h-11 sm:h-12 font-semibold text-sm sm:text-base rounded-xl border-border/80 bg-background/50 hover:bg-muted/80 text-foreground transition-all mt-2 cursor-pointer"
-            >
-              <Link to="/login">
-                Đã có tài khoản? Đăng nhập
-              </Link>
-            </Button>
           </form>
 
           {/* Divider với chữ "Hoặc" */}
-          <div className="relative flex items-center justify-center my-4 sm:my-5">
+          <div className="relative flex items-center justify-center my-2 sm:my-2.5">
             <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-border/80" />
+              <div className="w-full border-t border-border/70" />
             </div>
-            <div className="relative px-3 bg-card text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+            <div className="relative px-2.5 bg-card text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
               Hoặc
             </div>
           </div>
@@ -368,14 +360,23 @@ export default function Register() {
             onError={handleGoogleError}
             text="Đăng ký nhanh với Google"
             disabled={loading}
+            className="min-h-[40px] sm:min-h-[42px]"
           />
+
+          {/* Inline link đăng nhập */}
+          <p className="text-center text-xs text-muted-foreground mt-2.5 pt-0.5">
+            Đã có tài khoản?{" "}
+            <Link to="/login" className="font-semibold text-primary hover:underline">
+              Đăng nhập ngay
+            </Link>
+          </p>
         </div>
       ) : (
         /* Step 2: OTP Verification */
-        <div className="space-y-6">
-          <div className="p-3.5 rounded-xl bg-muted/40 border border-border flex items-center justify-between text-xs">
+        <div className="space-y-3 sm:space-y-4">
+          <div className="p-2.5 rounded-lg bg-muted/40 border border-border flex items-center justify-between text-xs">
             <div className="flex items-center gap-2 truncate">
-              <Mail className="w-4 h-4 text-primary shrink-0" />
+              <Mail className="w-3.5 h-3.5 text-primary shrink-0" />
               <span className="font-semibold text-foreground truncate">{email}</span>
             </div>
             <button
@@ -386,12 +387,12 @@ export default function Register() {
               }}
               className="inline-flex items-center gap-1 text-primary hover:underline font-semibold shrink-0 cursor-pointer"
             >
-              <ArrowLeft className="w-3.5 h-3.5" />
+              <ArrowLeft className="w-3 h-3" />
               <span>Đổi</span>
             </button>
           </div>
 
-          <div className="flex flex-col items-center">
+          <div className="flex flex-col items-center py-1">
             <OtpInput
               value={otp}
               onChange={setOtp}
@@ -408,7 +409,7 @@ export default function Register() {
           <Button
             type="button"
             onClick={() => handleVerifyOtp()}
-            className="w-full h-11 sm:h-12 font-bold text-sm sm:text-base rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 transition-all cursor-pointer"
+            className="w-full h-9.5 sm:h-10 font-semibold text-xs sm:text-sm rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm shadow-primary/20 transition-all cursor-pointer"
             disabled={loading || otp.length !== 6}
           >
             {loading ? (
@@ -421,7 +422,7 @@ export default function Register() {
             )}
           </Button>
 
-          <div className="text-center">
+          <div className="text-center pt-0.5">
             <button
               type="button"
               onClick={() => {
@@ -430,7 +431,7 @@ export default function Register() {
               }}
               className="text-xs text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1.5 cursor-pointer"
             >
-              <ArrowLeft className="w-3.5 h-3.5" />
+              <ArrowLeft className="w-3 h-3" />
               <span>Quay lại chỉnh sửa thông tin</span>
             </button>
           </div>

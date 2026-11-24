@@ -243,7 +243,6 @@ export default function Login() {
         title: "Đăng nhập thành công",
         description: "Chào mừng bạn trở lại AI Shorts Factory!",
       });
-      // Điều hướng tới trang đích
       setTimeout(() => {
         navigate(from, { replace: true });
       }, 500);
@@ -262,17 +261,17 @@ export default function Login() {
     >
       {/* Tabs chuyển đổi giữa Mật khẩu và Email OTP */}
       <Tabs value={authMode} onValueChange={handleTabChange} className="w-full">
-        <TabsList className="grid w-full grid-cols-2 mb-5 h-11 bg-muted/60 p-1 rounded-xl">
+        <TabsList className="grid w-full grid-cols-2 mb-3 sm:mb-3.5 h-9 bg-muted/60 p-0.5 rounded-lg">
           <TabsTrigger
             value="password"
-            className="rounded-lg font-semibold text-xs sm:text-sm data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm transition-all"
+            className="h-8 rounded-md font-semibold text-xs data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-xs transition-all"
           >
             <Lock className="w-3.5 h-3.5 mr-1.5" aria-hidden="true" />
             Mật khẩu
           </TabsTrigger>
           <TabsTrigger
             value="otp"
-            className="rounded-lg font-semibold text-xs sm:text-sm data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm transition-all"
+            className="h-8 rounded-md font-semibold text-xs data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-xs transition-all"
           >
             <Mail className="w-3.5 h-3.5 mr-1.5" aria-hidden="true" />
             Email OTP
@@ -282,19 +281,19 @@ export default function Login() {
         {/* ================= TAB 1: ĐĂNG NHẬP MẬT KHẨU ================= */}
         <TabsContent value="password" className="mt-0 focus-visible:outline-none">
           {passwordError && (
-            <div className="mb-4 p-3.5 rounded-xl bg-destructive/15 border border-destructive/30 text-destructive text-xs sm:text-sm font-medium">
+            <div className="mb-3 p-2.5 rounded-lg bg-destructive/15 border border-destructive/30 text-destructive text-xs font-medium leading-relaxed">
               {passwordError}
             </div>
           )}
 
-          <form onSubmit={handlePasswordSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="email" className="text-foreground font-semibold text-xs sm:text-sm">
+          <form onSubmit={handlePasswordSubmit} className="space-y-2.5 sm:space-y-3">
+            <div className="space-y-1">
+              <Label htmlFor="email" className="text-foreground font-medium text-xs">
                 Email
               </Label>
               <div className="relative">
                 <Mail
-                  className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
+                  className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
                   aria-hidden="true"
                 />
                 <Input
@@ -305,18 +304,18 @@ export default function Login() {
                   placeholder="you@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="pl-10 h-11 sm:h-12 bg-background/70 border-border/80 text-foreground placeholder:text-muted-foreground/70 focus:border-primary text-sm"
+                  className="pl-9 h-9.5 sm:h-10 bg-background/60 border-border/80 text-foreground placeholder:text-muted-foreground/60 focus:border-primary text-xs sm:text-sm rounded-lg"
                   required
                   disabled={passwordLoading}
                 />
               </div>
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-1">
               <div className="flex items-center justify-between">
                 <Label
                   htmlFor="password"
-                  className="text-foreground font-semibold text-xs sm:text-sm"
+                  className="text-foreground font-medium text-xs"
                 >
                   Mật khẩu
                 </Label>
@@ -329,7 +328,7 @@ export default function Login() {
               </div>
               <div className="relative">
                 <Lock
-                  className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
+                  className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
                   aria-hidden="true"
                 />
                 <Input
@@ -339,14 +338,14 @@ export default function Login() {
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="pl-10 pr-10 h-11 sm:h-12 bg-background/70 border-border/80 text-foreground placeholder:text-muted-foreground/70 focus:border-primary text-sm"
+                  className="pl-9 pr-9 h-9.5 sm:h-10 bg-background/60 border-border/80 text-foreground placeholder:text-muted-foreground/60 focus:border-primary text-xs sm:text-sm rounded-lg"
                   required
                   disabled={passwordLoading}
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition-colors"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1 transition-colors cursor-pointer"
                   aria-label={showPassword ? "Hide password" : "Show password"}
                   disabled={passwordLoading}
                 >
@@ -357,7 +356,7 @@ export default function Login() {
 
             <Button
               type="submit"
-              className="w-full h-11 sm:h-12 font-bold text-sm sm:text-base rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 transition-all mt-2 cursor-pointer"
+              className="w-full h-9.5 sm:h-10 font-semibold text-xs sm:text-sm rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm shadow-primary/20 transition-all mt-1 cursor-pointer"
               disabled={passwordLoading}
             >
               {passwordLoading ? (
@@ -369,48 +368,37 @@ export default function Login() {
                 "Đăng nhập"
               )}
             </Button>
-
-            <Button
-              type="button"
-              variant="outline"
-              asChild
-              className="w-full h-11 sm:h-12 font-semibold text-sm sm:text-base rounded-xl border-border/80 bg-background/50 hover:bg-muted/80 text-foreground transition-all mt-2 cursor-pointer"
-            >
-              <Link to="/register">
-                Đăng ký tài khoản
-              </Link>
-            </Button>
           </form>
         </TabsContent>
 
         {/* ================= TAB 2: ĐĂNG NHẬP EMAIL OTP ================= */}
         <TabsContent value="otp" className="mt-0 focus-visible:outline-none">
           {otpError && (
-            <div className="mb-4 p-3.5 rounded-xl bg-destructive/15 border border-destructive/30 text-destructive text-xs sm:text-sm font-medium animate-in fade-in-50">
+            <div className="mb-3 p-2.5 rounded-lg bg-destructive/15 border border-destructive/30 text-destructive text-xs font-medium animate-in fade-in-50 leading-relaxed">
               {otpError}
             </div>
           )}
 
           {otpSuccess && (
-            <div className="mb-4 p-3.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs sm:text-sm font-medium flex items-center gap-2 animate-in fade-in-50">
+            <div className="mb-3 p-2.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-medium flex items-center gap-2 animate-in fade-in-50">
               <CheckCircle2 className="w-4 h-4 shrink-0" />
-              <span>Đăng nhập thành công! Đang chuyển hướng đến bảng điều khiển...</span>
+              <span>Đăng nhập thành công! Đang chuyển hướng...</span>
             </div>
           )}
 
           {/* Bước 1: Yêu cầu gửi mã OTP */}
           {otpStep === "request" && (
-            <form onSubmit={handleSendOtp} className="space-y-4">
-              <div className="space-y-2">
+            <form onSubmit={handleSendOtp} className="space-y-2.5 sm:space-y-3">
+              <div className="space-y-1">
                 <Label
                   htmlFor="otp-email"
-                  className="text-foreground font-semibold text-xs sm:text-sm"
+                  className="text-foreground font-medium text-xs"
                 >
                   Email nhận mã OTP
                 </Label>
                 <div className="relative">
                   <Mail
-                    className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
+                    className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground"
                     aria-hidden="true"
                   />
                   <Input
@@ -421,19 +409,19 @@ export default function Login() {
                     placeholder="you@example.com"
                     value={otpEmail}
                     onChange={(e) => setOtpEmail(e.target.value)}
-                    className="pl-10 h-11 sm:h-12 bg-background/70 border-border/80 text-foreground placeholder:text-muted-foreground/70 focus:border-primary text-sm"
+                    className="pl-9 h-9.5 sm:h-10 bg-background/60 border-border/80 text-foreground placeholder:text-muted-foreground/60 focus:border-primary text-xs sm:text-sm rounded-lg"
                     required
                     disabled={isSendingOtp}
                   />
                 </div>
-                <p className="text-xs text-muted-foreground leading-relaxed pt-1">
-                  Mã xác thực gồm 6 số dùng một lần sẽ được gửi trực tiếp đến hộp thư của bạn.
+                <p className="text-[11px] text-muted-foreground leading-normal mt-0.5">
+                  Mã xác thực 6 số dùng một lần sẽ gửi trực tiếp đến hộp thư của bạn.
                 </p>
               </div>
 
               <Button
                 type="submit"
-                className="w-full h-11 sm:h-12 font-bold text-sm sm:text-base rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 transition-all mt-2 cursor-pointer"
+                className="w-full h-9.5 sm:h-10 font-semibold text-xs sm:text-sm rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm shadow-primary/20 transition-all mt-1 cursor-pointer"
                 disabled={isSendingOtp || !otpEmail.trim()}
               >
                 {isSendingOtp ? (
@@ -443,33 +431,21 @@ export default function Login() {
                   </>
                 ) : (
                   <>
-                    <Send className="w-4 h-4 mr-2" />
+                    <Send className="w-3.5 h-3.5 mr-1.5" />
                     Gửi mã xác thực OTP
                   </>
                 )}
-              </Button>
-
-              <Button
-                type="button"
-                variant="outline"
-                asChild
-                className="w-full h-11 sm:h-12 font-semibold text-sm sm:text-base rounded-xl border-border/80 bg-background/50 hover:bg-muted/80 text-foreground transition-all mt-2 cursor-pointer"
-              >
-                <Link to="/register">
-                  Đăng ký tài khoản
-                </Link>
               </Button>
             </form>
           )}
 
           {/* Bước 2: Nhập mã OTP và Xác nhận */}
           {otpStep === "verify" && (
-            <form onSubmit={handleVerifyOtp} className="space-y-4 animate-in fade-in-50">
-              {/* Thẻ hiển thị email nhận mã kèm nút đổi email */}
-              <div className="flex items-center justify-between p-3 rounded-xl bg-muted/50 border border-border/60">
-                <div className="flex items-center gap-2 overflow-hidden">
-                  <ShieldCheck className="w-4 h-4 text-primary shrink-0" />
-                  <span className="text-xs sm:text-sm truncate text-muted-foreground">
+            <form onSubmit={handleVerifyOtp} className="space-y-2.5 sm:space-y-3 animate-in fade-in-50">
+              <div className="flex items-center justify-between p-2 rounded-lg bg-muted/40 border border-border/60">
+                <div className="flex items-center gap-1.5 overflow-hidden">
+                  <ShieldCheck className="w-3.5 h-3.5 text-primary shrink-0" />
+                  <span className="text-xs truncate text-muted-foreground">
                     Gửi tới: <strong className="text-foreground font-semibold">{otpEmail}</strong>
                   </span>
                 </div>
@@ -483,27 +459,24 @@ export default function Login() {
                     setOtpError("");
                   }}
                   disabled={isVerifyingOtp}
-                  className="h-7 px-2 text-xs text-primary hover:text-primary/90 hover:bg-primary/10 shrink-0"
+                  className="h-6 px-2 text-xs text-primary hover:text-primary/90 hover:bg-primary/10 shrink-0"
                 >
                   <ArrowLeft className="w-3 h-3 mr-1" />
                   Đổi email
                 </Button>
               </div>
 
-              {/* Dev mode OTP badge nếu backend trả về để test nhanh */}
               {devOtp && (
-                <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-600 dark:text-amber-400 text-xs text-center font-mono font-medium">
+                <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-600 dark:text-amber-400 text-xs text-center font-mono font-medium">
                   Mã kiểm thử (Dev Mode): <strong>{devOtp}</strong>
                 </div>
               )}
 
-              {/* Component OtpInput 6 ô số rời nhau + Countdown Resend */}
-              <div className="py-2">
+              <div className="py-1">
                 <OtpInput
                   value={otp}
                   onChange={setOtp}
                   onComplete={() => {
-                    // Tự động kích hoạt khi nhập đủ 6 số nếu không đang loading
                     if (!isVerifyingOtp && !otpSuccess) {
                       handleVerifyOtp();
                     }
@@ -519,13 +492,13 @@ export default function Login() {
 
               <Button
                 type="submit"
-                className="w-full h-11 sm:h-12 font-bold text-sm sm:text-base rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25 transition-all mt-2 cursor-pointer"
+                className="w-full h-9.5 sm:h-10 font-semibold text-xs sm:text-sm rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm shadow-primary/20 transition-all mt-1 cursor-pointer"
                 disabled={isVerifyingOtp || otp.length !== 6 || otpSuccess}
               >
                 {isVerifyingOtp ? (
                   <>
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Đang xác thực mã...
+                    Đang xác thực...
                   </>
                 ) : otpSuccess ? (
                   <>
@@ -534,21 +507,10 @@ export default function Login() {
                   </>
                 ) : (
                   <>
-                    <KeyRound className="w-4 h-4 mr-2" />
+                    <KeyRound className="w-3.5 h-3.5 mr-1.5" />
                     Xác nhận & Đăng nhập
                   </>
                 )}
-              </Button>
-
-              <Button
-                type="button"
-                variant="outline"
-                asChild
-                className="w-full h-11 sm:h-12 font-semibold text-sm sm:text-base rounded-xl border-border/80 bg-background/50 hover:bg-muted/80 text-foreground transition-all mt-2 cursor-pointer"
-              >
-                <Link to="/register">
-                  Đăng ký tài khoản
-                </Link>
               </Button>
             </form>
           )}
@@ -556,19 +518,19 @@ export default function Login() {
       </Tabs>
 
       {/* Divider với chữ "Hoặc" */}
-      <div className="relative flex items-center justify-center my-4 sm:my-5">
+      <div className="relative flex items-center justify-center my-2.5 sm:my-3">
         <div className="absolute inset-0 flex items-center">
-          <div className="w-full border-t border-border/80" />
+          <div className="w-full border-t border-border/70" />
         </div>
-        <div className="relative px-3 bg-card text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+        <div className="relative px-2.5 bg-card text-[11px] uppercase tracking-wider text-muted-foreground font-semibold">
           Hoặc
         </div>
       </div>
 
       {/* Đăng nhập bằng Google */}
-      <div className="space-y-3">
+      <div className="space-y-2">
         {googleError && (
-          <div className="p-3.5 rounded-xl bg-destructive/15 border border-destructive/30 text-destructive text-xs sm:text-sm font-medium">
+          <div className="p-2.5 rounded-lg bg-destructive/15 border border-destructive/30 text-destructive text-xs font-medium">
             {googleError}
           </div>
         )}
@@ -578,8 +540,17 @@ export default function Login() {
           onError={handleGoogleError}
           text="Đăng nhập với Google"
           disabled={passwordLoading || isSendingOtp || isVerifyingOtp || googleLoading}
+          className="min-h-[40px] sm:min-h-[42px]"
         />
       </div>
+
+      {/* Inline link đăng ký tài khoản */}
+      <p className="text-center text-xs text-muted-foreground mt-3 pt-0.5">
+        Chưa có tài khoản?{" "}
+        <Link to="/register" className="font-semibold text-primary hover:underline">
+          Đăng ký ngay
+        </Link>
+      </p>
     </AuthLayout>
   );
 }

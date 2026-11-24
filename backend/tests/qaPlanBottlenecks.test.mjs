@@ -334,7 +334,9 @@ console.log('\n--- Suite 5: Infrastructure Fixes & Open Defect Checks ---')
 // 5.3 Frontend Storage URL: Check ProjectDetail dynamic origin (Item 7 Fixed)
 {
   const projectDetailContent = fs.readFileSync(path.join(repoRoot, 'frontend/src/pages/ProjectDetail.jsx'), 'utf8')
-  const usesResolver = projectDetailContent.includes('resolveStorageUrl(project.output.storage_key)')
+  const usesResolver = projectDetailContent.includes('resolveStorageUrl(outputMedia')
+    || projectDetailContent.includes('resolveStorageUrl(sourceMedia)')
+    || projectDetailContent.includes('resolveStorageUrl(project.output.storage_key)')
     || projectDetailContent.includes('resolveStorageUrl(project.source_video_key)')
   const hasHardcodedRelativeStorage = projectDetailContent.includes('`/storage/${project.output.storage_key}')
   assert(
