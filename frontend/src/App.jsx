@@ -1,8 +1,8 @@
+import { Suspense, lazy } from 'react';
 import { Toaster } from "@/components/ui/toaster"
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClientInstance } from '@/lib/query-client'
 import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-dom';
-import PageNotFound from './lib/PageNotFound';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import UserNotRegisteredError from '@/components/UserNotRegisteredError';
 import ScrollToTop from './components/ScrollToTop';
@@ -11,23 +11,32 @@ import ErrorBoundary from '@/components/ErrorBoundary';
 import { ThemeProvider } from 'next-themes';
 import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
-import Register from '@/pages/Register';
-import ForgotPassword from '@/pages/ForgotPassword';
-import ResetPassword from '@/pages/ResetPassword';
-import Dashboard from '@/pages/Dashboard';
-import Projects from '@/pages/Projects';
-import CreateProject from '@/pages/CreateProject';
-import ProjectDetail from '@/pages/ProjectDetail';
-import Queue from '@/pages/Queue';
-import Outputs from '@/pages/Outputs';
-import Analytics from '@/pages/Analytics';
-import SettingsPage from '@/pages/Settings';
-import ProviderSettings from '@/pages/ProviderSettings';
-import ApiKeys from '@/pages/ApiKeys';
-import Logs from '@/pages/Logs';
-import Admin from '@/pages/Admin';
-import TimelineDemo from '@/pages/TimelineDemo';
-import ComposerLauncher from '@/pages/ComposerLauncher';
+
+// Lazy-loaded secondary & heavy route pages
+const Register = lazy(() => import('@/pages/Register'));
+const ForgotPassword = lazy(() => import('@/pages/ForgotPassword'));
+const ResetPassword = lazy(() => import('@/pages/ResetPassword'));
+const Dashboard = lazy(() => import('@/pages/Dashboard'));
+const Projects = lazy(() => import('@/pages/Projects'));
+const CreateProject = lazy(() => import('@/pages/CreateProject'));
+const ProjectDetail = lazy(() => import('@/pages/ProjectDetail'));
+const Queue = lazy(() => import('@/pages/Queue'));
+const Outputs = lazy(() => import('@/pages/Outputs'));
+const Analytics = lazy(() => import('@/pages/Analytics'));
+const SettingsPage = lazy(() => import('@/pages/Settings'));
+const ProviderSettings = lazy(() => import('@/pages/ProviderSettings'));
+const ApiKeys = lazy(() => import('@/pages/ApiKeys'));
+const Logs = lazy(() => import('@/pages/Logs'));
+const Admin = lazy(() => import('@/pages/Admin'));
+const TimelineDemo = lazy(() => import('@/pages/TimelineDemo'));
+const ComposerLauncher = lazy(() => import('@/pages/ComposerLauncher'));
+const PageNotFound = lazy(() => import('./lib/PageNotFound'));
+
+const RouteLoadingFallback = () => (
+  <div className="fixed inset-0 flex items-center justify-center bg-background">
+    <div className="w-8 h-8 border-3 border-muted border-t-primary rounded-full animate-spin"></div>
+  </div>
+);
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
@@ -55,39 +64,40 @@ const AuthenticatedApp = () => {
   // Render the main app
   return (
     <ErrorBoundary>
-      <Routes>
-      <Route path="/" element={<Landing />} />
-      <Route path="/login" element={<Login />} />
-      <Route path="/register" element={<Register />} />
-      <Route path="/forgot-password" element={<ForgotPassword />} />
-      <Route path="/reset-password" element={<ResetPassword />} />
-      <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} />}>
-        {/* F8: /timeline là demo mock (0 API, MOCK_DEMO_CLIPS) — guard login, không public. */}
-        <Route path="/timeline" element={<TimelineDemo />} />
-        <Route path="/composer" element={<ComposerLauncher />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/projects" element={<Projects />} />
-        <Route path="/projects/new" element={<CreateProject />} />
-        <Route path="/projects/:id" element={<ProjectDetail />} />
-        <Route path="/queue" element={<Queue />} />
-        <Route path="/outputs" element={<Outputs />} />
-        <Route path="/analytics" element={<Analytics />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/settings/providers" element={<ProviderSettings />} />
-        <Route path="/settings/api-keys" element={<ApiKeys />} />
-        <Route path="/providers" element={<Navigate to="/settings/providers" replace />} />
-        <Route path="/api-keys" element={<Navigate to="/settings/api-keys" replace />} />
-        <Route path="/logs" element={<Logs />} />
-      </Route>
-      <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} requireRole="admin" />}>
-        <Route path="/admin" element={<Admin />} />
-      </Route>
-      <Route path="*" element={<PageNotFound />} />
-      </Routes>
+      <Suspense fallback={<RouteLoadingFallback />}>
+        <Routes>
+          <Route path="/" element={<Landing />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
+          <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} />}>
+            {/* F8: /timeline là demo mock (0 API, MOCK_DEMO_CLIPS) — guard login, không public. */}
+            <Route path="/timeline" element={<TimelineDemo />} />
+            <Route path="/composer" element={<ComposerLauncher />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/projects" element={<Projects />} />
+            <Route path="/projects/new" element={<CreateProject />} />
+            <Route path="/projects/:id" element={<ProjectDetail />} />
+            <Route path="/queue" element={<Queue />} />
+            <Route path="/outputs" element={<Outputs />} />
+            <Route path="/analytics" element={<Analytics />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/settings/providers" element={<ProviderSettings />} />
+            <Route path="/settings/api-keys" element={<ApiKeys />} />
+            <Route path="/providers" element={<Navigate to="/settings/providers" replace />} />
+            <Route path="/api-keys" element={<Navigate to="/settings/api-keys" replace />} />
+            <Route path="/logs" element={<Logs />} />
+          </Route>
+          <Route element={<ProtectedRoute unauthenticatedElement={<Navigate to="/login" replace />} requireRole="admin" />}>
+            <Route path="/admin" element={<Admin />} />
+          </Route>
+          <Route path="*" element={<PageNotFound />} />
+        </Routes>
+      </Suspense>
     </ErrorBoundary>
   );
 };
-
 
 function App() {
   return (

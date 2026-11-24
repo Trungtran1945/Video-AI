@@ -41,9 +41,9 @@ When designing and developing frontend interfaces:
 
 ## Project Architecture (Video_AI — verified 2026-09-17)
 
-- **Frontend:** React 18 + Vite 6 (`frontend/`). Scripts: `dev`, `build` (`vite build`), `lint` (`eslint . --quiet`), `typecheck`, `preview`. No `npm test`. Dark theme (#0F1117), Vite proxy `/api` → `http://localhost:3001`. Key: `src/api/client.js`, `src/pages/CreateProject.jsx`, `src/pages/ProjectDetail.jsx`, `src/components/timeline/`.
+- **Frontend:** React 18 + Vite 6 (`frontend/`). Scripts: `dev`, `build` (`vite build`), `lint` (`eslint . --quiet`), `test` (`node --test src/**/*.test.js`), `typecheck`, `preview`. Unit tests: 3 files under `src/**/*.test.js`. Dark theme (#0F1117), Vite proxy `/api` → `http://localhost:3001`. Key: `src/api/client.js`, `src/pages/CreateProject.jsx`, `src/pages/ProjectDetail.jsx`, `src/components/timeline/`.
 - **Backend:** Node >=18 ESM Express (`backend/server.js`, `backend/src/`). Scripts: `dev`/`start` (`node server.js`), `check:redis`, `test` (`node scripts/run-tests.mjs` → all `backend/tests/*.test.mjs`). Routes under `src/routes/v1/`, liveness `GET /health` (incl. `database.persistenceState` HEALTHY/DEGRADED/WRITE_BLOCKED) + readiness `GET /ready` (503 when WRITE_BLOCKED). Project statuses canonical: `pending/queued/running/completed/failed/cancelled` (`src/lib/projectStatus.js`; legacy `success`→`completed`).
-- **Modes:** SUMMARY vs TRANSLATE_DUB (target spec in `Video_AI_docs/docs/`, legacy STYLE_EDIT code being removed). 13 translation style presets via `GET /style-presets`. Resumable TUS-like upload (`POST /uploads/init`, `PUT /uploads/:id/chunk`, `POST /uploads/:id/complete`), SSE `GET /projects/:id/events`, storage served at `/storage/<key>`.
+- **Modes:** SUMMARY, TRANSLATE_DUB, SCRIPT_TO_VIDEO, MEDIA_COMPOSER (target spec in `Video_AI_docs/docs/`, legacy STYLE_EDIT code being removed). 13 translation style presets via `GET /style-presets`. Resumable TUS-like upload (`POST /uploads/init`, `PUT /uploads/:id/chunk`, `POST /uploads/:id/complete`), SSE `GET /projects/:id/events`, storage served at `/storage/<key>`.
 - **Pipeline stages** (`backend/src/pipeline/stages/`): `dubIngest → dubStt → dubMerge → dubTranslate → dubMask → dubTtsAlign → dubRender`; `summaryTranscribe → summaryAnalyze → summaryScript → summarySceneDetect → summaryAlign → summarySubtitle → summaryTts → summaryRender`.
 - **Workers/queue:** BullMQ + Redis (`src/queue/`). `docker-compose.yml` services: `redis` (6379), `api` (3001), `worker` (profile `scale`), `web` (80). Redis NOT guaranteed running locally — probe via `npm run check:redis` or `/health`, never assume.
 - **Database:** Pure PostgreSQL 16+ (`pg.Pool`) via `DATABASE_URL=postgresql://...` (`.env`/compose). SQLite (`sql.js`) is completely removed (no SQLite fallback, no SQLite in tests or runtime). Schema in `src/db/postgresSchema.sql`, migrations tracked via `schema_migrations`, seeds in `src/db/seed.js`.
@@ -63,7 +63,7 @@ When designing and developing frontend interfaces:
 ## Testing Rules
 
 - Backend: `cd backend; npm test`. This is the regression gate — run it fully, don't stop at HTTP 200.
-- Frontend: `cd frontend; npm run lint` and `npm run build`. There is no frontend `npm test` — don't invent one.
+- Frontend: `cd frontend; npm run lint`, `cd frontend; npm test` (3 unit test files via `node --test src/**/*.test.js`), and `npm run build`.
 - Contract: `frontend/src/api/*` usage must match `backend/src/routes/` responses; verify on every API change.
 - Video pipeline: check only touched `dub*`/`summary*` stages in isolation, plus the full backend suite for regression.
 

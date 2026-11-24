@@ -8,6 +8,12 @@ export class OpenAiLlm {
   }
 
   async complete({ system, prompt, json = false, temperature = 0.7, maxOutputTokens }) {
+    if (process.env.NODE_ENV === 'test' && (process.env.DEFAULT_PROVIDER_MODE === 'mock' || process.env.AI_PROVIDER_MODE === 'mock')) {
+      const isUnmocked = typeof globalThis.fetch === 'function' && (String(globalThis.fetch).includes('undici') || String(globalThis.fetch).includes('[native code]'))
+      if (isUnmocked) {
+        throw new Error(`[TestGuard] External call to OpenAI (${this.model}) blocked in test mode. Use MockLlm or mock globalThis.fetch in tests.`)
+      }
+    }
     const messages = []
     if (system) messages.push({ role: 'system', content: system })
     messages.push({ role: 'user', content: prompt })

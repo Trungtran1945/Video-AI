@@ -32,11 +32,13 @@ export function reportProviderFailure({ provider, apiKeyId, errorCode }, opts = 
   }
   // Structured observability (never logs keys/secrets).
   try {
-    console.warn(
-      `[AI_PROVIDER_FAILOVER] capability=${opts.capability || '-'} failedProvider=${provider} ` +
-      `errorCode=${code} cooldownUntil=${new Date(cooldownUntil.get(key)).toISOString()} ` +
-      `scope=${scopeKey() || '-'} attempt=${opts.attempt ?? '-'}`
-    )
+    if (process.env.SILENCE_PROVIDER_LOGS !== 'true' && process.env.NODE_ENV !== 'test') {
+      console.warn(
+        `[AI_PROVIDER_FAILOVER] capability=${opts.capability || '-'} failedProvider=${provider} ` +
+        `errorCode=${code} cooldownUntil=${new Date(cooldownUntil.get(key)).toISOString()} ` +
+        `scope=${scopeKey() || '-'} attempt=${opts.attempt ?? '-'}`
+      )
+    }
   } catch (_) {}
   return { providerKey: key, code, cooldownUntilMs: cooldownUntil.get(key) }
 }

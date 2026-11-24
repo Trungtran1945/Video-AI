@@ -547,7 +547,11 @@ export default function Login() {
       {/* Inline link đăng ký tài khoản */}
       <p className="text-center text-xs text-muted-foreground mt-3 pt-0.5">
         Chưa có tài khoản?{" "}
-        <Link to="/register" className="font-semibold text-primary hover:underline">
+        <Link
+          to="/register"
+          data-testid="register-link"
+          className="font-semibold text-primary hover:underline"
+        >
           Đăng ký ngay
         </Link>
       </p>

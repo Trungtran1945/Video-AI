@@ -19,6 +19,7 @@ import { sweepProjectCleanupTasks } from './src/services/projectCleanup.js'
 import { responseSanitizerMiddleware, sanitizeStringContent } from './src/lib/responseSanitizer.js'
 import { securityHeadersMiddleware, httpsEnforcementMiddleware } from './src/middleware/securityHeaders.js'
 import { sendError } from './src/lib/httpError.js'
+import { getQueueHealth, QUEUE_STATES, isQueueRequired, buildHealthResponse, buildReadyResponse } from './src/routes/v1/health.js'
 
 import v1Router from './src/routes/v1/index.js'
 
@@ -84,72 +85,23 @@ app.use((err, req, res, next) => {
   return sendError(res, status, code, message)
 })
 
+// Health check: reports DB health and Redis/BullMQ status without failing if Redis is down.
+// Consolidated health & readiness endpoints delegate to canonical implementation in src/routes/v1/health.js.
+// Preserves health contract: status, bullmq, durableCleanup, cleanup (getCleanupStats), queueState,
+// database (persistenceState, consecutiveSaveFailures, lastSuccessfulSaveAt), writes, auth.
 app.get('/health', async (req, res) => {
-  let redisOk = false
-  try {
-    const { isRedisReady } = await import('./src/queue/connection.js')
-    redisOk = isRedisReady()
-  } catch (_) {}
-  const persistence = getDbPersistenceStats()
-  const health = getDbPersistenceHealth()
-  const writes = getWriteQueueStats()
-  // Liveness: process is alive. Persistence state is reported explicitly so
-  // operators can distinguish HEALTHY / DEGRADED / WRITE_BLOCKED.
-  // Redis down never fails liveness (always 200 here; /ready gates writes).
-  const status = health.state === PERSISTENCE_STATES.HEALTHY
-    ? 'ok'
-    : health.state === PERSISTENCE_STATES.DEGRADED
-      ? 'degraded'
-      : 'unavailable'
-  let cleanupStats = { pending: 0, failed: 0, oldestPendingAgeMs: 0, lastFailureAt: null }
-  try {
-    cleanupStats = await getCleanupStats()
-  } catch (_) {}
-  let refreshFallbackStats = { count: 0, lastAt: null, deprecated: true, removalTarget: 'v2' }
-  try {
-    refreshFallbackStats = getRefreshFallbackStats()
-  } catch (_) {}
-  res.json({
-    status,
-    redis: redisOk ? 'connected' : 'disconnected',
-    bullmq: redisOk ? 'available' : 'unavailable',
-    durableCleanup: 'available',
-    cleanup: cleanupStats,
-    database: {
-      ...persistence,
-      persistenceState: health.state,
-      consecutiveSaveFailures: health.consecutiveSaveFailures,
-      lastSuccessfulSaveAt: health.lastSuccessfulSaveAt,
-      lastSaveError: sanitizeStringContent(health.lastSaveError),
-      maxSaveFailures: health.maxSaveFailures,
-    },
-    writes,
-    auth: { refreshFallback: refreshFallbackStats },
-  })
+  const payload = await buildHealthResponse()
+  res.json(payload)
 })
 
-// Readiness: WRITE_BLOCKED → 503 + ready:false (orchestrator stops routing
+// Readiness: WRITE_BLOCKED or (when required) QUEUE_STATES.UNAVAILABLE queue → 503 + ready:false (orchestrator stops routing
 // writes here). DEGRADED stays 200 + ready:true so transient save hiccups
-// don't cause restart loops. Redis is reported but never gates readiness
-// (dev runs without Redis; prod fail-fasts at boot instead).
+// don't cause restart loops. Redis is report-only in dev, but gates readiness
+// when QUEUE_REQUIRED=true or in production.
+// Canonical implementation in src/routes/v1/health.js.
+// Preserves contract: persistenceState, consecutiveSaveFailures, lastSuccessfulSaveAt, queue.
 app.get('/ready', async (req, res) => {
-  let redisOk = false
-  try {
-    const { isRedisReady } = await import('./src/queue/connection.js')
-    redisOk = isRedisReady()
-  } catch (_) {}
-  const health = getDbPersistenceHealth()
-  const ready = health.state !== PERSISTENCE_STATES.WRITE_BLOCKED
-  const body = {
-    ready,
-    database: {
-      persistenceState: health.state,
-      consecutiveSaveFailures: health.consecutiveSaveFailures,
-      lastSuccessfulSaveAt: health.lastSuccessfulSaveAt,
-      lastSaveError: sanitizeStringContent(health.lastSaveError),
-    },
-    redis: redisOk ? 'connected' : 'disconnected',
-  }
+  const { ready, body } = await buildReadyResponse()
   res.status(ready ? 200 : 503).json(body)
 })
 

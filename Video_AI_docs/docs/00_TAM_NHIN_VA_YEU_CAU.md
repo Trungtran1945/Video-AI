@@ -47,7 +47,7 @@ Hệ thống phục vụ các nhóm use-case chính:
 
 - Không hỗ trợ live-streaming trực tiếp.
 - Không có hệ thống thanh toán / ví điểm thưởng — mọi tính năng mở cho user đã đăng nhập.
-- Database: Hiện tại sử dụng `sql.js` (WebAssembly SQLite 30 bảng với file lưu trữ `backend/data.db` và single-writer lock); PostgreSQL là hướng nâng cấp khi scale ngang.
+- Database: Sử dụng thuần PostgreSQL 16+ (`pg.Pool`) với schema `postgresSchema.sql` và RLS tenant isolation. Kiến trúc SQLite cũ đã được gỡ bỏ hoàn toàn.
 - Không tự động kiểm duyệt bản quyền nội dung nguồn (xem §5 — trách nhiệm thuộc về user).
 - Giới hạn concurrency kỹ thuật: Mặc định tối đa 2 project `running` đồng thời / user (`MAX_CONCURRENT_PROJECTS_PER_USER`), các project vượt ngưỡng sẽ nằm ở trạng thái `queued`.
 

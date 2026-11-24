@@ -10,6 +10,8 @@
     "dev:api-only": "node scripts/dev.mjs --api-only",
     "start": "node server.js",
     "check:redis": "node scripts/check-redis.mjs",
+    "ensure:redis": "node scripts/ensure-redis.mjs",
+    "check:docs": "node scripts/check-docs-integrity.mjs",
     "test": "node scripts/run-tests.mjs",
     "check:secrets": "node scripts/scan-secrets.mjs",
     "lint": "eslint src tests scripts --quiet",

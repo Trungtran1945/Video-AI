@@ -67,6 +67,9 @@ jobs:
       - name: Lint backend
         run: cd backend && npm run lint
 
+      - name: Docs integrity guard
+        run: cd backend && npm run check:docs
+
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg && ffmpeg -version
 
@@ -80,6 +83,9 @@ jobs:
 
       - name: Lint frontend
         run: cd frontend && npm run lint
+
+      - name: Test frontend
+        run: cd frontend && npm test
 
       - name: Typecheck frontend
         run: cd frontend && npm run typecheck

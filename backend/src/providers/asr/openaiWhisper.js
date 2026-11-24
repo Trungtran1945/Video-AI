@@ -58,6 +58,12 @@ export class OpenAiWhisperAsr {
   }
 
   async transcribe(filePath, { language, prompt, temperature, effectiveConfig } = {}) {
+    if (process.env.NODE_ENV === 'test' && (process.env.DEFAULT_PROVIDER_MODE === 'mock' || process.env.AI_PROVIDER_MODE === 'mock')) {
+      const isUnmocked = typeof globalThis.fetch === 'function' && (String(globalThis.fetch).includes('undici') || String(globalThis.fetch).includes('[native code]'))
+      if (isUnmocked) {
+        throw new Error(`[TestGuard] External call to OpenAI Whisper blocked in test mode. Use MockAsr or mock globalThis.fetch in tests.`)
+      }
+    }
     // Upload memory audit (Node 22): single buffered read for multipart upload.
     // Hashing is streaming (sttUtils.hashFileContent) so this is the only
     // whole-file buffer. File-backed FormData/File (openAsBlob) is not used:

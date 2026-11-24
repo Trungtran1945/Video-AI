@@ -18,6 +18,7 @@ import confirmPreviewRouter from './confirmPreview.js'
 import scriptUploadsRouter from './scriptUploads.js'
 import youtubeRouter from './youtube.js'
 import composerAssetsRouter from './composerAssets.js'
+import healthRouter from './health.js'
 
 const router = Router()
 
@@ -46,5 +47,6 @@ router.use('/settings', settingsRouter)
 router.use('/api-keys', apiKeysRouter)
 router.use('/logs', logsRouter)
 router.use('/admin', adminRouter)
+router.use('/health', healthRouter)
 
 export default router

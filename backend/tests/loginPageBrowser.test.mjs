@@ -138,39 +138,37 @@ try {
   const emailInput = page.locator('input[type="email"], #email').first()
   const passwordInput = page.locator('input[type="password"], #password').first()
   const loginButton = page.locator('button[type="submit"]:has-text("Đăng nhập")').first()
-  const registerButton = page.locator('a[href="/register"]:has-text("Đăng ký tài khoản"), button:has-text("Đăng ký tài khoản")').first()
+  const registerLink = page.locator('[data-testid="register-link"], a[href="/register"]:has-text("Đăng ký ngay")').first()
   const dividerText = page.locator('div:has-text("Hoặc")').filter({ hasNot: page.locator('div div') }).first()
   // Locate Google button container or button
-  const googleButtonContainer = page.locator('[data-testid="google-signin-btn"], .space-y-3:has(button, div), div:has-text("Google")').last()
+  const googleBtn = page.locator('button:has-text("Google"), [id="google-signin-btn"], iframe[title*="Google"]').first()
+  const googleButtonContainer = page.locator('[data-testid="google-signin-btn"], .space-y-2:has(button, div), div:has-text("Google")').last()
 
   assert(await emailInput.isVisible(), 'Email input is visible')
   assert(await passwordInput.isVisible(), 'Password input is visible')
   assert(await loginButton.isVisible(), 'Nút "Đăng nhập" (Primary) is visible')
-  assert(await registerButton.isVisible(), 'Nút "Đăng ký tài khoản" (Secondary) is visible')
   assert(await dividerText.isVisible(), 'Divider "Hoặc" is visible')
+  assert(await registerLink.isVisible(), 'Link "Đăng ký ngay" (Register link) is visible')
 
   // Check vertical positions (Bounding Boxes)
   const emailBox = await emailInput.boundingBox()
   const passBox = await passwordInput.boundingBox()
   const loginBox = await loginButton.boundingBox()
-  const regBox = await registerButton.boundingBox()
   const divBox = await dividerText.boundingBox()
+  const regBox = await registerLink.boundingBox()
+
+  let googleBox = null
+  if (await googleBtn.isVisible()) {
+    googleBox = await googleBtn.boundingBox()
+  } else {
+    googleBox = await googleButtonContainer.boundingBox()
+  }
 
   assert(emailBox && passBox && emailBox.y < passBox.y, `Inputs order: Email (y=${emailBox?.y}) is above Password (y=${passBox?.y})`)
   assert(passBox && loginBox && passBox.y < loginBox.y, `Inputs -> Login Button: Password (y=${passBox?.y}) is above Login Button (y=${loginBox?.y})`)
-  assert(loginBox && regBox && loginBox.y < regBox.y, `Login Button -> Register Button: Login (y=${loginBox?.y}) is above Register Button (y=${regBox?.y})`)
-  assert(regBox && divBox && regBox.y < divBox.y, `Register Button -> Divider "Hoặc": Register Button (y=${regBox?.y}) is above Divider (y=${divBox?.y})`)
-
-  // Check Google button is below Divider
-  const googleBtn = page.locator('button:has-text("Google"), [id="google-signin-btn"], iframe[title*="Google"]').first()
-  if (await googleBtn.isVisible()) {
-    const googleBox = await googleBtn.boundingBox()
-    assert(divBox && googleBox && divBox.y < googleBox.y, `Divider "Hoặc" (y=${divBox?.y}) is above Google Button (y=${googleBox?.y})`)
-  } else {
-    // Check container
-    const gContainerBox = await googleButtonContainer.boundingBox()
-    assert(divBox && gContainerBox && divBox.y <= gContainerBox.y, `Divider "Hoặc" (y=${divBox?.y}) is above Google Button Container (y=${gContainerBox?.y})`)
-  }
+  assert(loginBox && divBox && loginBox.y < divBox.y, `Login Button -> Divider "Hoặc": Login (y=${loginBox?.y}) is above Divider (y=${divBox?.y})`)
+  assert(divBox && googleBox && divBox.y < googleBox.y, `Divider "Hoặc" -> Google Button: Divider (y=${divBox?.y}) is above Google (y=${googleBox?.y})`)
+  assert(googleBox && regBox && googleBox.y < regBox.y, `Google Button -> Register Link: Google (y=${googleBox?.y}) is above Register Link (y=${regBox?.y})`)
 
   // -------------------------------------------------------------
   // TEST 2: Responsive Check on Mobile (375x667)
@@ -182,8 +180,8 @@ try {
   // Verify elements still visible and properly stacked
   assert(await emailInput.isVisible(), 'Mobile: Email input visible')
   assert(await loginButton.isVisible(), 'Mobile: Login button visible')
-  assert(await registerButton.isVisible(), 'Mobile: Register button visible')
   assert(await dividerText.isVisible(), 'Mobile: Divider "Hoặc" visible')
+  assert(await registerLink.isVisible(), 'Mobile: Register link visible')
 
   const hasHorizontalScrollbar = await page.evaluate(() => {
     return document.documentElement.scrollWidth > document.documentElement.clientWidth
@@ -213,23 +211,23 @@ try {
   const regNameInput = page.locator('input[type="text"], #name').first()
   const regEmailInput = page.locator('input[type="email"], #email').first()
   const regSubmitButton = page.locator('button[type="submit"]:has-text("Nhận mã OTP"), button:has-text("đăng ký")').first()
-  const regToLoginButton = page.locator('a[href="/login"]:has-text("Đã có tài khoản? Đăng nhập")').first()
+  const regToLoginButton = page.locator('a[href="/login"]:has-text("Đăng nhập")').first()
   const regDivider = page.locator('div:has-text("Hoặc")').filter({ hasNot: page.locator('div div') }).first()
 
   assert(await regNameInput.isVisible(), 'Register: Name input is visible')
   assert(await regEmailInput.isVisible(), 'Register: Email input is visible')
   assert(await regSubmitButton.isVisible(), 'Register: Primary submit button is visible')
-  assert(await regToLoginButton.isVisible(), 'Register: "Đã có tài khoản? Đăng nhập" button is visible')
   assert(await regDivider.isVisible(), 'Register: Divider "Hoặc" is visible')
+  assert(await regToLoginButton.isVisible(), 'Register: "Đăng nhập ngay" link is visible')
 
   const rEmailBox = await regEmailInput.boundingBox()
   const rSubmitBox = await regSubmitButton.boundingBox()
-  const rLoginBox = await regToLoginButton.boundingBox()
   const rDivBox = await regDivider.boundingBox()
+  const rLoginBox = await regToLoginButton.boundingBox()
 
   assert(rEmailBox && rSubmitBox && rEmailBox.y < rSubmitBox.y, `Register: Inputs (y=${rEmailBox?.y}) above Submit Button (y=${rSubmitBox?.y})`)
-  assert(rSubmitBox && rLoginBox && rSubmitBox.y < rLoginBox.y, `Register: Submit Button (y=${rSubmitBox?.y}) above Login Button (y=${rLoginBox?.y})`)
-  assert(rLoginBox && rDivBox && rLoginBox.y < rDivBox.y, `Register: Login Button (y=${rLoginBox?.y}) above Divider (y=${rDivBox?.y})`)
+  assert(rSubmitBox && rDivBox && rSubmitBox.y < rDivBox.y, `Register: Submit Button (y=${rSubmitBox?.y}) above Divider (y=${rDivBox?.y})`)
+  assert(rDivBox && rLoginBox && rDivBox.y < rLoginBox.y, `Register: Divider (y=${rDivBox?.y}) above Login Link (y=${rLoginBox?.y})`)
 
   // -------------------------------------------------------------
   // TEST 4: Console Errors Check

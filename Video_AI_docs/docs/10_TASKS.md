@@ -5,12 +5,15 @@ Tài liệu theo dõi trạng thái cài đặt thực tế của các tính nă
 > **Quy ước nhãn**:
 > - `[DONE]`: Đã cài đặt hoàn chỉnh và có kiểm thử bảo vệ.
 > - `[PARTIAL]`: Đã cài đặt một phần (hoặc backend đã có nhưng frontend chưa khai thác hết).
-> - `[PLANNED]`: Mục tiêu nâng cấp trong tương lai (Postgres, S3 storage, v.v.).
+> - `[PLANNED]`: Mục tiêu nâng cấp trong tương lai (S3 storage, v.v.).
+>
+> > [!NOTE]
+> > **Single Source of Truth:** Nguồn sự thật duy nhất là [AGENTS.md](../../AGENTS.md). Toàn bộ hệ thống cơ sở dữ liệu đã chuyển đổi sang **PostgreSQL 16+** (`pg.Pool`). Kiến trúc SQLite cũ đã hoàn tất chuyển đổi (ARCHIVED).
 
 ---
 
 ## Giai đoạn 1 — Nền tảng Kiến trúc Cốt lõi
-- `[DONE]` Hệ thống cơ sở dữ liệu `sql.js` (WebAssembly SQLite) 30 bảng (bao gồm bảng `timeline_tracks` và các trường mở rộng của `timeline_clips`, `assets`), lưu tệp `backend/data.db`, atomic snapshot memory-disk và single-writer lock (`data.db.writer.lock`).
+- `[DONE]` Hệ thống cơ sở dữ liệu: Hoàn thành chuyển đổi từ SQLite cũ sang **PostgreSQL 16+** (30 bảng bao gồm `timeline_tracks` và các trường mở rộng của `timeline_clips`, `assets`, `pg.Pool`, `backend/src/db/postgresSchema.sql`, RLS policies, migrations 001/002/003).
 - `[DONE]` Hệ thống xác thực JWT (Access token ngắn hạn + HttpOnly cookie `refresh_token` xoay vòng CAS, phân quyền USER / ADMIN).
 - `[DONE]` Quên mật khẩu & xác thực mã OTP qua email (`reset_tokens`, `email_otps`, Nodemailer SMTP).
 - `[DONE]` Kiến trúc Provider Pattern (`backend/src/providers/registry.js`, `callProvider.js`) hỗ trợ LLM, ASR, TTS, Vision, Image.
@@ -67,7 +70,7 @@ Tài liệu theo dõi trạng thái cài đặt thực tế của các tính nă
 - `[DONE]` Bộ định tuyến REST `composerAssets.js`: 8 endpoints quản lý assets (`POST /assets`, `GET /assets`, `POST /reorder`, `POST /ocr`, `POST /translate`, `POST /tts`, `POST /auto-arrange`, `PUT /timeline`).
 - `[DONE]` Pipeline Media Composer 3 stages (`composer.ingest`, `composer.prepare`, `composer.render`) trong `runner.js`.
 - `[DONE]` Xử lý FFmpeg đa lớp và âm thanh: Visual multi-layer composition (Background blur + Main Slideshow 1.05x + Overlay), lặp vô tận BGM (`aloop`), dynamic sidechain ducking (-12dB khi có voiceover), burn-in phụ đề ASS UTF-8 Unicode-safe.
-- `[DONE]` Chiến lược bộ nhớ đệm 2 tầng (2-Tier Cache): Tầng 1 tại trường asset của SQLite, Tầng 2 tại bảng `provider_cache` với khoá băm SHA-256 (TTL 90 ngày) giúp tiết kiệm tối đa quota API khi thao tác OCR và Dịch thuật.
+- `[DONE]` Chiến lược bộ nhớ đệm 2 tầng (2-Tier Cache): Tầng 1 tại trường asset của database, Tầng 2 tại bảng `provider_cache` với khoá băm SHA-256 (TTL 90 ngày) giúp tiết kiệm tối đa quota API khi thao tác OCR và Dịch thuật.
 - `[DONE]` Media Composer Studio 4 pane trong `ProjectDetail.jsx`: MediaLibrary kéo thả, ComposerPreview (Canvas vs MP4 Video), ClipInspector chỉnh sửa thuộc tính, và Multi-track Timeline 5 rãnh.
 - `[DONE]` Tương tác Multi-track Timeline chuyên nghiệp: Hỗ trợ 5 rãnh độc lập (`BACKGROUND`, `MAIN_VIDEO`, `OVERLAY`, `VOICE`, `BGM`), cắt xén hai đầu (Dual-handle trimming), snap-to-grid và zoom timeline.
 - `[DONE]` Modal thao tác nhanh trên Asset: `OcrTranslateModal.jsx` (trích xuất và dịch chữ song ngữ có cache), `TtsModal.jsx` (sinh âm thanh giọng đọc AI).
@@ -86,5 +89,5 @@ Tài liệu theo dõi trạng thái cài đặt thực tế của các tính nă
 - `[DONE]` Tích hợp sidecar ZeroTTS Python trong môi trường phát triển cục bộ (`npm run dev`).
 - `[DONE]` Liên kết tài khoản YouTube qua Google OAuth (PKCE) và xuất bản video.
 - `[DONE]` Thông báo hoàn thành/thất bại qua email bằng Nodemailer SMTP.
-- `[PLANNED]` Nâng cấp cơ sở dữ liệu lên PostgreSQL khi cần triển khai đa node worker song song.
+- `[DONE]` Nâng cấp cơ sở dữ liệu lên **PostgreSQL 16+** hoàn tất (`pg.Pool`, RLS tenant isolation).
 - `[PLANNED]` Lưu trữ đối tượng S3/MinIO cho volume media phân tán.

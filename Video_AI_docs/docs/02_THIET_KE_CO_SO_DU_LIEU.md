@@ -2,7 +2,9 @@
 
 # Current Implementation (CURRENT)
 
-> Nguồn đối chiếu (source of truth, branch main): `backend/src/db/schema.js` (toàn file).
+> [!NOTE]
+> **Single Source of Truth:** Xem [AGENTS.md](../../AGENTS.md) và [POSTGRESQL_GUIDE.md](../../docs/database/POSTGRESQL_GUIDE.md). Hệ thống sử dụng thuần **PostgreSQL 16+** (`pg.Pool`) theo DDL `backend/src/db/postgresSchema.sql`. Kiến trúc SQLite cũ đã hoàn tất chuyển đổi và được lưu trữ (ARCHIVED).
+> Nguồn đối chiếu (source of truth, branch main): `backend/src/db/postgresSchema.sql`.
 
 CURRENT có đúng **30 tables** (verbatim):
 `users`, `reset_tokens`, `email_otps`, `settings`, `projects`, `assets`, `generation_jobs`, `scenes`, `script_segments`, `timeline_tracks`, `timeline_clips`, `audios`, `subtitles`, `outputs`, `youtube_uploads`, `script_uploads`, `youtube_accounts`, `youtube_oauth_states`, `api_keys`, `provider_logs`, `provider_rate_limits`, `provider_cache`, `transcript_segments`, `ocr_regions`, `style_presets`, `project_glossaries`, `sse_tickets`, `project_idempotency`, `project_cleanup_tasks`, `upload_sessions`.
@@ -38,7 +40,7 @@ CURRENT có đúng **30 tables** (verbatim):
   - `project_cleanup_tasks`: Outbox dọn file filesystem sau DELETE project (`status = pending|failed|completed`), commit cùng transaction với DB wipe.
   - `upload_sessions`: Upload resumable TUS-style có `last_activity_at`, `expires_at`, index `(status, expires_at)` và state machine `pending → completing → completed|expired`.
 
-> **Lưu ý Triển khai:** Thiết kế target hướng tới Prisma ORM + PostgreSQL. Triển khai hiện tại dùng `sql.js` (WebAssembly SQLite) với raw SQL trực tiếp (`backend/src/db/schema.js`).
+> **Lưu ý Triển khai:** Triển khai hiện tại dùng thuần PostgreSQL 16+ (`pg.Pool`) với raw SQL trực tiếp qua DDL `backend/src/db/postgresSchema.sql` và các migrations RLS 001/002/003. Kiến trúc SQLite cũ đã được gỡ bỏ hoàn toàn.
 
 ---
 
@@ -71,7 +73,7 @@ GenerationJob 1──* ProviderLog
 
 ---
 
-## 2. Chi tiết 30 Bảng trong Cơ sở Dữ liệu (`backend/src/db/schema.js`)
+## 2. Chi tiết 30 Bảng trong Cơ sở Dữ liệu (`backend/src/db/postgresSchema.sql`)
 
 ### 2.1. Nhóm Người dùng & Bảo mật
 1. **`users`**: Tài khoản người dùng (`id`, `email`, `password`, `role`, `name`, `refresh_token`, `refresh_expires`, `created_date`, `updated_date`).
@@ -134,7 +136,7 @@ GenerationJob 1──* ProviderLog
 
 ## 4. Quyết định Thiết kế Cốt lõi (Design Decisions)
 
-1. **sql.js in-memory + File Persistence**: Dùng SQLite thông qua WebAssembly, mọi thao tác ghi diễn ra trên bộ nhớ và được đẩy ra file `data.db` bằng cơ chế ghi atomic memory snapshot. Single-writer lock file (`data.db.writer.lock`) ngăn ngừa xung đột đa tiến trình.
+1. **PostgreSQL 16+ Connection Pooling (`pg.Pool`)**: Sử dụng PostgreSQL với connection pooling (`pg.Pool`), hỗ trợ truy vấn đồng thời cao, ACID và RLS tenant isolation. Cơ chế kiểm tra sức khỏe cơ sở dữ liệu qua `GET /health` (`HEALTHY` / `DEGRADED` / `WRITE_BLOCKED`). Kiến trúc SQLite in-memory và single-writer lock cũ đã được loại bỏ hoàn toàn.
 2. **Optimistic Concurrency với `transcript_version`**: Khi người dùng chỉnh sửa transcript hoặc mask, `projects.transcript_version` được tăng lên. Bảng `outputs` lưu lại phiên bản lúc render; nếu version lệch, cờ `outputStale: true` báo hiệu cần kết xuất lại.
 3. **Mask Lifecycle & Tính Bất Biến**: Mask `APPROVED` được coi là hợp đồng kết xuất bất biến (không thể sửa toạ độ hay thời gian khi đang APPROVED; phải chuyển về `DRAFT` để chỉnh sửa).
 4. **Resumable Upload Sessions**: Quản lý phiên upload theo chunk bằng bảng `upload_sessions`, có khả năng tự phục hồi khi máy chủ khởi động lại.

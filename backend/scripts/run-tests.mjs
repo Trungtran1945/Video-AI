@@ -1,5 +1,6 @@
 // Test runner: executes backend/tests/*.test.mjs sequentially against PostgreSQL (video_ai_test)
 // Run: npm test (from backend/)
+process.env.DOTENV_CONFIG_QUIET = 'true'
 import 'dotenv/config'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -32,11 +33,21 @@ for (const f of files) {
   await cleanTestDatabase(testDbUrl)
   const full = path.join(testsDir, f)
   console.log(`\n=== ${f} ===`)
+  const testEnv = {
+    ...process.env,
+    NODE_ENV: 'test',
+    DATABASE_URL: testDbUrl,
+    RUN_TESTS_RUNNER: '1',
+    DEFAULT_PROVIDER_MODE: 'mock',
+    AI_PROVIDER_MODE: 'mock',
+    DOTENV_CONFIG_QUIET: 'true',
+    SILENCE_PROVIDER_LOGS: 'true',
+  }
   const r = spawnSync(process.execPath, [full], {
     stdio: 'inherit',
     timeout: 60000,
     killSignal: 'SIGKILL',
-    env: { ...process.env, DATABASE_URL: testDbUrl, RUN_TESTS_RUNNER: '1' },
+    env: testEnv,
   })
   if (r.error && r.error.code === 'ETIMEDOUT') {
     failed.push(f)

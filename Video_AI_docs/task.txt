@@ -12,7 +12,7 @@ Ngày cập nhật: 2026-11-08
 - Duy trì 100% tính tương thích ngược cho các dự án cũ thuộc chế độ SUMMARY, TRANSLATE_DUB và SCRIPT_TO_VIDEO.
 
 2. CÁC HẠNG MỤC ĐÃ TRIỂN KHAI VÀ XÁC MINH
-- [x] Cơ sở dữ liệu: Thêm bảng `timeline_tracks` và các cột mở rộng cho `timeline_clips`, `assets` (tổng 30 bảng SQLite sql.js).
+- [x] Cơ sở dữ liệu: Thêm bảng `timeline_tracks` và các cột mở rộng cho `timeline_clips`, `assets` (chuyển đổi hoàn tất sang PostgreSQL 16+).
 - [x] Backend Services: Xây dựng `composerService.js` quản lý 5 rãnh timeline, auto-arrange, 2-tier cache cho OCR & Dịch thuật, TTS voiceover, và lưu cấu trúc timeline.
 - [x] RESTful API: Xây dựng bộ định tuyến `composerAssets.js` với 8 endpoints chuyên biệt (/assets, /reorder, /ocr, /translate, /tts, /auto-arrange, /timeline).
 - [x] Pipeline Runner: Triển khai 3 stages `composer.ingest`, `composer.prepare`, `composer.render`.

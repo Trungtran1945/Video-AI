@@ -28,7 +28,7 @@ Nguyên tắc thiết kế: **User cấu hình đầu vào → AI thực thi pip
 | --- | --- |
 | [`docs/00_TAM_NHIN_VA_YEU_CAU.md`](docs/00_TAM_NHIN_VA_YEU_CAU.md) | Tầm nhìn, phạm vi, yêu cầu chức năng & phi chức năng cho 4 chế độ (FR-MC1 đến FR-MC16 cho Composer) |
 | [`docs/01_KIEN_TRUC_TONG_THE.md`](docs/01_KIEN_TRUC_TONG_THE.md) | Kiến trúc tổng thể, layout thực tế `backend/` + `frontend/`, luồng 4 pipeline, Provider Pattern, Queue |
-| [`docs/02_THIET_KE_CO_SO_DU_LIEU.md`](docs/02_THIET_KE_CO_SO_DU_LIEU.md) | Thiết kế cơ sở dữ liệu (`sql.js` SQLite 30 bảng), schema `timeline_tracks`, quan hệ, snapshot & writer lock |
+| [`docs/02_THIET_KE_CO_SO_DU_LIEU.md`](docs/02_THIET_KE_CO_SO_DU_LIEU.md) | Thiết kế cơ sở dữ liệu (PostgreSQL 16+), schema `timeline_tracks`, quan hệ & RLS |
 | [`docs/03_THIET_KE_BACKEND.md`](docs/03_THIET_KE_BACKEND.md) | Backend Express ESM: Clean Architecture, `composerService.js`, `composerAssets.js`, auth, quota guard |
 | [`docs/04_THIET_KE_FRONTEND.md`](docs/04_THIET_KE_FRONTEND.md) | Frontend React 18 + Vite 6: Media Composer Studio 4 pane, timeline 5 rãnh, dual preview, dual trim |
 | [`docs/05_THIET_KE_PIPELINE_CHI_TIET.md`](docs/05_THIET_KE_PIPELINE_CHI_TIET.md) | Chi tiết thuật toán từng stage của các pipeline: Composer (ingest, prepare, render), Dubbing, Summary, Script-to-Video |
@@ -44,7 +44,7 @@ Nguyên tắc thiết kế: **User cấu hình đầu vào → AI thực thi pip
 ## 3. Công nghệ thực tế (Current Stack)
 
 - **Cấu trúc Repository:** Phẳng hai thành phần `backend/` và `frontend/` (JavaScript ESM).
-- **Backend:** Node.js >=18 (ESM), Express 4, `sql.js` (WebAssembly SQLite 30 bảng với atomic snapshot memory-disk và file `backend/data.db`, single-writer lock `data.db.writer.lock`), BullMQ 5 + Redis 7, JWT auth (access token + HttpOnly refresh cookie), SSE event bus.
+- **Backend:** Node.js >=18 (ESM), Express 4, PostgreSQL 16+ (`pg.Pool`), BullMQ 5 + Redis 7, JWT auth (access token + HttpOnly refresh cookie), SSE event bus.
 - **Frontend:** React 18, Vite 6, TailwindCSS, Radix UI / shadcn/ui, TanStack Query v5, Framer Motion, Lucide icons, Zustand (quản lý timeline state).
 - **Media Engine:** FFmpeg & FFprobe (quản lý qua `backend/src/media/ffmpeg.js` và `mediaService.js`, hỗ trợ multi-layer visual composition và dynamic sidechain ducking).
 - **TTS Engine:** Hỗ trợ đa nhà cung cấp: Microsoft Edge-TTS, Google TTS, ElevenLabs, OpenAI TTS và ZeroTTS (Python local sidecar chạy qua `npm run dev`).

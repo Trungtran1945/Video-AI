@@ -59,6 +59,13 @@ export async function generateContent({ model, apiKey, body, json = false, maxOu
   }
 
   while (true) {
+    // Test guard: in test mode with mock providers enabled, prevent unmocked external HTTP calls to Google Gemini
+    if (process.env.NODE_ENV === 'test' && (process.env.DEFAULT_PROVIDER_MODE === 'mock' || process.env.AI_PROVIDER_MODE === 'mock')) {
+      const isUnmocked = typeof globalThis.fetch === 'function' && (String(globalThis.fetch).includes('undici') || String(globalThis.fetch).includes('[native code]'))
+      if (isUnmocked) {
+        throw new Error(`[TestGuard] External call to Gemini (${model}) blocked in test mode. Use MockLlm or mock globalThis.fetch in tests.`)
+      }
+    }
     await acquireGeminiQuota(apiKey)
     const controller = makeController()
     let timeoutHandle = null
@@ -98,7 +105,7 @@ export async function generateContent({ model, apiKey, body, json = false, maxOu
       attempt++
       if (attempt > retryBudget) throw netErr
       const waitMs = Math.min(60_000, backoffMs / 2 + Math.random() * (backoffMs / 2))
-      console.warn(
+      if (process.env.SILENCE_PROVIDER_LOGS !== 'true' && process.env.NODE_ENV !== 'test') console.warn(
         `[Gemini] transient (network) �?" th��- l���i l��n ${attempt}/${retryBudget} sau ${(waitMs / 1000).toFixed(1)}s: ${netErr.message}`
       )
       await sleep(waitMs)
@@ -171,7 +178,7 @@ export async function generateContent({ model, apiKey, body, json = false, maxOu
     const retryAfterMs = waitSec > 0 ? waitSec * 1000 : 0
     const jitteredBackoff = backoffMs / 2 + Math.random() * (backoffMs / 2)
     const waitMs = Math.min(60_000, Math.max(retryAfterMs, jitteredBackoff))
-    console.warn(
+    if (process.env.SILENCE_PROVIDER_LOGS !== 'true' && process.env.NODE_ENV !== 'test') console.warn(
       `[Gemini] transient (${res.status}) �?" th��- l���i l��n ${attempt}/${retryBudget} sau ${(waitMs / 1000).toFixed(1)}s: ${message}`
     )
     await sleep(waitMs)

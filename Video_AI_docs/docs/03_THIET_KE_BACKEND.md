@@ -1,7 +1,7 @@
 # 03 — Thiết kế Backend
 
 > **Lưu ý Triển khai:** Thiết kế target hướng tới TypeScript strict + `apps/api/`.
-> Triển khai hiện tại dùng JavaScript (ES modules) trong `backend/` với `sql.js` (SQLite in-memory + file persistence) thay vì Prisma.
+> Triển khai hiện tại dùng JavaScript (ES modules) trong `backend/` với PostgreSQL 16+ (`pg.Pool`, `backend/src/db/postgresSchema.sql`) thay vì Prisma. Kiến trúc SQLite cũ đã được gỡ bỏ hoàn toàn.
 
 Backend là ứng dụng Node.js (>=18 ESM) Express, tổ chức theo nguyên tắc **Clean Architecture** và **Provider Pattern**.
 
@@ -14,11 +14,11 @@ backend/
 ├── scripts/                  # check-redis.mjs, run-tests.mjs, dev.mjs, zerotts_service.py
 ├── src/
 │   ├── config.js             # Quản lý biến môi trường tập trung, CORS origin allowlist
-│   ├── db.js                 # sql.js wrapper, atomic snapshot, single-writer lock, persistence health
+│   ├── db.js                 # pg.Pool wrapper, connection health
 │   ├── db/
-│   │   ├── schema.js         # Khởi tạo 30 bảng SQLite (DDL)
+│   │   ├── postgresSchema.sql # Khởi tạo bảng PostgreSQL (DDL)
 │   │   ├── seed.js           # Dữ liệu khởi tạo (Admin, Settings, 13 StylePresets, RateLimits)
-│   │   └── query.js          # Hàng đợi tuần tự hoá truy vấn ghi, query/queryOne/run
+│   │   └── query.js          # Helper query/queryOne/run tương thích pg.Pool
 │   ├── lib/                  # httpError, safePath, callProvider, providerFailover, rateLimiter
 │   ├── media/                # ffmpeg.js (serialize Windows process), mediaService.js
 │   ├── middleware/           # auth, projectAccess, safeMediaStatic, sseAuth
@@ -125,14 +125,14 @@ summary.transcribe ➔ summary.sceneDetect ➔ summary.analyze ➔ summary.scrip
 
 ---
 
-## 5. Cơ sở dữ liệu & Quản lý Trạng thái Lưu trữ (sql.js)
+## 5. Cơ sở dữ liệu & Quản lý Trạng thái Lưu trữ (PostgreSQL 16+)
 
-- **In-Memory + Disk Atomic Snapshots**: `sql.js` nạp toàn bộ dữ liệu vào RAM để truy vấn siêu nhanh; mọi đột biến ghi được tuần tự hóa qua hàng đợi `query.js` và flush ra tệp `backend/data.db` bằng snapshot atomic.
-- **Single-Writer Lock (`data.db.writer.lock`)**: File lock ghi nhận PID và hostname của tiến trình sở hữu, ngăn chặn hai tiến trình ghi đè làm hỏng database.
+- **PostgreSQL Connection Pool (`pg.Pool`)**: Kết nối tới PostgreSQL 16+ qua `DATABASE_URL`, hỗ trợ đa tiến trình và đa worker đồng thời mà không bị giới hạn single-writer của SQLite.
+- **Row-Level Security (RLS)**: Phân lập dữ liệu đa người dùng (tenant isolation) trực tiếp ở tầng database engine.
 - **Persistence Health Monitoring**:
-  - `HEALTHY`: Quá trình ghi đĩa diễn ra bình thường.
-  - `DEGRADED`: Xuất hiện lỗi ghi đĩa tạm thời nhưng chưa vượt ngưỡng tối đa.
-  - `WRITE_BLOCKED`: Quá số lần ghi lỗi cho phép; máy chủ tự động chặn mọi thao tác ghi mới và endpoint `/ready` trả về HTTP 503 để bảo vệ dữ liệu.
+  - `HEALTHY`: Quá trình kết nối và truy vấn database diễn ra bình thường.
+  - `DEGRADED`: Xuất hiện lỗi kết nối tạm thời hoặc đang thử kết nối lại.
+  - `WRITE_BLOCKED`: Quá số lần lỗi kết nối cho phép; máy chủ tự động chặn các thao tác ghi mới và endpoint `/ready` trả về HTTP 503 để bảo vệ dữ liệu.
 
 ---
 

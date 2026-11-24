@@ -66,6 +66,8 @@ export const verifyOtpSchema = z
   .passthrough()
 
 // --- Project Schemas ---
+// Canonical modes: SUMMARY, TRANSLATE_DUB, SCRIPT_TO_VIDEO, MEDIA_COMPOSER.
+// AI_VIDEO is preserved as an intentional API alias normalized to SCRIPT_TO_VIDEO in projects.js.
 export const PROJECT_MODES = [
   'SUMMARY',
   'TRANSLATE_DUB',

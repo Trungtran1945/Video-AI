@@ -3,7 +3,7 @@
 # Current Implementation (CURRENT)
 
 - **Cấu trúc Repository**: Bố cục phẳng `backend/` và `frontend/` (JavaScript ESM, không `apps/` + `packages/`).
-- **Cơ sở dữ liệu**: `sql.js` (WebAssembly SQLite) ghi tệp `backend/data.db` với **30 bảng** định nghĩa tại `backend/src/db/schema.js` (bao gồm bảng `timeline_tracks` và các trường mở rộng của `timeline_clips` và `assets`). Cơ chế lưu trữ: atomic in-memory snapshot sang đĩa, single-writer lock (`data.db.writer.lock`), hàng đợi tuần tự hóa các truy vấn ghi (`query.js`), giám sát trạng thái `HEALTHY` / `DEGRADED` / `WRITE_BLOCKED`.
+- **Cơ sở dữ liệu**: PostgreSQL 16+ (`pg.Pool`) với schema định nghĩa tại `backend/src/db/postgresSchema.sql` (bao gồm bảng `timeline_tracks` và các trường mở rộng của `timeline_clips` và `assets`, RLS tenant isolation). Giám sát trạng thái qua `GET /health` (`HEALTHY` / `DEGRADED` / `WRITE_BLOCKED`).
 - **Pipeline điều phối (`backend/src/pipeline/runner.js`)**: Hỗ trợ **4 chế độ** (3 mode tạo mới chính thức + 1 mode legacy):
   - `MEDIA_COMPOSER` (3 stages - Flagship mới): `composer.ingest → composer.prepare → composer.render`. Tự động kiểm tra & dàn xếp timeline khớp voiceover (`composerIngest`), chuẩn hóa kích thước/tỷ lệ khung hình ảnh và sinh phụ đề ASS UTF-8 (`composerPrepare`), kết hợp visual 2 lớp (Background + Slideshow motion 1.05x), lặp vô hạn BGM (`aloop`), dynamic sidechain ducking (-12dB khi có giọng nói) và xuất video MP4 Full HD (`composerRender`).
   - `TRANSLATE_DUB` (7 stages): `dub.ingest → dub.stt → dub.merge → dub.translate → dub.mask → dub.ttsAlign → dub.render`. STT-only (Whisper ASR + 15s overlap stitching), 13 StylePreset, Masking (tự động hoặc thủ công), Forced Alignment TTS (`TEMPO_MAX = 1.35`), Dynamic Sidechain Ducking (-12dB).
@@ -231,7 +231,7 @@ sequenceDiagram
   participant R as Pipeline Runner
   participant P as Providers (ASR/Vision/LLM/TTS)
   participant M as Media (FFmpeg)
-  participant D as DB (sql.js)
+  participant D as DB (PostgreSQL)
 
   U->>W: Upload phim + cấu hình SUMMARY
   W->>A: POST /api/v1/projects
@@ -263,7 +263,7 @@ sequenceDiagram
   participant R as Pipeline Runner
   participant P as Providers (ASR/LLM/TTS/Vision)
   participant M as Media (FFmpeg)
-  participant D as DB (sql.js)
+  participant D as DB (PostgreSQL)
 
   U->>W: Tải lên video resumable + chọn 13 StylePreset
   W->>A: POST /api/v1/projects (TRANSLATE_DUB)
@@ -295,7 +295,7 @@ sequenceDiagram
   participant R as Pipeline Runner
   participant P as Providers (LLM/TTS/Image)
   participant M as Media (FFmpeg)
-  participant D as DB (sql.js)
+  participant D as DB (PostgreSQL)
 
   U->>W: Tải kịch bản .txt / paste text + chọn giọng đọc & khung hình
   W->>A: POST /api/v1/projects (SCRIPT_TO_VIDEO)

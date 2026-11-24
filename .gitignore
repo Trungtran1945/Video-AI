@@ -63,6 +63,9 @@ transflow/
 *.webm
 *.avi
 
+# ===== Test artifacts =====
+media_composer_studio.png
+
 # ===== Editor / IDE =====
 .vscode/*
 !.vscode/extensions.json
