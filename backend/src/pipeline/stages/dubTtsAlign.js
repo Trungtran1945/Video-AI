@@ -80,7 +80,7 @@ async function trimWavToDur(inPath, outPath, maxDurSec) {
   ])
   return outPath
 }
-import { listProvidersForCapability } from '../../providers/registry.js'
+import { listProvidersForCapability, KEYLESS } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
 import { classifyProviderError, ERROR_CODES } from '../../lib/providerErrors.js'
 import { runWithProviderScope } from '../../lib/providerScope.js'
@@ -185,6 +185,7 @@ export async function dubTtsAlign(ctx) {
 
   await runWithProviderScope(`dub.ttsAlign:${project.id}`, async () => {
   for (let i = 0; i < segments.length; i++) {
+    if (signal?.aborted) throw new Error('Cancelled')
     const seg = segments[i]
     if (stopError) {
       errorCount++
@@ -196,6 +197,36 @@ export async function dubTtsAlign(ctx) {
       })
       continue
     }
+
+    const segKey = sanitizeSegmentId(seg.id)
+    const finalPath = path.join(segDir, `seg_fit_${segKey}.wav`)
+
+    // Checkpoint resume: If segment already synthesized & attached in previous run, reuse it
+    if (seg.tts_audio_id && fs.existsSync(finalPath)) {
+      try {
+        const existingAudio = await queryOne('SELECT id, duration_sec, provider FROM audios WHERE id = ? AND project_id = ?', [seg.tts_audio_id, project.id])
+        if (existingAudio) {
+          const probeDur = (await probe(finalPath)).durationSec
+          if (probeDur > 0.05) {
+            fitted.push({
+              segmentId: seg.id,
+              indexNum: seg.index_num,
+              file: finalPath,
+              effectiveDurSec: round3(probeDur),
+              action: 'fit',
+              tempo: 1,
+              providerId: existingAudio.provider || ttsCandidates[0]?.id || 'unknown',
+              audioId: existingAudio.id,
+            })
+            successCount++
+            cacheHitCount++
+            setProgress(3 + Math.round(((i + 1) / segments.length) * 82))
+            continue
+          }
+        }
+      } catch (_) {}
+    }
+
     const slotDur = Math.max(0.2, Number(seg.end_sec) - Number(seg.start_sec))
     const nextStart = segments[i + 1] ? Number(segments[i + 1].start_sec) : Infinity
     // TransFlow pause-expansion: Dòng phụ đề sở hữu slot của nó + khoảng lặng (pause)
@@ -208,12 +239,13 @@ export async function dubTtsAlign(ctx) {
     // cùng key). Key-level error → dừng batch, segment còn lại failed không gọi provider.
     let done = false
     for (let ttsAttempt = 0; ttsAttempt <= 1 && !done; ttsAttempt++) {
+      if (signal?.aborted) throw new Error('Cancelled')
       try {
         // Sinh audio + căn chỉnh cho 1 bản dịch. Nếu provider hỗ trợ tốc độ native,
         // synthesize lại đúng tốc độ (speed = tempo cần thiết) thay vì dùng atempo.
         const segKey = sanitizeSegmentId(seg.id)
         const makeAudio = async (text) => {
-          let audio = await synthWithFailover(ttsCandidates, text, segDir, segKey, job, project.id, 1, project.user_id)
+          let audio = await synthWithFailover(ttsCandidates, text, segDir, segKey, job, project.id, 1, project.user_id, signal)
           if (audio.cacheHit) cacheHitCount++
           // Loại bỏ khoảng lặng thừa ở đầu và cuối clip do TTS sinh ra (TransFlow prepare_voice)
           try {
@@ -234,7 +266,7 @@ export async function dubTtsAlign(ctx) {
             }
             if (targetSpeed !== 1) {
               const speed = clamp(targetSpeed, SPEED_MIN, SPEED_MAX)
-              const re = await synthWithFailover(ttsCandidates, text, segDir, segKey, job, project.id, speed, project.user_id)
+              const re = await synthWithFailover(ttsCandidates, text, segDir, segKey, job, project.id, speed, project.user_id, signal)
               audio = { ...re, audioPath: re.audioPath }
               if (re.cacheHit) cacheHitCount++
               try {
@@ -277,7 +309,14 @@ export async function dubTtsAlign(ctx) {
           padBeforeSec: fit.padBeforeSec,
           padAfterSec: fit.padAfterSec,
         })
-        try { fs.unlinkSync(audio.audioPath) } catch (_) {}
+
+        // Do not unlink clip cache (clip_*.mp3); only clean up temp files created by prepareVoiceClip
+        if (audio.audioPath && !path.basename(audio.audioPath).startsWith('clip_')) {
+          try { fs.unlinkSync(audio.audioPath) } catch (_) {}
+        }
+        try { fs.unlinkSync(path.join(segDir, `seg_${segKey}_clean.mp3`)) } catch (_) {}
+        try { fs.unlinkSync(path.join(segDir, `seg_${segKey}_norm.mp3`)) } catch (_) {}
+
         let finalDur = (await probe(finalPath)).durationSec || fit.effectiveDurSec
         // Physical consistency: audio thật không được tràn sang segment kế (chừa 60ms gap)
         const maxAllowed = Math.max(slotDur, nextStart !== Infinity ? Math.max(0.1, nextStart - 0.06 - Number(seg.start_sec)) : slotDur + 2.0)
@@ -290,11 +329,33 @@ export async function dubTtsAlign(ctx) {
         }
         if (finalDur <= 0) throw new Error(`audio rỗng sau fit (segment ${seg.index_num})`)
 
-        // Manual translation trong DB là source of truth (manual > generated):
-        // bản rút gọn (shorten) chỉ dùng in-memory cho TTS synthesis, KHÔNG
-        // overwrite DB. Redub dùng lại translation hiện tại, không mất sửa tay.
-        // NOTE: chỉ xóa intermediate clip khi nó là file tạm KHÔNG phải clip
-        // cache dùng chung (clip_*.mp3 được giữ để rerun reuse).
+        // Checkpoint persistence: Ghi audios row + attachTtsAudio ngay khi từng segment xong
+        await assertRunOwner(project.id, runToken)
+        const audioRow = await insertProjectOwned(project.id, runToken, 'audios', {
+          id: uuidv4(),
+          project_id: project.id,
+          kind: 'voice',
+          storage_key: null,
+          duration_sec: round3(Math.min(finalDur, maxAllowed)),
+          provider: audio.providerId || ttsCandidates[0]?.id || 'unknown',
+        })
+        if (!audioRow) {
+          const error = new Error('RUN_ABORTED')
+          error.code = 'RUN_ABORTED'
+          throw error
+        }
+        try {
+          await attachTtsAudio(project.id, seg.id, audioRow.id, transcriptVersion, runToken)
+        } catch (error) {
+          await runProjectOwned(project.id, runToken, 'DELETE FROM audios WHERE id = ?', [audioRow.id])
+          if (error instanceof TranscriptRevisionConflict) {
+            const conflict = new Error('TRANSCRIPT_CHANGED_DURING_TTS')
+            conflict.transient = true
+            throw conflict
+          }
+          throw error
+        }
+
         fitted.push({
           segmentId: seg.id,
           indexNum: seg.index_num,
@@ -303,6 +364,7 @@ export async function dubTtsAlign(ctx) {
           action: fit.action,
           tempo: fit.tempo,
           providerId: audio.providerId || ttsCandidates[0]?.id || 'unknown',
+          audioId: audioRow.id,
         })
         successCount++
         rateLimitStreak = 0
@@ -362,6 +424,13 @@ export async function dubTtsAlign(ctx) {
     err.missingSegments = missing
     err.totalSegments = segments.length
     err.errorCode = firstErrorCode
+    if (firstErrorCode === ERROR_CODES.PROVIDER_QUOTA_EXCEEDED || stopError?.errorCode === ERROR_CODES.PROVIDER_QUOTA_EXCEEDED) {
+      err.code = ERROR_CODES.PROVIDER_QUOTA_EXCEEDED
+    } else if (firstErrorCode === 'NO_PROVIDER_AVAILABLE' || stopError?.code === 'NO_PROVIDER_AVAILABLE') {
+      err.code = 'NO_PROVIDER_AVAILABLE'
+    } else if (firstErrorCode) {
+      err.code = firstErrorCode
+    }
     // BE-E02: persist partial diagnostics vào job.result TRƯỚC khi throw để
     // frontend render danh sách segment thiếu mà không parse string.
     // Best-effort, không throw (failJob chỉ giữ error_message 500 ký tự).
@@ -395,37 +464,9 @@ export async function dubTtsAlign(ctx) {
     }))
   )
 
-  // Ghi audios rows + cập nhật tts_audio_id
   for (let i = 0; i < fitted.length; i++) {
-    const f = fitted[i]
-    await assertRunOwner(project.id, runToken)
-    const audioRow = await insertProjectOwned(project.id, runToken, 'audios', {
-      id: uuidv4(),
-      project_id: project.id,
-      kind: 'voice',
-      storage_key: null, // file ở project dir, không cần storage key public
-      duration_sec: round3(f.effectiveDurSec),
-      provider: f.providerId || ttsCandidates[0]?.id || 'unknown',
-    })
-    if (!audioRow) {
-      const error = new Error('RUN_ABORTED')
-      error.code = 'RUN_ABORTED'
-      throw error
-    }
-    try {
-      await attachTtsAudio(project.id, f.segmentId, audioRow.id, transcriptVersion, runToken)
-    } catch (error) {
-      await runProjectOwned(project.id, runToken, 'DELETE FROM audios WHERE id = ?', [audioRow.id])
-      if (error instanceof TranscriptRevisionConflict) {
-        const conflict = new Error('TRANSCRIPT_CHANGED_DURING_TTS')
-        conflict.transient = true
-        throw conflict
-      }
-      throw error
-    }
-    f.audioId = audioRow.id
-    f.startAtSec = sequenced[i].startAtSec
-    f.endAtSec = sequenced[i].endAtSec
+    fitted[i].startAtSec = sequenced[i]?.startAtSec
+    fitted[i].endAtSec = sequenced[i]?.endAtSec
   }
 
   // Trả về kết quả partial success (transflow doc 15 §8.3)
@@ -465,12 +506,22 @@ export async function dubTtsAlign(ctx) {
 //   đúng ownership và được giữ nguyên. Không dùng filesystem path làm auth proof
 //   cross-project; callProvider chặn cross-project cache/single-flight reuse.
 // - `audio.cacheHit` đếm cả fs-hit (ở đây) lẫn DB-hit (callProvider trả cacheHit:true).
-async function synthWithFailover(candidates, text, segDir, _segKey, job, projectId, speed = 1, userId = null) {
+async function synthWithFailover(candidates, text, segDir, _segKey, job, projectId, speed = 1, userId = null, signal = null) {
   const clean = String(text || '').trim()
   if (!clean) throw new Error('TTS text rỗng')
+  if (signal?.aborted) throw new Error('Cancelled')
+
+  // Ensure failover allows at least 1 attempt for keyless/free providers (edge_tts, zerotts, mock)
+  // rather than cutting the chain with maxAttempts=4
+  const keylessIdx = candidates.findIndex((c) => ['edge_tts', 'zerotts', 'mock', 'google_tts', 'voicestudio'].includes(c.id) || KEYLESS.has(c.id))
+  const maxAttempts = keylessIdx >= 0
+    ? Math.max(candidates.length, keylessIdx + 1)
+    : Math.max(4, candidates.length)
+
   const out = await withProviderFailover(
-    { capability: 'TTS', candidates, maxAttempts: Math.min(4, candidates.length) },
+    { capability: 'TTS', candidates, maxAttempts },
     async (cand) => {
+      if (signal?.aborted) throw new Error('Cancelled')
       const voice = cand.provider.voice || cand.provider.model || cand.id
       const model = cand.provider.model || cand.id
       const canonical = buildTtsCacheInput({ provider: cand.id, voice, model, text: clean, speed })
@@ -490,11 +541,12 @@ async function synthWithFailover(candidates, text, segDir, _segKey, job, project
         type: 'tts',
         model,
         input: canonical,
-        fn: () => cand.provider.synthesize({ text: clean, outPath: clipPath, speed }),
+        fn: () => cand.provider.synthesize({ text: clean, outPath: clipPath, speed, signal }),
         userId,
         apiKeyId: cand.apiKeyId,
         projectId,
         jobId: job.id,
+        signal,
       })
       const dur = res?.durationSec || (await probe(res?.audioPath || clipPath)).durationSec
       return { audioPath: res?.audioPath || clipPath, durationSec: dur, provider: cand.id, providerId: cand.id, model, cacheHit: false }
@@ -503,7 +555,7 @@ async function synthWithFailover(candidates, text, segDir, _segKey, job, project
   return out.result
 }
 
-export async function shortenTranslation(llm, sourceText, translation, ratio, job, projectId, targetLanguage = 'vi', _attempt = 0, userId = null) {
+export async function shortenTranslation(llm, sourceText, translation, ratio, job, projectId, targetLanguage = 'vi', _attempt = 0, userId = null, signal = null) {
   // Best-effort cosmetic call: fail fast (no retry storm) when the LLM is
   // exhausted — the stage keeps the original translation and fits via tempo.
   try {
@@ -527,11 +579,13 @@ export async function shortenTranslation(llm, sourceText, translation, ratio, jo
         temperature: 0.2,
         maxOutputTokens: 150,
         maxRetries: 0,
+        signal,
       }),
       userId,
       apiKeyId: llm.apiKeyId,
       projectId,
       jobId: job?.id,
+      signal,
     })
 
     let text = String(res?.text || '').trim()

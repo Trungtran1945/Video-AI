@@ -37,6 +37,12 @@ export async function dubRender(ctx) {
     error.code = 'GENERATION_SNAPSHOT_MISSING'
     throw error
   }
+  const currentProjectVersion = Number(project.transcript_version ?? 0)
+  if (transcriptVersion !== currentProjectVersion) {
+    console.log(
+      `[dub.render] Diagnostic: Generation snapshot (${transcriptVersion}) differs from current project transcript_version (${currentProjectVersion}). Using generation snapshot for output provenance.`
+    )
+  }
   await assertRunOwner(project.id, runToken)
   const params = parseParams(project.params)
   const src = await stageSourceMedia(project, ctx)
@@ -234,6 +240,8 @@ export async function dubRender(ctx) {
     durationSec: round3(finalInfo.durationSec),
     thumbnailKey: thumbKey,
     transcriptVersion,
+    generationSnapshot: transcriptVersion,
+    isTtsActive: enableDubbing,
     runToken: ctx.runToken,
   })
   setProgress(100)

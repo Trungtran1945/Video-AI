@@ -66,7 +66,7 @@ const ENV_KEYS = {
 }
 
 // Provider chạy không cần API key (VoiceStudio local, Edge-TTS của Microsoft, Google Translate via Apps Script, Mock providers).
-const KEYLESS = new Set(['voicestudio', 'zerotts', 'edge_tts', 'google_tts', 'google_translate', 'mock', 'slide'])
+export const KEYLESS = new Set(['voicestudio', 'zerotts', 'edge_tts', 'google_tts', 'google_translate', 'mock', 'slide'])
 
 const REGISTRY = {
   llm: {

@@ -17,6 +17,7 @@ const { insert, run, queryOne, query } = await import('../src/db/query.js')
 const { generateAccessToken } = await import('../src/middleware/auth.js')
 const projectsRouter = (await import('../src/routes/v1/projects.js')).default
 const runner = await import('../src/pipeline/runner.js')
+const { processDrainQueued } = await import('../src/queue/workers/drainQueued.js')
 const { connection } = await import('../src/queue/connection.js')
 const { notifyQueue } = await import('../src/queue/notifyQueue.js')
 
@@ -299,6 +300,80 @@ try {
   const body7 = await res7.json()
   assert(res7.status === 403, `T7 returns 403 (got ${res7.status})`)
   assert(body7.code === 'AUTH_002' || body7.error?.code === 'AUTH_002', 'T7 code is AUTH_002')
+
+  // T8: drainQueued does not rerun successful dub.stt stage
+  console.log('\n--- T8: drainQueued does not rerun successful dub.stt stage ---')
+  await run("UPDATE projects SET status = 'completed', run_token = NULL WHERE user_id = ?", [userId1])
+
+  const p8Id = uuidv4()
+  await insert('projects', {
+    id: p8Id,
+    user_id: userId1,
+    mode: 'TRANSLATE_DUB',
+    title: 'DrainQueued Resume STT Check',
+    status: 'queued',
+    run_token: null,
+    transcript_version: 1,
+    params: '{}',
+  })
+  const prevStages = ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.mask']
+  for (const st of prevStages) {
+    await insert('generation_jobs', {
+      id: uuidv4(),
+      project_id: p8Id,
+      type: st,
+      status: 'success',
+    })
+  }
+  await insert('generation_jobs', {
+    id: uuidv4(),
+    project_id: p8Id,
+    type: 'dub.ttsAlign',
+    status: 'failed',
+  })
+  await insert('generation_jobs', {
+    id: uuidv4(),
+    project_id: p8Id,
+    type: 'dub.render',
+    status: 'pending',
+  })
+  await insert('transcript_segments', {
+    id: uuidv4(),
+    project_id: p8Id,
+    index_num: 0,
+    start_sec: 0,
+    end_sec: 1,
+    text: 'DrainQueued Test',
+    translation: 'Kiểm tra DrainQueued',
+  })
+
+  const drainedStarted = []
+  runner.setStageImplOverride('dub.stt', async () => {
+    drainedStarted.push('dub.stt')
+    throw new Error('dub.stt MUST NOT be re-executed by drainQueued!')
+  })
+  runner.setStageImplOverride('dub.ttsAlign', async () => {
+    drainedStarted.push('dub.ttsAlign')
+    return { dubbedCount: 1 }
+  })
+  runner.setStageImplOverride('dub.render', async () => {
+    drainedStarted.push('dub.render')
+    return {}
+  })
+
+  const drainRes = await processDrainQueued()
+  assert(drainRes.drained >= 1, `T8 processDrainQueued drained at least 1 project (got ${drainRes.drained})`)
+
+  for (let i = 0; i < 40; i++) {
+    const p8Db = await queryOne('SELECT status FROM projects WHERE id = ?', [p8Id])
+    if (p8Db && p8Db.status === 'completed') break
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  const p8Final = await queryOne('SELECT status FROM projects WHERE id = ?', [p8Id])
+  assert(p8Final.status === 'completed', 'T8 project completed via drainQueued')
+  assert(!drainedStarted.includes('dub.stt'), 'T8 dub.stt was NOT re-executed by drainQueued')
+  assert(drainedStarted.includes('dub.ttsAlign'), 'T8 drainQueued resumed from firstRunnableStage (dub.ttsAlign)')
+  assert(drainedStarted.includes('dub.render'), 'T8 drainQueued finished with dub.render')
 
 } catch (err) {
   console.error('Test error:', err)

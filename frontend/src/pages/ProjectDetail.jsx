@@ -328,8 +328,6 @@ export default function ProjectDetail() {
   const isOutputAvailable =
     effectiveStatus === 'completed' &&
     Boolean(outputMedia?.storage_key || outputMedia?.secure_url || outputMedia?.url) &&
-    !outputStale &&
-    project?.outputStale !== true &&
     (outputMedia?.status === 'success' || !outputMedia?.status);
   const rawOutputUrl = isOutputAvailable
     ? resolveStorageUrl(outputMedia?.secure_url || outputMedia?.url || outputMedia?.storage_key)
@@ -915,7 +913,14 @@ export default function ProjectDetail() {
           audioMode: dubConfig.audioMode,
         });
       } catch (e) {
-        console.warn('Auto-sync dubbing config before regenerate error:', e);
+        console.error('Auto-sync dubbing config before regenerate error:', e);
+        toast({
+          title: 'Lỗi đồng bộ cấu hình lồng tiếng',
+          description: e?.response?.data?.message || e.message || 'Không thể cập nhật cấu hình lồng tiếng trước khi chạy lại.',
+          variant: 'destructive',
+        });
+        setRegenerating(false);
+        return;
       }
     }
 

@@ -586,6 +586,11 @@ router.patch(
       existingParams = typeof req.project.params === 'string' ? JSON.parse(req.project.params) : (req.project.params || {})
     } catch (_) {}
 
+    let prevParams = {}
+    try {
+      prevParams = typeof req.project.params === 'string' ? JSON.parse(req.project.params) : (req.project.params || {})
+    } catch (_) {}
+
     if (b.params && typeof b.params === 'object') {
       const cleanParams = { ...b.params }
       delete cleanParams.user_id
@@ -594,6 +599,15 @@ router.patch(
       delete cleanParams.role
       delete cleanParams.run_token
       existingParams = { ...existingParams, ...cleanParams }
+
+      const prevDubbingEnabled = prevParams.enableDubbing !== false && prevParams.audioMode !== 'ORIGINAL_ONLY'
+      const nextDubbingEnabled = existingParams.enableDubbing !== false && existingParams.audioMode !== 'ORIGINAL_ONLY'
+
+      if (prevDubbingEnabled && !nextDubbingEnabled) {
+        await run('DELETE FROM generation_jobs WHERE project_id = ? AND type = ?', [req.project.id, 'dub.ttsAlign'])
+        await run('DELETE FROM audios WHERE project_id = ?', [req.project.id])
+        await run('UPDATE transcript_segments SET tts_audio_id = NULL, tts_clip_key = NULL WHERE project_id = ?', [req.project.id])
+      }
     }
     if (hasResolution && typeof b.resolution === 'string') {
       existingParams.resolution = b.resolution
@@ -1273,11 +1287,12 @@ router.patch('/:id/dubbing', requireProjectOwner, async (req, res) => {
 
     await run('UPDATE projects SET params = ? WHERE id = ?', [JSON.stringify(nextParams), project.id])
 
-    if (providerChanged || !newEnable) {
+    const dubbingDisabled = !newEnable || audioMode === 'ORIGINAL_ONLY'
+    if (providerChanged || dubbingDisabled) {
       await run('UPDATE transcript_segments SET tts_audio_id = NULL, tts_clip_key = NULL WHERE project_id = ?', [project.id])
     }
 
-    if (!newEnable) {
+    if (dubbingDisabled) {
       // Xoá bỏ job dub.ttsAlign để không còn tồn tại trong danh sách jobs kiểm tra
       await run('DELETE FROM generation_jobs WHERE project_id = ? AND type = ?', [project.id, 'dub.ttsAlign'])
       // Xoá bỏ các tệp audio liên quan trong DB

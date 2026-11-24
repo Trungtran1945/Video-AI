@@ -44,6 +44,8 @@ function isRateLimitError(err) {
 }
 
 function isQuotaError(err) {
+  if (err?.code === ERROR_CODES.PROVIDER_QUOTA_EXCEEDED) return true
+  if (err?.errorCode === ERROR_CODES.PROVIDER_QUOTA_EXCEEDED) return true
   if (err?.code === 'NO_PROVIDER_AVAILABLE' && err?.errorCode === ERROR_CODES.PROVIDER_QUOTA_EXCEEDED) return true
   try {
     return classifyProviderError(err).code === ERROR_CODES.PROVIDER_QUOTA_EXCEEDED
@@ -53,7 +55,9 @@ function isQuotaError(err) {
 }
 
 function errorCodeOf(err) {
+  if (err?.errorCode) return err.errorCode
   if (err?.code === 'NO_PROVIDER_AVAILABLE' && err?.errorCode) return err.errorCode
+  if (err?.code) return err.code
   try {
     return classifyProviderError(err).code || null
   } catch (_) {
@@ -153,7 +157,7 @@ async function readCurrentTranscriptVersion(projectId) {
 //               key at all) — the ONLY case allowed to fall back
 //   'corrupt' → snapshot key present but unusable — never substitute silently
 //   'absent'  → no successful ttsAlign (job missing or not success)
-async function readFrozenTtsSnapshot(projectId) {
+export async function readFrozenTtsSnapshot(projectId) {
   const job = await queryOne(
     `SELECT status, result FROM generation_jobs WHERE project_id = ? AND type = 'dub.ttsAlign'`,
     [projectId]
@@ -168,6 +172,34 @@ async function readFrozenTtsSnapshot(projectId) {
   return { state: 'frozen', snapshot }
 }
 
+// Helper to determine the active generation snapshot and provenance state.
+// Handles 4 states (frozen, legacy, corrupt, absent) and properly respects when
+// ttsAlign is not in stage list (ttsIndex < 0).
+export async function getActiveGenerationProvenance(projectId, effectiveFrom, project, currentVersion = null) {
+  const stageOrder = stagesForProject(project)
+  const ttsIndex = stageOrder.indexOf('dub.ttsAlign')
+  const fromIndex = effectiveFrom ? Math.max(0, stageOrder.indexOf(effectiveFrom)) : 0
+  const current = currentVersion !== null ? currentVersion : await readCurrentTranscriptVersion(projectId)
+
+  // When ttsAlign is not active for this project (e.g. enableDubbing is false or audioMode is ORIGINAL_ONLY)
+  if (ttsIndex < 0) {
+    return { state: 'absent', snapshot: current, isTtsActive: false }
+  }
+
+  // When starting from or before ttsAlign, ttsAlign will run in this generation
+  if (fromIndex <= ttsIndex) {
+    return { state: 'absent', snapshot: current, isTtsActive: true }
+  }
+
+  // When resuming downstream after ttsAlign
+  const frozen = await readFrozenTtsSnapshot(projectId)
+  return {
+    state: frozen.state,
+    snapshot: frozen.state === 'frozen' ? frozen.snapshot : current,
+    isTtsActive: true,
+  }
+}
+
 // Resolve the transcript revision this generation will use (one per generation).
 // - When dub.ttsAlign re-runs in this generation → capture the current revision
 //   at the generation boundary (producers below may still refresh it).
@@ -180,25 +212,23 @@ async function readFrozenTtsSnapshot(projectId) {
 // snapshot tracking existed) may fall back to the current revision.
 // Exported for provenance tests.
 export async function resolveGenerationSnapshot(projectId, effectiveFrom, project) {
-  const stageOrder = stagesForProject(project)
-  const ttsIndex = stageOrder.indexOf('dub.ttsAlign')
-  const fromIndex = effectiveFrom ? Math.max(0, stageOrder.indexOf(effectiveFrom)) : 0
   const current = await readCurrentTranscriptVersion(projectId)
-  if (ttsIndex < 0 || fromIndex <= ttsIndex) return current
-  const frozen = await readFrozenTtsSnapshot(projectId)
-  if (frozen.state === 'frozen') return frozen.snapshot
-  if (frozen.state === 'corrupt') {
+  const prov = await getActiveGenerationProvenance(projectId, effectiveFrom, project, current)
+  if (prov.state === 'frozen') return prov.snapshot
+  if (prov.state === 'corrupt') {
     throw new Error(
       `[GenerationProvenance] project=${projectId}: dub.ttsAlign persisted an unusable transcriptVersionSnapshot — ` +
       'the current generation has no usable transcript provenance. Re-run the generation from dub.ttsAlign to freeze a new snapshot.'
     )
   }
-  if (frozen.state === 'legacy') {
-    console.warn(`[GenerationProvenance] project=${projectId}: LEGACY_GENERATION — dub.ttsAlign result predates snapshot tracking; falling back to current transcript revision ${current}`)
-    return current
+  if (prov.state === 'legacy') {
+    console.warn(`[GenerationProvenance] project=${projectId}: LEGACY_GENERATION — dub.ttsAlign result predates snapshot tracking; falling back to current transcript revision ${prov.snapshot}`)
+    return prov.snapshot
   }
-  console.warn(`[GenerationProvenance] project=${projectId}: dub.ttsAlign has no frozen snapshot (state=absent) — falling back to current transcript revision ${current}`)
-  return current
+  if (prov.isTtsActive && prov.state === 'absent') {
+    console.warn(`[GenerationProvenance] project=${projectId}: dub.ttsAlign has no frozen snapshot (state=absent) — falling back to current transcript revision ${prov.snapshot}`)
+  }
+  return prov.snapshot
 }
 
 async function startDubSequential(project, _setProgress, results, signal, runToken = null, forceTranscript = false, generation = { transcriptVersionSnapshot: null }) {
@@ -898,7 +928,7 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
     }
     // Quota / no-provider: stage failover already tried every key — parking
     // as retry would just loop on depleted keys. Fail fast with root cause.
-    if (err?.code === 'NO_PROVIDER_AVAILABLE' || isQuotaError(err)) {
+    if (err?.code === 'NO_PROVIDER_AVAILABLE' || isQuotaError(err) || err?.code === ERROR_CODES.PROVIDER_QUOTA_EXCEEDED || err?.errorCode === ERROR_CODES.PROVIDER_QUOTA_EXCEEDED) {
       const code = errorCodeOf(err) || ERROR_CODES.PROVIDER_QUOTA_EXCEEDED
       const detail = err?.details?.attempted
         ? ` (đã thử ${err.details.attempted.length} provider: ${err.details.attempted.map((a) => `${a.provider}:${a.code}`).join(', ')})`
@@ -1068,33 +1098,35 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
       for (const type of list) await ensureStageJob(projectId, type, runToken)
     }
 
-    // Clamp fromStage to the earliest incomplete stage in pipeline order.
+    // Auto-resume from firstRunnableStage if fromStage is null, or clamp fromStage
+    // to the earliest incomplete stage in pipeline order.
     // Never skip an incomplete predecessor (e.g. redub forcing dub.ttsAlign
-    // while dub.translate is failed → deterministic BLOCK_RENDER). Callers
-    // already use firstRunnableStage, this is the enforcement point.
+    // while dub.translate is failed → deterministic BLOCK_RENDER).
     let effectiveFrom = fromStage
-    if (effectiveFrom) {
-      try {
-        const allJobs = await query(
-          'SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?',
-          [projectId]
-        )
-        const r = firstRunnableStage(stagesForProject(project), allJobs)
-        if (r.waiting) {
-          await parkProjectForRetry(projectId, r.type, runToken)
-          return
+    try {
+      const allJobs = await query(
+        'SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?',
+        [projectId]
+      )
+      const r = firstRunnableStage(stagesForProject(project), allJobs)
+      if (r.waiting) {
+        await parkProjectForRetry(projectId, r.type, runToken)
+        return
+      }
+      if (!effectiveFrom) {
+        if (r.type) {
+          effectiveFrom = r.type
         }
-        if (r.type && r.type !== effectiveFrom) {
-          const order = stagesForProject(project)
-          const effIdx = order.indexOf(effectiveFrom)
-          const rIdx = order.indexOf(r.type)
-          if (rIdx < effIdx) {
-            console.warn(`[Pipeline] Clamped resume ${effectiveFrom} → ${r.type} (earliest incomplete) for ${projectId}`)
-            effectiveFrom = r.type
-          }
+      } else if (r.type && r.type !== effectiveFrom) {
+        const order = stagesForProject(project)
+        const effIdx = order.indexOf(effectiveFrom)
+        const rIdx = order.indexOf(r.type)
+        if (rIdx < effIdx) {
+          console.warn(`[Pipeline] Clamped resume ${effectiveFrom} → ${r.type} (earliest incomplete) for ${projectId}`)
+          effectiveFrom = r.type
         }
-      } catch (_) {}
-    }
+      }
+    } catch (_) {}
 
     // Generation boundary: ONE transcript revision snapshot per generation.
     // TRANSLATE_DUB: captured here, refreshed only while transcript-producing

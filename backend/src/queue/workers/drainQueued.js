@@ -1,7 +1,8 @@
 import { Worker } from 'bullmq'
 import { connection, createRedisConnection, createThrottledLogger, isRedisReady, isConnectionReady, waitForConnection, attachDedicatedLogging } from '../connection.js'
 import { query, queryOne } from '../../db/query.js'
-import { runPipeline } from '../../pipeline/runner.js'
+import { runPipeline, stagesForProject } from '../../pipeline/runner.js'
+import { firstRunnableStage } from '../../pipeline/context.js'
 import { recoverStaleProjects, RECOVERY_REASON_STALE } from '../../pipeline/recovery.js'
 import { claimQueuedProject } from '../claim.js'
 import { config } from '../../config.js'
@@ -19,7 +20,7 @@ const logWorkerError = createThrottledLogger(30000)
  * cũ nhất khi user đó có slot RUNNING trống.
  * Đồng thời dọn các project stuck 'running' quá lâu (backend crash mid-pipeline).
  */
-async function processDrainQueued(_job) {
+export async function processDrainQueued(_job) {
   const maxConcurrent = config.maxConcurrentProjectsPerUser
 
   // ── 1. Recover stale projects via the shared service ──
@@ -79,7 +80,20 @@ async function processDrainQueued(_job) {
         const claim = await claimQueuedProject(oldest.id)
         if (!claim.claimed) continue
         const isScript = String(oldest.mode || '').toUpperCase().replace('-', '_') === 'SCRIPT_TO_VIDEO'
-        runPipeline(oldest.id, null, claim.runToken, isScript ? { parkAfterAnalysis: true } : {}).catch((e) => console.error('[DrainQueued] start failed', e))
+
+        let resumeStage = null
+        try {
+          const jobs = await query('SELECT type, status, next_retry_at FROM generation_jobs WHERE project_id = ?', [oldest.id])
+          if (jobs?.length > 0) {
+            const fullProj = await queryOne('SELECT * FROM projects WHERE id = ?', [oldest.id])
+            if (fullProj) {
+              const r = firstRunnableStage(stagesForProject(fullProj), jobs)
+              if (r?.type) resumeStage = r.type
+            }
+          }
+        } catch (_) {}
+
+        runPipeline(oldest.id, resumeStage, claim.runToken, isScript ? { parkAfterAnalysis: true } : {}).catch((e) => console.error('[DrainQueued] start failed', e))
         drained++
       }
     }

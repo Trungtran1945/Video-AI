@@ -24,7 +24,25 @@ function normalizeVersion(value) {
 // GENERATION used (captured at dub.ttsAlign and persisted in its job result),
 // never the current project revision at insertion time. When the generation
 // recorded a snapshot, publishing anything else is rejected.
-async function assertOutputProvenance(tx, projectId, version) {
+async function assertOutputProvenance(tx, project, version, input = {}) {
+  const projectId = project.id || input.projectId
+
+  // Check whether ttsAlign is active for this project/generation
+  let isTtsActive = input.isTtsActive
+  if (isTtsActive === undefined) {
+    let params = project.params
+    if (typeof params === 'string') {
+      try { params = JSON.parse(params) } catch (_) { params = {} }
+    }
+    params = params || {}
+    isTtsActive = params.enableDubbing !== false && params.audioMode !== 'ORIGINAL_ONLY'
+  }
+
+  // If ttsAlign is not active for this generation -> skip guard instead of comparing with stale job
+  if (!isTtsActive) {
+    return
+  }
+
   const job = await tx.queryOne(
     `SELECT status, result FROM generation_jobs WHERE project_id = ? AND type = 'dub.ttsAlign'`,
     [projectId]
@@ -65,7 +83,7 @@ async function insertOutput(tx, input) {
   const projectId = input.projectId
   const version = input.transcriptVersion === undefined ? null : normalizeVersion(input.transcriptVersion)
   const scriptVersion = input.scriptVersion === undefined ? null : normalizeVersion(input.scriptVersion)
-  const project = await tx.queryOne('SELECT mode, transcript_version, script_version FROM projects WHERE id = ?', [projectId])
+  const project = await tx.queryOne('SELECT id, mode, transcript_version, script_version, params FROM projects WHERE id = ?', [projectId])
   if (!project) throw new Error('Project not found')
   if (input.runToken) {
     const run = await tx.queryOne('SELECT status, run_token FROM projects WHERE id = ?', [projectId])
@@ -76,7 +94,7 @@ async function insertOutput(tx, input) {
     throw new Error('Dub output requires a valid transcript version snapshot')
   }
   if (mode === 'TRANSLATE_DUB' && version !== null) {
-    await assertOutputProvenance(tx, projectId, version)
+    await assertOutputProvenance(tx, project, version, input)
   }
   if (mode === 'SCRIPT_TO_VIDEO' && (input.scriptVersion === undefined || scriptVersion === null)) {
     throw new Error('Script output requires a valid script version snapshot')

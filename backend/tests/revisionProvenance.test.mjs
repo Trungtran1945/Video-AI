@@ -16,12 +16,13 @@ process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, queryOne, run } = await import('../src/db/query.js')
-const { resolveGenerationSnapshot } = await import('../src/pipeline/runner.js')
+const { resolveGenerationSnapshot, getActiveGenerationProvenance } = await import('../src/pipeline/runner.js')
 const { default: dubTtsAlign } = await import('../src/pipeline/stages/dubTtsAlign.js')
 const { default: dubRender } = await import('../src/pipeline/stages/dubRender.js')
-const { createOutput } = await import('../src/services/outputService.js')
+const { createOutput, outputIsStale } = await import('../src/services/outputService.js')
 
 await initSchema()
+await run(`INSERT INTO users (id, email, password, role) VALUES ('prov-user', 'prov-user@test.local', 'hash', 'user') ON CONFLICT (id) DO NOTHING`)
 
 let failures = 0
 const assert = (c, m) => { if (c) console.log('PASS:', m); else { failures++; console.error('FAIL:', m) } }
@@ -241,7 +242,115 @@ const readSrc = (...parts) => fs.readFileSync(path.join(__dirname, '..', 'src', 
   assert(runnerSrc.includes('idx_generation_jobs_project_type'), 'runner documents the one-current-job-per-stage generation identity')
 }
 
+// ── 6. Dubbing disabled: stale ttsAlign job does NOT throw mismatch ──
+{
+  const projectId = 'prov-dub-off'
+  await insert('projects', {
+    id: projectId,
+    user_id: 'prov-user',
+    mode: 'TRANSLATE_DUB',
+    title: 'dubbing disabled with stale tts job',
+    status: 'running',
+    params: JSON.stringify({ enableDubbing: false }),
+    transcript_version: 11,
+  })
+  // Stale ttsAlign job from earlier when dubbing was on
+  await insert('generation_jobs', {
+    id: 'prov-stale-tts-job',
+    project_id: projectId,
+    type: 'dub.ttsAlign',
+    status: 'success',
+    result: JSON.stringify({ transcriptVersionSnapshot: 10 }),
+  })
+
+  // createOutput at version 11 must succeed (not throw mismatch)
+  let err = null
+  let out = null
+  try {
+    out = await createOutput({
+      id: 'prov-out-dub-off',
+      projectId,
+      storageKey: 'projects/prov-dub-off/final.mp4',
+      durationSec: 1,
+      transcriptVersion: 11,
+    })
+  } catch (e) {
+    err = e
+  }
+  assert(!err, `dubbing disabled does not throw mismatch on stale ttsAlign job (err: ${err?.message})`)
+  assert(out?.id === 'prov-out-dub-off', 'output published successfully when dubbing is disabled')
+
+  // Also test with audioMode = 'ORIGINAL_ONLY'
+  await run('UPDATE projects SET params = ? WHERE id = ?', [JSON.stringify({ audioMode: 'ORIGINAL_ONLY' }), projectId])
+  err = null
+  out = null
+  try {
+    out = await createOutput({
+      id: 'prov-out-orig-only',
+      projectId,
+      storageKey: 'projects/prov-dub-off/final-orig.mp4',
+      durationSec: 1,
+      transcriptVersion: 11,
+    })
+  } catch (e) {
+    err = e
+  }
+  assert(!err, `audioMode=ORIGINAL_ONLY does not throw mismatch on stale ttsAlign job (err: ${err?.message})`)
+  assert(out?.id === 'prov-out-orig-only', 'output published successfully with audioMode=ORIGINAL_ONLY')
+
+  await run('DELETE FROM outputs WHERE project_id = ?', [projectId])
+  await run('DELETE FROM generation_jobs WHERE project_id = ?', [projectId])
+  await run('DELETE FROM projects WHERE id = ?', [projectId])
+}
+
+// ── 7. Approve mask -> bump transcript_version -> regenerate render-only -> output published & not stale ──
+{
+  const projectId = 'prov-mask-regen'
+  await insert('projects', {
+    id: projectId,
+    user_id: 'prov-user',
+    mode: 'TRANSLATE_DUB',
+    title: 'approve mask regen',
+    status: 'completed',
+    params: JSON.stringify({ enableDubbing: false }),
+    transcript_version: 10,
+  })
+
+  // Simulate mask approval bumping transcript_version to 11
+  await run('UPDATE projects SET transcript_version = 11 WHERE id = ?', [projectId])
+  const project = await queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
+
+  // Resolve generation snapshot for render-only resume
+  const snapshot = await resolveGenerationSnapshot(projectId, 'dub.render', project)
+  assert(snapshot === 11, `render-only snapshot captures bumped transcript_version 11 (got ${snapshot})`)
+
+  // Publish output with snapshot 11
+  const out = await createOutput({
+    id: 'prov-out-mask-11',
+    projectId,
+    storageKey: 'projects/prov-mask-regen/final-11.mp4',
+    durationSec: 1,
+    transcriptVersion: snapshot,
+    generationSnapshot: snapshot,
+    isTtsActive: false,
+  })
+  assert(out?.id === 'prov-out-mask-11', 'output published at bumped version 11')
+
+  // Verify outputIsStale returns false
+  const stale = outputIsStale('TRANSLATE_DUB', 11, out)
+  assert(stale === false, 'regenerated output at version 11 is not stale')
+
+  // Verify helper getActiveGenerationProvenance works cleanly
+  const prov = await getActiveGenerationProvenance(projectId, 'dub.render', project, 11)
+  assert(prov.isTtsActive === false && prov.snapshot === 11 && prov.state === 'absent',
+    `getActiveGenerationProvenance correctly reports inactive ttsAlign (got: ${JSON.stringify(prov)})`)
+
+  await run('DELETE FROM outputs WHERE project_id = ?', [projectId])
+  await run('DELETE FROM projects WHERE id = ?', [projectId])
+}
+
 await run('DELETE FROM projects WHERE id IN (?, ?, ?)', ['prov-skip', 'prov-resume', 'prov-out'])
+await run("DELETE FROM users WHERE id = 'prov-user'")
 fs.rmSync(tmpRoot, { recursive: true, force: true })
 if (failures > 0) process.exit(1)
 console.log('ALL PASS')
