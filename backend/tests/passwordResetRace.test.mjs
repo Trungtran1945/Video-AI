@@ -21,7 +21,6 @@ import { once } from 'node:events'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-reset-race-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.NODE_ENV = 'test'
 // Must be set before any src import — config.js reads env at module load.
@@ -126,19 +125,12 @@ await storeRefreshToken(USER_ID, oldRefresh)
   assert(res.status === 401, `refresh with the pre-reset token → 401 (got ${res.status})`)
 }
 
-// DB không lưu raw token: row.token === sha256(devToken), không có devToken anywhere in DB bytes
+// DB không lưu raw token: row.token === sha256(devToken), không có devToken trong DB
 {
   const row = await queryOne('SELECT token FROM reset_tokens WHERE email = ?', [EMAIL])
   assert(!!row && row.token === sha256(devToken), 'DB stores only sha256(devToken) for the consumed token')
-  if (process.env.DB_PATH && fs.existsSync(process.env.DB_PATH)) {
-    const bytes = fs.readFileSync(process.env.DB_PATH)
-    const raw = Buffer.from(devToken, 'utf8')
-    const rawUtf16 = Buffer.from(devToken, 'utf16le')
-    assert(!bytes.includes(raw) && !bytes.includes(rawUtf16), 'raw devToken appears nowhere in the persisted DB bytes')
-  } else {
-    const rawRow = await queryOne('SELECT token FROM reset_tokens WHERE token = ?', [devToken])
-    assert(!rawRow, 'raw devToken is never stored in DB')
-  }
+  const rawRow = await queryOne('SELECT token FROM reset_tokens WHERE token = ?', [devToken])
+  assert(!rawRow, 'raw devToken is never stored in DB')
 }
 
 // cleanup

@@ -35,7 +35,10 @@ async function assertOutputProvenance(tx, project, version, input = {}) {
       try { params = JSON.parse(params) } catch (_) { params = {} }
     }
     params = params || {}
-    isTtsActive = params.enableDubbing !== false && params.audioMode !== 'ORIGINAL_ONLY'
+    const rawEnable = params.enableDubbing ?? params.enable_dubbing
+    const enableDubbing = rawEnable !== undefined ? Boolean(rawEnable && rawEnable !== 'false') : true
+    const audioMode = params.audioMode || params.audio_mode || (enableDubbing ? 'DUB_MIX' : 'ORIGINAL_ONLY')
+    isTtsActive = Boolean(enableDubbing) && audioMode !== 'ORIGINAL_ONLY'
   }
 
   // If ttsAlign is not active for this generation -> skip guard instead of comparing with stale job
@@ -47,17 +50,34 @@ async function assertOutputProvenance(tx, project, version, input = {}) {
     `SELECT status, result FROM generation_jobs WHERE project_id = ? AND type = 'dub.ttsAlign'`,
     [projectId]
   )
-  if (!job || job.status !== 'success') return
+  if (!job || job.status !== 'success') {
+    console.warn(
+      `[OutputProvenance] project=${projectId}: provenanceRelaxed=true state=absent ` +
+      `outputVersion=${version} reason="NO_FROZEN_SNAPSHOT: dub.ttsAlign job missing or not success"`
+    )
+    return
+  }
   let snapshot = null
+  let hasDeclaredSnapshot = false
   try {
     const parsed = JSON.parse(job.result || '{}')
     if (parsed && parsed.transcriptVersionSnapshot !== null && parsed.transcriptVersionSnapshot !== undefined) {
+      hasDeclaredSnapshot = true
       snapshot = normalizeVersion(parsed.transcriptVersionSnapshot)
     }
   } catch (_) {
-    return
+    throw new Error('Output provenance check failed: corrupt dub.ttsAlign job result JSON')
   }
-  if (snapshot === null) return // legacy generation without a persisted snapshot
+  if (hasDeclaredSnapshot && snapshot === null) {
+    throw new Error('Output provenance check failed: corrupt dub.ttsAlign transcriptVersionSnapshot')
+  }
+  if (snapshot === null) {
+    console.warn(
+      `[OutputProvenance] project=${projectId}: provenanceRelaxed=true state=legacy ` +
+      `outputVersion=${version} reason="LEGACY_GENERATION: dub.ttsAlign result has no transcriptVersionSnapshot"`
+    )
+    return // legacy generation without a persisted snapshot
+  }
   if (snapshot !== version) {
     throw new Error(
       `Output transcript version ${version} does not match the generation snapshot ${snapshot}`

@@ -1,7 +1,4 @@
 import pg from 'pg'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
 import { assertDatabaseSecrets, redactSensitiveString } from './config.js'
 
 const { Pool: PgPool, types: pgTypes } = pg
@@ -77,25 +74,49 @@ export const PERSISTENCE_STATES = Object.freeze({
   WRITE_BLOCKED: 'WRITE_BLOCKED',
 })
 
+let consecutiveSaveFailures = 0
+let lastSaveError = null
+let lastSuccessfulSaveAt = new Date().toISOString()
+let lastSaveDurationMs = 0
+let lastFailureSource = null // 'write' | 'probe' | null
+
+function maxSaveFailuresLimit() {
+  const v = Number(process.env.DB_MAX_SAVE_FAILURES)
+  return Number.isInteger(v) && v >= 1 ? v : 5
+}
+
+function formatPersistenceError(err) {
+  const raw = err?.message || err?.errors?.[0]?.message || err?.code || String(err)
+  return redactSensitiveString(raw || 'Database persistence error')
+}
+
+export function recordPersistenceSuccess(durationMs = 0) {
+  consecutiveSaveFailures = 0
+  lastSaveError = null
+  lastFailureSource = null
+  lastSaveDurationMs = Math.max(0, Math.round(Number(durationMs) || 0))
+  lastSuccessfulSaveAt = new Date().toISOString()
+}
+
+export function recordPersistenceFailure(err, durationMs = 0, source = 'write') {
+  consecutiveSaveFailures++
+  lastSaveError = formatPersistenceError(err)
+  lastFailureSource = source
+  lastSaveDurationMs = Math.max(0, Math.round(Number(durationMs) || 0))
+}
+
 export function getDbPersistenceStats() {
   return {
     engine: 'postgresql',
-    lastSaveAt: new Date().toISOString(),
-    lastSaveDurationMs: 0,
-    lastSaveError: null,
+    lastSaveAt: lastSuccessfulSaveAt,
+    lastSaveDurationMs,
+    lastSaveError,
     writerLock: false,
   }
 }
 
-let consecutiveSaveFailures = 0
-let lastSaveError = null
-let lastSuccessfulSaveAt = new Date().toISOString()
-
 export function getDbPersistenceHealth() {
-  const max = (() => {
-    const v = Number(process.env.DB_MAX_SAVE_FAILURES)
-    return Number.isInteger(v) && v >= 1 ? v : 5
-  })()
+  const max = maxSaveFailuresLimit()
   let state = PERSISTENCE_STATES.HEALTHY
   if (consecutiveSaveFailures >= max) {
     state = PERSISTENCE_STATES.WRITE_BLOCKED
@@ -108,22 +129,42 @@ export function getDbPersistenceHealth() {
     consecutiveSaveFailures,
     lastSaveError,
     lastSuccessfulSaveAt,
-    lastSaveDurationMs: 0,
+    lastSaveDurationMs,
     maxSaveFailures: max,
   }
 }
 
-export function save() {
+export async function save() {
+  const t0 = Date.now()
   try {
-    fs.writeFileSync(path.join(os.tmpdir(), '.vidai_db_probe'), 'ok')
-    consecutiveSaveFailures = 0
-    lastSaveError = null
-    lastSuccessfulSaveAt = new Date().toISOString()
+    const pool = getPool()
+    await pool.query('SELECT 1')
+    recordPersistenceSuccess(Date.now() - t0)
+    return true
   } catch (err) {
-    consecutiveSaveFailures++
-    lastSaveError = err?.message || String(err)
+    recordPersistenceFailure(err, Date.now() - t0, 'probe')
     throw err
   }
+}
+
+export async function probeDatabaseHealth() {
+  const t0 = Date.now()
+  try {
+    const pool = getPool()
+    await pool.query('SELECT 1')
+    // Preserve DEGRADED state caused by failed writes until a write or explicit save()
+    // succeeds, while allowing recovery from probe outages or WRITE_BLOCKED.
+    if (
+      consecutiveSaveFailures === 0 ||
+      lastFailureSource === 'probe' ||
+      consecutiveSaveFailures >= maxSaveFailuresLimit()
+    ) {
+      recordPersistenceSuccess(Date.now() - t0)
+    }
+  } catch (err) {
+    recordPersistenceFailure(err, Date.now() - t0, 'probe')
+  }
+  return getDbPersistenceHealth()
 }
 
 let dbInitPromise = null
@@ -196,6 +237,9 @@ export default {
   getDb,
   getDbPersistenceStats,
   getDbPersistenceHealth,
+  probeDatabaseHealth,
+  recordPersistenceSuccess,
+  recordPersistenceFailure,
   PERSISTENCE_STATES,
   releaseWriterLock,
   save,

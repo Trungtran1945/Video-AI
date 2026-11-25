@@ -10,7 +10,6 @@ import path from 'node:path'
 import os from 'node:os'
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai_test_asr_'))
-process.env.DB_PATH = path.join(tmpDir, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpDir, 'storage')
 
 const { initSchema } = await import('../src/db/schema.js')

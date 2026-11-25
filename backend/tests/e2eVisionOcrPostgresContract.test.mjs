@@ -5,7 +5,6 @@ import fs from 'node:fs'
 import express from 'express'
 import { once } from 'node:events'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_ocr_contract_${Date.now()}_${Math.random().toString(36).slice(2)}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { query, queryOne, run, insert, convertSqlForPostgres } = await import('../src/db/query.js')
@@ -205,7 +204,6 @@ console.log('\n--- 4. Subtitle Schema Integrity Check ---')
   console.log('PASS: subtitles table created_date column verified')
 }
 
-try { fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 
 console.log('\n======================================================')
 console.log(' ALL VISION OCR & POSTGRESQL CONTRACT TESTS PASSED!   ')

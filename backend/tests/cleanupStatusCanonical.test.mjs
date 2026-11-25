@@ -10,7 +10,6 @@ import os from 'node:os'
 import path from 'node:path'
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-cleanup-status-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.NODE_ENV = 'test'
 process.env.PROJECT_RETENTION_DAYS = '30'

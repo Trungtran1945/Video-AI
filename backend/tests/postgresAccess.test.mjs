@@ -6,10 +6,6 @@ import dotenv from 'dotenv'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 dotenv.config({ path: path.join(__dirname, '..', '.env') })
 
-// Ensure we test PostgreSQL
-delete process.env.DB_PATH
-delete process.env.FORCE_SQLITE
-
 const { isPostgresMode, getPool, closePool, getDbPersistenceHealth, PERSISTENCE_STATES } = await import('../src/db.js')
 const {
   query,

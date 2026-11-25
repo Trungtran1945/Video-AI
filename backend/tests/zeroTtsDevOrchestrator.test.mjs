@@ -41,12 +41,10 @@ function getClosedPort() {
 function runDevUntilReady(args = [], env = {}, { readyPattern = /Backend running/i, timeoutMs = 12000 } = {}) {
   return new Promise((resolve, reject) => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai_dev_orch_'));
-    const dbPath = path.join(tmpDir, 'test.db');
     const storageDir = path.join(tmpDir, 'storage');
 
     const mergedEnv = {
       ...process.env,
-      DB_PATH: dbPath,
       STORAGE_DIR: storageDir,
       ...env,
     };

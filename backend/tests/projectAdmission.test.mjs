@@ -2,7 +2,6 @@ import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_project_admission_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { query, queryOne, run } = await import('../src/db/query.js')
@@ -106,7 +105,6 @@ const jobAfterOwnedDelete = await queryOne('SELECT status FROM generation_jobs W
 assert(staleOwnedDelete === false && jobAfterOwnedDelete.status === 'success', 'cancelled run cannot delete project artifacts')
 
 await run('DELETE FROM projects WHERE user_id IN (?, ?, ?, ?, ?)', ['admission-user', 'owned-user', 'expired-user', 'expired-running-user', 'job-owner-user'])
-fs.rmSync(process.env.DB_PATH, { force: true })
 
 if (failures > 0) process.exit(1)
 console.log('ALL PASS')

@@ -5,7 +5,6 @@ import fs from 'node:fs'
 import express from 'express'
 import { once } from 'node:events'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_perf_benchmark_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { query, queryOne, insert, run } = await import('../src/db/query.js')
@@ -176,7 +175,6 @@ const allTranscriptOk = tBatch.every(r => r.status === 200)
 console.log(`${N} parallel requests to GET /projects/:id/transcript (300 segs each): total ${dTranscriptBatch.toFixed(2)}ms, avg ${(dTranscriptBatch / N).toFixed(2)}ms per req, all 200 OK: ${allTranscriptOk}`)
 
 await new Promise(r => server.close(r))
-fs.rmSync(process.env.DB_PATH, { force: true })
 
 if (!allProjectOk || !allTranscriptOk || dProject > 50 || dTranscript > 50) {
   console.error('PERF CHECK FAILED')

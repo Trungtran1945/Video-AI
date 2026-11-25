@@ -7,7 +7,6 @@ import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_cache_obs_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 await initSchema()

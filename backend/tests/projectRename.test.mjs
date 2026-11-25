@@ -6,7 +6,6 @@ import { once } from 'node:events'
 import assert from 'node:assert/strict'
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-rename-http-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.NODE_ENV = 'test'
 

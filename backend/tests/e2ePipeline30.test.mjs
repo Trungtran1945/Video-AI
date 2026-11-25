@@ -7,7 +7,6 @@ import path from 'node:path'
 import os from 'node:os'
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-e2e30-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.GEMINI_API_KEY = 'test-key'
 process.env.GOOGLE_TRANSLATE_SCRIPT_URL = 'https://script.google.com/macros/s/TEST/exec'

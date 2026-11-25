@@ -5,7 +5,6 @@ import os from 'node:os'
 import { v4 as uuidv4 } from 'uuid'
 
 // Set isolated test DB
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_audio_timeline_test_${Date.now()}_${Math.random().toString(36).slice(2)}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, queryOne, query } = await import('../src/db/query.js')

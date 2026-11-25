@@ -5,7 +5,6 @@
 import path from 'node:path'
 import os from 'node:os'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_maskApprove_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { run } = await import('../src/db/query.js')
@@ -79,7 +78,6 @@ for (const [id, status, enabled] of rows) {
 await run(`DELETE FROM ocr_regions WHERE project_id = ?`, [pid])
 await run(`DELETE FROM projects WHERE id = ?`, [pid])
 
-try { const fs = await import('node:fs'); fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

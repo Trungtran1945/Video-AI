@@ -10,7 +10,6 @@ import express from 'express'
 import { once } from 'node:events'
 import { randomUUID } from 'node:crypto'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_qsummary_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert } = await import('../src/db/query.js')
@@ -70,6 +69,5 @@ const get = (p) => fetch(`${base}${p}`, { headers: { authorization: `Bearer ${to
 }
 
 await new Promise((r) => server.close(r))
-try { fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 if (failures > 0) process.exit(1)
 console.log('\nALL PASS')

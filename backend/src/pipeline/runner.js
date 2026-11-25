@@ -183,24 +183,64 @@ export async function getActiveGenerationProvenance(projectId, effectiveFrom, pr
 
   // When ttsAlign is not active for this project (e.g. enableDubbing is false or audioMode is ORIGINAL_ONLY)
   if (ttsIndex < 0) {
-    return { state: 'absent', snapshot: current, isTtsActive: false }
+    return {
+      state: 'absent',
+      snapshot: current,
+      isTtsActive: false,
+      ttsWillRun: false,
+      provenanceRelaxed: false,
+      provenanceRelaxedReason: null,
+    }
   }
 
   // When starting from or before ttsAlign, ttsAlign will run in this generation
   if (fromIndex <= ttsIndex) {
-    return { state: 'absent', snapshot: current, isTtsActive: true }
+    return {
+      state: 'absent',
+      snapshot: current,
+      isTtsActive: true,
+      ttsWillRun: true,
+      provenanceRelaxed: false,
+      provenanceRelaxedReason: null,
+    }
   }
 
   // When resuming downstream after ttsAlign
   const frozen = await readFrozenTtsSnapshot(projectId)
+  if (frozen.state === 'frozen') {
+    return {
+      state: 'frozen',
+      snapshot: frozen.snapshot,
+      isTtsActive: true,
+      ttsWillRun: false,
+      provenanceRelaxed: false,
+      provenanceRelaxedReason: null,
+    }
+  }
+  if (frozen.state === 'corrupt') {
+    return {
+      state: 'corrupt',
+      snapshot: current,
+      isTtsActive: true,
+      ttsWillRun: false,
+      provenanceRelaxed: false,
+      provenanceRelaxedReason: null,
+    }
+  }
+  const provenanceRelaxedReason = frozen.state === 'legacy'
+    ? `LEGACY_GENERATION: dub.ttsAlign result predates transcriptVersionSnapshot tracking; fell back to current transcript revision ${current}`
+    : `NO_FROZEN_SNAPSHOT: dub.ttsAlign has no frozen transcriptVersionSnapshot (state=${frozen.state}); fell back to current transcript revision ${current}`
   return {
     state: frozen.state,
-    snapshot: frozen.state === 'frozen' ? frozen.snapshot : current,
+    snapshot: current,
     isTtsActive: true,
+    ttsWillRun: false,
+    provenanceRelaxed: true,
+    provenanceRelaxedReason,
   }
 }
 
-// Resolve the transcript revision this generation will use (one per generation).
+// Resolve the transcript revision + provenance metadata for this generation.
 // - When dub.ttsAlign re-runs in this generation → capture the current revision
 //   at the generation boundary (producers below may still refresh it).
 // - When only dub.render re-runs (resume after a successful ttsAlign) → reuse
@@ -208,26 +248,31 @@ export async function getActiveGenerationProvenance(projectId, effectiveFrom, pr
 //   provenance can never reference two different revisions.
 // The frozen snapshot is mandatory for a current generation: a missing-but-
 // declared snapshot is provenance corruption and fails the run instead of
-// silently relabeling the output. Only LEGACY_GENERATION jobs (written before
-// snapshot tracking existed) may fall back to the current revision.
-// Exported for provenance tests.
-export async function resolveGenerationSnapshot(projectId, effectiveFrom, project) {
+// silently relabeling the output. When resuming downstream without a frozen
+// snapshot ('absent' or 'legacy'), provenance falls back to current and
+// records provenanceRelaxed=true + reason.
+export async function resolveGenerationProvenance(projectId, effectiveFrom, project) {
   const current = await readCurrentTranscriptVersion(projectId)
   const prov = await getActiveGenerationProvenance(projectId, effectiveFrom, project, current)
-  if (prov.state === 'frozen') return prov.snapshot
+  if (prov.state === 'frozen') return prov
   if (prov.state === 'corrupt') {
     throw new Error(
       `[GenerationProvenance] project=${projectId}: dub.ttsAlign persisted an unusable transcriptVersionSnapshot — ` +
       'the current generation has no usable transcript provenance. Re-run the generation from dub.ttsAlign to freeze a new snapshot.'
     )
   }
-  if (prov.state === 'legacy') {
-    console.warn(`[GenerationProvenance] project=${projectId}: LEGACY_GENERATION — dub.ttsAlign result predates snapshot tracking; falling back to current transcript revision ${prov.snapshot}`)
-    return prov.snapshot
+  if (prov.provenanceRelaxed) {
+    console.warn(
+      `[GenerationProvenance] project=${projectId}: provenanceRelaxed=true state=${prov.state} ` +
+      `snapshot=${prov.snapshot} reason="${prov.provenanceRelaxedReason}"`
+    )
   }
-  if (prov.isTtsActive && prov.state === 'absent') {
-    console.warn(`[GenerationProvenance] project=${projectId}: dub.ttsAlign has no frozen snapshot (state=absent) — falling back to current transcript revision ${prov.snapshot}`)
-  }
+  return prov
+}
+
+// Exported for provenance tests.
+export async function resolveGenerationSnapshot(projectId, effectiveFrom, project) {
+  const prov = await resolveGenerationProvenance(projectId, effectiveFrom, project)
   return prov.snapshot
 }
 
@@ -872,7 +917,15 @@ export async function executeStage(project, job, settings, setProgress, results,
       // Diagnostic payload: the generation snapshot the output is attributed to
       // (never a re-read of the current project revision).
       await updateGenerationJobOwned(projectId, job.id, {
-        payload: JSON.stringify({ runToken, transcriptVersion: generation.transcriptVersionSnapshot }),
+        payload: JSON.stringify({
+          runToken,
+          transcriptVersion: generation.transcriptVersionSnapshot,
+          ...(generation.provenanceRelaxed ? {
+            provenanceRelaxed: true,
+            provenanceRelaxedReason: generation.provenanceRelaxedReason,
+            provenanceState: generation.provenanceState || null,
+          } : {}),
+        }),
       }, runToken)
     }
     const stagingContext = createJobStagingContext(projectId, job.type)
@@ -897,6 +950,9 @@ export async function executeStage(project, job, settings, setProgress, results,
           runToken,
           transcriptVersionSnapshot: generation.transcriptVersionSnapshot,
           scriptVersionSnapshot: generation.scriptVersionSnapshot,
+          provenanceRelaxed: Boolean(generation.provenanceRelaxed),
+          provenanceRelaxedReason: generation.provenanceRelaxedReason || null,
+          provenanceState: generation.provenanceState || null,
           forceTranscript,
           stagingContext,
         }),
@@ -907,12 +963,21 @@ export async function executeStage(project, job, settings, setProgress, results,
     } finally {
       await stagingContext.cleanup()
     }
-    results[job.type] = result
 
-    // Merge quota_risk warning (if any) so FE stepper/banner can display it.
-    const persistedResult = quotaWarning
-      ? { ...(result || {}), warnings: [...((result && result.warnings) || []), quotaWarning] }
-      : (result || {})
+    const provenanceMeta = (job.type === 'dub.render' && generation.provenanceRelaxed)
+      ? {
+          provenanceRelaxed: true,
+          provenanceRelaxedReason: generation.provenanceRelaxedReason || 'NO_FROZEN_SNAPSHOT: fell back to current transcript revision',
+          ...(generation.provenanceState ? { provenanceState: generation.provenanceState } : {}),
+        }
+      : null
+    // Merge quota_risk warning (if any) + provenance relaxation metadata so FE/QA can inspect it.
+    const persistedResult = {
+      ...(result || {}),
+      ...(provenanceMeta || {}),
+      ...(quotaWarning ? { warnings: [...((result && result.warnings) || []), quotaWarning] } : {}),
+    }
+    results[job.type] = persistedResult
     const updated = await updateGenerationJobOwned(projectId, job.id, {
       status: 'success',
       step: 'done',
@@ -1146,10 +1211,16 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
     // Project-done publishes 'completed' (projects.status vocab); job-done rows
     // keep 'success' (generation_jobs.status vocab) — consumers map via
     // normalizeJobStatus(), never literal-compare.
+    const dubProvenance = isDubProject(project)
+      ? await resolveGenerationProvenance(projectId, effectiveFrom, project)
+      : null
     const generation = {
-      transcriptVersionSnapshot: isDubProject(project)
-        ? await resolveGenerationSnapshot(projectId, effectiveFrom, project)
+      transcriptVersionSnapshot: dubProvenance
+        ? dubProvenance.snapshot
         : Number(project.transcript_version ?? 0),
+      provenanceRelaxed: Boolean(dubProvenance?.provenanceRelaxed),
+      provenanceRelaxedReason: dubProvenance?.provenanceRelaxedReason || null,
+      provenanceState: dubProvenance?.state || null,
       // SCRIPT_TO_VIDEO: the script revision this generation renders. Captured
       // once at the run boundary so retries of render keep the same provenance.
       scriptVersionSnapshot: isScriptProject(project) ? Number(project.script_version ?? 0) : null,

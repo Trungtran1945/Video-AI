@@ -6,7 +6,6 @@ import { once } from 'node:events'
 
 // Isolated DB for testing
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-selective-rerun-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 
 const { initSchema } = await import('../src/db/schema.js')

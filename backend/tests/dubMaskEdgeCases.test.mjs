@@ -17,7 +17,6 @@ import express from 'express';
 import { once } from 'node:events';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai_dubmask_edge_'));
-process.env.DB_PATH = path.join(tmpDir, 'test.db');
 process.env.STORAGE_DIR = path.join(tmpDir, 'storage');
 if (!process.env.GEMINI_API_KEY) process.env.GEMINI_API_KEY = 'edge-test-key';
 

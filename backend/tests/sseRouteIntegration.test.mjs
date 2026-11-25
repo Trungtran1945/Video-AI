@@ -6,7 +6,6 @@ import http from 'node:http'
 import express from 'express'
 import { once } from 'node:events'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_sse_route_integ_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, run } = await import('../src/db/query.js')
@@ -141,7 +140,6 @@ function collectSseData(res, { timeoutMs = 2000 } = {}) {
 }
 
 await new Promise((r) => server.close(r))
-try { (await import('node:fs')).rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 if (failures > 0) process.exit(1)

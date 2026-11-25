@@ -6,7 +6,6 @@ import http from 'node:http'
 import express from 'express'
 import { v4 as uuidv4 } from 'uuid'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_composer_regression_${Date.now()}_${Math.random().toString(36).slice(2)}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, query, queryOne, run } = await import('../src/db/query.js')

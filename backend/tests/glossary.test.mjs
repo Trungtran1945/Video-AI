@@ -3,7 +3,6 @@
 import path from 'node:path'
 import os from 'node:os'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_glossary_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert } = await import('../src/db/query.js')

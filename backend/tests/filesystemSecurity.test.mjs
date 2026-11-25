@@ -9,7 +9,6 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-fs-security-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 
 const { isPathInside, resolveSafePath, UnsafeStoragePathError } = await import('../src/lib/safePath.js')

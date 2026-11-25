@@ -1,12 +1,10 @@
 // Heartbeat stale detection + unified idempotent recovery.
-// Uses an isolated temp data.db (never touches real data).
+// Runs against isolated PostgreSQL test DB (video_ai_test).
 // Run: node backend/tests/heartbeatRecovery.test.mjs
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-process.env.DB_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'video-ai-recovery-')), 'data.db')
 process.env.NODE_ENV = process.env.NODE_ENV || 'test'
 
 const { initSchema } = await import('../src/db/schema.js')

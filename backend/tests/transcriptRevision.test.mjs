@@ -10,7 +10,6 @@ import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_transcriptRev_${Date.now()}.db`)
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const { initSchema } = await import('../src/db/schema.js')
@@ -140,7 +139,6 @@ async function commitTranscript(projectId, expectedRevisionOrNull, newTranslatio
   assert(output.includes('outputIsStale') && output.includes('transcript_version'), 'outputStale derived from transcript_version')
 }
 
-try { fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

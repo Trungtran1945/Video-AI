@@ -3,7 +3,6 @@
 import path from 'node:path'
 import os from 'node:os'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_stt_only_render_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, run } = await import('../src/db/query.js')
@@ -151,7 +150,6 @@ await insert('ocr_regions', {
   assert(masks[0].start_sec === 0 && masks[0].end_sec === 87.5, 'vùng AUTO tĩnh giữ nguyên 0→duration')
 }
 
-try { (await import('node:fs')).rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 if (failures > 0) process.exit(1)

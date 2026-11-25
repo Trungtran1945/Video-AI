@@ -2,7 +2,6 @@ import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_transcript_service_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, queryOne, run } = await import('../src/db/query.js')
@@ -168,7 +167,6 @@ assert(conflictCount === 1, 'one concurrent edit receives a revision conflict')
 
 await run('DELETE FROM transcript_segments WHERE project_id IN (?, ?)', [projectId, runProjectId])
 await run('DELETE FROM projects WHERE id IN (?, ?)', [projectId, runProjectId])
-fs.rmSync(process.env.DB_PATH, { force: true })
 
 if (failures > 0) process.exit(1)
 console.log('ALL PASS')

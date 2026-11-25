@@ -5,7 +5,6 @@ import path from 'node:path'
 import os from 'node:os'
 import { v4 as uuidv4 } from 'uuid'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_dubmerge_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, updateById, query, queryOne } = await import('../src/db/query.js')

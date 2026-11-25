@@ -15,18 +15,18 @@ import { once } from 'node:events'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-idem-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.NODE_ENV = 'test'
 // Must be set before any src import — config.js / db.js read env at load.
 // High admission cap so every project in this file is admitted (pending +
 // runToken); the copy-failure path is then exercised through release->queued.
-// MAX_SAVE_FAILURES=1 so one armed save failure WRITE_BLOCKs the DB and the
-// post-admission failure surfaces as 503 (not a raw disk error).
+// MAX_SAVE_FAILURES=1 so one armed PostgreSQL persistence failure WRITE_BLOCKs
+// the DB and the post-admission failure surfaces as 503.
 process.env.MAX_CONCURRENT_PROJECTS_PER_USER = '10'
 process.env.DB_MAX_SAVE_FAILURES = '1'
 
 const { initSchema } = await import('../src/db/schema.js')
+const { getPool, closePool } = await import('../src/db.js')
 const { insert, query, queryOne, run } = await import('../src/db/query.js')
 const { TRANSLATION_VERSION } = await import('../src/lib/cacheKey.js')
 const { generateAccessToken } = await import('../src/middleware/auth.js')
@@ -157,27 +157,58 @@ let copyFailId = null
 }
 
 // E) 503 khi DB ban sau admission: body co projectId, project ton tai 1 ban.
-// Armed save failure tu save thu 2 (sau admission commit): copy persist fail
-// (raw disk error -> copy-catch), release write gap WRITE_BLOCKED (probe fail)
+// Armed PostgreSQL failure tu commit thu 2 (sau admission commit): copy persist fail
+// (raw PostgreSQL error -> copy-catch), release write gap WRITE_BLOCKED (probe fail)
 // -> PersistenceBlockedError -> 503 + projectId.
 {
   const beforeE = await query('SELECT id FROM projects WHERE user_id = ?', [user.id])
-  const originalWriteFileSync = fs.writeFileSync
-  let saveCount = 0
-  fs.writeFileSync = (...args) => {
-    saveCount += 1
-    if (saveCount >= 2) {
-      const error = new Error('EACCES: simulated save failure')
-      error.code = 'EACCES'
+  const pool = getPool()
+  const originalPoolQuery = pool.query.bind(pool)
+  const originalPoolConnect = pool.connect.bind(pool)
+  let commitCount = 0
+  let pgOutageArmed = false
+  pool.connect = function (cb) {
+    // pool.query() internally calls this.connect(cb) expecting callback semantics
+    if (typeof cb === 'function') return originalPoolConnect(cb)
+    return originalPoolConnect().then((client) => {
+      const originalClientQuery = client.query.bind(client)
+      const originalClientRelease = client.release.bind(client)
+      client.query = async (sql, ...rest) => {
+        const text = typeof sql === 'string' ? sql : sql?.text || ''
+        if (/^\s*COMMIT\b/i.test(text)) {
+          commitCount += 1
+          if (commitCount >= 2) {
+            pgOutageArmed = true
+            const error = new Error('ECONNRESET: simulated PostgreSQL commit failure')
+            error.code = 'ECONNRESET'
+            throw error
+          }
+        }
+        return originalClientQuery(sql, ...rest)
+      }
+      client.release = (...relArgs) => {
+        client.query = originalClientQuery
+        client.release = originalClientRelease
+        return originalClientRelease(...relArgs)
+      }
+      return client
+    })
+  }
+  pool.query = async (sql, ...rest) => {
+    const text = typeof sql === 'string' ? sql : sql?.text || ''
+    if (pgOutageArmed && /^\s*SELECT\s+1\b/i.test(text)) {
+      const error = new Error('ECONNRESET: simulated PostgreSQL probe failure')
+      error.code = 'ECONNRESET'
       throw error
     }
-    return originalWriteFileSync(...args)
+    return originalPoolQuery(sql, ...rest)
   }
   let r5
   try {
     r5 = await post('/', dubBody('Idem E'), { 'idempotency-key': 'idem-key-005' })
   } finally {
-    fs.writeFileSync = originalWriteFileSync
+    pool.connect = originalPoolConnect
+    pool.query = originalPoolQuery
   }
   assert(r5.status === 503, `post-admission DB failure -> 503 (got ${r5.status})`)
   const b5 = await r5.json()
@@ -266,6 +297,7 @@ if (user2?.id) {
 }
 await run('DELETE FROM style_presets WHERE id = ?', ['preset-satnghia'])
 await run('DELETE FROM users WHERE id = ?', [user.id])
+await closePool()
 fs.rmSync(tmpRoot, { recursive: true, force: true })
 console.log(failures ? `\n${failures} FAILURES` : '\nALL PASS')
 process.exit(failures === 0 ? 0 : 1)

@@ -3,7 +3,6 @@ import os from 'node:os'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_output_version_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, queryOne, run } = await import('../src/db/query.js')
@@ -93,7 +92,6 @@ assert(summaryState.output.transcript_version === null && summaryState.outputSta
 
 await run('DELETE FROM outputs WHERE project_id IN (?, ?, ?)', [projectId, runProjectId, summaryId])
 await run('DELETE FROM projects WHERE id IN (?, ?, ?)', [projectId, runProjectId, summaryId])
-fs.rmSync(process.env.DB_PATH, { force: true })
 
 if (failures > 0) process.exit(1)
 console.log('ALL PASS')

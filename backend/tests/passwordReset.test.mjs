@@ -14,7 +14,6 @@ import { once } from 'node:events'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const backendRoot = path.join(__dirname, '..')
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-reset-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.NODE_ENV = 'test'
 // Must be set before any src import — config.js reads env at module load.

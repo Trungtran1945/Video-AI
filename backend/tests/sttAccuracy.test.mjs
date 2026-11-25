@@ -112,7 +112,6 @@ assert(normalizeSttLanguage('en-US') === 'en', 'en-US → en')
 // ── 3. ASR cache must not reuse by path alone ──
 {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai_stt_cache_'))
-  process.env.DB_PATH = path.join(tmpDir, 'test.db')
   process.env.STORAGE_DIR = path.join(tmpDir, 'storage')
   const { initSchema } = await import('../src/db/schema.js')
   await initSchema()
@@ -141,7 +140,6 @@ assert(normalizeSttLanguage('en-US') === 'en', 'en-US → en')
   assert(calls === 2, `path-only ASR inputs bypass cache (calls=${calls})`)
   assert(r2.segments[0].text === 'v2', 'second content returned, not stale cache')
   try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch (_) {}
-  try { fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 }
 
 if (failures > 0) { console.error(`\n${failures} FAILURES`); process.exit(1) }

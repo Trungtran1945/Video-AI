@@ -8,7 +8,6 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai_dubmask_wf_'));
-process.env.DB_PATH = path.join(tmpRoot, 'test.db');
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage');
 // Bảo đảm vision candidate tồn tại mà không gọi mạng thật (prototype patch bên dưới).
 if (!process.env.GEMINI_API_KEY) process.env.GEMINI_API_KEY = 'test-dubmask-key';

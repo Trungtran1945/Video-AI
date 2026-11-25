@@ -6,7 +6,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_callprov_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { callProvider } = await import('../src/lib/callProvider.js')

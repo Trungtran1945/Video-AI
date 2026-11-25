@@ -8,7 +8,6 @@ import path from 'node:path'
 import { v4 as uuidv4 } from 'uuid'
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-cancelguard-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.NODE_ENV = process.env.NODE_ENV || 'test'
 

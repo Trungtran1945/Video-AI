@@ -4,7 +4,6 @@ import os from 'node:os'
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_composer_e2e_${Date.now()}_${Math.random().toString(36).slice(2)}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, query, queryOne, run } = await import('../src/db/query.js')

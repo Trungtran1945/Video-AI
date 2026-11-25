@@ -1,15 +1,18 @@
 ================================================================================
 MASTER TASK (FOLLOW-UP): SỬA TIẾP SAU COMMIT c239c35 — PROVENANCE, CHECKPOINT VÀ MASK
-Trạng thái: HOÀN THÀNH [DONE]
+Kế hoạch (Plan): Phase A–D (follow-up dubbing, checkpoint và mask sau c239c35)
+Trạng thái thực tế (Status): Phase A–D ĐÃ COMMIT (c239c35 + dcc5b01) — Hết scope
+                             của task này; các việc phát sinh Vòng cải tiến định kỳ #3
+                             được theo dõi riêng tại Video_AI_docs/task.md (chưa commit)
 Ngày lập kế hoạch: 2026-11-25
-Commit trước đó: c239c35 "fix(dubbing): resolve transcript version mismatch, tts resume
-                 checkpointing, and output provenance" (đã sửa một phần)
+Commits thực hiện: c239c35 (2026-11-24 — fix nền provenance/checkpoint/failover),
+                   dcc5b01 (2026-11-25 — hoàn tất Phase A–D & test kiểm chứng)
 Người thực hiện dự kiến: Antigravity CLI
 ================================================================================
 
-0. BỐI CẢNH — ĐÃ LÀM VÀ CÒN THIẾU
+0. BỐI CẢNH — ĐÃ LÀM VÀ PHẠM VI ĐỐI CHIẾU
 --------------------------------------------------------------------------------
-Commit c239c35 đã làm đúng:
+Commit c239c35 đã làm đúng phần nền ban đầu:
 - Bỏ qua provenance guard khi tắt dubbing / audioMode=ORIGINAL_ONLY
   (outputService.js:31-42) + test case 6 trong revisionProvenance.test.mjs.
 - Dọn job ttsAlign khi đổi params qua PATCH chung (projects.js:586-610) và mở rộng
@@ -21,7 +24,7 @@ Commit c239c35 đã làm đúng:
 - Gắn code quota rõ ràng (dubTtsAlign.js:428-432, runner.js:46-60,931).
 - Không unlink clip cache (dubTtsAlign.js:309-317), check signal.aborted trong vòng lặp.
 
-CÒN THIẾU / CÒN LỖI (bản task này tập trung sửa):
+TỒN ĐỌNG SAU c239c35 (đã được giải quyết & commit trong dcc5b01):
 1. [P0] Checkpoint DB cho phép resume chỉ segment thiếu KHÔNG hoạt động trong pipeline
    thật vì runner xoá sạch trước khi stage chạy.
 2. [P0] isTtsActive truyền từ dubRender bỏ qua audioMode → lỗi 11/10 có thể tái diễn.
@@ -29,11 +32,16 @@ CÒN THIẾU / CÒN LỖI (bản task này tập trung sửa):
    không có test integration approve → regenerate → output có mask.
 4. [P2] Timeout vẫn không huỷ provider call; precheck vẫn warn-only.
 
+Lưu ý:
+- Vòng cải tiến định kỳ #3 (phát hiện mới sau Phase A–D: bỏ file I/O trong save(),
+  dọn tàn dư SQLite/DB_PATH, cập nhật pipeline list AGENTS.md, provenance relaxation)
+  nằm riêng ở Video_AI_docs/task.md — không gộp vào file này.
+
 Phase 0 chẩn đoán của bản task trước ĐÃ xác nhận xong (không cần làm lại):
 params.enableDubbing=false / audioMode=ORIGINAL_ONLY + job ttsAlign cũ snapshot 10 +
 approve mask bump transcript_version 10→11 → render dùng 11 → guard so với 10 → throw.
 
-1. PHASE A — CHECKPOINT RESUME HOẠT ĐỘNG THẬT TRONG PIPELINE (P0)
+1. PHASE A — CHECKPOINT RESUME HOẠT ĐỘNG THẬT TRONG PIPELINE (P0) — [COMMITTED: dcc5b01]
 --------------------------------------------------------------------------------
 Vấn đề: dubTtsAlign.js:205 kiểm tra `seg.tts_audio_id && fs.existsSync(finalPath)`
 để reuse segment đã synth, NHƯNG runner.js:781 gọi
@@ -46,28 +54,28 @@ Test hiện tại trong ttsCacheResume.test.mjs gọi trực tiếp dubTtsAlign(
 đi vòng executeStage → pass giả tạo, không chứng minh hành vi thật.
 
 Yêu cầu:
-- [x] Chọn 1 trong 2 cách (khuyến nghị cách 1, ít xâm lấn):
+- [x] (commit dcc5b01 — runner.js, dubTtsAlign.js) Chọn cách 1 (ít xâm lấn):
       (1) Bỏ 'audios' khỏi RESETS['dub.ttsAlign'] (runner.js:446) và để
           dub.ttsAlign tự reconcile: chỉ tạo audio row cho segment chưa có liên kết
           hợp lệ; verify file tồn tại + duration > 0.05 + provider/voice fingerprint
           còn khớp trước khi reuse. Không để audio mồ côi hoặc sai project.
       (2) Giữ RESETS nhưng runner truyền cờ resume (vd options.resumeFromCheckpoint)
           để clearArtifacts bỏ qua phần audios/tts_audio_id khi retry sau quota.
-- [x] Đảm bảo vẫn giữ invariant bảo mật: file/audio chỉ được reuse trong CÙNG project;
-      không dùng filesystem path làm auth proof cross-project
-      (comment dubTtsAlign.js:461-465 phải vẫn đúng).
-- [x] Giữ nguyên invariant 100% TTS khi enableDubbing=true, KHÔNG trộn giọng gốc;
-      BLOCK_RENDER: MISSING_TTS_AUDIO ở dubRender.js:159-163 không được bỏ.
-- [x] Test MỚI đi qua runner (không gọi trực tiếp stage):
+- [x] (commits c239c35, dcc5b01 — dubTtsAlign.js) Đảm bảo vẫn giữ invariant bảo mật:
+      file/audio chỉ được reuse trong CÙNG project; không dùng filesystem path làm
+      auth proof cross-project (comment dubTtsAlign.js phải vẫn đúng).
+- [x] (commits c239c35, dcc5b01 — dubRender.js) Giữ nguyên invariant 100% TTS khi
+      enableDubbing=true, KHÔNG trộn giọng gốc; BLOCK_RENDER: MISSING_TTS_AUDIO
+      không được bỏ.
+- [x] (commit dcc5b01 — backend/tests/ttsCacheResume.test.mjs) Test MỚI đi qua runner
+      (không gọi trực tiếp stage):
       + seed 3 segment, chạy `runPipeline`/`executeStage` với mock TTS quota ở segment 3
         → assert 2 segment có tts_audio_id + file tồn tại;
       + retry qua `runPipeline`/`executeStage` (có clearArtifacts) → assert provider
         synthesize chỉ được gọi 1 lần cho segment 3, 2 segment đầu được reuse;
       + assert không có audio row trùng lặp / tts_audio_id bị dangling.
-      Có thể đặt trong backend/tests/ttsCacheResume.test.mjs (bổ sung case mới) hoặc
-      file riêng theo naming có sẵn.
 
-2. PHASE B — isTtsActive PHẢI KHỚP shouldDub (P0)
+2. PHASE B — isTtsActive PHẢI KHỚP shouldDub (P0) — [COMMITTED: dcc5b01; nền: c239c35]
 --------------------------------------------------------------------------------
 Vấn đề: dubRender.js:244 truyền `isTtsActive: enableDubbing` (lấy từ
 `const enableDubbing = !!params.enableDubbing`), trong khi
@@ -79,52 +87,51 @@ Lưu ý: outputService.js:32-38 có fallback tự tính từ params, nhưng bị
 giá trị dubRender truyền vào.
 
 Yêu cầu:
-- [x] Sửa dubRender.js:244 thành:
-      `isTtsActive: enableDubbing && audioMode !== 'ORIGINAL_ONLY'`
-      (dùng biến audioMode đã tính ở dubRender.js:107), HOẶC bỏ hẳn override
-      `input.isTtsActive` để outputService tự tính từ project.params.
-      Khuyến nghị: sửa thành biểu thức trên (rõ ràng, khớp stagesForProject).
-- [x] Thêm test trong backend/tests/revisionProvenance.test.mjs:
+- [x] (commit dcc5b01 — dubRender.js) Sửa `isTtsActive: enableDubbing && audioMode !== 'ORIGINAL_ONLY'`
+      (dùng biến audioMode đã tính trong dubRender.js), khớp stagesForProject.
+- [x] (commit dcc5b01 — backend/tests/revisionProvenance.test.mjs) Thêm test:
       project có `params = {enableDubbing:true, audioMode:'ORIGINAL_ONLY'}` +
       job ttsAlign cũ snapshot 10 + transcript_version 11 → createOutput ở version 11
       KHÔNG throw; và ngược lại enableDubbing=true + DUB_MIX + snapshot 10 → version 11
       VẪN throw (không làm guard bị vô hiệu hoá quá đà).
-- [x] Giữ nguyên test case 6/7 hiện có (dubbing tắt, legacy, corrupt).
+- [x] (commits c239c35, dcc5b01 — revisionProvenance.test.mjs) Giữ nguyên test case 6/7
+      hiện có (dubbing tắt, legacy, corrupt).
 
-3. PHASE C — MASK PHIẾN BẢN XEM TRƯỚC VÀ OUTPUT (P1)
+3. PHASE C — MASK PHIẾN BẢN XEM TRƯỚC VÀ OUTPUT (P1) — [COMMITTED: dcc5b01; nền: c239c35]
 --------------------------------------------------------------------------------
-Commit trước chỉ sửa gián tiếp nhánh output (output stale không còn bị ẩn).
-Chưa đụng MaskEditor.jsx / masks.js. Yêu cầu:
+Commit c239c35 mới sửa gián tiếp nhánh output (output stale không còn bị ẩn ở ProjectDetail.jsx).
+Phase C trong dcc5b01 hoàn tất MaskEditor.jsx / masks.js / dubRender.js / tests:
 
-- [x] frontend/src/components/MaskEditor.jsx:
-      + Refetch danh sách mask sau khi approve thành công (hiện chỉ merge response
-        local ở dòng 86/134 → gọi lại loader từ props).
-      + `boxStyle()` (dòng 261-262) có fallback khi `contentBox` null: dùng kích thước
-        mặc định từ video element/params thay vì `display:none` — đảm bảo khung che
-        luôn hiện ngay cả khi metadata chưa load xong.
+- [x] (commit dcc5b01 — frontend/src/components/MaskEditor.jsx)
+      + Refetch danh sách mask sau khi approve thành công (gọi lại loader từ props).
+      + `boxStyle()` có fallback khi `contentBox` null: dùng kích thước mặc định từ
+        video element/params thay vì `display:none` — đảm bảo khung che luôn hiện
+        ngay cả khi metadata chưa load xong.
       + Tách rõ copy UI: "bản xem trước trên video gốc" vs "đã render vào video sau
-        Chạy lại" (tham chiếu dòng 296-300, 299, 505).
+        Chạy lại".
       + Mask AUTO đã APPROVED + read-only: disable nút Approve kèm tooltip giải thích
-        (dòng 120; backend masks.js:259-261 trả 400 nếu cố PATCH).
-- [x] backend/src/routes/v1/masks.js / backend/src/pipeline/stages/dubRender.js:
+        (backend masks.js trả 400 nếu cố PATCH).
+- [x] (commit dcc5b01 — backend/src/routes/v1/masks.js, dubRender.js)
       geometry/timing của mask APPROVED không hợp lệ → trả thông báo rõ mask nào lỗi
-      thay vì fail chung chung (dubRender.js:285-290).
-- [x] Test MỚI (đang thiếu hoàn toàn):
+      thay vì fail chung chung.
+- [x] (commit dcc5b01 — backend/tests/maskApproveRender.test.mjs, frontend/src/components/maskEditor.test.js)
+      Test MỚI:
       + Integration backend: approve mask → regenerate → output thật chứa vùng che
         (assert cấu hình FFmpeg/region được apply, không chỉ unit loadSubtitleRegions).
       + Frontend unit test cho MaskEditor: sau approve phải gọi API load lại masks;
         khung được render khi chưa có contentBox.
-- [x] Giữ nguyên hành vi render order: source → mask → ASS → audio mix → mux
-      (dubRender.js:55-100).
+- [x] (commit dcc5b01 — dubRender.js) Giữ nguyên hành vi render order:
+      source → mask → ASS → audio mix → mux.
 
-4. PHASE D — CỦNG CỐ THÊM (P2, tuỳ chọn)
+4. PHASE D — CỦNG CỐ THÊM (P2, tuỳ chọn) — [COMMITTED: dcc5b01]
 --------------------------------------------------------------------------------
-- [x] Timeout stage không huỷ provider call: withTimeout (runner.js:694-700) chỉ
-      Promise.race — xem xét truyền AbortController vào provider call khi hết hạn.
-- [x] Precheck quota vẫn warn-only (quotaGuardService.js:234-279) — nếu cần, thêm
-      cảnh báo sớm cho user trước khi chạy TTS với số segment lớn; KHÔNG block pipeline.
-- [x] Cập nhật checkbox trạng thái trong task.txt sau khi xong từng phase (commit trước
-      để tất cả `[ ]` dù code đã đổi).
+- [x] (commit dcc5b01 — runner.js) Timeout stage huỷ provider call: withTimeout nhận
+      AbortController (`stageAc.abort()`), truyền signal xuống stage impl.
+- [x] (commit dcc5b01 — backend/src/services/quotaGuardService.js) Precheck quota
+      warn-only — thêm cảnh báo sớm cho user trước khi chạy TTS với số segment lớn
+      (`est >= 50`); KHÔNG block pipeline.
+- [x] (commit dcc5b01 + đối chiếu hash tại lần rà soát sau dcc5b01) Cập nhật trạng thái
+      và ghi nhận commit hash thực tế trong task.txt, tách biệt với backlog Vòng #3 ở task.md.
 
 5. THỨ TỰ & CỔNG KIỂM THỬ
 --------------------------------------------------------------------------------

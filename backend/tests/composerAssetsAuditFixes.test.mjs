@@ -7,7 +7,6 @@ import assert from 'node:assert/strict'
 import { v4 as uuidv4 } from 'uuid'
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-assets-audit-fixes-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.NODE_ENV = 'test'
 process.env.MAX_CONCURRENT_PROJECTS_PER_USER = '10'

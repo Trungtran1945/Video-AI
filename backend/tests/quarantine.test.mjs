@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url'
 
 // DB cách ly (không chạm DB dev thật): persistTranslateReview ghi job.result.
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-quar-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 
 const mod = await import('../src/pipeline/stages/dubTranslate.js')

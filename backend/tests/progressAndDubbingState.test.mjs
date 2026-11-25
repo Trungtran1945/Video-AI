@@ -5,7 +5,6 @@ import express from 'express'
 import { once } from 'node:events'
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-prog-dub-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 
 const { initSchema } = await import('../src/db/schema.js')
@@ -137,7 +136,6 @@ for (const id of [pCompleted, pFailed, pQueued, pCancelled]) {
   await run('DELETE FROM projects WHERE id = ?', [id])
 }
 await run('DELETE FROM users WHERE id = ?', [user.id])
-fs.rmSync(process.env.DB_PATH, { force: true })
 
 try {
   const { notifyQueue } = await import('../src/queue/notifyQueue.js')

@@ -1,19 +1,18 @@
 // Atomic queue claim: two workers cannot claim the same queued project.
-// Functional test uses an isolated temp data.db (never touches real data).
+// Functional test runs against isolated PostgreSQL test DB (video_ai_test).
 // Run: node backend/tests/atomicClaim.test.mjs
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-process.env.DB_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'video-ai-claim-')), 'data.db')
 process.env.NODE_ENV = process.env.NODE_ENV || 'test'
 
 const { initSchema } = await import('../src/db/schema.js')
-const { queryOne, insert } = await import('../src/db/query.js')
+const { queryOne, insert, run } = await import('../src/db/query.js')
 const { claimQueuedProject } = await import('../src/queue/claim.js')
 
 await initSchema()
+await run("DELETE FROM projects WHERE id LIKE 'claim-%'")
 
 let failures = 0
 const assert = (c, m) => { if (c) console.log('PASS:', m); else { failures++; console.error('FAIL:', m) } }
@@ -66,5 +65,6 @@ assert(parked.status === 'queued', 'over-limit claim rolls back to queued')
     'drain has no unconditional pending UPDATE')
 }
 
+await run("DELETE FROM projects WHERE id LIKE 'claim-%'")
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

@@ -55,7 +55,6 @@ async function bootProdServer({ redisHost, redisPort }) {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-prod-runtime-'))
   const env = {
     ...process.env,
-    DB_PATH: path.join(tmpRoot, 'test.db'),
     STORAGE_DIR: path.join(tmpRoot, 'storage'),
     NODE_ENV: 'production',
     PORT: '0',
@@ -131,7 +130,7 @@ if (hasDocker && redisStartedByUs) {
     assert(health?.database?.persistenceState === 'HEALTHY', `production /health persistenceState HEALTHY (got ${health?.database?.persistenceState})`)
     assert(health?.redis === 'connected', `production /health redis connected with ephemeral redis (got ${health?.redis})`)
     assert(health?.bullmq === 'available', `production /health bullmq available (got ${health?.bullmq})`)
-    assert(fs.existsSync(path.join(tmpRoot, 'test.db')) || fs.existsSync(path.join(tmpRoot, 'storage')), 'database/storage initialized on production boot')
+    assert(fs.existsSync(path.join(tmpRoot, 'storage')), 'storage initialized on production boot')
 
     const readyRes = await fetchWithFallback('/ready')
     const ready = await readyRes.json()

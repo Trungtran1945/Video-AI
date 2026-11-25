@@ -10,7 +10,6 @@ import { v4 as uuidv4 } from 'uuid'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-composer-resilience-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.NODE_ENV = 'test'
 process.env.MAX_CONCURRENT_PROJECTS_PER_USER = '10'

@@ -43,6 +43,12 @@ export async function dubRender(ctx) {
       `[dub.render] Diagnostic: Generation snapshot (${transcriptVersion}) differs from current project transcript_version (${currentProjectVersion}). Using generation snapshot for output provenance.`
     )
   }
+  if (ctx.provenanceRelaxed) {
+    console.warn(
+      `[dub.render] project=${project.id}: provenanceRelaxed=true state=${ctx.provenanceState || 'absent'} ` +
+      `snapshot=${transcriptVersion} reason="${ctx.provenanceRelaxedReason || 'NO_FROZEN_SNAPSHOT'}"`
+    )
+  }
   await assertRunOwner(project.id, runToken)
   const params = parseParams(project.params)
   const src = await stageSourceMedia(project, ctx)
@@ -255,6 +261,11 @@ export async function dubRender(ctx) {
     dubbedAudio: enableDubbing,
     // Thông tin về segment dùng giọng gốc
     fallbackToOriginal,
+    ...(ctx.provenanceRelaxed ? {
+      provenanceRelaxed: true,
+      provenanceRelaxedReason: ctx.provenanceRelaxedReason || 'NO_FROZEN_SNAPSHOT: fell back to current transcript revision',
+      ...(ctx.provenanceState ? { provenanceState: ctx.provenanceState } : {}),
+    } : {}),
   }
 }
 

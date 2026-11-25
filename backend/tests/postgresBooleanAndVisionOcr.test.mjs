@@ -1,9 +1,4 @@
 import assert from 'node:assert/strict'
-import path from 'node:path'
-import os from 'node:os'
-import fs from 'node:fs'
-
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_pg_bool_ocr_${Date.now()}_${Math.random().toString(36).slice(2)}.db`)
 
 const { convertSqlForPostgres, query, insert, run, queryOne } = await import('../src/db/query.js')
 const { initSchema } = await import('../src/db/schema.js')

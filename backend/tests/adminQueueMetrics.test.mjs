@@ -7,7 +7,6 @@ import express from 'express'
 import { once } from 'node:events'
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-adminq-'))
-process.env.DB_PATH = path.join(tmpDir, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpDir, 'storage')
 process.env.NODE_ENV = 'test'
 

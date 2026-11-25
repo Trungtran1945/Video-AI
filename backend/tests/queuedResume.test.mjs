@@ -5,9 +5,7 @@ import { once } from 'node:events'
 import express from 'express'
 import { v4 as uuidv4 } from 'uuid'
 
-const tmpDb = path.join(os.tmpdir(), `vidai_queued_resume_${Date.now()}.db`)
 const tmpStorage = path.join(os.tmpdir(), `vidai_queued_resume_storage_${Date.now()}`)
-process.env.DB_PATH = tmpDb
 process.env.STORAGE_DIR = tmpStorage
 process.env.MAX_CONCURRENT_PROJECTS_PER_USER = '1'
 process.env.NODE_ENV = 'test'
@@ -381,7 +379,6 @@ try {
 } finally {
   runner.clearStageImplOverrides()
   server.close()
-  try { fs.rmSync(tmpDb, { force: true }) } catch (_) {}
   try { fs.rmSync(tmpStorage, { recursive: true, force: true }) } catch (_) {}
 }
 

@@ -13,7 +13,6 @@ import http from 'node:http'
 import express from 'express'
 import { once } from 'node:events'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_sse_db_fail_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, run, queryOne } = await import('../src/db/query.js')
@@ -124,7 +123,6 @@ function collectUntilEnd(res, { timeoutMs = 3000 } = {}) {
 }
 
 await new Promise((r) => server.close(r))
-try { fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 if (failures > 0) process.exit(1)

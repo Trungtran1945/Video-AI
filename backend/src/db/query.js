@@ -1,4 +1,11 @@
-import { getPool, save, getDbPersistenceHealth, PERSISTENCE_STATES } from '../db.js'
+import {
+  getPool,
+  save,
+  getDbPersistenceHealth,
+  recordPersistenceSuccess,
+  recordPersistenceFailure,
+  PERSISTENCE_STATES,
+} from '../db.js'
 import {
   ALLOWED_TABLES,
   assertValidTable,
@@ -15,20 +22,49 @@ export {
   validatePagination,
 }
 
-function checkPersistenceGate(op = 'write') {
+const NON_PERSISTENCE_SQLSTATE_PREFIXES = new Set([
+  '02', '21', '22', '23', '24', '26', '27', '28', '2B', '2D', '2F',
+  '34', '38', '39', '3B', '3D', '3F', '40', '42', '44', '54', '55', 'P0',
+])
+
+export function isPersistenceFailureError(err) {
+  if (!err) return false
+  const code = typeof err.code === 'string' ? err.code : ''
+  // 25006 = read_only_sql_transaction (cannot execute writes)
+  if (code === '25006') return true
+  if (/^[0-9A-Z]{5}$/.test(code)) {
+    const prefix = code.slice(0, 2)
+    if (prefix === '25') return false
+    if (NON_PERSISTENCE_SQLSTATE_PREFIXES.has(prefix)) return false
+    return true
+  }
+  return true
+}
+
+async function checkPersistenceGate(op = 'write') {
   const health = getDbPersistenceHealth()
   if (health.state === PERSISTENCE_STATES.WRITE_BLOCKED) {
     try {
-      save()
+      await save()
     } catch (_) {
       throw new PersistenceBlockedError(op)
     }
-  } else {
-    try {
-      save()
-    } catch (e) {
-      throw e
+  }
+}
+
+async function executePoolWrite(op, sql, params) {
+  await checkPersistenceGate(op)
+  const pool = getPool()
+  const t0 = Date.now()
+  try {
+    const res = await pool.query(sql, params)
+    recordPersistenceSuccess(Date.now() - t0)
+    return res
+  } catch (err) {
+    if (isPersistenceFailureError(err)) {
+      recordPersistenceFailure(err, Date.now() - t0, 'write')
     }
+    throw err
   }
 }
 
@@ -159,32 +195,41 @@ export async function queryOne(sql, params = []) {
 }
 
 export async function run(sql, params = []) {
-  checkPersistenceGate('run')
-  const pool = getPool()
   const converted = convertSqlForPostgres(sql)
-  await pool.query(converted, sanitizeParams(params))
+  await executePoolWrite('run', converted, sanitizeParams(params))
   return true
 }
 
 export async function runAffected(sql, params = []) {
-  checkPersistenceGate('runAffected')
-  const pool = getPool()
   const converted = convertSqlForPostgres(sql)
-  const res = await pool.query(converted, sanitizeParams(params))
+  const res = await executePoolWrite('runAffected', converted, sanitizeParams(params))
   return res.rowCount ?? 0
 }
 
 export async function runReturningOne(sql, params = [], selectSql, selectParams = []) {
-  checkPersistenceGate('runReturningOne')
+  await checkPersistenceGate('runReturningOne')
   const pool = getPool()
-  const client = await pool.connect()
+  const t0 = Date.now()
+  let client
+  try {
+    client = await pool.connect()
+  } catch (err) {
+    if (isPersistenceFailureError(err)) {
+      recordPersistenceFailure(err, Date.now() - t0, 'write')
+    }
+    throw err
+  }
   try {
     await client.query('BEGIN')
     await client.query(convertSqlForPostgres(sql), sanitizeParams(params))
     const res = await client.query(convertSqlForPostgres(selectSql), sanitizeParams(selectParams))
     await client.query('COMMIT')
+    recordPersistenceSuccess(Date.now() - t0)
     return res.rows[0] || null
   } catch (err) {
+    if (isPersistenceFailureError(err)) {
+      recordPersistenceFailure(err, Date.now() - t0, 'write')
+    }
     try {
       await client.query('ROLLBACK')
     } catch (_) {}
@@ -195,29 +240,27 @@ export async function runReturningOne(sql, params = [], selectSql, selectParams 
 }
 
 export async function insert(table, obj) {
-  checkPersistenceGate('insert')
   const validTable = assertValidTable(table)
-  const pool = getPool()
   const rawCols = Object.keys(obj || {})
   if (rawCols.length === 0) {
+    await checkPersistenceGate('insert')
     throw new Error('Cannot insert empty object')
   }
   const cols = rawCols.map(assertValidColumnName)
   const params = cols.map((c) => sanitizeVal(obj[c]))
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ')
   const sql = `INSERT INTO "${validTable}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES (${placeholders}) RETURNING *`
-  const res = await pool.query(sql, params)
+  const res = await executePoolWrite('insert', sql, params)
   return res.rows[0] || null
 }
 
 export async function updateById(table, id, obj) {
-  checkPersistenceGate('updateById')
   const validTable = assertValidTable(table)
-  const pool = getPool()
   const cleanObj = { ...obj }
   delete cleanObj.id
   const rawCols = Object.keys(cleanObj)
   if (rawCols.length === 0) {
+    await checkPersistenceGate('updateById')
     return findById(validTable, id)
   }
   const cols = rawCols.map(assertValidColumnName)
@@ -225,7 +268,7 @@ export async function updateById(table, id, obj) {
   const sets = cols.map((c, i) => `"${c}" = $${i + 1}`).join(', ')
   params.push(id)
   const sql = `UPDATE "${validTable}" SET ${sets} WHERE id = $${params.length} RETURNING *`
-  const res = await pool.query(sql, params)
+  const res = await executePoolWrite('updateById', sql, params)
   return res.rows[0] || null
 }
 
@@ -236,13 +279,32 @@ export async function findById(table, id) {
 
 export async function withTransaction(fn, options = {}) {
   return withWriteLock(async () => {
+    await checkPersistenceGate(options.op || 'commit')
     const pool = getPool()
-    const client = await pool.connect()
+    const t0 = Date.now()
+    let client
     try {
-      await client.query('BEGIN')
+      client = await pool.connect()
+    } catch (err) {
+      if (isPersistenceFailureError(err)) {
+        recordPersistenceFailure(err, Date.now() - t0, 'write')
+      }
+      throw err
+    }
+    let lastClientQueryError = null
+    const runClientQuery = async (sqlText, queryParams) => {
+      try {
+        return await client.query(sqlText, queryParams)
+      } catch (err) {
+        lastClientQueryError = err
+        throw err
+      }
+    }
+    try {
+      await runClientQuery('BEGIN')
       const tx = {
         async query(sql, params = []) {
-          const res = await client.query(convertSqlForPostgres(sql), sanitizeParams(params))
+          const res = await runClientQuery(convertSqlForPostgres(sql), sanitizeParams(params))
           return res.rows
         },
         async queryOne(sql, params = []) {
@@ -250,11 +312,11 @@ export async function withTransaction(fn, options = {}) {
           return rows[0] || null
         },
         async run(sql, params = []) {
-          await client.query(convertSqlForPostgres(sql), sanitizeParams(params))
+          await runClientQuery(convertSqlForPostgres(sql), sanitizeParams(params))
           return true
         },
         async runAffected(sql, params = []) {
-          const res = await client.query(convertSqlForPostgres(sql), sanitizeParams(params))
+          const res = await runClientQuery(convertSqlForPostgres(sql), sanitizeParams(params))
           return res.rowCount ?? 0
         },
         async insert(table, obj) {
@@ -267,7 +329,7 @@ export async function withTransaction(fn, options = {}) {
           const params = cols.map((c) => sanitizeVal(obj[c]))
           const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ')
           const sql = `INSERT INTO "${validTable}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES (${placeholders}) RETURNING *`
-          const res = await client.query(sql, params)
+          const res = await runClientQuery(sql, params)
           return res.rows[0] || null
         },
         async updateById(table, id, obj) {
@@ -283,15 +345,18 @@ export async function withTransaction(fn, options = {}) {
           const sets = cols.map((c, i) => `"${c}" = $${i + 1}`).join(', ')
           params.push(id)
           const sql = `UPDATE "${validTable}" SET ${sets} WHERE id = $${params.length} RETURNING *`
-          const res = await client.query(sql, params)
+          const res = await runClientQuery(sql, params)
           return res.rows[0] || null
         },
       }
       const out = await fn(tx)
-      checkPersistenceGate('commit')
-      await client.query('COMMIT')
+      await runClientQuery('COMMIT')
+      recordPersistenceSuccess(Date.now() - t0)
       return out
     } catch (err) {
+      if (err === lastClientQueryError && isPersistenceFailureError(err)) {
+        recordPersistenceFailure(err, Date.now() - t0, 'write')
+      }
       try {
         await client.query('ROLLBACK')
       } catch (_) {}
@@ -468,6 +533,7 @@ export default {
   getWriteQueueStats,
   WriteQueueFullError,
   PersistenceBlockedError,
+  isPersistenceFailureError,
   convertSqlForPostgres,
   sanitizeVal,
   sanitizeParams,

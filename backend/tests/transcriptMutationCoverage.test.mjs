@@ -3,7 +3,6 @@ import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_transcript_coverage_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, query, queryOne, run } = await import('../src/db/query.js')
@@ -107,6 +106,5 @@ assert(bypasses.length === 0, `production transcript mutations are centralized (
 
 await run('DELETE FROM transcript_segments WHERE project_id IN (?, ?)', [sourceId, targetId])
 await run('DELETE FROM projects WHERE id IN (?, ?)', [sourceId, targetId])
-fs.rmSync(process.env.DB_PATH, { force: true })
 if (failures > 0) process.exit(1)
 console.log('ALL PASS')

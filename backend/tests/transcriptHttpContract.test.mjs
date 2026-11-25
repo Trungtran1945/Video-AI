@@ -4,7 +4,6 @@ import fs from 'node:fs'
 import express from 'express'
 import { once } from 'node:events'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_transcript_http_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, run } = await import('../src/db/query.js')
@@ -71,6 +70,5 @@ await new Promise((resolve) => server.close(resolve))
 await run('DELETE FROM transcript_segments WHERE project_id = ?', [projectId])
 await run('DELETE FROM projects WHERE id = ?', [projectId])
 await run('DELETE FROM users WHERE id = ?', [user.id])
-fs.rmSync(process.env.DB_PATH, { force: true })
 if (failures > 0) process.exit(1)
 console.log('ALL PASS')

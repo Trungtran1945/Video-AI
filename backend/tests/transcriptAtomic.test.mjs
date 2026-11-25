@@ -6,7 +6,6 @@
 import path from 'node:path'
 import os from 'node:os'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_transcriptAtomic_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { query, queryOne, run, withTransaction } = await import('../src/db/query.js')
@@ -155,7 +154,6 @@ function seg(id, idx, s, e, extra = {}) {
   assert(!route.includes('start_sec = start_sec + ?'), 'không còn UPDATE push trực tiếp trong loop')
 }
 
-try { const fs = await import('node:fs'); fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

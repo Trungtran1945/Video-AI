@@ -15,9 +15,9 @@ import express from 'express'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const tmpDb = path.join(os.tmpdir(), `vidai_mask_approve_render_${Date.now()}_${Math.random().toString(36).slice(2)}.db`)
-const tmpStorage = path.join(os.tmpdir(), `vidai_mask_approve_render_storage_${Date.now()}_${Math.random().toString(36).slice(2)}`)
-process.env.DB_PATH = tmpDb
+const runSuffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+const tmpStorage = path.join(os.tmpdir(), `vidai_mask_approve_render_storage_${runSuffix}`)
+// config.js actively reads STORAGE_DIR at import time and initializes uploads/outputs/tmp inside it.
 process.env.STORAGE_DIR = tmpStorage
 process.env.NODE_ENV = 'test'
 
@@ -39,11 +39,16 @@ function assert(cond, msg) {
   }
 }
 
-const user = { id: 'u-mask-approve-render', email: 'mask-approve@test.local', role: 'user', password: 'pw' }
+const user = {
+  id: `u-mask-approve-render-${runSuffix}`,
+  email: `mask-approve-${runSuffix}@test.local`,
+  role: 'user',
+  password: 'pw',
+}
 await insert('users', user)
 const token = generateAccessToken(user)
 
-const projectId = `p-mask-appr-${Date.now()}`
+const projectId = `p-mask-appr-${runSuffix}`
 await insert('projects', {
   id: projectId,
   user_id: user.id,
@@ -182,7 +187,7 @@ try {
 
   // ── 6. Error surfacing when an APPROVED mask has invalid geometry in DB ──
   console.log('\n--- TEST 6: Malformed APPROVED mask identifies WHICH mask failed ---')
-  const badMaskId = `m-bad-geometry-${Date.now()}`
+  const badMaskId = `m-bad-geometry-${runSuffix}`
   await insert('ocr_regions', {
     id: badMaskId,
     project_id: projectId,
@@ -220,21 +225,18 @@ try {
   // Test getRegionValidationError helper
   const validationDetail = getRegionValidationError({ ratio_x: 0.1, ratio_y: 0.2, ratio_w: 0, ratio_h: 0.3, start_sec: 1, end_sec: 3 })
   assert(validationDetail?.includes('kích thước không hợp lệ'), `getRegionValidationError explains specific reason: ${validationDetail}`)
-
-  await run('DELETE FROM ocr_regions WHERE id = ?', [badMaskId])
-  await run('DELETE FROM ocr_regions WHERE id = ?', [maskId])
-  await run('DELETE FROM projects WHERE id = ?', [projectId])
-  await run('DELETE FROM users WHERE id = ?', [user.id])
 } finally {
   if (typeof server.closeAllConnections === 'function') {
     server.closeAllConnections()
   }
   await new Promise((r) => server.close(r))
+  try { await run('DELETE FROM ocr_regions WHERE project_id = ?', [projectId]) } catch (_) {}
+  try { await run('DELETE FROM projects WHERE id = ?', [projectId]) } catch (_) {}
+  try { await run('DELETE FROM users WHERE id = ?', [user.id]) } catch (_) {}
   try {
     const { closePool } = await import('../src/db.js')
     await closePool()
   } catch (_) {}
-  try { fs.rmSync(tmpDb, { force: true }) } catch (_) {}
   try { fs.rmSync(tmpStorage, { recursive: true, force: true }) } catch (_) {}
   await new Promise((r) => setTimeout(r, 200))
 }

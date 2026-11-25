@@ -1,6 +1,10 @@
 import { Router } from 'express'
 import { isRedisReady, connection } from '../../queue/connection.js'
-import { getDbPersistenceStats, getDbPersistenceHealth, PERSISTENCE_STATES } from '../../db.js'
+import {
+  getDbPersistenceStats,
+  probeDatabaseHealth,
+  PERSISTENCE_STATES,
+} from '../../db.js'
 import { getWriteQueueStats } from '../../db/query.js'
 import { getRefreshFallbackStats } from '../../lib/refreshMetrics.js'
 import { getCleanupStats } from '../../services/projectCleanup.js'
@@ -75,8 +79,8 @@ export function getQueueHealth(opts = {}) {
 
 export async function buildHealthResponse() {
   const queueHealth = getQueueHealth()
+  const health = await probeDatabaseHealth()
   const persistence = getDbPersistenceStats()
-  const health = getDbPersistenceHealth()
   const writes = getWriteQueueStats()
 
   const status = health.state === PERSISTENCE_STATES.HEALTHY
@@ -130,7 +134,7 @@ export async function buildHealthResponse() {
 export async function buildReadyResponse() {
   const queueHealth = getQueueHealth()
   const queueRequired = isQueueRequired()
-  const health = getDbPersistenceHealth()
+  const health = await probeDatabaseHealth()
 
   const dbOk = health.state !== PERSISTENCE_STATES.WRITE_BLOCKED
   const queueBlocked = queueRequired && queueHealth.state === QUEUE_STATES.UNAVAILABLE

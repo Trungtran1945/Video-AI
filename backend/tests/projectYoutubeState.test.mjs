@@ -1,8 +1,3 @@
-import path from 'node:path'
-import os from 'node:os'
-import fs from 'node:fs'
-
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_yt_state_${Date.now()}_${Math.random().toString(36).slice(2)}.db`)
 process.env.JWT_SECRET = 'test-secret-key-for-youtube-state'
 
 const { initSchema } = await import('../src/db/schema.js')
@@ -171,10 +166,4 @@ try {
 } catch (err) {
   console.error('Unhandled error in test:', err)
   process.exit(1)
-} finally {
-  try {
-    if (process.env.DB_PATH && fs.existsSync(process.env.DB_PATH)) {
-      fs.unlinkSync(process.env.DB_PATH)
-    }
-  } catch (_) {}
 }

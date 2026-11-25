@@ -4,7 +4,6 @@
 import path from 'node:path'
 import os from 'node:os'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_maskInvariant_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { run } = await import('../src/db/query.js')
@@ -73,7 +72,6 @@ const base = { ratioX: 0.1, ratioY: 0.7, ratioW: 0.8, ratioH: 0.2, startSec: 1, 
   assert(!src.includes("patch.enabled = v.value.status === 'APPROVED' ? 1"), 'không còn mirror cũ rời rạc')
 }
 
-try { const fs = await import('node:fs'); fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

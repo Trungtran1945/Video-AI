@@ -8,7 +8,6 @@ import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_redubUsesManual_${Date.now()}.db`)
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -108,7 +107,6 @@ const assert = (c, m) => {
   assert(latest?.id === 'out-v2', `(d) latest là bản mới nhất out-v2 (got: ${latest?.id})`)
 }
 
-try { fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 
 if (failures > 0) {
   console.error(`\n${failures} tests failed!`)

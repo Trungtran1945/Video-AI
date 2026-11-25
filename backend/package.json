@@ -12,6 +12,7 @@
     "check:redis": "node scripts/check-redis.mjs",
     "ensure:redis": "node scripts/ensure-redis.mjs",
     "check:docs": "node scripts/check-docs-integrity.mjs",
+    "check:legacy": "node scripts/check-legacy-artifacts.mjs",
     "test": "node scripts/run-tests.mjs",
     "check:secrets": "node scripts/scan-secrets.mjs",
     "lint": "eslint src tests scripts --quiet",

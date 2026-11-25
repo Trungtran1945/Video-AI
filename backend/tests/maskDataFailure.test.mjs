@@ -3,7 +3,6 @@
 import path from 'node:path'
 import os from 'node:os'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_mask_fail_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, run } = await import('../src/db/query.js')
@@ -126,7 +125,6 @@ await insert('projects', { id: pid, user_id: 'u-fail', mode: 'TRANSLATE_DUB', ti
   await run('ALTER TABLE ocr_regions_orig RENAME TO ocr_regions')
 }
 
-try { (await import('node:fs')).rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 if (failures > 0) process.exit(1)

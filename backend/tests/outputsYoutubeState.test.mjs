@@ -1,10 +1,6 @@
-import path from 'node:path'
-import os from 'node:os'
-import fs from 'node:fs'
 import express from 'express'
 import { once } from 'node:events'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_outputs_yt_${Date.now()}_${Math.random().toString(36).slice(2)}.db`)
 process.env.JWT_SECRET = 'test-secret-outputs-yt-state'
 
 const { initSchema } = await import('../src/db/schema.js')
@@ -170,11 +166,6 @@ try {
     server.closeAllConnections?.()
     await new Promise((r) => server.close(r))
   }
-  try {
-    if (process.env.DB_PATH && fs.existsSync(process.env.DB_PATH)) {
-      fs.unlinkSync(process.env.DB_PATH)
-    }
-  } catch (_) {}
   await new Promise((r) => setTimeout(r, 200))
   process.exit(failures > 0 ? 1 : 0)
 }

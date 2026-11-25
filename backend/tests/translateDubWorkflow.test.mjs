@@ -6,7 +6,6 @@ import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_workflow_${Date.now()}.db`)
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const srcFile = (...p) => fs.readFileSync(path.join(__dirname, '..', 'src', ...p), 'utf8')
@@ -134,7 +133,6 @@ async function cols(table) {
   assert(!runner.includes('ocr_regions'), 'runner RESETS không xoá ocr_regions')
 }
 
-try { fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

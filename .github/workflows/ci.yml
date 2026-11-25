@@ -70,6 +70,9 @@ jobs:
       - name: Docs integrity guard
         run: cd backend && npm run check:docs
 
+      - name: Legacy SQLite artifacts guard
+        run: cd backend && npm run check:legacy
+
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg && ffmpeg -version
 

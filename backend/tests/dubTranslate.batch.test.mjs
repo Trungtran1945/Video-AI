@@ -5,7 +5,6 @@ import path from 'node:path'
 import os from 'node:os'
 
 // Set env BEFORE import (module load-time resolves paths).
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_test_batch_${Date.now()}.db`)
 
 const {
   splitLlmBatches,

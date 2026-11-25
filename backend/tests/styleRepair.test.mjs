@@ -9,7 +9,6 @@ import path from 'node:path'
 import os from 'node:os'
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-stylerepair-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.GEMINI_API_KEY = 'test-key'
 process.env.GEMINI_MAX_RETRIES = '1'

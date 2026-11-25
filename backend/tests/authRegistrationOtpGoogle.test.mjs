@@ -7,7 +7,6 @@ import express from 'express'
 import { once } from 'node:events'
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-auth-reg-google-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.NODE_ENV = 'test'
 process.env.DEV_OTP_EXPOSE = 'true'

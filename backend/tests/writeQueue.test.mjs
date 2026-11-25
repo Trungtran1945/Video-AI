@@ -2,7 +2,6 @@ import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_write_queue_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const {
@@ -53,6 +52,5 @@ assert(recovered === 'alive', 'write queue continues after an operation failure'
 const stats = getWriteQueueStats()
 assert(stats.depth === 0 && stats.lastOperation === 'test.recovered', 'queue stats expose depth and last operation')
 
-await fs.promises.rm(process.env.DB_PATH, { force: true })
 if (failures > 0) process.exit(1)
 console.log('ALL PASS')

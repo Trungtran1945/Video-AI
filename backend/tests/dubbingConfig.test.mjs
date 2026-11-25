@@ -5,7 +5,6 @@ import express from 'express'
 import { once } from 'node:events'
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-dubbing-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 
 const { initSchema } = await import('../src/db/schema.js')
@@ -182,7 +181,6 @@ for (const id of ['proj-d01','proj-d02','proj-d04','proj-d05','proj-d06','proj-d
   await run('DELETE FROM projects WHERE id = ?', [id])
 }
 await run('DELETE FROM users WHERE id IN (?, ?)', [user.id, otherUser.id])
-fs.rmSync(process.env.DB_PATH, { force: true })
 
 if (failures > 0) process.exit(1)
 console.log('ALL PASS')

@@ -5,7 +5,6 @@ import fs from 'node:fs'
 import express from 'express'
 import { once } from 'node:events'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_script_audio_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { insert, queryOne } = await import('../src/db/query.js')
@@ -177,7 +176,6 @@ try {
     await Promise.all([projectQueue.close(), drainQueue.close(), notifyQueue.close(), cleanupQueue.close()].map((p) => p.catch(() => {})))
   } catch (_) {}
   try { fs.rmSync(pDir, { recursive: true, force: true }) } catch (_) {}
-  try { fs.rmSync(process.env.DB_PATH, { force: true }) } catch (_) {}
   await new Promise((r) => setTimeout(r, 500))
   process.exit(0)
 }

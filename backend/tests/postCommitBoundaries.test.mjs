@@ -1,5 +1,5 @@
 // Post-commit boundaries (Issue B):
-// - one user action's DB mutations commit as ONE transaction (no partial wipe)
+// - one user action's DB mutations commit as ONE PostgreSQL transaction (no partial wipe)
 // - a post-commit side effect (abort/fs/notify) failing never flips an
 //   already-committed change into an API failure
 // Run: node backend/tests/postCommitBoundaries.test.mjs
@@ -12,11 +12,11 @@ import { once } from 'node:events'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-postcommit-'))
-process.env.DB_PATH = path.join(tmpRoot, 'test.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.NODE_ENV = 'test'
 
 const { initSchema } = await import('../src/db/schema.js')
+const { getPool, closePool } = await import('../src/db.js')
 const { insert, run, queryOne } = await import('../src/db/query.js')
 const { cancelProjectUseCase } = await import('../src/usecases/cancelProjectUseCase.js')
 const { generateAccessToken } = await import('../src/middleware/auth.js')
@@ -39,21 +39,39 @@ await run("DELETE FROM users WHERE id = 'pcb-user'").catch(() => {})
 const user = { id: 'pcb-user', email: 'pcb@test.local', role: 'user', password: 'x' }
 await insert('users', user)
 
-const originalWriteFileSync = fs.writeFileSync
-let saveCalls = 0
+const pool = getPool()
+const originalPoolConnect = pool.connect.bind(pool)
+let commitCalls = 0
 let armFailures = false
-fs.writeFileSync = (...args) => {
-  if (armFailures) {
-    const error = new Error('EACCES: simulated save failure')
-    error.code = 'EACCES'
-    throw error
-  }
-  saveCalls += 1
-  return originalWriteFileSync(...args)
+pool.connect = function (cb) {
+  // pool.query() internally calls this.connect(cb) expecting callback semantics
+  if (typeof cb === 'function') return originalPoolConnect(cb)
+  return originalPoolConnect().then((client) => {
+    const originalClientQuery = client.query.bind(client)
+    const originalClientRelease = client.release.bind(client)
+    client.query = async (sql, ...rest) => {
+      const text = typeof sql === 'string' ? sql : sql?.text || ''
+      if (/^\s*COMMIT\b/i.test(text)) {
+        if (armFailures) {
+          const error = new Error('ECONNRESET: simulated PostgreSQL commit failure')
+          error.code = 'ECONNRESET'
+          throw error
+        }
+        commitCalls += 1
+      }
+      return originalClientQuery(sql, ...rest)
+    }
+    client.release = (...relArgs) => {
+      client.query = originalClientQuery
+      client.release = originalClientRelease
+      return originalClientRelease(...relArgs)
+    }
+    return client
+  })
 }
 const disarm = () => { armFailures = false }
 
-// ── 1. cancel: DB mutations commit atomically (save failure → nothing changes) ──
+// ── 1. cancel: DB mutations commit atomically (commit failure -> nothing changes) ──
 await scenario('cancelAtomic', async () => {
   await insert('projects', { id: 'pcb-c1', user_id: user.id, mode: 'SUMMARY', title: 'c1', status: 'queued' })
   await insert('generation_jobs', { id: 'pcb-c1-job', project_id: 'pcb-c1', type: 'summary.render', status: 'pending' })
@@ -64,7 +82,7 @@ await scenario('cancelAtomic', async () => {
   try {
     await cancelProjectUseCase('pcb-c1', { abort: () => abortCalls.push('x') })
   } catch (e) { error = e } finally { disarm() }
-  assert(error?.code === 'EACCES', `cancel save failure rejects with the disk error (got ${error?.code})`)
+  assert(error?.code === 'ECONNRESET', `cancel commit failure rejects with the PostgreSQL error (got ${error?.code})`)
 
   const project = await queryOne('SELECT status FROM projects WHERE id = ?', ['pcb-c1'])
   const job = await queryOne('SELECT status FROM generation_jobs WHERE id = ?', ['pcb-c1-job'])
@@ -98,7 +116,7 @@ await scenario('cancelSideEffectFailure', async () => {
   assert(project?.status === 'cancelled', 'cancellation is committed despite the side effect failure')
 })
 
-// ── 3. project DELETE: ONE transaction = ONE save (no partial wipe possible) ──
+// ── 3. project DELETE: ONE PostgreSQL transaction = ONE COMMIT (no partial wipe possible) ──
 const app = express()
 app.use(express.json())
 app.use('/api/v1/projects', projectsRouter)
@@ -117,11 +135,11 @@ await scenario('deleteSingleCommit', async () => {
   await insert('provider_logs', { id: 'pcb-d1-log', project_id: 'pcb-d1', provider: 'test' })
   await insert('transcript_segments', { id: 'pcb-d1-seg', project_id: 'pcb-d1', index_num: 0, start_sec: 0, end_sec: 1, text: 'hi' })
 
-  saveCalls = 0
+  commitCalls = 0
   const res = await del('pcb-d1')
   assert(res.status === 200, `DELETE succeeds (got ${res.status})`)
-  assert(saveCalls === 1,
-    `the whole DB wipe commits with exactly ONE save() — no partial deletion window (got ${saveCalls})`)
+  assert(commitCalls === 1,
+    `the whole DB wipe commits with exactly ONE PostgreSQL COMMIT — no partial deletion window (got ${commitCalls})`)
 
   assert(await queryOne('SELECT id FROM projects WHERE id = ?', ['pcb-d1']) === null, 'project row deleted')
   assert(await queryOne('SELECT id FROM generation_jobs WHERE id = ?', ['pcb-d1-job']) === null, 'jobs deleted')
@@ -154,7 +172,7 @@ await scenario('deleteRollbackAndRetry', async () => {
     'retry still keeps provider_logs')
 })
 
-fs.writeFileSync = originalWriteFileSync
+pool.connect = originalPoolConnect
 // Force-close keep-alive sockets first: exiting while a socket is mid-close
 // trips a libuv assertion on Windows (UV_HANDLE_CLOSING).
 server.closeAllConnections?.()
@@ -191,7 +209,8 @@ await run("DELETE FROM provider_logs WHERE project_id LIKE 'pcb-%'")
 await run("DELETE FROM generation_jobs WHERE project_id LIKE 'pcb-%'")
 await run("DELETE FROM transcript_segments WHERE project_id LIKE 'pcb-%'")
 await run("DELETE FROM projects WHERE id LIKE 'pcb-%'")
-await run("DELETE FROM users WHERE id = ?", [user.id])
+await run('DELETE FROM users WHERE id = ?', [user.id])
+await closePool()
 fs.rmSync(tmpRoot, { recursive: true, force: true })
 console.log('ALL PASS')
 process.exit(failures === 0 ? 0 : 1)

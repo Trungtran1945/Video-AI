@@ -7,7 +7,6 @@ import path from 'node:path'
 import os from 'node:os'
 
 // Phải set env TRƯỚC khi import (module ffmpeg.js chạy resolveBin tại load time).
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_test_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { translateGroup } = await import('../src/pipeline/stages/dubTranslate.js')
@@ -61,9 +60,7 @@ console.log('entries:', [...collected.entries()])
 const ok = collected.size === 5 && indexes.every((i) => collected.has(i))
 if (!ok) {
   console.error('FAIL: thiếu bản dịch cho các index:', indexes.filter((i) => !collected.has(i)))
-  fs.rmSync(process.env.DB_PATH, { force: true })
   process.exit(1)
 }
 console.log('PASS: translateGroup bù đủ mọi câu bị thiếu (backfill hoạt động)')
-fs.rmSync(process.env.DB_PATH, { force: true })
 process.exit(0)

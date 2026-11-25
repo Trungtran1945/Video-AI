@@ -5,7 +5,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_stale_inv_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { callProvider } = await import('../src/lib/callProvider.js')
@@ -69,7 +68,6 @@ const ghost = path.join(tmp, 'ghost_seg.mp3')
 }
 
 try { fs.rmSync(tmp, { recursive: true, force: true }) } catch {}
-try { fs.rmSync(process.env.DB_PATH, { force: true }) } catch {}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

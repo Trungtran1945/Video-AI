@@ -7,7 +7,6 @@ import path from 'node:path'
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_roundrobin_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { run } = await import('../src/db/query.js')

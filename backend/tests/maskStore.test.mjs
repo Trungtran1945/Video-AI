@@ -1,10 +1,6 @@
 // Schema cho subtitle-mask pipeline: transcript_segments có source/confidence/
 // + bbox ratio; ocr_regions có type/blur_radius/opacity/enabled.
 // Chạy: node tests/maskStore.test.mjs
-import path from 'node:path'
-import os from 'node:os'
-
-process.env.DB_PATH = path.join(os.tmpdir(), `vidai_maskstore_${Date.now()}.db`)
 
 const { initSchema } = await import('../src/db/schema.js')
 const { query } = await import('../src/db/query.js')
@@ -21,7 +17,7 @@ function assert(cond, msg) {
 async function cols(table) {
   const rows = await query(`SELECT name FROM pragma_table_info(?) ORDER BY cid`, [table]).catch(() => [])
   if (rows.length) return rows.map((r) => r.name)
-  // sql.js pragma via table-valued function may vary — fallback direct form
+  // Fallback direct PRAGMA form (translated to information_schema by convertSqlForPostgres)
   const rows2 = await query(`PRAGMA table_info(${table})`)
   return rows2.map((r) => r.name)
 }

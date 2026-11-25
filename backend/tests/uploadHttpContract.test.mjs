@@ -6,7 +6,6 @@ import express from 'express'
 import { once } from 'node:events'
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vidai-upload-http-'))
-process.env.DB_PATH = path.join(tmpRoot, 'data.db')
 process.env.STORAGE_DIR = path.join(tmpRoot, 'storage')
 process.env.NODE_ENV = 'test'
 
