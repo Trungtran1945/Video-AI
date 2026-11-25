@@ -5,8 +5,8 @@ import { query } from '../../db/query.js'
 import { createOutput } from '../../services/outputService.js'
 import { assertRunOwner } from '../../services/projectAdmission.js'
 import {
-  burnSubtitlesStyled,
   applySubtitleMasks,
+  burnSubtitlesStyled,
   buildDubTrack,
   muxStream,
   makeThumbnail,
@@ -241,7 +241,7 @@ export async function dubRender(ctx) {
     thumbnailKey: thumbKey,
     transcriptVersion,
     generationSnapshot: transcriptVersion,
-    isTtsActive: enableDubbing,
+    isTtsActive: enableDubbing && audioMode !== 'ORIGINAL_ONLY',
     runToken: ctx.runToken,
   })
   setProgress(100)
@@ -292,8 +292,10 @@ export async function loadSubtitleRegions(projectId, { maskMethod = 'blur', incl
 
     const norm = normalizeRegion(row)
     if (!norm) {
-      const error = new Error(`BLOCK_RENDER: MASK_INVALID — Mask ${row.id || 'unknown'} có toạ độ hoặc timing không hợp lệ`)
+      const detail = getRegionValidationError(row)
+      const error = new Error(`BLOCK_RENDER: MASK_INVALID — Mask ${row.id || 'unknown'} có toạ độ hoặc timing không hợp lệ${detail ? ` (${detail})` : ''}`)
       error.code = 'BLOCK_RENDER'
+      error.maskId = row.id || null
       throw error
     }
     approved.push(norm)
@@ -352,6 +354,30 @@ export async function deriveAutoRegions(projectId, maskMethod = 'blur') {
     })
   }
   return out
+}
+
+export function getRegionValidationError(r) {
+  if (!r) return 'dữ liệu mask rỗng'
+  const rx = Number(r.ratioX ?? r.ratio_x)
+  const ry = Number(r.ratioY ?? r.ratio_y)
+  const rw = Number(r.ratioW ?? r.ratio_w)
+  const rh = Number(r.ratioH ?? r.ratio_h)
+  const s = Number(r.start_sec ?? r.startSec)
+  const e = Number(r.end_sec ?? r.endSec)
+
+  if (![rx, ry, rw, rh, s, e].every(Number.isFinite)) {
+    return 'thiếu toạ độ hoặc timing'
+  }
+  if (rw <= 0 || rh <= 0) {
+    return `kích thước không hợp lệ (ratioW: ${rw}, ratioH: ${rh})`
+  }
+  if (rx < 0 || rx > 1 || ry < 0 || ry > 1 || rw > 1 || rh > 1) {
+    return `toạ độ ngoài khoảng [0, 1] (ratioX: ${rx}, ratioY: ${ry}, ratioW: ${rw}, ratioH: ${rh})`
+  }
+  if (!(e > s) || s < 0) {
+    return `timing không hợp lệ (start: ${s}s, end: ${e}s)`
+  }
+  return null
 }
 
 export function normalizeRegion(r) {

@@ -443,7 +443,7 @@ const RESETS = {
   'dub.merge': [], // dub.merge chỉ kiểm tra DB, không tạo artifacts
   'dub.translate': ['audios', 'subtitles', 'outputs'],
   'dub.mask': [],
-  'dub.ttsAlign': ['audios', 'outputs'],
+  'dub.ttsAlign': ['outputs'],
   'dub.render': ['outputs'],
   // SCRIPT_TO_VIDEO: ingest/analyze rebuild the whole script-derived graph.
   // tts/image self-reconcile per segment (no blanket delete).
@@ -721,10 +721,13 @@ async function loadJob(projectId, type) {
   )
 }
 
-function withTimeout(promise, ms, label = 'Stage') {
+function withTimeout(promise, ms, label = 'Stage', stageAc = null) {
   let timer
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} bị timeout sau ${Math.round(ms / 1000)}s – có thể FFmpeg đang treo.`)), ms)
+    timer = setTimeout(() => {
+      try { stageAc?.abort() } catch (_) {}
+      reject(new Error(`${label} bị timeout sau ${Math.round(ms / 1000)}s – có thể FFmpeg đang treo.`))
+    }, ms)
   })
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
@@ -752,7 +755,7 @@ const DEFAULT_STAGE_TIMEOUT = 15 * 60 * 1000
 
 // Execute ONE stage end-to-end (reset → running → impl → success/fail).
 // Trả về true nếu thành công/skip, false nếu thất bại.
-async function executeStage(project, job, settings, setProgress, results, isFirstExecutedStage, signal, runToken = null, forceTranscript = false, generation = { transcriptVersionSnapshot: null }) {
+export async function executeStage(project, job, settings, setProgress, results, isFirstExecutedStage, signal, runToken = null, forceTranscript = false, generation = { transcriptVersionSnapshot: null }) {
   const projectId = project.id
   try {
     if (runToken && !(await isProjectRunOwned(projectId, runToken))) return false
@@ -873,9 +876,14 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
       }, runToken)
     }
     const stagingContext = createJobStagingContext(projectId, job.type)
+    const stageAc = new AbortController()
     if (signal) {
-      signal.addEventListener('abort', () => stagingContext.cleanup(), { once: true })
+      if (signal.aborted) stageAc.abort()
+      else signal.addEventListener('abort', () => stageAc.abort(), { once: true })
     }
+    const effectiveSignal = stageAc.signal
+    effectiveSignal.addEventListener('abort', () => stagingContext.cleanup(), { once: true })
+
     let result
     try {
       result = await withTimeout(
@@ -885,7 +893,7 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
           settings,
           setProgress,
           results,
-          signal,
+          signal: effectiveSignal,
           runToken,
           transcriptVersionSnapshot: generation.transcriptVersionSnapshot,
           scriptVersionSnapshot: generation.scriptVersionSnapshot,
@@ -893,7 +901,8 @@ async function executeStage(project, job, settings, setProgress, results, isFirs
           stagingContext,
         }),
         stageTimeout,
-        job.type
+        job.type,
+        stageAc
       )
     } finally {
       await stagingContext.cleanup()
@@ -1318,4 +1327,4 @@ async function runPipelineOwned(projectId, fromStage = null, admissionToken = nu
   }
 }
 
-export default { runPipeline, STAGES, flatStages, stagesForProject, groupedStagesForProject }
+export default { runPipeline, executeStage, STAGES, flatStages, stagesForProject, groupedStagesForProject }

@@ -259,6 +259,26 @@ export async function precheckStage(userId, provider, estimatedRequests = 10) {
       },
     }
   }
+  // Phase D early warning: Cảnh báo sớm nếu batch segments lớn vượt quota còn lại trong ngày (warn-only, không block)
+  if (snapshot.limitToday != null
+    && est >= 50
+    && snapshot.usedToday + est > snapshot.limitToday) {
+    return {
+      allowed: true,
+      warning: {
+        type: 'quota_risk',
+        scope: 'daily',
+        provider: snapshot.provider,
+        percentUsed: snapshot.percentUsed,
+        percent: snapshot.daily.percent,
+        usedToday: snapshot.usedToday,
+        limitToday: snapshot.limitToday,
+        estimatedRequests: est,
+        estimatedShortfall: snapshot.usedToday + est - snapshot.limitToday,
+        message: `Ước tính số đoạn cần TTS (${est} segments) sẽ vượt quá hạn mức quota còn lại của ${provider} hôm nay (${snapshot.limitToday - snapshot.usedToday} lượt)`,
+      },
+    }
+  }
   if (snapshot.minute.percent != null && snapshot.minute.percent >= threshold * 100) {
     return {
       allowed: true,
@@ -272,6 +292,19 @@ export async function precheckStage(userId, provider, estimatedRequests = 10) {
         limitThisMinute: snapshot.limitThisMinute,
         estimatedRequests: est,
         message: `Rate limit/phút ${provider} gần đầy (${snapshot.minute.percent.toFixed(1)}% — ${snapshot.usedThisMinute}/${snapshot.limitThisMinute})`,
+      },
+    }
+  }
+  // Early notice cho batch TTS lớn khi không rõ limit provider (warn-only, không block)
+  if (est >= 50 && snapshot.limitToday == null && (!snapshot.minute || snapshot.minute.percent == null)) {
+    return {
+      allowed: true,
+      warning: {
+        type: 'large_segment_notice',
+        scope: 'batch',
+        provider: snapshot.provider,
+        estimatedRequests: est,
+        message: `Dự án có số lượng câu lồng tiếng lớn (${est} segments). Quá trình TTS có thể tốn nhiều thời gian và quota provider.`,
       },
     }
   }

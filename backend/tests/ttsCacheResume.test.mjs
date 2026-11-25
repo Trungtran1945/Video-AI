@@ -271,12 +271,181 @@ const assert = (c, m) => { if (c) console.log('PASS:', m); else { failures++; co
 
   } finally {
     MockTts.prototype.synthesize = origSynth
+    try { fs.rmSync(path.join(projectDir(testProjectId), 'audio_segments'), { recursive: true, force: true }) } catch (_) {}
     try { await run('DELETE FROM transcript_segments WHERE project_id = ?', [testProjectId]) } catch (_) {}
     try { await run('DELETE FROM audios WHERE project_id = ?', [testProjectId]) } catch (_) {}
     try { await run('DELETE FROM generation_jobs WHERE project_id = ?', [testProjectId]) } catch (_) {}
     try { await run('DELETE FROM projects WHERE id = ?', [testProjectId]) } catch (_) {}
     try { await run('DELETE FROM settings WHERE user_id = ?', [testUserId]) } catch (_) {}
     try { await run('DELETE FROM users WHERE id = ?', [testUserId]) } catch (_) {}
+  }
+}
+
+// ── 4. Pipeline runner checkpoint resume (through runPipeline with clearArtifacts) ──
+{
+  console.log('\n--- Test: Pipeline runner checkpoint resume (runPipeline + clearArtifacts) ---')
+  const { query, queryOne, run, insert } = await import('../src/db/query.js')
+  const { default: runner, setStageImplOverride, clearStageImplOverrides } = await import('../src/pipeline/runner.js')
+  const { default: MockTts } = await import('../src/providers/tts/mockTts.js')
+  const { projectDir } = await import('../src/pipeline/context.js')
+
+  const testUserId2 = uuidv4()
+  const testProjectId2 = uuidv4()
+  const origSynth = MockTts.prototype.synthesize
+
+  try {
+    // 1. Seed user, settings, project
+    await insert('users', {
+      id: testUserId2,
+      email: `tts_runner_${Date.now()}@test.local`,
+      password: 'hash',
+      role: 'user',
+      created_date: new Date().toISOString(),
+    })
+    await insert('settings', {
+      user_id: testUserId2,
+      active_llm_provider: 'mock',
+      active_voice_provider: 'mock',
+    })
+    await insert('projects', {
+      id: testProjectId2,
+      user_id: testUserId2,
+      mode: 'TRANSLATE_DUB',
+      title: 'TTS Runner Resume Test',
+      status: 'pending',
+      transcript_version: 1,
+      source_storage_provider: 'cloudinary',
+      params: JSON.stringify({ enableDubbing: true, targetLanguage: 'vi', voiceProvider: 'mock', audioMode: 'DUB_MIX' }),
+    })
+
+    // 2. Seed predecessor jobs as success so firstRunnableStage targets dub.ttsAlign
+    for (const st of ['dub.ingest', 'dub.stt', 'dub.merge', 'dub.translate', 'dub.mask']) {
+      await insert('generation_jobs', { id: uuidv4(), project_id: testProjectId2, type: st, status: 'success' })
+    }
+    await insert('generation_jobs', { id: uuidv4(), project_id: testProjectId2, type: 'dub.ttsAlign', status: 'pending' })
+
+    // 3. Seed 3 segments
+    const rSeg0Id = uuidv4()
+    const rSeg1Id = uuidv4()
+    const rSeg2Id = uuidv4()
+
+    await insert('transcript_segments', {
+      id: rSeg0Id,
+      project_id: testProjectId2,
+      index_num: 0,
+      start_sec: 0,
+      end_sec: 2,
+      text: 'Runner segment 1',
+      translation: 'Đoạn runner một',
+    })
+    await insert('transcript_segments', {
+      id: rSeg1Id,
+      project_id: testProjectId2,
+      index_num: 1,
+      start_sec: 2.5,
+      end_sec: 4.5,
+      text: 'Runner segment 2',
+      translation: 'Đoạn runner hai',
+    })
+    await insert('transcript_segments', {
+      id: rSeg2Id,
+      project_id: testProjectId2,
+      index_num: 2,
+      start_sec: 5,
+      end_sec: 7,
+      text: 'Runner segment 3',
+      translation: 'Đoạn runner ba',
+    })
+
+    // Mock dub.render downstream to avoid ffmpeg invocation
+    setStageImplOverride('dub.render', async () => ({ outputKey: 'outputs/mock_render.mp4' }))
+
+    // 4. Run 1: Mock TTS fails with quota error on 3rd call (segment 3 / index 2)
+    let runnerCalls = []
+    MockTts.prototype.synthesize = async function (input, opts) {
+      const text = typeof input === 'object' ? input.text : input
+      runnerCalls.push(text)
+      if (runnerCalls.length === 3) {
+        const quotaErr = new Error('Quota exceeded 429')
+        quotaErr.status = 429
+        quotaErr.code = ERROR_CODES.PROVIDER_QUOTA_EXCEEDED
+        throw quotaErr
+      }
+      return origSynth.call(this, input, opts)
+    }
+
+    await runner.runPipeline(testProjectId2, 'dub.ttsAlign')
+
+    // Assertions after Run 1:
+    const ttsJob1 = await queryOne("SELECT status, error_message FROM generation_jobs WHERE project_id = ? AND type = 'dub.ttsAlign'", [testProjectId2])
+    assert(ttsJob1 && ttsJob1.status === 'failed', `Run 1 through runner failed dub.ttsAlign job on quota (got ${ttsJob1?.status})`)
+
+    const rSegs1 = await query('SELECT id, index_num, tts_audio_id FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC', [testProjectId2])
+    assert(rSegs1[0].tts_audio_id !== null, 'Runner segment 0 has tts_audio_id checkpointed')
+    assert(rSegs1[1].tts_audio_id !== null, 'Runner segment 1 has tts_audio_id checkpointed')
+    assert(rSegs1[2].tts_audio_id === null, 'Runner segment 2 has null tts_audio_id (failed on quota)')
+
+    const pDir2 = projectDir(testProjectId2)
+    const rSegDir = path.join(pDir2, 'audio_segments')
+    const rSeg0File = path.join(rSegDir, `seg_fit_${rSeg0Id.replace(/[^a-zA-Z0-9_-]/g, '_')}.wav`)
+    const rSeg1File = path.join(rSegDir, `seg_fit_${rSeg1Id.replace(/[^a-zA-Z0-9_-]/g, '_')}.wav`)
+    assert(fs.existsSync(rSeg0File), 'Runner segment 0 audio file exists on disk')
+    assert(fs.existsSync(rSeg1File), 'Runner segment 1 audio file exists on disk')
+
+    const rAudios1 = await query('SELECT id FROM audios WHERE project_id = ?', [testProjectId2])
+    assert(rAudios1.length === 2, `Audios table has exactly 2 rows checkpointed after Run 1 (got ${rAudios1.length})`)
+
+    // 5. Run 2 (Retry): provider succeeds, executeStage calls clearArtifacts
+    runnerCalls = []
+    MockTts.prototype.synthesize = async function (input, opts) {
+      const text = typeof input === 'object' ? input.text : input
+      runnerCalls.push(text)
+      return origSynth.call(this, input, opts)
+    }
+
+    await run("UPDATE projects SET status = 'pending', run_token = NULL WHERE id = ?", [testProjectId2])
+    await run("UPDATE generation_jobs SET status = 'pending', error_message = NULL WHERE project_id = ? AND type = 'dub.ttsAlign'", [testProjectId2])
+
+    await runner.runPipeline(testProjectId2, 'dub.ttsAlign')
+
+    // Assertions after Run 2 (Retry):
+    const ttsJob2 = await queryOne("SELECT status FROM generation_jobs WHERE project_id = ? AND type = 'dub.ttsAlign'", [testProjectId2])
+    assert(ttsJob2 && ttsJob2.status === 'success', `Run 2 through runner succeeded dub.ttsAlign job (got ${ttsJob2?.status})`)
+    assert(runnerCalls.length === 1, `Provider synthesize called ONLY ONCE during retry (got ${runnerCalls.length} calls)`)
+    assert(runnerCalls[0] === 'Đoạn runner ba', `Provider synthesized segment 3 ("Đoạn runner ba"), got "${runnerCalls[0]}"`)
+
+    const rSegs2 = await query('SELECT id, index_num, tts_audio_id FROM transcript_segments WHERE project_id = ? ORDER BY index_num ASC', [testProjectId2])
+    assert(rSegs2[0].tts_audio_id === rSegs1[0].tts_audio_id, 'Runner segment 0 kept original tts_audio_id from checkpoint')
+    assert(rSegs2[1].tts_audio_id === rSegs1[1].tts_audio_id, 'Runner segment 1 kept original tts_audio_id from checkpoint')
+    assert(rSegs2[2].tts_audio_id !== null, 'Runner segment 2 now has tts_audio_id')
+
+    const rAudios2 = await query('SELECT id FROM audios WHERE project_id = ?', [testProjectId2])
+    assert(rAudios2.length === 3, `Audios table has exactly 3 rows (got ${rAudios2.length}) — no duplicate audio rows`)
+
+    // Assert no dangling tts_audio_id
+    const dangling = await query(
+      'SELECT id, tts_audio_id FROM transcript_segments WHERE project_id = ? AND tts_audio_id IS NOT NULL AND tts_audio_id NOT IN (SELECT id FROM audios WHERE project_id = ?)',
+      [testProjectId2, testProjectId2]
+    )
+    assert(dangling.length === 0, `No dangling tts_audio_id found (got ${dangling.length})`)
+
+    // Assert no orphan audios
+    const orphans = await query(
+      'SELECT id FROM audios WHERE project_id = ? AND kind = ? AND id NOT IN (SELECT tts_audio_id FROM transcript_segments WHERE project_id = ? AND tts_audio_id IS NOT NULL)',
+      [testProjectId2, 'voice', testProjectId2]
+    )
+    assert(orphans.length === 0, `No orphan audio rows found (got ${orphans.length})`)
+
+  } finally {
+    clearStageImplOverrides()
+    MockTts.prototype.synthesize = origSynth
+    try { fs.rmSync(path.join(projectDir(testProjectId2), 'audio_segments'), { recursive: true, force: true }) } catch (_) {}
+    try { await run('DELETE FROM transcript_segments WHERE project_id = ?', [testProjectId2]) } catch (_) {}
+    try { await run('DELETE FROM audios WHERE project_id = ?', [testProjectId2]) } catch (_) {}
+    try { await run('DELETE FROM generation_jobs WHERE project_id = ?', [testProjectId2]) } catch (_) {}
+    try { await run('DELETE FROM projects WHERE id = ?', [testProjectId2]) } catch (_) {}
+    try { await run('DELETE FROM settings WHERE user_id = ?', [testUserId2]) } catch (_) {}
+    try { await run('DELETE FROM users WHERE id = ?', [testUserId2]) } catch (_) {}
   }
 }
 

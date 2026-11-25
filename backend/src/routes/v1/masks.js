@@ -4,7 +4,7 @@ import { query, queryOne, run, insert, runReturningOne } from '../../db/query.js
 import { authMiddleware } from '../../middleware/auth.js'
 import { requireProjectOwner } from '../../middleware/projectAccess.js'
 import { sendError, ERR } from '../../lib/httpError.js'
-import { deriveAutoRegions } from '../../pipeline/stages/dubRender.js'
+import { deriveAutoRegions, getRegionValidationError } from '../../pipeline/stages/dubRender.js'
 import { parseParams } from '../../pipeline/context.js'
 
 const router = Router()
@@ -207,7 +207,26 @@ router.post('/projects/:id/masks', requireProjectOwner, async (req, res) => {
       return sendError(res, 400, ERR.VALIDATION, 'Chỉ dự án TRANSLATE_DUB mới có mask', { field: 'mode' })
     }
     const v = validateMaskInput(req.body || {})
-    if (!v.ok) return sendError(res, 400, ERR.VALIDATION, v.message, { field: v.field })
+    if (!v.ok) {
+      const isApproving = String(req.body?.status || '').toUpperCase() === 'APPROVED'
+      const errMsg = isApproving
+        ? `Mask có toạ độ hoặc timing không hợp lệ để duyệt (APPROVED): ${v.message}`
+        : v.message
+      return sendError(res, 400, ERR.VALIDATION, errMsg, { field: v.field })
+    }
+
+    if (v.value.status === 'APPROVED' && v.value.enabled !== 0) {
+      const geoErr = getRegionValidationError(v.value)
+      if (geoErr) {
+        return sendError(
+          res,
+          400,
+          ERR.VALIDATION,
+          `Mask có toạ độ hoặc timing không hợp lệ để duyệt (APPROVED): ${geoErr}`,
+          { field: 'status' }
+        )
+      }
+    }
     const row = await insert('ocr_regions', {
       id: uuidv4(),
       project_id: req.project.id,
@@ -261,7 +280,13 @@ router.patch('/projects/:id/masks/:maskId', requireProjectOwner, async (req, res
     }
     if (!row) return sendError(res, 404, ERR.VALIDATION, 'Mask không tồn tại trong project này', { field: 'maskId' })
     const v = validateMaskInput(req.body || {}, { partial: true })
-    if (!v.ok) return sendError(res, 400, ERR.VALIDATION, v.message, { field: v.field })
+    if (!v.ok) {
+      const isApproving = String(req.body?.status || '').toUpperCase() === 'APPROVED'
+      const errMsg = isApproving
+        ? `Mask ${req.params.maskId} có toạ độ hoặc timing không hợp lệ để duyệt (APPROVED): ${v.message}`
+        : v.message
+      return sendError(res, 400, ERR.VALIDATION, errMsg, { field: v.field, maskId: req.params.maskId })
+    }
 
     // BẢO ĐẢM APPROVED MASK IMMUTABLE (§4.4):
     // Nếu row hiện tại là APPROVED:
@@ -306,7 +331,31 @@ router.patch('/projects/:id/masks/:maskId', requireProjectOwner, async (req, res
     const startSec = patch.start_sec !== undefined ? patch.start_sec : row.start_sec
     const endSec = patch.end_sec !== undefined ? patch.end_sec : row.end_sec
     if (!(Number(endSec) > Number(startSec)) || Number(startSec) < 0) {
-      return sendError(res, 400, ERR.VALIDATION, 'Timing mask không hợp lệ (0<=start<end)', { field: 'endSec' })
+      return sendError(res, 400, ERR.VALIDATION, `Timing mask ${req.params.maskId} không hợp lệ (0<=start<end)`, { field: 'endSec', maskId: req.params.maskId })
+    }
+
+    // Kiểm tra toạ độ và timing nếu mask ở trạng thái APPROVED
+    const targetStatus = patch.status !== undefined ? patch.status : row.status
+    const targetEnabled = patch.enabled !== undefined ? patch.enabled : row.enabled
+    if (targetStatus === 'APPROVED' && targetEnabled !== 0) {
+      const mergedForValidation = {
+        ratioX: patch.ratio_x !== undefined ? patch.ratio_x : row.ratio_x,
+        ratioY: patch.ratio_y !== undefined ? patch.ratio_y : row.ratio_y,
+        ratioW: patch.ratio_w !== undefined ? patch.ratio_w : row.ratio_w,
+        ratioH: patch.ratio_h !== undefined ? patch.ratio_h : row.ratio_h,
+        startSec,
+        endSec,
+      }
+      const geoErr = getRegionValidationError(mergedForValidation)
+      if (geoErr) {
+        return sendError(
+          res,
+          400,
+          ERR.VALIDATION,
+          `Mask ${req.params.maskId} có toạ độ hoặc timing không hợp lệ để duyệt (APPROVED): ${geoErr}`,
+          { field: 'status', maskId: req.params.maskId }
+        )
+      }
     }
     let updated = row
     if (Object.keys(patch).length) {

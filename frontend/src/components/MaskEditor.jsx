@@ -5,7 +5,7 @@ import { Plus, Trash2, Eye, EyeOff, Copy, Loader2, AlertCircle, Scissors, Check 
 const toPct = (r) => Math.round(Number(r || 0) * 1000) / 10;
 const toRatio = (p) => Math.min(1, Math.max(0, Number(p) / 100));
 
-function isAuto(m) {
+export function isAuto(m) {
   return String(m?.id || '').startsWith('auto:') ||
     String(m?.id || '').startsWith('legacy_ocr:') ||
     String(m?.source || '').toUpperCase() === 'AUTO' ||
@@ -14,11 +14,123 @@ function isAuto(m) {
     !!m?.isLegacy;
 }
 
-function inTime(m, t) {
+export function inTime(m, t) {
   return Number(m.startSec) <= t && t <= Number(m.endSec);
 }
 
-export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale, onMaskChange }) {
+export function computeBoxStyle(m, contentBox, {
+  container = null,
+  video = null,
+  params = null,
+  currentTime = 0,
+  selectedId = null,
+} = {}) {
+  let box = contentBox;
+  if (!box) {
+    const cw = container?.clientWidth || 640;
+    const ch = container?.clientHeight || 360;
+    const vw = video?.videoWidth || params?.videoWidth || params?.width || 16;
+    const vh = video?.videoHeight || params?.videoHeight || params?.height || 9;
+    const scale = Math.min(cw / vw, ch / vh);
+    const w = vw * scale;
+    const h = vh * scale;
+    box = {
+      x: (cw - w) / 2,
+      y: (ch - h) / 2,
+      w: w || cw,
+      h: h || ch,
+    };
+  }
+
+  const left = box.x + Number(m.ratioX) * box.w;
+  const top = box.y + Number(m.ratioY) * box.h;
+  const width = Number(m.ratioW) * box.w;
+  const height = Number(m.ratioH) * box.h;
+  const active = inTime(m, currentTime);
+  const base = {
+    position: 'absolute',
+    left,
+    top,
+    width,
+    height,
+    border: `2px ${m.type === 'solid' ? 'dashed' : 'solid'} ${active ? '#60a5fa' : 'rgba(96,165,250,0.45)'}`,
+    borderRadius: 4,
+    cursor: isAuto(m) ? 'pointer' : 'move',
+    opacity: active ? 1 : 0.55,
+    zIndex: 5,
+    touchAction: 'none',
+  };
+  if (m.type === 'solid') {
+    base.background = `rgba(0,0,0,${Number(m.opacity ?? 1)})`;
+  } else {
+    base.backdropFilter = `blur(${Math.max(1, Math.round(Number(m.blurRadius ?? 8) / 2))}px)`;
+    base.background = 'rgba(0,0,0,0.25)';
+  }
+  if (String(selectedId) === String(m.id)) {
+    base.boxShadow = '0 0 0 2px rgba(96,165,250,0.6)';
+  }
+  return base;
+}
+
+export function getMaskApproveState(selected, { disabled = false, saving = false } = {}) {
+  const isSelectedAuto = Boolean(selected && isAuto(selected));
+  const isSelectedApproved = Boolean(selected && selected.status === 'APPROVED');
+  const canApprove = Boolean(
+    selected &&
+    !isSelectedAuto &&
+    !isSelectedApproved &&
+    !disabled &&
+    !saving
+  );
+
+  const approveHint = !selected
+    ? 'Chọn một mask thủ công để approve'
+    : isSelectedAuto
+      ? (isSelectedApproved
+          ? 'Mask tự động đã APPROVED và chỉ đọc — không thể approve lại. Nhấn “Nhân bản tay” để chỉnh'
+          : 'Mask tự động từ dub.mask — giữ nguyên suốt video (chỉ đọc). Nhấn “Nhân bản tay” để chỉnh')
+      : isSelectedApproved
+        ? 'APPROVED: đã render vào video sau Chạy lại (khác với bản xem trước trên video gốc)'
+        : 'Approve để đưa mask vào video sau Chạy lại (đã render vào video sau Chạy lại)';
+
+  return { canApprove, approveHint, isSelectedAuto, isSelectedApproved };
+}
+
+export async function approveMask({
+  projectId,
+  maskId,
+  updateMaskFn = projectsApi.updateMask,
+  reloadMasksFn = null,
+  onMaskChange = null,
+  loader = null,
+  onReload = null,
+}) {
+  const updated = await updateMaskFn(projectId, maskId, { status: 'APPROVED' });
+  if (typeof reloadMasksFn === 'function') {
+    await reloadMasksFn();
+  }
+  if (typeof loader === 'function') {
+    await loader();
+  }
+  if (typeof onReload === 'function') {
+    await onReload();
+  }
+  if (typeof onMaskChange === 'function') {
+    await onMaskChange();
+  }
+  return updated;
+}
+
+export default function MaskEditor({
+  projectId,
+  sourceUrl,
+  disabled,
+  outputStale,
+  onMaskChange,
+  loader,
+  onReload,
+  params,
+}) {
   const [masks, setMasks] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [currentTime, setCurrentTime] = useState(0);
@@ -33,14 +145,25 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
 
   const load = useCallback(async () => {
     try {
-      const res = await projectsApi.masks(projectId);
-      const list = Array.isArray(res) ? res : res?.masks || [];
+      let list = null;
+      if (typeof loader === 'function') {
+        const res = await loader();
+        if (Array.isArray(res) || res?.masks) {
+          list = Array.isArray(res) ? res : res.masks;
+        }
+      }
+      if (!list) {
+        const res = await projectsApi.masks(projectId);
+        list = Array.isArray(res) ? res : res?.masks || [];
+      }
       setMasks(list);
       setError('');
+      return list;
     } catch (e) {
       setError('Không tải được masks: ' + (e?.response?.data?.message || e.message));
+      return [];
     }
-  }, [projectId]);
+  }, [projectId, loader]);
 
   useEffect(() => {
     if (projectId) load();
@@ -117,22 +240,22 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
   // §2 approve lifecycle: DRAFT → APPROVED (render burn thật) | DISABLED.
   // Chưa chọn mask hoặc mask AUTO → nút Approve disabled.
   // Thêm mask CHỈ tạo bản xem trước — video cuối chỉ đổi khi Approve + Chạy lại.
-  const canApprove = selected && !isAuto(selected) && selected.status !== 'APPROVED' && !disabled && !saving;
-  const approveHint = !selected
-    ? 'Chọn một mask thủ công để approve'
-    : isAuto(selected)
-      ? 'Mask tự động từ dub.mask — giữ nguyên suốt video (chỉ đọc). Nhấn “Nhân bản tay” để chỉnh'
-      : selected.status === 'APPROVED'
-        ? 'APPROVED: sẽ được render ở lần chạy lại'
-        : 'Approve để đưa mask vào video ở lần Chạy lại tiếp theo';
+  const { canApprove, approveHint } = getMaskApproveState(selected, { disabled, saving });
   const handleApprove = async () => {
     if (!canApprove) return;
     setSaving(true);
     setError('');
     try {
-      const updated = await projectsApi.updateMask(projectId, selected.id, { status: 'APPROVED' });
+      const updated = await approveMask({
+        projectId,
+        maskId: selected.id,
+        updateMaskFn: (pId, mId, data) => projectsApi.updateMask(pId, mId, data),
+        reloadMasksFn: load,
+        onMaskChange,
+        loader,
+        onReload,
+      });
       setMasks((prev) => prev.map((m) => (String(m.id) === String(selected.id) ? { ...m, ...updated } : m)));
-      onMaskChange?.();
     } catch (e) {
       setError('Không approve được mask: ' + (e?.response?.data?.message || e.message));
     } finally {
@@ -258,33 +381,13 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
     }
   };
 
-  const boxStyle = (m) => {
-    if (!contentBox) return { display: 'none' };
-    const left = contentBox.x + Number(m.ratioX) * contentBox.w;
-    const top = contentBox.y + Number(m.ratioY) * contentBox.h;
-    const width = Number(m.ratioW) * contentBox.w;
-    const height = Number(m.ratioH) * contentBox.h;
-    const active = inTime(m, currentTime);
-    const base = {
-      position: 'absolute', left, top, width, height,
-      border: `2px ${m.type === 'solid' ? 'dashed' : 'solid'} ${active ? '#60a5fa' : 'rgba(96,165,250,0.45)'}`,
-      borderRadius: 4,
-      cursor: isAuto(m) ? 'pointer' : 'move',
-      opacity: active ? 1 : 0.55,
-      zIndex: 5,
-      touchAction: 'none',
-    };
-    if (m.type === 'solid') {
-      base.background = `rgba(0,0,0,${Number(m.opacity ?? 1)})`;
-    } else {
-      base.backdropFilter = `blur(${Math.max(1, Math.round(Number(m.blurRadius ?? 8) / 2))}px)`;
-      base.background = 'rgba(0,0,0,0.25)';
-    }
-    if (String(selectedId) === String(m.id)) {
-      base.boxShadow = '0 0 0 2px rgba(96,165,250,0.6)';
-    }
-    return base;
-  };
+  const boxStyle = (m) => computeBoxStyle(m, contentBox, {
+    container: containerRef.current,
+    video: videoRef.current,
+    params,
+    currentTime,
+    selectedId,
+  });
 
   return (
     <div className="flex flex-col gap-2">
@@ -296,7 +399,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
       {/* Workflow lifecycle: thêm mask ≠ sửa video cuối. Burn thật chỉ xảy ra ở dub.render. */}
       <div className="flex items-start gap-2 text-[11px] text-muted-foreground bg-muted/50 border border-border rounded-lg px-2 py-1.5">
         <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
-        <span>Thêm mask chỉ tạo bản xem trước. Để đưa vào video cuối: <strong className="text-foreground">Approve</strong> mask rồi nhấn <strong className="text-foreground">Chạy lại</strong>.</span>
+        <span>Thêm mask chỉ tạo <strong>bản xem trước trên video gốc</strong>. Để đưa vào video cuối (<strong>đã render vào video sau Chạy lại</strong>): <strong className="text-foreground">Approve</strong> mask rồi nhấn <strong className="text-foreground">Chạy lại</strong>.</span>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
@@ -384,7 +487,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
           </div>
         ))}
       </div>
-      <div className="text-[10px] text-muted-foreground px-1">Xem trước trên video nguồn — phụ đề dịch sẽ hiển thị phía trên vùng che ở video cuối. Vùng AUTO giữ nguyên suốt video; muốn chỉnh tay hãy Nhân bản.</div>
+      <div className="text-[10px] text-muted-foreground px-1">Bản xem trước trên video gốc — phụ đề dịch sẽ hiển thị phía trên vùng che ở video cuối (đã render vào video sau Chạy lại). Vùng AUTO giữ nguyên suốt video; muốn chỉnh tay hãy Nhân bản.</div>
 
       {/* Danh sách mask */}
       <div className="flex flex-col gap-1 max-h-32 overflow-y-auto">
@@ -413,7 +516,7 @@ export default function MaskEditor({ projectId, sourceUrl, disabled, outputStale
               <span className="shrink-0 text-amber-400/90" title="Mask DRAFT chưa được render — cần Approve">chưa render</span>
             )}
             {!isAuto(m) && m.status === 'APPROVED' && (
-              <span className="shrink-0 text-emerald-400/90" title="Mask sẽ được đưa vào video ở lần Chạy lại tiếp theo">chờ render</span>
+              <span className="shrink-0 text-emerald-400/90" title="Mask sẽ được đưa vào video (đã render vào video sau Chạy lại)">chờ render</span>
             )}
             {!isAuto(m) && (
               <button
@@ -502,7 +605,7 @@ function MaskForm({ mask, readOnly, disabled, onCommit, onDelete, onDuplicate, o
       )}
       {!readOnly && mask.status === 'APPROVED' && (
         <div className="flex items-center justify-between text-[11px] text-emerald-600 dark:text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-2">
-          <span>APPROVED: sẽ được render ở lần chạy lại. Mask đã khoá để bảo đảm tính nhất quán.</span>
+          <span>APPROVED: đã render vào video sau Chạy lại (khác với bản xem trước trên video gốc). Mask đã khoá để bảo đảm tính nhất quán.</span>
           <button
             type="button"
             onClick={onResetToDraft}

@@ -303,6 +303,72 @@ const readSrc = (...parts) => fs.readFileSync(path.join(__dirname, '..', 'src', 
   await run('DELETE FROM projects WHERE id = ?', [projectId])
 }
 
+// ── 6b. enableDubbing=true + audioMode: ORIGINAL_ONLY does not throw, DUB_MIX throws ──
+{
+  const projectId = 'prov-dub-mix-check'
+  await insert('projects', {
+    id: projectId,
+    user_id: 'prov-user',
+    mode: 'TRANSLATE_DUB',
+    title: 'audioMode mismatch checks',
+    status: 'running',
+    params: JSON.stringify({ enableDubbing: true, audioMode: 'ORIGINAL_ONLY' }),
+    transcript_version: 11,
+  })
+  // Stale ttsAlign job snapshot 10
+  await insert('generation_jobs', {
+    id: 'prov-job-snap-10',
+    project_id: projectId,
+    type: 'dub.ttsAlign',
+    status: 'success',
+    result: JSON.stringify({ transcriptVersionSnapshot: 10 }),
+  })
+
+  // 1. ORIGINAL_ONLY with enableDubbing:true + snapshot 10 + version 11 -> createOutput does NOT throw
+  let err = null
+  let out = null
+  try {
+    const params = { enableDubbing: true, audioMode: 'ORIGINAL_ONLY' }
+    out = await createOutput({
+      id: 'prov-out-orig-only-11',
+      projectId,
+      storageKey: 'projects/prov-dub-mix-check/final-orig.mp4',
+      durationSec: 1,
+      transcriptVersion: 11,
+      generationSnapshot: 11,
+      isTtsActive: params.enableDubbing && params.audioMode !== 'ORIGINAL_ONLY',
+    })
+  } catch (e) {
+    err = e
+  }
+  assert(!err, `enableDubbing=true + ORIGINAL_ONLY does not throw mismatch on stale ttsAlign job (err: ${err?.message})`)
+  assert(out?.id === 'prov-out-orig-only-11', 'output published with enableDubbing=true + ORIGINAL_ONLY')
+
+  // 2. DUB_MIX with enableDubbing:true + snapshot 10 + version 11 -> createOutput STILL throws
+  await run('UPDATE projects SET params = ? WHERE id = ?', [JSON.stringify({ enableDubbing: true, audioMode: 'DUB_MIX' }), projectId])
+  let mismatchErr = null
+  try {
+    const params = { enableDubbing: true, audioMode: 'DUB_MIX' }
+    await createOutput({
+      id: 'prov-out-dub-mix-11',
+      projectId,
+      storageKey: 'projects/prov-dub-mix-check/final-dub-mix.mp4',
+      durationSec: 1,
+      transcriptVersion: 11,
+      generationSnapshot: 11,
+      isTtsActive: params.enableDubbing && params.audioMode !== 'ORIGINAL_ONLY',
+    })
+  } catch (e) {
+    mismatchErr = e
+  }
+  assert(mismatchErr && /snapshot/.test(mismatchErr.message),
+    `enableDubbing=true + DUB_MIX STILL throws mismatch when version (11) != snapshot (10) (got: ${mismatchErr?.message})`)
+
+  await run('DELETE FROM outputs WHERE project_id = ?', [projectId])
+  await run('DELETE FROM generation_jobs WHERE project_id = ?', [projectId])
+  await run('DELETE FROM projects WHERE id = ?', [projectId])
+}
+
 // ── 7. Approve mask -> bump transcript_version -> regenerate render-only -> output published & not stale ──
 {
   const projectId = 'prov-mask-regen'

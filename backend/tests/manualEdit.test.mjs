@@ -74,7 +74,7 @@ const assert = (c, m) => {
   assert(!!m, "(c) tìm thấy RESETS['dub.ttsAlign']")
   if (m) {
     assert(!m[1].includes('transcriptSegments'), `(c) RESETS['dub.ttsAlign'] không xoá segments (got: [${m[1].trim()}])`)
-    assert(m[1].includes('audios') && m[1].includes('outputs'), `(c) RESETS['dub.ttsAlign'] vẫn reset audios+outputs`)
+    assert(!m[1].includes('audios') && m[1].includes('outputs'), "(c) RESETS['dub.ttsAlign'] giữ outputs và không xoá audios để checkpoint resume tự reconcile")
   }
 }
 

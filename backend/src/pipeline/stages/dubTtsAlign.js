@@ -183,6 +183,18 @@ export async function dubTtsAlign(ctx) {
   let firstErrorCode = null
   const usedProviderIds = new Map()
 
+  // Clean up orphan voice audios for this project to ensure no dangling rows
+  try {
+    await runProjectOwned(
+      project.id,
+      runToken,
+      `DELETE FROM audios WHERE project_id = ? AND kind = 'voice' AND id NOT IN (
+        SELECT tts_audio_id FROM transcript_segments WHERE project_id = ? AND tts_audio_id IS NOT NULL
+      )`,
+      [project.id, project.id]
+    )
+  } catch (_) {}
+
   await runWithProviderScope(`dub.ttsAlign:${project.id}`, async () => {
   for (let i = 0; i < segments.length; i++) {
     if (signal?.aborted) throw new Error('Cancelled')
@@ -202,29 +214,62 @@ export async function dubTtsAlign(ctx) {
     const finalPath = path.join(segDir, `seg_fit_${segKey}.wav`)
 
     // Checkpoint resume: If segment already synthesized & attached in previous run, reuse it
-    if (seg.tts_audio_id && fs.existsSync(finalPath)) {
+    let reused = false
+    if (seg.tts_audio_id) {
       try {
         const existingAudio = await queryOne('SELECT id, duration_sec, provider FROM audios WHERE id = ? AND project_id = ?', [seg.tts_audio_id, project.id])
-        if (existingAudio) {
+        if (existingAudio && fs.existsSync(finalPath)) {
           const probeDur = (await probe(finalPath)).durationSec
           if (probeDur > 0.05) {
-            fitted.push({
-              segmentId: seg.id,
-              indexNum: seg.index_num,
-              file: finalPath,
-              effectiveDurSec: round3(probeDur),
-              action: 'fit',
-              tempo: 1,
-              providerId: existingAudio.provider || ttsCandidates[0]?.id || 'unknown',
-              audioId: existingAudio.id,
+            // Verify provider & voice fingerprint
+            const cand = ttsCandidates.find((c) => c.id === existingAudio.provider) || ttsCandidates[0]
+            const voice = cand?.provider?.voice || cand?.provider?.voiceId || cand?.provider?.model || requestedVoiceName || cand?.id
+            const model = cand?.provider?.model || cand?.id
+            const canonical = buildTtsCacheInput({
+              provider: cand?.id || existingAudio.provider,
+              voice,
+              model,
+              text: seg.translation,
+              speed: 1,
             })
-            successCount++
-            cacheHitCount++
-            setProgress(3 + Math.round(((i + 1) / segments.length) * 82))
-            continue
+            const expectedClip = ttsClipKey(canonical)
+
+            const providerMatches = requestedProvider
+              ? existingAudio.provider === requestedProvider
+              : (existingAudio.provider === ttsCandidates[0]?.id || ttsCandidates.some((c) => c.id === existingAudio.provider))
+
+            const clipKeyMatches = !seg.tts_clip_key || seg.tts_clip_key === expectedClip
+
+            if (providerMatches && clipKeyMatches) {
+              fitted.push({
+                segmentId: seg.id,
+                indexNum: seg.index_num,
+                file: finalPath,
+                effectiveDurSec: round3(probeDur),
+                action: 'fit',
+                tempo: 1,
+                providerId: existingAudio.provider || ttsCandidates[0]?.id || 'unknown',
+                audioId: existingAudio.id,
+              })
+              successCount++
+              cacheHitCount++
+              setProgress(3 + Math.round(((i + 1) / segments.length) * 82))
+              reused = true
+              continue
+            }
           }
         }
       } catch (_) {}
+
+      if (!reused) {
+        // Invalid link or fingerprint mismatch: remove old audio row and unlink segment
+        try {
+          await runProjectOwned(project.id, runToken, 'DELETE FROM audios WHERE id = ? AND project_id = ?', [seg.tts_audio_id, project.id])
+          await runProjectOwned(project.id, runToken, 'UPDATE transcript_segments SET tts_audio_id = NULL, tts_clip_key = NULL WHERE id = ? AND project_id = ?', [seg.id, project.id])
+        } catch (_) {}
+        seg.tts_audio_id = null
+        seg.tts_clip_key = null
+      }
     }
 
     const slotDur = Math.max(0.2, Number(seg.end_sec) - Number(seg.start_sec))
@@ -355,6 +400,16 @@ export async function dubTtsAlign(ctx) {
           }
           throw error
         }
+
+        // Record tts_clip_key on transcript_segments for fingerprint tracking
+        try {
+          const cand = ttsCandidates.find((c) => c.id === (audio.providerId || ttsCandidates[0]?.id)) || ttsCandidates[0]
+          const voice = cand?.provider?.voice || cand?.provider?.voiceId || cand?.provider?.model || requestedVoiceName || cand?.id
+          const model = cand?.provider?.model || cand?.id
+          const canonical = buildTtsCacheInput({ provider: cand?.id || audio.providerId || ttsCandidates[0]?.id, voice, model, text: seg.translation, speed: 1 })
+          const clipKey = ttsClipKey(canonical)
+          await runProjectOwned(project.id, runToken, 'UPDATE transcript_segments SET tts_clip_key = ? WHERE id = ? AND project_id = ?', [clipKey, seg.id, project.id])
+        } catch (_) {}
 
         fitted.push({
           segmentId: seg.id,
