@@ -10,7 +10,9 @@ import { query, queryOne, run, withTransaction } from '../../db/query.js'
 import { resolveStorageKey, ensureDir } from '../../pipeline/context.js'
 import { config } from '../../config.js'
 import composerService from '../../services/composerService.js'
-import { detectFileSignature, isDangerousSignature } from '../../lib/fileValidation.js'
+import { detectFileSignature, isDangerousSignature, isUnsafeSvgContent, FILE_SIZE_LIMITS } from '../../lib/fileValidation.js'
+import { uploadRateLimiter } from '../../middleware/rateLimiter.js'
+import { checkDiskSpace } from '../../lib/diskGuard.js'
 
 const router = Router()
 router.use(authMiddleware)
@@ -34,6 +36,17 @@ function totalSizeLimit(req, res, next) {
   const len = Number(req.headers['content-length'] || 0)
   if (len > 1024 * 1024 * 1024) {
     return sendError(res, 413, 'BATCH_TOO_LARGE', 'Tổng dung lượng tệp tải lên vượt quá giới hạn 1GB')
+  }
+  next()
+}
+
+async function diskSpaceGuard(req, res, next) {
+  const disk = await checkDiskSpace()
+  if (!disk.ok) {
+    return sendError(res, 507, 'STORAGE_FULL', 'Máy chủ tạm hết dung lượng lưu trữ. Vui lòng thử lại sau.', {
+      freeBytes: disk.freeBytes,
+      minFreeBytes: disk.minFreeBytes,
+    })
   }
   next()
 }
@@ -62,16 +75,27 @@ export function checkMediaSignature(filePath) {
   if (!filePath || !fs.existsSync(filePath)) return false
   let fd
   try {
+    const stat = fs.lstatSync(filePath)
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 2) return false
     fd = fs.openSync(filePath, 'r')
-    const buf = Buffer.alloc(512)
-    const bytesRead = fs.readSync(fd, buf, 0, 512, 0)
+    const headerSize = Math.min(stat.size, 4096)
+    const buf = Buffer.alloc(headerSize)
+    const bytesRead = fs.readSync(fd, buf, 0, headerSize, 0)
     if (bytesRead < 2) return false
 
     const header = buf.subarray(0, bytesRead)
     const dangerous = isDangerousSignature(header)
     if (dangerous.dangerous) return false
 
-    const detected = detectFileSignature(header)
+    let inspectBuf = header
+    const headText = header.toString('utf8').replace(/^\uFEFF/, '').trimStart().toLowerCase()
+    if (headText.startsWith('<svg') || headText.startsWith('<?xml') || headText.startsWith('<!--') || filePath.toLowerCase().endsWith('.svg')) {
+      if (stat.size > FILE_SIZE_LIMITS.IMAGE) return false
+      inspectBuf = fs.readFileSync(filePath)
+      if (isUnsafeSvgContent(inspectBuf.toString('utf8'))) return false
+    }
+
+    const detected = detectFileSignature(inspectBuf)
     if (!detected || detected.dangerous) return false
 
     return ['image', 'audio', 'video'].includes(detected.type)
@@ -170,7 +194,7 @@ router.get('/:id/assets', requireProjectOwner, async (req, res) => {
 })
 
 // POST /api/v1/projects/:id/assets
-router.post('/:id/assets', requireProjectOwner, totalSizeLimit, uploadHandler, async (req, res) => {
+router.post('/:id/assets', uploadRateLimiter, requireProjectOwner, totalSizeLimit, diskSpaceGuard, uploadHandler, async (req, res) => {
   const files = req.files?.files || (req.files?.file ? [req.files.file[0]] : [])
   const cleanupFiles = () => {
     for (const f of files) {

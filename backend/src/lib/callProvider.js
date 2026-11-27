@@ -346,8 +346,9 @@ async function resolveRateLimitOpts(provider, userId, rateLimitOpts) {
 }
 
 async function executeProviderCall({ provider, type, model, fn, userId, apiKeyId, projectId, jobId, rateLimitOpts }) {
-  // 2. Rate limiter
-  const limiter = getRateLimiter(userId || 'system', provider, apiKeyId, await resolveRateLimitOpts(provider, userId, rateLimitOpts), model)
+  // 2. Rate limiter — shared server env keys (apiKeyId == null) share one bucket across all users
+  const limiterKey = !apiKeyId ? 'shared-env' : (userId || 'system')
+  const limiter = getRateLimiter(limiterKey, provider, apiKeyId, await resolveRateLimitOpts(provider, userId, rateLimitOpts), model)
 
   await limiter.acquire()
   const startMs = Date.now()

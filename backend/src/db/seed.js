@@ -102,6 +102,7 @@ export async function seed() {
 
   const defaultLimits = [
     { id: 'gemini-free', provider: 'gemini', tier: 'free', requests_per_minute: 10, requests_per_day: 250, concurrency: 1 },
+    { id: 'whisper-free', provider: 'whisper', tier: 'free', requests_per_minute: 20, requests_per_day: 2000, concurrency: 2 },
     { id: 'openai-free', provider: 'openai', tier: 'free', requests_per_minute: 3, requests_per_day: 200, concurrency: 1 },
     { id: 'elevenlabs-free', provider: 'elevenlabs', tier: 'free', requests_per_minute: 2, requests_per_day: null, concurrency: 1 },
     { id: 'huggingface-free', provider: 'huggingface', tier: 'free', requests_per_minute: 5, requests_per_day: null, concurrency: 1 },
@@ -111,15 +112,19 @@ export async function seed() {
   const existingLimitIds = new Set(existingLimits.map((l) => l.id))
   for (const lim of defaultLimits) {
     if (existingLimitIds.has(lim.id)) continue
-    await insert('provider_rate_limits', {
-      id: lim.id,
-      provider: lim.provider,
-      tier: lim.tier,
-      requests_per_minute: lim.requests_per_minute,
-      requests_per_day: lim.requests_per_day,
-      concurrency: lim.concurrency,
-      user_id: null,
-    })
+    try {
+      await insert('provider_rate_limits', {
+        id: lim.id,
+        provider: lim.provider,
+        tier: lim.tier,
+        requests_per_minute: lim.requests_per_minute,
+        requests_per_day: lim.requests_per_day,
+        concurrency: lim.concurrency,
+        user_id: null,
+      })
+    } catch (err) {
+      if (err?.code !== '23505') throw err
+    }
   }
 }
 

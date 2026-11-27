@@ -18,6 +18,7 @@ import {
 import AuthLayout from "@/components/AuthLayout";
 import OtpInput from "@/components/auth/OtpInput";
 import GoogleSignInButton from "@/components/auth/GoogleSignInButton";
+import TurnstileWidget from "@/components/auth/TurnstileWidget";
 import { useAuth } from "@/lib/AuthContext";
 import { useToast } from "@/components/ui/use-toast";
 
@@ -44,6 +45,9 @@ export default function Register() {
 
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState("");
+  const [turnstileReset, setTurnstileReset] = useState(0);
+  const turnstileEnabled = Boolean(import.meta.env.VITE_TURNSTILE_SITE_KEY);
 
   const formatAuthError = (err) => {
     if (err?.response?.status === 429) {
@@ -93,10 +97,14 @@ export default function Register() {
       setError("Mật khẩu xác nhận không khớp");
       return;
     }
+    if (turnstileEnabled && !turnstileToken) {
+      setError("Vui lòng hoàn tất xác thực bảo vệ bot (Turnstile)");
+      return;
+    }
 
     setLoading(true);
     try {
-      const res = await registerSendOtp(email.trim(), password, name.trim() || undefined);
+      const res = await registerSendOtp(email.trim(), password, name.trim() || undefined, turnstileToken);
       if (res?.cooldownSec) {
         setCooldownSec(res.cooldownSec);
       } else {
@@ -106,6 +114,10 @@ export default function Register() {
         setDevOtp(res.devOtp);
       }
       setOtp("");
+      if (turnstileEnabled) {
+        setTurnstileToken("");
+        setTurnstileReset((n) => n + 1);
+      }
       setStep("otp");
       toast({
         title: "Đã gửi mã xác thực",
@@ -113,6 +125,10 @@ export default function Register() {
       });
     } catch (err) {
       setError(formatAuthError(err));
+      if (turnstileEnabled) {
+        setTurnstileToken("");
+        setTurnstileReset((n) => n + 1);
+      }
     } finally {
       setLoading(false);
     }
@@ -149,10 +165,14 @@ export default function Register() {
 
   // Resend OTP in Step 2
   const handleResendOtp = async () => {
+    if (turnstileEnabled && !turnstileToken) {
+      setError("Vui lòng hoàn tất xác thực Turnstile trước khi gửi lại mã");
+      return;
+    }
     setIsResending(true);
     setError("");
     try {
-      const res = await registerSendOtp(email.trim(), password, name.trim() || undefined);
+      const res = await registerSendOtp(email.trim(), password, name.trim() || undefined, turnstileToken);
       if (res?.cooldownSec) {
         setCooldownSec(res.cooldownSec);
       } else {
@@ -161,12 +181,20 @@ export default function Register() {
       if (res?.devOtp) {
         setDevOtp(res.devOtp);
       }
+      if (turnstileEnabled) {
+        setTurnstileToken("");
+        setTurnstileReset((n) => n + 1);
+      }
       toast({
         title: "Đã gửi lại mã OTP",
         description: "Vui lòng kiểm tra hộp thư đến hoặc thư mục rác (Spam).",
       });
     } catch (err) {
       setError(formatAuthError(err));
+      if (turnstileEnabled) {
+        setTurnstileToken("");
+        setTurnstileReset((n) => n + 1);
+      }
     } finally {
       setIsResending(false);
     }
@@ -328,6 +356,12 @@ export default function Register() {
               </div>
             </div>
 
+            <TurnstileWidget
+              onVerify={(tok) => setTurnstileToken(tok)}
+              onExpire={() => setTurnstileToken("")}
+              resetSignal={turnstileReset}
+            />
+
             <Button
               type="submit"
               className="w-full h-9.5 sm:h-10 font-semibold text-xs sm:text-sm rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm shadow-primary/20 transition-all mt-1 cursor-pointer"
@@ -405,6 +439,12 @@ export default function Register() {
               autoFocus
             />
           </div>
+
+          <TurnstileWidget
+            onVerify={(tok) => setTurnstileToken(tok)}
+            onExpire={() => setTurnstileToken("")}
+            resetSignal={turnstileReset}
+          />
 
           <Button
             type="button"

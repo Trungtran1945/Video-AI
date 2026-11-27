@@ -1,8 +1,9 @@
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import { query, updateById } from '../../db/query.js'
-import { getProvider } from '../../providers/registry.js'
+import { listProvidersForCapability } from '../../providers/registry.js'
 import { callProvider } from '../../lib/callProvider.js'
+import { withProviderFailover } from '../../lib/providerFailover.js'
 import { packSegment, buildTimelineRows, textEmbedding } from '../alignService.js'
 import { projectDir, ensureDir, parseJsonSafe, toStorageKey, round2, insertMany } from '../context.js'
 
@@ -21,7 +22,10 @@ export async function summaryAlign(ctx) {
   }
   const scenesById = new Map(scenesRows.map((s) => [s.id, s]))
 
-  const tts = await getProvider(project.user_id, 'tts')
+  // Demo mode thêm mock vào cuối danh sách: nếu Edge-TTS không có mạng thì
+  // pipeline vẫn render được (giọng im lặng). Provider thật vẫn đứng đầu.
+  const ttsCandidates = await listProvidersForCapability(project.user_id, 'tts')
+  if (!ttsCandidates.length) throw new Error('NO_PROVIDER_AVAILABLE: chưa có provider TTS nào')
   const audioDir = ensureDir(path.join(projectDir(project.id), 'audio'))
   const usedSceneIds = new Set()
   const segmentsMeta = []
@@ -31,17 +35,21 @@ export async function summaryAlign(ctx) {
     // Check abort signal
     if (signal?.aborted) throw new Error('Cancelled')
     setProgress(3 + Math.round((segmentsMeta.length / segments.length) * 55))
-    const synth = await callProvider({
-      provider: tts.id,
-      type: 'tts',
-      model: tts.provider.model || tts.id,
-      input: { text: seg.narration, outPath: path.join(audioDir, `seg_${seg.index_num}.mp3`) },
-      fn: () => tts.provider.synthesize({ text: seg.narration, outPath: path.join(audioDir, `seg_${seg.index_num}.mp3`) }),
-      userId: project.user_id,
-      apiKeyId: tts.apiKeyId,
-      projectId: project.id,
-      jobId: job.id,
-    })
+    const outPath = path.join(audioDir, `seg_${seg.index_num}.mp3`)
+    const { result: synth, provider: usedTts } = await withProviderFailover(
+      { capability: 'tts', candidates: ttsCandidates, maxAttempts: ttsCandidates.length },
+      async (cand) => callProvider({
+        provider: cand.id,
+        type: 'tts',
+        model: cand.provider.model || cand.id,
+        input: { text: seg.narration, outPath },
+        fn: () => cand.provider.synthesize({ text: seg.narration, outPath }),
+        userId: project.user_id,
+        apiKeyId: cand.apiKeyId,
+        projectId: project.id,
+        jobId: job.id,
+      })
+    )
 
     const refs = (parseJsonSafe(seg.scene_refs, []) || [])
       .map((r) => ({ scene: scenesById.get(r.sceneId), weight: Number(r.weight) || 0.6 }))
@@ -66,7 +74,7 @@ export async function summaryAlign(ctx) {
       kind: 'voice',
       storage_key: toStorageKey(synth.audioPath),
       duration_sec: round2(duration),
-      provider: tts.id,
+      provider: usedTts.id,
     }
     audioRows.push(audioRow)
     segmentsMeta.push({

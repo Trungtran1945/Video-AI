@@ -248,23 +248,86 @@ async function start() {
     }
   }
 
+  let fallbackDrainTimer = null
+  let fallbackCleanupTimer = null
+  const startFallbackDrainLoop = () => {
+    if (fallbackDrainTimer) return
+    fallbackDrainTimer = setInterval(() => {
+      import('./src/queue/workers/drainQueued.js')
+        .then((m) => m.processDrainQueued({}))
+        .catch((e) => console.warn('[Queue] fallback drain failed:', e?.message || e))
+    }, 15_000)
+    if (typeof fallbackDrainTimer.unref === 'function') fallbackDrainTimer.unref()
+  }
+  const startFallbackCleanupLoop = () => {
+    if (fallbackCleanupTimer) return
+    fallbackCleanupTimer = setInterval(() => {
+      import('./src/queue/workers/cleanupWorker.js')
+        .then((m) => m.processCleanup({}))
+        .catch((e) => console.warn('[Queue] fallback cleanup failed:', e?.message || e))
+    }, 60 * 60 * 1000)
+    if (typeof fallbackCleanupTimer.unref === 'function') fallbackCleanupTimer.unref()
+  }
+
   try {
     const { connection, waitForRedis, getRedisEndpoint } = await import('./src/queue/connection.js')
     if (await waitForRedis(3000)) {
       await bootQueueWorkers()
-    } else if (config.nodeEnv === 'production') {
-      // Redis bắt buộc ở production: fail fast với diagnostic rõ ràng thay vì
+    } else if (config.nodeEnv === 'production' && isQueueRequired()) {
+      // Redis bắt buộc ở production mặc định: fail fast với diagnostic rõ ràng thay vì
       // chạy mù rồi spam "Stream isn't writeable" ở mọi worker.
-      console.error(`[Queue] FATAL: Redis unavailable at ${getRedisEndpoint()} — workers (notifications, cleanup, job draining) require Redis. Start it (docker compose up redis) or set REDIS_HOST/REDIS_PORT in backend/.env`)
+      // (Chỉ bỏ qua khi cấu hình tường minh QUEUE_REQUIRED=false cho môi trường single-node miễn phí)
+      console.error(`[Queue] FATAL: Redis unavailable at ${getRedisEndpoint()} — workers (notifications, cleanup, job draining) require Redis. Start it (docker compose up redis) or set REDIS_HOST/REDIS_PORT/REDIS_URL`)
       process.exit(1)
     } else {
-      console.warn('[Queue] Redis unavailable — notifications, cleanup, and job draining are disabled; new projects stay "queued" until Redis is ready (docker compose up -d redis). API remains 200; check GET /health → redis:disconnected. (workers will start when Redis is ready)')
+      console.warn('[Queue] Redis unavailable — BullMQ disabled; using in-process drain & cleanup fallbacks (or set REDIS_HOST/REDIS_URL). Check GET /health → redis:disconnected.')
+      if (config.nodeEnv === 'production' || !isQueueRequired()) {
+        startFallbackDrainLoop()
+        startFallbackCleanupLoop()
+      }
       connection.once('ready', () => {
+        if (fallbackDrainTimer) {
+          clearInterval(fallbackDrainTimer)
+          fallbackDrainTimer = null
+        }
+        if (fallbackCleanupTimer) {
+          clearInterval(fallbackCleanupTimer)
+          fallbackCleanupTimer = null
+        }
         bootQueueWorkers().catch((e) => console.warn('[Queue] deferred worker boot failed:', e.message))
       })
     }
   } catch (e) {
     console.warn('[Queue] Redis module failed to load — queue features disabled:', e.message)
+  }
+
+  // Optional single-service deployment: serve prebuilt frontend/dist from Express
+  // when SERVE_FRONTEND_DIST=true (keeps same-origin cookies on PaaS like Render).
+  if (process.env.SERVE_FRONTEND_DIST === 'true') {
+    const distDir = path.resolve(__dirname, '..', 'frontend', 'dist')
+    const indexHtml = path.join(distDir, 'index.html')
+    if (fs.existsSync(indexHtml)) {
+      app.use(express.static(distDir, {
+        index: false,
+        setHeaders(res, filePath) {
+          if (/[/\\]assets[/\\]/.test(filePath)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+          } else {
+            res.setHeader('Cache-Control', 'no-cache')
+          }
+        },
+      }))
+      app.get('*', (req, res, next) => {
+        if (req.path.startsWith('/api') || req.path.startsWith('/storage') || req.path === '/health' || req.path === '/ready') {
+          return next()
+        }
+        res.setHeader('Cache-Control', 'no-cache')
+        res.sendFile(indexHtml)
+      })
+      console.log(`[Web] Serving frontend SPA from ${distDir}`)
+    } else {
+      console.warn(`[Web] SERVE_FRONTEND_DIST=true but ${indexHtml} not found`)
+    }
   }
 
   // Log final queue system status

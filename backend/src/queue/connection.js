@@ -1,20 +1,56 @@
 import IORedis from 'ioredis'
 import { config } from '../config.js'
 
-const endpoint = `${config.redis.host}:${config.redis.port}`
+export function buildRedisConnectionInfo(redisCfg = config.redis) {
+  const base = {
+    maxRetriesPerRequest: null,
+    // Deliberately false: commands must fail fast with a clear diagnostic
+    // instead of silently queueing against a dead stream.
+    enableOfflineQueue: false,
+    retryStrategy(times) {
+      const delay = Math.min(times * 500, 30000)
+      return delay
+    },
+  }
 
-const redisOptions = {
-  host: config.redis.host,
-  port: config.redis.port,
-  maxRetriesPerRequest: null,
-  // Deliberately false: commands must fail fast with a clear diagnostic
-  // instead of silently queueing against a dead stream.
-  enableOfflineQueue: false,
-  retryStrategy(times) {
-    const delay = Math.min(times * 500, 30000)
-    return delay
-  },
+  const tlsRejectUnauthorized = process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false'
+
+  if (redisCfg?.url) {
+    try {
+      const parsed = new URL(redisCfg.url)
+      const port = Number(parsed.port || 6379)
+      const useTls = parsed.protocol === 'rediss:' || Boolean(redisCfg?.tls)
+      return {
+        endpoint: `${parsed.hostname}:${port}`,
+        options: {
+          ...base,
+          host: parsed.hostname,
+          port,
+          ...(parsed.username ? { username: decodeURIComponent(parsed.username) } : {}),
+          ...(parsed.password ? { password: decodeURIComponent(parsed.password) } : {}),
+          ...(useTls ? { tls: { rejectUnauthorized: tlsRejectUnauthorized } } : {}),
+        },
+      }
+    } catch (_) {
+      // Fallback to host/port config if REDIS_URL is malformed
+    }
+  }
+
+  const host = redisCfg?.host || '127.0.0.1'
+  const port = Number(redisCfg?.port || 6379)
+  return {
+    endpoint: `${host}:${port}`,
+    options: {
+      ...base,
+      host,
+      port,
+      ...(redisCfg?.password ? { password: redisCfg.password } : {}),
+      ...(redisCfg?.tls ? { tls: { rejectUnauthorized: tlsRejectUnauthorized } } : {}),
+    },
+  }
 }
+
+const { endpoint, options: redisOptions } = buildRedisConnectionInfo()
 
 export const connection = new IORedis(redisOptions)
 

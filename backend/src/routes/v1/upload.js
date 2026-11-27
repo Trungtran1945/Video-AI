@@ -12,6 +12,7 @@ import { markLegacyUploadActive, releaseLegacyUpload } from '../../services/lega
 import { assertVideoFile, MediaValidationError, validateVideoMetadata } from '../../services/mediaValidation.js'
 import { CHUNK_SIZE, MAX_SIZE, resumableUploadService, UploadServiceError } from '../../services/resumableUploadService.js'
 import { storageService } from '../../services/storage/index.js'
+import { checkDiskSpace } from '../../lib/diskGuard.js'
 
 // Legacy multipart chỉ cho file nhỏ ≤50MB; file lớn dùng resumable TUS
 // (POST /uploads/init → PUT chunk 8MB → POST complete, limit 2GB duy nhất).
@@ -148,6 +149,13 @@ export function createUploadRouter({
   }))
 
   router.post('/init', asyncHandler(async (req, res) => {
+    const disk = await checkDiskSpace()
+    if (!disk.ok) {
+      return sendError(res, 507, 'STORAGE_FULL', 'Máy chủ tạm hết dung lượng lưu trữ. Vui lòng thử lại sau.', {
+        freeBytes: disk.freeBytes,
+        minFreeBytes: disk.minFreeBytes,
+      })
+    }
     const body = req.body || {}
     const result = await service.createSession({
       userId: req.user.id,

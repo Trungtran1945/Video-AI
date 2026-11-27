@@ -1,9 +1,15 @@
 import fs from 'node:fs'
 import path from 'path'
+import { ERROR_CODES, ERROR_KINDS } from '../../lib/providerErrors.js'
 
 // Tương thích OpenAI Whisper API — có thể trỏ sang Groq free qua WHISPER_BASE_URL
 export const DEFAULT_BASE = 'https://api.openai.com/v1'
 export const WHISPER_RESPONSE_FORMAT = 'verbose_json'
+
+function getWhisperTimeoutMs() {
+  const v = Number(process.env.WHISPER_TIMEOUT_MS)
+  return Number.isFinite(v) && v > 0 ? v : 120_000
+}
 
 export function getWhisperEndpoint() {
   const raw = String(process.env.WHISPER_BASE_URL || DEFAULT_BASE).trim() || DEFAULT_BASE
@@ -89,12 +95,33 @@ export class OpenAiWhisperAsr {
     form.append('temperature', String(effective.temperature))
     if (effective.initialPrompt) form.append('prompt', effective.initialPrompt)
 
-    const res = await fetch(`${base}/audio/transcriptions`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${this.apiKey}` },
-      body: form,
-    })
-    const data = await res.json().catch(() => null)
+    const timeoutMs = getWhisperTimeoutMs()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let res
+    let data
+    try {
+      res = await fetch(`${base}/audio/transcriptions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        body: form,
+        signal: controller.signal,
+      })
+      data = await res.json().catch(() => null)
+    } catch (err) {
+      if (err?.name === 'AbortError' || err?.name === 'TimeoutError' || controller.signal.aborted) {
+        const terr = new Error(`ASR (Whisper) timeout sau ${Math.round(timeoutMs / 1000)}s`)
+        terr.code = ERROR_CODES.PROVIDER_TIMEOUT
+        terr.errorCode = ERROR_CODES.PROVIDER_TIMEOUT
+        terr.kind = ERROR_KINDS.TRANSIENT
+        terr.status = 504
+        terr.retryable = true
+        throw terr
+      }
+      throw err
+    } finally {
+      clearTimeout(timer)
+    }
     if (!res.ok) {
       const message = data?.error?.message || `OpenAI Whisper HTTP ${res.status}`
       const err = new Error(`ASR (Whisper) lỗi: ${message}`)

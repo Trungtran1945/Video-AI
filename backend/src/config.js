@@ -164,8 +164,18 @@ function positiveInt(value, fallback) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
 }
 
+function nonNegativeInt(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback
+  const parsed = Number(value)
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback
+}
+
 const instanceMode = String(process.env.INSTANCE_MODE || 'single').toLowerCase()
 const maxConcurrentProjectsPerUser = positiveInt(process.env.MAX_CONCURRENT_PROJECTS_PER_USER, 2)
+const maxGlobalConcurrentPipelines = nonNegativeInt(
+  process.env.MAX_GLOBAL_CONCURRENT_PIPELINES,
+  nodeEnv === 'production' ? 2 : 0
+)
 
 export const config = {
   port: Number(process.env.PORT || 3001),
@@ -201,17 +211,26 @@ export const config = {
   },
   // Group 1: BullMQ / Redis
   redis: {
+    url: process.env.REDIS_URL || '',
     host: process.env.REDIS_HOST || '127.0.0.1',
     port: Number(process.env.REDIS_PORT || 6379),
+    password: process.env.REDIS_PASSWORD || '',
+    tls: process.env.REDIS_TLS === 'true',
   },
   // Group 1: Concurrency limit
   maxConcurrentProjectsPerUser,
+  maxGlobalConcurrentPipelines,
   instanceMode,
   projectLeaseSeconds: positiveInt(process.env.PROJECT_LEASE_SECONDS, 1800),
   uploadSessionTtlMinutes: positiveInt(process.env.UPLOAD_SESSION_TTL_MINUTES, 60),
   dbMaxPendingWrites: positiveInt(process.env.DB_MAX_PENDING_WRITES, 1000),
   dbSlowWriteMs: Number.isFinite(Number(process.env.DB_SLOW_WRITE_MS)) ? Number(process.env.DB_SLOW_WRITE_MS) : 1000,
   projectRetentionDays: Number(process.env.PROJECT_RETENTION_DAYS || 30),
+  // Disk safety: chặn tạo project/upload khi đĩa trống dưới ngưỡng.
+  // 0 = tắt guard (mặc định dev/test). Production set 30 qua compose/.env.
+  minFreeDiskGb: nonNegativeInt(process.env.MIN_FREE_DISK_GB, 0),
+  // Abuse safety: số project tối đa một user được giữ (0 = không giới hạn).
+  maxStoredProjectsPerUser: nonNegativeInt(process.env.MAX_STORED_PROJECTS_PER_USER, 0),
   // Group 1: SMTP notification
   smtp: {
     host: process.env.SMTP_HOST || '',

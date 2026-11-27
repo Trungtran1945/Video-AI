@@ -5,14 +5,10 @@ import { connection, isConnectionReady } from '../queue/connection.js'
 const inMemoryStores = new Map()
 
 /**
- * Safely extracts client IP address, supporting X-Forwarded-For header when behind reverse proxy
+ * Safely extracts client IP address from Express `req.ip` (respecting `trust proxy`),
+ * falling back to `req.socket.remoteAddress`. Never trusts arbitrary `X-Forwarded-For[0]`.
  */
 export function getClientIp(req) {
-  const forwarded = req?.headers?.['x-forwarded-for']
-  if (forwarded) {
-    const first = String(forwarded).split(',')[0].trim()
-    if (first) return first
-  }
   return req?.ip || req?.socket?.remoteAddress || 'unknown'
 }
 
@@ -41,6 +37,13 @@ function getMemoryStore(prefix = 'default') {
  * Returns 0 if allowed, or retryAfterSec > 0 if limit exceeded.
  */
 function memoryHitRateLimit(store, key, limit, windowMs, now = Date.now()) {
+  if (store.size > 1000) {
+    for (const [k, tsList] of store.entries()) {
+      const fresh = tsList.filter((t) => now - t < windowMs)
+      if (fresh.length === 0) store.delete(k)
+      else if (fresh.length !== tsList.length) store.set(k, fresh)
+    }
+  }
   const normKey = normalizeRateLimitKey(key)
   const hits = (store.get(normKey) || []).filter((t) => now - t < windowMs)
   hits.push(now)
@@ -202,7 +205,7 @@ export function createRateLimiter(options = {}) {
   const {
     windowMs = 60 * 1000,
     limit = 60,
-    keyGenerator = (req) => req.ip || req.headers['x-forwarded-for'] || 'unknown',
+    keyGenerator = (req) => getClientIp(req),
     skip = () => false,
     message = 'Quá nhiều yêu cầu. Vui lòng thử lại sau.',
     code = 'RATE_LIMITED',
@@ -252,15 +255,29 @@ export const globalApiRateLimiter = createRateLimiter({
   limit: 300,
   prefix: 'global_api',
   message: 'Quá nhiều yêu cầu từ địa chỉ IP này. Vui lòng thử lại sau ít phút.',
-  skip: (req) => req.path === '/health' || req.path === '/ready',
+  skip: (req) =>
+    req.path === '/health' ||
+    req.path === '/health/ready' ||
+    req.path === '/ready' ||
+    (req.method === 'PUT' && /^\/uploads?\/[^/]+\/chunk$/.test(req.path)),
 })
 
-/** Upload endpoints rate limiter: 60 requests / 1 minute per IP */
+/** Upload endpoints rate limiter: 60 requests / 1 minute per IP (skips TUS chunks which use chunkUploadRateLimiter) */
 export const uploadRateLimiter = createRateLimiter({
   windowMs: 60 * 1000,
   limit: 60,
   prefix: 'upload',
   message: 'Quá nhiều yêu cầu tải lên từ địa chỉ IP của bạn. Vui lòng thử lại sau.',
+  skip: (req) => req.method === 'HEAD' || req.method === 'GET' || (req.method === 'PUT' && /\/chunk$/.test(req.path)),
+})
+
+/** Resumable chunk upload rate limiter: 600 chunks / 1 minute per IP (supports 2GB / 8MB = 256 chunks) */
+export const chunkUploadRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  limit: 600,
+  prefix: 'upload_chunk',
+  message: 'Quá nhiều chunk tải lên từ địa chỉ IP của bạn. Vui lòng thử lại sau.',
+  skip: (req) => !(req.method === 'PUT' && /\/chunk$/.test(req.path)),
 })
 
 /** Register rate limiter: 10 requests / 15 minutes per IP */
@@ -299,6 +316,7 @@ export default {
   createRateLimiter,
   globalApiRateLimiter,
   uploadRateLimiter,
+  chunkUploadRateLimiter,
   registerRateLimiter,
   googleRateLimiter,
   forgotPasswordIpLimiter,

@@ -28,6 +28,7 @@ import {
 } from '../../services/scriptUploadService.js'
 import { isPathInside } from '../../lib/safePath.js'
 import { formatAsset } from './composerAssets.js'
+import { checkDiskSpace } from '../../lib/diskGuard.js'
 import { formatClip, formatTrack } from '../../services/composerService.js'
 import { validateBody, validateParams } from '../../middleware/validate.js'
 import { createProjectSchema, idParamSchema } from '../../validation/schemas.js'
@@ -55,6 +56,20 @@ const isScriptMode = (mode) => normalizeMode(mode) === 'SCRIPT_TO_VIDEO'
 const VOICE_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
 const SCRIPT_IMAGE_PROVIDERS = new Set(['slide', 'mock'])
 const SCRIPT_ASPECTS = new Set(['16:9', '9:16'])
+const SAFE_SOURCE_KEY_RE = /^uploads\/[A-Za-z0-9._-]+\.(mp4|m4v|mov|mkv|webm|avi)$/i
+const UUID_SOURCE_KEY_RE = /^uploads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(mp4|m4v|mov|mkv|webm|avi)$/i
+
+export function isValidSourceVideoKey(rawKey, { nodeEnv = process.env.NODE_ENV, hasOwnedSession = false } = {}) {
+  if (typeof rawKey !== 'string') return false
+  const key = rawKey.trim()
+  if (!key || key.includes('\0') || key.includes('..') || key.includes('\\')) return false
+  if (key.startsWith('/') || /^[a-zA-Z]:/.test(key) || /^[a-zA-Z]+:\/\//.test(key)) return false
+  if (!SAFE_SOURCE_KEY_RE.test(key)) return false
+  if (nodeEnv === 'production' && !hasOwnedSession && !UUID_SOURCE_KEY_RE.test(key)) {
+    return false
+  }
+  return true
+}
 
 async function addScriptExtras(extras, project) {
   const analyze = await queryOne(
@@ -104,6 +119,13 @@ const isDubMode = (mode) => {
 router.post('/', validateBody(createProjectSchema), protectFields(['user_id', 'role']), async (req, res) => {
   let createdProjectId = null
   try {
+    const disk = await checkDiskSpace()
+    if (!disk.ok) {
+      return sendError(res, 507, 'STORAGE_FULL', 'Máy chủ tạm hết dung lượng lưu trữ. Vui lòng thử lại sau.', {
+        freeBytes: disk.freeBytes,
+        minFreeBytes: disk.minFreeBytes,
+      })
+    }
     const b = req.body || {}
     // Chuẩn hoá mode về UPPERCASE, chấp nhận alias SCRIPT_TO_VIDEO từ client.
     const mode = normalizeMode(b.mode)
@@ -118,6 +140,28 @@ router.post('/', validateBody(createProjectSchema), protectFields(['user_id', 'r
     }
     if (mode !== 'SCRIPT_TO_VIDEO' && mode !== 'MEDIA_COMPOSER' && !b.sourceVideoKey) {
       return sendError(res, 400, ERR.VALIDATION, 'sourceVideoKey is required', { field: 'sourceVideoKey' })
+    }
+    let validatedSourceVideoKey = null
+    let ownedUploadSession = null
+    if (mode !== 'SCRIPT_TO_VIDEO' && mode !== 'MEDIA_COMPOSER' && b.sourceVideoKey) {
+      const candidateKey = typeof b.sourceVideoKey === 'string' ? b.sourceVideoKey.trim() : ''
+      if (!candidateKey || !SAFE_SOURCE_KEY_RE.test(candidateKey) || candidateKey.includes('..')) {
+        return sendError(res, 400, ERR.VALIDATION, 'sourceVideoKey is invalid', { field: 'sourceVideoKey' })
+      }
+      ownedUploadSession = await queryOne(
+        'SELECT user_id, storage_provider, cloudinary_public_id, secure_url FROM upload_sessions WHERE storage_key = ? LIMIT 1',
+        [candidateKey]
+      )
+      if (ownedUploadSession && ownedUploadSession.user_id && ownedUploadSession.user_id !== req.user.id && req.user.role !== 'admin') {
+        if (process.env.STRICT_IDOR_404 === 'true') {
+          return sendError(res, 404, ERR.VALIDATION, 'Uploaded source video not found', { field: 'sourceVideoKey' })
+        }
+        return sendError(res, 403, ERR.AUTH_FORBIDDEN, 'Forbidden', { field: 'sourceVideoKey' })
+      }
+      if (!isValidSourceVideoKey(candidateKey, { hasOwnedSession: Boolean(ownedUploadSession) })) {
+        return sendError(res, 400, ERR.VALIDATION, 'sourceVideoKey must reference an uploaded video key', { field: 'sourceVideoKey' })
+      }
+      validatedSourceVideoKey = candidateKey
     }
 
     // Group 1: Copyright validation
@@ -266,7 +310,7 @@ router.post('/', validateBody(createProjectSchema), protectFields(['user_id', 'r
         targetDurationSec: Number(b.targetDurationSec) || (mode === 'SUMMARY' ? 1500 : 60),
         aspectRatio: b.aspectRatio || '16:9',
         params,
-        sourceVideoKey: scriptMode || mode === 'MEDIA_COMPOSER' ? null : (b.sourceVideoKey || null),
+        sourceVideoKey: scriptMode || mode === 'MEDIA_COMPOSER' ? null : validatedSourceVideoKey,
         videoHash: scriptMode || mode === 'MEDIA_COMPOSER' ? null : (b.videoHash || null),
         copyrightAcknowledged: true,
         scriptUploadId: scriptMode ? scriptUpload.id : null,
@@ -275,18 +319,10 @@ router.post('/', validateBody(createProjectSchema), protectFields(['user_id', 'r
         scriptVersion: 0,
         scriptReviewRequired: false,
       }
-      if (admissionData.sourceVideoKey) {
-        try {
-          const uploadSession = await queryOne(
-            'SELECT storage_provider, cloudinary_public_id, secure_url FROM upload_sessions WHERE storage_key = ? LIMIT 1',
-            [admissionData.sourceVideoKey]
-          )
-          if (uploadSession) {
-            admissionData.sourceStorageProvider = uploadSession.storage_provider || 'local'
-            admissionData.sourceCloudinaryPublicId = uploadSession.cloudinary_public_id || null
-            admissionData.sourceSecureUrl = uploadSession.secure_url || null
-          }
-        } catch (_) {}
+      if (admissionData.sourceVideoKey && ownedUploadSession) {
+        admissionData.sourceStorageProvider = ownedUploadSession.storage_provider || 'local'
+        admissionData.sourceCloudinaryPublicId = ownedUploadSession.cloudinary_public_id || null
+        admissionData.sourceSecureUrl = ownedUploadSession.secure_url || null
       }
       const requestFingerprint = computeProjectFingerprint({
         mode: admissionData.mode,
@@ -437,6 +473,11 @@ router.post('/', validateBody(createProjectSchema), protectFields(['user_id', 'r
     if (err?.code === 'DB_WRITE_QUEUE_FULL' || err?.code === 'DB_PERSISTENCE_BLOCKED') {
       return sendError(res, 503, err.code, 'Database write queue is busy', { retryAfterMs: err.retryAfterMs, ...extra })
     }
+    if (err?.code === 'PROJECT_LIMIT_REACHED') {
+      return sendError(res, 409, 'PROJECT_LIMIT_REACHED',
+        `Bạn đã đạt giới hạn ${err.limit} dự án được lưu. Hãy xoá bớt dự án cũ rồi thử lại.`,
+        { limit: err.limit, stored: err.stored, ...extra })
+    }
     console.error('Create project error:', err)
     sendError(res, 500, 'INTERNAL_ERROR', 'Internal server error', extra)
   }
@@ -457,10 +498,11 @@ router.get('/', async (req, res) => {
       sql += (params.length ? ' AND' : ' WHERE') + ' mode = ?'
       params.push(normalizeMode(req.query.mode))
     }
+    const rawSortBy = req.query.sortBy === 'updated_date' ? 'updated_at' : req.query.sortBy
     const sortClause = buildSafeOrderBy(
-      req.query.sortBy,
+      rawSortBy,
       req.query.sortDir,
-      ['created_date', 'title', 'mode', 'status', 'updated_date'],
+      ['created_date', 'title', 'mode', 'status', 'updated_at'],
       'created_date DESC'
     )
     sql += ` ORDER BY ${sortClause}`

@@ -154,7 +154,7 @@ const projectWithLocal = {
   id: projectId,
   source_video_key: localAbsPath,
 }
-const stagedSrcLocal = await stageSourceMedia(projectWithLocal)
+const stagedSrcLocal = await stageSourceMedia(projectWithLocal, { storageDir })
 assert(stagedSrcLocal === localAbsPath, 'stageSourceMedia returns local path for on-disk source video')
 
 const projectWithRemote = {

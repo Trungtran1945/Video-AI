@@ -19,6 +19,6 @@ class PipelineEventBus extends EventEmitter {
 }
 
 const bus = new PipelineEventBus()
-bus.setMaxListeners(100)
+bus.setMaxListeners(500)
 
 export default bus

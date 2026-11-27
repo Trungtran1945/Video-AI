@@ -120,39 +120,73 @@ function runBin(bin, args, { captureStdout = false, cwd, timeout = 0, signal } =
   })
 }
 
-// Serialize mọi lời gọi ffmpeg/ffprobe: build ffmpeg 9.0 trên Windows crash
+// Serialize ffmpeg trên Windows: build ffmpeg 9.0 trên Windows crash
 // (exit -22 / 4294967294) khi 2 tiến trình ghi file chạy đồng thời
 // (vd: dub.stt ‖ dub.ocr đều spawn ffmpeg ghi file cùng lúc).
-let taskQueue = Promise.resolve()
-function enqueue(task) {
-  const next = taskQueue.then(task, task)
-  taskQueue = next.then(() => {}, () => {}) // không giữ lỗi, không rò rỉ chuỗi
-  return next
+// Trên Linux/macOS cho phép concurrency có giới hạn (FFMPEG_CONCURRENCY, mặc định 2).
+// ffprobe (chỉ đọc) luôn được chạy song song không phải chờ behind ffmpeg encode.
+export function getFfmpegConcurrency(platform = process.platform, envVal = process.env.FFMPEG_CONCURRENCY) {
+  if (platform === 'win32') return 1
+  const parsed = Number.parseInt(String(envVal ?? ''), 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 2
 }
+
+export function createConcurrencyQueue(getLimit) {
+  let active = 0
+  const waiters = []
+
+  const release = () => {
+    active = Math.max(0, active - 1)
+    while (waiters.length > 0 && active < Math.max(1, getLimit())) {
+      const next = waiters.shift()
+      active++
+      next()
+    }
+  }
+
+  return async function runQueued(task) {
+    const limit = Math.max(1, getLimit())
+    if (active >= limit) {
+      await new Promise((resolve) => waiters.push(resolve))
+    } else {
+      active++
+    }
+    try {
+      return await task()
+    } finally {
+      release()
+    }
+  }
+}
+
+const enqueueFfmpeg = createConcurrencyQueue(() => getFfmpegConcurrency())
 
 export function ffmpeg(args, opts = {}) {
   const { timeout, signal, ...spawnOpts } = opts
-  return enqueue(() => runBin(FFMPEG_BIN, args, { ...spawnOpts, timeout, signal }))
+  return enqueueFfmpeg(() => runBin(FFMPEG_BIN, args, { ...spawnOpts, timeout, signal }))
 }
 
 export async function ffmpegAvailable() {
   try {
-    const { stdout } = await enqueue(() => runBin(FFMPEG_BIN, ['-version'], { captureStdout: true }))
+    const { stdout } = await runBin(FFMPEG_BIN, ['-version'], { captureStdout: true, timeout: 10_000 })
     return { ok: true, version: stdout.split('\n')[0].trim() }
   } catch (err) {
     return { ok: false, error: err.message }
   }
 }
 
+const DEFAULT_PROBE_TIMEOUT_MS = 30_000
+
 export async function probe(file, opts = {}) {
   const { timeout, signal, ...spawnOpts } = opts
-  const { stdout } = await enqueue(() => runBin(FFPROBE_BIN, [
+  const effectiveTimeout = timeout !== undefined ? timeout : DEFAULT_PROBE_TIMEOUT_MS
+  const { stdout } = await runBin(FFPROBE_BIN, [
     '-v', 'quiet',
     '-print_format', 'json',
     '-show_format',
     '-show_streams',
     file,
-  ], { captureStdout: true, timeout, signal, ...spawnOpts }))
+  ], { captureStdout: true, timeout: effectiveTimeout, signal, ...spawnOpts })
   let info
   try {
     info = JSON.parse(stdout)

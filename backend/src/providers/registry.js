@@ -1,3 +1,4 @@
+import { config } from '../config.js'
 import { query, queryOne } from '../db/query.js'
 import { decrypt } from '../lib/crypto.js'
 import GeminiLlm from './llm/gemini.js'
@@ -15,6 +16,7 @@ import ZeroTts from './tts/zeroTts.js'
 import GeminiVision from './vision/geminiVision.js'
 import MockVision from './vision/mockVision.js'
 import GoogleTranslate from './translate/googleTranslate.js'
+import MockTranslate from './translate/mockTranslate.js'
 import SlideImage from './image/slideImage.js'
 
 export class ProviderError extends Error {
@@ -68,6 +70,22 @@ const ENV_KEYS = {
 // Provider chạy không cần API key (VoiceStudio local, Edge-TTS của Microsoft, Google Translate via Apps Script, Mock providers).
 export const KEYLESS = new Set(['voicestudio', 'zerotts', 'edge_tts', 'google_tts', 'google_translate', 'mock', 'slide'])
 
+// Demo mode (DEFAULT_PROVIDER_MODE=mock): người dùng clone repo chạy local
+// không cần API key. Provider thật vẫn đứng đầu khi có key/env, mock chỉ là
+// phương án cuối cùng (xem listProvidersForCapability/getProvider bên dưới).
+function isDemoMode() {
+  return config.defaultProviderMode === 'mock'
+}
+
+function mockCandidate(type, factories) {
+  if (!isDemoMode() || typeof factories.mock !== 'function') return null
+  try {
+    return { id: 'mock', provider: factories.mock(null), apiKeyId: null, demoFallback: true }
+  } catch (_) {
+    return null
+  }
+}
+
 const REGISTRY = {
   llm: {
     gemini: (key) => new GeminiLlm(key),
@@ -99,6 +117,7 @@ const REGISTRY = {
   },
   translate: {
     google_translate: (key) => new GoogleTranslate(key || process.env.GOOGLE_TRANSLATE_SCRIPT_URL),
+    mock: (key) => new MockTranslate(key),
   },
   image: {
     slide: () => new SlideImage(),
@@ -199,6 +218,12 @@ export async function listProvidersForCapability(userId, type, { id } = {}) {
       }
     }
   }
+  // Demo mode: thêm mock làm candidate cuối để failover khi provider thật
+  // hết key / hết quota / lỗi mạng. Provider thật vẫn giữ thứ tự ưu tiên.
+  if (!candidates.some((c) => c.id === 'mock')) {
+    const fallback = mockCandidate(type, factories)
+    if (fallback) candidates.push(fallback)
+  }
   return candidates
 }
 
@@ -215,11 +240,19 @@ export async function getProvider(userId, type, { id } = {}) {
       `${PROVIDER_LABELS[providerId] || providerId} chưa được hỗ trợ trên máy chủ này. Hãy chọn nhà cung cấp khác trong Cài đặt.`
     )
   }
+  // Google Translate là keyless nhưng cần Apps Script URL. Demo mode không có
+  // URL → dùng mock để pipeline không bắn CONFIGURATION khi gọi translate.
+  if (providerId === 'google_translate' && isDemoMode() && !String(process.env.GOOGLE_TRANSLATE_SCRIPT_URL || '').trim()) {
+    const fallback = mockCandidate(type, REGISTRY[type])
+    if (fallback) return fallback
+  }
   if (KEYLESS.has(providerId)) {
     return { id: providerId, provider: factory(null), apiKeyId: null }
   }
   const { key: apiKey, apiKeyId } = await resolveApiKey(userId, providerId)
   if (!apiKey) {
+    const fallback = mockCandidate(type, REGISTRY[type])
+    if (fallback) return fallback
     throw new ProviderError(
       `Chưa cấu hình API key cho ${PROVIDER_LABELS[providerId] || providerId}. Thêm key tại trang API Keys (provider: ${providerId}) hoặc đặt biến môi trường ${(ENV_KEYS[providerId] || []).join(' / ')}`,
       'PROV_001'

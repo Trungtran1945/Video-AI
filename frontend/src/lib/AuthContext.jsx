@@ -80,8 +80,8 @@ export const AuthProvider = ({ children }) => {
     return data
   }
 
-  const register = async (email, password, name) => {
-    const data = await authApi.register(email, password, name)
+  const register = async (email, password, name, turnstileToken) => {
+    const data = await authApi.register(email, password, name, turnstileToken)
     setAccessToken(data.accessToken)
     setUser(data.user)
     setIsAuthenticated(true)
@@ -90,8 +90,8 @@ export const AuthProvider = ({ children }) => {
     return data
   }
 
-  const registerSendOtp = async (email, password, name) => {
-    return await authApi.registerSendOtp(email, password, name)
+  const registerSendOtp = async (email, password, name, turnstileToken) => {
+    return await authApi.registerSendOtp(email, password, name, turnstileToken)
   }
 
   const registerVerifyOtp = async (email, otp, password, name) => {

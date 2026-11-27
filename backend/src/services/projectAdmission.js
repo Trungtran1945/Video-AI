@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { config } from '../config.js'
 import { withTransaction, queryOne, updateById, insert, run } from '../db/query.js'
 import { PROJECT_ACTIVE_STATUSES, PROJECT_STATUS } from '../lib/projectStatus.js'
+import { evaluateStoredProjectCap } from '../lib/storagePolicy.js'
 
 // Active execution slots (pending + running); queued is waiting, not consuming capacity
 const EXECUTION_STATUSES = PROJECT_ACTIVE_STATUSES.filter((s) => s !== PROJECT_STATUS.QUEUED)
@@ -11,6 +12,32 @@ const DEFAULT_LEASE_SECONDS = 1800
 function limitFrom(options) {
   const value = Number(options?.maxConcurrent ?? config.maxConcurrentProjectsPerUser)
   return Number.isInteger(value) && value > 0 ? value : 2
+}
+
+function globalLimitFrom(options) {
+  const raw = options?.maxGlobalConcurrent ?? config.maxGlobalConcurrentPipelines
+  const value = Number(raw)
+  return Number.isInteger(value) && value > 0 ? value : 0
+}
+
+async function hasRunSlot(tx, userId, maxConcurrent, maxGlobalConcurrent) {
+  const active = await tx.queryOne(
+    `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN (${EXECUTION_IN_LIST})`,
+    [userId]
+  )
+  if (Number(active?.count || 0) >= maxConcurrent) {
+    return false
+  }
+  if (maxGlobalConcurrent > 0) {
+    await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['global:pipeline_admission'])
+    const globalActive = await tx.queryOne(
+      `SELECT COUNT(*) AS count FROM projects WHERE status IN (${EXECUTION_IN_LIST})`
+    )
+    if (Number(globalActive?.count || 0) >= maxGlobalConcurrent) {
+      return false
+    }
+  }
+  return true
 }
 
 function leaseExpiry(now = Date.now()) {
@@ -117,11 +144,27 @@ export async function createProjectWithAdmission(data, options = {}) {
     if (userId) {
       await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['user:' + userId])
     }
-    const active = await tx.queryOne(
-      `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN (${EXECUTION_IN_LIST})`,
-      [userId]
-    )
-    const runToken = Number(active?.count || 0) < maxConcurrent ? uuidv4() : null
+    const maxStored = options.maxStoredProjects ?? config.maxStoredProjectsPerUser
+    if (userId && Number(maxStored) > 0) {
+      const storedRow = await tx.queryOne(
+        'SELECT COUNT(*) AS count FROM projects WHERE user_id = ?',
+        [userId]
+      )
+      const cap = evaluateStoredProjectCap({
+        storedCount: Number(storedRow?.count || 0),
+        maxStored,
+      })
+      if (!cap.ok) {
+        const err = new Error('Stored project limit reached')
+        err.code = 'PROJECT_LIMIT_REACHED'
+        err.limit = cap.maxStored
+        err.stored = cap.storedCount
+        throw err
+      }
+    }
+    const maxGlobalConcurrent = globalLimitFrom(options)
+    const hasSlot = await hasRunSlot(tx, userId, maxConcurrent, maxGlobalConcurrent)
+    const runToken = hasSlot ? uuidv4() : null
     const status = runToken ? 'pending' : 'queued'
     const project = await tx.insert('projects', projectValues(data, status, runToken))
     return { project, admitted: Boolean(runToken), runToken }
@@ -130,6 +173,7 @@ export async function createProjectWithAdmission(data, options = {}) {
 
 export async function claimQueuedProject(projectId, options = {}) {
   const maxConcurrent = limitFrom(options)
+  const maxGlobalConcurrent = globalLimitFrom(options)
   return withTransaction(async (tx) => {
     let project = await tx.queryOne('SELECT * FROM projects WHERE id = ?', [projectId])
     if (!project || project.status !== 'queued') return { claimed: false, reason: 'not-queued' }
@@ -139,11 +183,9 @@ export async function claimQueuedProject(projectId, options = {}) {
       if (!project || project.status !== 'queued') return { claimed: false, reason: 'not-queued' }
     }
     if (Number(project.script_review_required || 0) === 1) return { claimed: false, reason: 'review-required' }
-    const active = await tx.queryOne(
-      `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN (${EXECUTION_IN_LIST})`,
-      [project.user_id]
-    )
-    if (Number(active?.count || 0) >= maxConcurrent) return { claimed: false, reason: 'concurrency' }
+    if (!(await hasRunSlot(tx, project.user_id, maxConcurrent, maxGlobalConcurrent))) {
+      return { claimed: false, reason: 'concurrency' }
+    }
     const token = uuidv4()
     const now = new Date().toISOString()
     const changed = await tx.runAffected(
@@ -204,11 +246,8 @@ export async function acquireProjectRun(projectId, options = {}) {
       if (expired !== 1) return { admitted: false, reason: 'race-lost' }
     }
 
-    const active = await tx.queryOne(
-      `SELECT COUNT(*) AS count FROM projects WHERE user_id = ? AND status IN (${EXECUTION_IN_LIST})`,
-      [project.user_id]
-    )
-    if (Number(active?.count || 0) >= maxConcurrent) {
+    const maxGlobalConcurrent = globalLimitFrom(options)
+    if (!(await hasRunSlot(tx, project.user_id, maxConcurrent, maxGlobalConcurrent))) {
       if (project.status !== 'queued') {
         await tx.run(`UPDATE projects SET status = 'queued', run_token = NULL, lease_expires_at = NULL WHERE id = ?`, [projectId])
       }

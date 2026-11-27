@@ -27,6 +27,31 @@ export class MockVision {
   }
 
   /**
+   * Contract dùng bởi summary.analyze (giống GeminiVision.describeImage).
+   * Không đọc file — trả mô tả mẫu theo thứ tự để pipeline có embedding ổn định.
+   * @param {{imagePath?: string, prompt?: string}} opts
+   * @returns {Promise<{text: string, model: string}>}
+   */
+  async describeImage({ imagePath, prompt } = {}) {
+    void imagePath
+    void prompt
+    return { text: 'Cảnh phim mô phỏng dùng để xem thử quy trình tóm tắt video.', model: 'mock' }
+  }
+
+  /**
+   * Contract dùng bởi summary.analyze khi có nhiều ảnh cùng lúc.
+   * @param {{imagePaths?: string[]}} opts
+   * @returns {Promise<Array<{text: string, model: string}>>}
+   */
+  async describeBatch({ imagePaths = [] } = {}) {
+    const n = Array.isArray(imagePaths) ? imagePaths.length : 1
+    return Array.from({ length: n }, (_, i) => ({
+      text: `Cảnh ${i + 1} trong chuỗi video mô phỏng.`,
+      model: 'mock',
+    }))
+  }
+
+  /**
    * Detect hardsub subtitle region (dub.mask test double).
    * Returns one fixed bottom-frame box so CI covers union→insert→render
    * without a real vision key. Ignores imagePath (no I/O).

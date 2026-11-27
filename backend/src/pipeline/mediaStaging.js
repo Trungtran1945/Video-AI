@@ -1,9 +1,11 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { v4 as uuidv4 } from 'uuid'
+import { config } from '../config.js'
 import { storageService } from '../services/storage/index.js'
+import { assertSafeRemoteMediaUrl } from '../services/storage/cloudinaryStorageProvider.js'
 import { tmpDirOf, resolveStorageKey } from './context.js'
-import { isPathInside } from '../lib/safePath.js'
+import { isPathInside, resolveSafePath } from '../lib/safePath.js'
 
 /**
  * Creates a unique, job-scoped staging manager for a pipeline stage.
@@ -25,18 +27,34 @@ export function createJobStagingContext(projectId, stageName = 'stage', options 
   async function stageFile(keyOrUrl, filenameHint = null) {
     if (!keyOrUrl) throw new Error('Cannot stage media: key or URL is empty')
 
-    // If keyOrUrl is an existing absolute path on disk
-    if (typeof keyOrUrl === 'string' && path.isAbsolute(keyOrUrl) && fs.existsSync(keyOrUrl)) {
-      const stat = await fs.promises.stat(keyOrUrl)
-      if (stat.isFile() && stat.size > 0) return keyOrUrl
+    const allowedLocalRoot = options.allowLocalDir || options.storageDir || config.storageDir
+
+    // If keyOrUrl is an absolute path, strictly confine it to allowedLocalRoot (never read arbitrary host files)
+    if (typeof keyOrUrl === 'string' && path.isAbsolute(keyOrUrl)) {
+      if (!isPathInside(allowedLocalRoot, keyOrUrl)) {
+        throw new Error(`Unsafe media staging path outside storage directory: ${path.basename(keyOrUrl)}`)
+      }
+      if (fs.existsSync(keyOrUrl)) {
+        const stat = await fs.promises.stat(keyOrUrl)
+        if (stat.isFile() && stat.size > 0) return keyOrUrl
+      }
+      throw new Error(`Staged local media file not found: ${path.basename(keyOrUrl)}`)
     }
 
-    // 1. If key refers to an existing local file inside storageDir, return its absolute path directly
-    const localAbs = options.storageDir ? path.resolve(options.storageDir, keyOrUrl) : resolveStorageKey(keyOrUrl)
-    if (localAbs && fs.existsSync(localAbs)) {
-      const stat = await fs.promises.stat(localAbs)
-      if (stat.isFile() && stat.size > 0) {
-        return localAbs
+    const isHttpUrl = typeof keyOrUrl === 'string' && /^https?:\/\//i.test(keyOrUrl)
+    if (isHttpUrl) {
+      assertSafeRemoteMediaUrl(keyOrUrl)
+    } else {
+      // 1. If key refers to an existing local file inside storageDir, return its absolute path directly
+      const localAbs = options.storageDir ? resolveSafePath(options.storageDir, keyOrUrl) : resolveStorageKey(keyOrUrl)
+      if (!localAbs) {
+        throw new Error(`Unsafe media staging key: ${String(keyOrUrl)}`)
+      }
+      if (fs.existsSync(localAbs)) {
+        const stat = await fs.promises.stat(localAbs)
+        if (stat.isFile() && stat.size > 0) {
+          return localAbs
+        }
       }
     }
 
@@ -132,7 +150,11 @@ export async function stageSourceMedia(project, ctx = {}) {
   }
 
   // 3. Fallback: create an ephemeral staging context and register cleanup in ctx
-  const staging = createJobStagingContext(project.id, ctx.job?.type || 'media')
+  const staging = createJobStagingContext(project.id, ctx.job?.type || 'media', {
+    storageDir: ctx.storageDir,
+    allowLocalDir: ctx.allowLocalDir,
+    storage: ctx.storage,
+  })
   if (ctx.signal) {
     ctx.signal.addEventListener('abort', () => staging.cleanup(), { once: true })
   }

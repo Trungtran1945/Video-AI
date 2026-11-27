@@ -1,0 +1,9 @@
+/var/log/videoai-backup.log
+/var/log/videoai-disk.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    create 0640 ubuntu ubuntu
+}

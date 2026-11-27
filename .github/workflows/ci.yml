@@ -1,5 +1,7 @@
 name: CI
 
+# CI-only ephemeral Postgres password below: deliberately not the dev placeholder
+# (backend rejects DEV_DB_PASSWORD in NODE_ENV=production during the runtime smoke).
 on:
   push:
     branches: [main, develop]
@@ -16,7 +18,7 @@ jobs:
         env:
           POSTGRES_DB: video_ai
           POSTGRES_USER: video_ai_user
-          POSTGRES_PASSWORD: VideoAI_Secure_Db_2026!
+          POSTGRES_PASSWORD: CI_Ephemeral_Db_Pass_9f3a7c21
         ports:
           - 5433:5432
         options: >-
@@ -25,12 +27,12 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      DATABASE_URL: postgresql://video_ai_user:VideoAI_Secure_Db_2026!@localhost:5433/video_ai
+      DATABASE_URL: postgresql://video_ai_user:CI_Ephemeral_Db_Pass_9f3a7c21@localhost:5433/video_ai
       DB_HOST: localhost
       DB_PORT: 5433
       DB_NAME: video_ai
       DB_USER: video_ai_user
-      DB_PASSWORD: VideoAI_Secure_Db_2026!
+      DB_PASSWORD: CI_Ephemeral_Db_Pass_9f3a7c21
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -133,7 +135,7 @@ jobs:
         env:
           POSTGRES_DB: video_ai
           POSTGRES_USER: video_ai_user
-          POSTGRES_PASSWORD: VideoAI_Secure_Db_2026!
+          POSTGRES_PASSWORD: CI_Ephemeral_Db_Pass_9f3a7c21
         ports:
           - 5433:5432
         options: >-
@@ -142,12 +144,12 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      DATABASE_URL: postgresql://video_ai_user:VideoAI_Secure_Db_2026!@localhost:5433/video_ai
+      DATABASE_URL: postgresql://video_ai_user:CI_Ephemeral_Db_Pass_9f3a7c21@localhost:5433/video_ai
       DB_HOST: localhost
       DB_PORT: 5433
       DB_NAME: video_ai
       DB_USER: video_ai_user
-      DB_PASSWORD: VideoAI_Secure_Db_2026!
+      DB_PASSWORD: CI_Ephemeral_Db_Pass_9f3a7c21
     steps:
       - name: Checkout
         uses: actions/checkout@v7

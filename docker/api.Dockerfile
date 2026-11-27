@@ -6,7 +6,8 @@ COPY backend/ ./backend/
 
 FROM node:22-alpine
 WORKDIR /app
-RUN apk add --no-cache ffmpeg \
+RUN apk add --no-cache ffmpeg fontconfig ttf-dejavu ttf-liberation \
+    && fc-cache -f \
     && mkdir -p /app/storage /app/tmp \
     && chown -R node:node /app
 COPY --chown=node:node --from=build /app/backend/node_modules ./node_modules

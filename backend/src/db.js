@@ -17,7 +17,12 @@ let pgPool = null
 
 export function getDatabasePoolConfig() {
   const connectionString = process.env.DATABASE_URL
-  const ssl = process.env.DB_SSL === 'true'
+  const urlRequiresSsl = Boolean(
+    connectionString &&
+    process.env.DB_SSL !== 'false' &&
+    /[?&]sslmode=(require|verify-ca|verify-full)\b/i.test(connectionString)
+  )
+  const ssl = (process.env.DB_SSL === 'true' || urlRequiresSsl)
     ? { rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false' }
     : false
 

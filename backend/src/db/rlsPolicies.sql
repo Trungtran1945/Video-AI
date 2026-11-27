@@ -4,20 +4,24 @@
 -- =============================================================================
 
 -- 0. Provision unprivileged application role for strict RLS enforcement
+-- Wrapped in exception handler so managed PostgreSQL (e.g. Neon/Supabase)
+-- without CREATEROLE privileges still applies RLS policies cleanly.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'video_ai_app') THEN
         CREATE ROLE video_ai_app NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
     END IF;
+    GRANT USAGE ON SCHEMA public TO video_ai_app;
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO video_ai_app;
+    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO video_ai_app;
+    GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO video_ai_app;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO video_ai_app;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO video_ai_app;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO video_ai_app;
+EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE 'Skipping video_ai_app role provisioning due to insufficient_privilege';
 END
 $$;
-GRANT USAGE ON SCHEMA public TO video_ai_app;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO video_ai_app;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO video_ai_app;
-GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO video_ai_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO video_ai_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO video_ai_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO video_ai_app;
 
 -- 1. Helper function to get current tenant ID safely
 CREATE OR REPLACE FUNCTION current_app_user_id() RETURNS TEXT AS $$

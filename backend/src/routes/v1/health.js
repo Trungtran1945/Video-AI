@@ -8,7 +8,6 @@ import {
 import { getWriteQueueStats } from '../../db/query.js'
 import { getRefreshFallbackStats } from '../../lib/refreshMetrics.js'
 import { getCleanupStats } from '../../services/projectCleanup.js'
-import { sanitizeStringContent } from '../../lib/responseSanitizer.js'
 import { config } from '../../config.js'
 
 export const QUEUE_STATES = Object.freeze({
@@ -104,12 +103,26 @@ export async function buildHealthResponse() {
     refreshFallbackStats = { count: 0, lastAt: null, deprecated: true, status: 'unknown' }
   }
 
+  const isProd = process.env.NODE_ENV === 'production'
+  const databasePayload = {
+    engine: persistence.engine,
+    persistenceState: health.state,
+    consecutiveSaveFailures: health.consecutiveSaveFailures,
+    lastSuccessfulSaveAt: health.lastSuccessfulSaveAt,
+    maxSaveFailures: health.maxSaveFailures,
+  }
+  if (!isProd) {
+    Object.assign(databasePayload, persistence)
+  }
+
   return {
     status,
     redis: queueHealth.redis,
     bullmq: queueHealth.bullmq,
     durableCleanup,
-    cleanup: cleanupStats,
+    cleanup: isProd
+      ? { pending: cleanupStats.pending, failed: cleanupStats.failed }
+      : cleanupStats,
     queueState: queueHealth.state,
     queue: {
       state: queueHealth.state,
@@ -118,16 +131,11 @@ export async function buildHealthResponse() {
       bullmq: queueHealth.bullmq,
       required: queueHealth.required,
     },
-    database: {
-      ...persistence,
-      persistenceState: health.state,
-      consecutiveSaveFailures: health.consecutiveSaveFailures,
-      lastSuccessfulSaveAt: health.lastSuccessfulSaveAt,
-      lastSaveError: sanitizeStringContent(health.lastSaveError),
-      maxSaveFailures: health.maxSaveFailures,
-    },
-    writes,
-    auth: { refreshFallback: refreshFallbackStats },
+    database: databasePayload,
+    ...(isProd ? {} : {
+      writes,
+      auth: { refreshFallback: refreshFallbackStats },
+    }),
   }
 }
 
@@ -146,7 +154,6 @@ export async function buildReadyResponse() {
       persistenceState: health.state,
       consecutiveSaveFailures: health.consecutiveSaveFailures,
       lastSuccessfulSaveAt: health.lastSuccessfulSaveAt,
-      lastSaveError: sanitizeStringContent(health.lastSaveError),
     },
     redis: queueHealth.redis,
     queue: {

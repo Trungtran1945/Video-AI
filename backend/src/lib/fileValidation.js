@@ -239,18 +239,12 @@ export function detectFileSignature(buf) {
 
   // --- TEXT / VECTOR / SUBTITLES ---
 
-  const utf8Sample = buf.subarray(0, Math.min(len, 512)).toString('utf8').trim()
+  const utf8Sample = buf.subarray(0, Math.min(len, 4096)).toString('utf8').replace(/^\uFEFF/, '').trim()
 
-  // SVG: vector image
-  if (utf8Sample.startsWith('<svg') || (utf8Sample.startsWith('<?xml') && utf8Sample.includes('<svg'))) {
-    // OWASP check: ensure SVG does not contain executable script tags or event handlers
-    const lowerSvg = utf8Sample.toLowerCase()
-    if (
-      lowerSvg.includes('<script') ||
-      lowerSvg.includes('javascript:') ||
-      /\bon\w+\s*=/i.test(lowerSvg) ||
-      lowerSvg.includes('<foreignobject')
-    ) {
+  // SVG: vector image — scan full provided buffer (never truncate SVG XSS checks at 512 bytes)
+  if (utf8Sample.startsWith('<svg') || ((utf8Sample.startsWith('<?xml') || utf8Sample.startsWith('<!--')) && utf8Sample.includes('<svg'))) {
+    const fullSvgText = buf.toString('utf8')
+    if (isUnsafeSvgContent(fullSvgText)) {
       return { dangerous: true, reason: 'Malicious script / event handler detected inside SVG' }
     }
     return { type: 'image', format: 'svg', mime: 'image/svg+xml', ext: '.svg' }
@@ -286,15 +280,30 @@ export function detectFileSignature(buf) {
  * @param {number} [options.maxBytes] - Maximum allowed file size in bytes
  * @returns {Promise<{ valid: boolean, type: string, format: string, mime: string, ext: string }>}
  */
+const DANGEROUS_SVG_RE = /<script\b|javascript:|vbscript:|data:text\/html|\bon\w+\s*=|<foreignobject\b|<iframe\b|<embed\b|<object\b/i
+
+export function isUnsafeSvgContent(svgText) {
+  if (typeof svgText !== 'string' || !svgText) return false
+  return DANGEROUS_SVG_RE.test(svgText)
+}
+
+function looksLikeXmlOrSvg(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length === 0) return false
+  const head = buf.subarray(0, Math.min(buf.length, 4096)).toString('utf8').replace(/^\uFEFF/, '').trimStart().toLowerCase()
+  return head.startsWith('<svg') || head.startsWith('<?xml') || head.startsWith('<!--')
+}
+
 export async function validateFileSignature(filePathOrBuffer, options = {}) {
   const { expectedType, allowedTypes, filename, maxBytes } = options
 
   let headerBuf
+  let fullBuf = null
   let fileSize = 0
 
   if (Buffer.isBuffer(filePathOrBuffer)) {
     fileSize = filePathOrBuffer.length
-    headerBuf = filePathOrBuffer.subarray(0, Math.min(fileSize, 512))
+    headerBuf = filePathOrBuffer.subarray(0, Math.min(fileSize, 4096))
+    fullBuf = filePathOrBuffer
   } else if (typeof filePathOrBuffer === 'string') {
     const stat = await fs.promises.lstat(filePathOrBuffer)
     if (!stat.isFile() || stat.isSymbolicLink()) {
@@ -306,8 +315,8 @@ export async function validateFileSignature(filePathOrBuffer, options = {}) {
     fileSize = stat.size
     const fd = await fs.promises.open(filePathOrBuffer, 'r')
     try {
-      headerBuf = Buffer.alloc(512)
-      const { bytesRead } = await fd.read(headerBuf, 0, 512, 0)
+      headerBuf = Buffer.alloc(4096)
+      const { bytesRead } = await fd.read(headerBuf, 0, 4096, 0)
       headerBuf = headerBuf.subarray(0, bytesRead)
     } finally {
       await fd.close()
@@ -344,8 +353,17 @@ export async function validateFileSignature(filePathOrBuffer, options = {}) {
     })
   }
 
-  // 2. Detect media signature
-  const detected = detectFileSignature(headerBuf)
+  // 2. Detect media signature (for SVG/XML, read full payload up to IMAGE limit to prevent padding bypass)
+  const isSvgFilename = typeof filename === 'string' && filename.toLowerCase().trim().endsWith('.svg')
+  let bufToDetect = headerBuf
+  if (looksLikeXmlOrSvg(headerBuf) || isSvgFilename) {
+    if (fullBuf) {
+      bufToDetect = fullBuf
+    } else if (typeof filePathOrBuffer === 'string' && fileSize <= FILE_SIZE_LIMITS.IMAGE) {
+      bufToDetect = await fs.promises.readFile(filePathOrBuffer)
+    }
+  }
+  const detected = detectFileSignature(bufToDetect)
   if (!detected) {
     throw new FileValidationError('File signature could not be verified or is unsupported', {
       statusCode: 415,

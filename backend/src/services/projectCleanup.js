@@ -3,6 +3,7 @@ import { config } from '../config.js'
 import { query, run } from '../db/query.js'
 import { projectDir, tmpDirOf, resolveStorageKey } from '../pipeline/context.js'
 import { isPathInside } from '../lib/safePath.js'
+import { storageService } from './storage/index.js'
 
 // Every (table, column) pair that can hold a storage_key pointing into storage/.
 // projects uses `id` instead of `project_id` as its scope column.
@@ -73,6 +74,55 @@ export async function deleteProjectFiles(project, ownKeys = []) {
     } catch (err) {
       failed++
       console.error(`[Cleanup] không xoá được thư mục ${dir}:`, err.message)
+    }
+  }
+
+  // Best-effort cleanup of unreferenced Cloudinary assets owned by this project
+  if (storageService.cloudinaryProvider?.isConfigured()) {
+    try {
+      const ownUnreferencedKeys = [...new Set(ownKeys)]
+        .map((k) => String(k || '').trim())
+        .filter((k) => k && !otherRefs.has(k))
+
+      let sql = `SELECT id, storage_key, cloudinary_public_id, resource_type
+                 FROM cloudinary_assets
+                 WHERE cloudinary_public_id IS NOT NULL AND (project_id = ?`
+      const params = [project.id]
+      if (ownUnreferencedKeys.length > 0) {
+        const placeholders = ownUnreferencedKeys.map(() => '?').join(', ')
+        sql += ` OR storage_key IN (${placeholders})`
+        params.push(...ownUnreferencedKeys)
+      }
+      sql += `)`
+
+      const cloudRows = await query(sql, params)
+      const deletedRowIds = []
+      for (const row of cloudRows || []) {
+        if (row.storage_key && otherRefs.has(row.storage_key)) continue
+        try {
+          const delRes = await storageService.delete(row.cloudinary_public_id, {
+            provider: 'cloudinary',
+            resourceType: row.resource_type || 'video',
+          })
+          const remoteGone = delRes?.success === true || delRes?.result === 'ok' || delRes?.result === 'not found'
+          if (remoteGone) {
+            if (row.id) deletedRowIds.push(row.id)
+          } else {
+            failed++
+            console.warn(`[Cleanup] xoá Cloudinary asset ${row.cloudinary_public_id} trả về thất bại:`, delRes?.result || 'unknown')
+          }
+        } catch (err) {
+          failed++
+          console.warn(`[Cleanup] không xoá được Cloudinary asset ${row.cloudinary_public_id}:`, err?.message || err)
+        }
+      }
+      if (deletedRowIds.length > 0) {
+        const delPlaceholders = deletedRowIds.map(() => '?').join(', ')
+        await run(`DELETE FROM cloudinary_assets WHERE id IN (${delPlaceholders})`, deletedRowIds).catch(() => {})
+      }
+    } catch (err) {
+      failed++
+      console.warn(`[Cleanup] lỗi truy vấn Cloudinary assets cho project ${project.id}:`, err?.message || err)
     }
   }
 

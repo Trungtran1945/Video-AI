@@ -1,4 +1,11 @@
+import { ERROR_CODES, ERROR_KINDS } from '../../lib/providerErrors.js'
+
 const BASE = 'https://api.openai.com/v1'
+
+function getOpenAiTimeoutMs() {
+  const v = Number(process.env.OPENAI_TIMEOUT_MS)
+  return Number.isFinite(v) && v > 0 ? v : 60_000
+}
 
 export class OpenAiLlm {
   constructor(apiKey) {
@@ -24,15 +31,36 @@ export class OpenAiLlm {
       ...(json ? { response_format: { type: 'json_object' } } : {}),
       ...(maxOutputTokens ? { max_tokens: maxOutputTokens } : {}),
     }
-    const res = await fetch(`${BASE}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    })
-    const data = await res.json().catch(() => null)
+    const timeoutMs = getOpenAiTimeoutMs()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let res
+    let data
+    try {
+      res = await fetch(`${BASE}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+      data = await res.json().catch(() => null)
+    } catch (err) {
+      if (err?.name === 'AbortError' || err?.name === 'TimeoutError' || controller.signal.aborted) {
+        const terr = new Error(`OpenAI LLM timeout sau ${Math.round(timeoutMs / 1000)}s`)
+        terr.code = ERROR_CODES.PROVIDER_TIMEOUT
+        terr.errorCode = ERROR_CODES.PROVIDER_TIMEOUT
+        terr.kind = ERROR_KINDS.TRANSIENT
+        terr.status = 504
+        terr.retryable = true
+        throw terr
+      }
+      throw err
+    } finally {
+      clearTimeout(timer)
+    }
     if (!res.ok) {
       const message = data?.error?.message || `OpenAI HTTP ${res.status}`
       const err = new Error(`OpenAI LLM lỗi: ${message}`)

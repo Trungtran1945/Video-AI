@@ -99,14 +99,36 @@ export function outputIsStale(mode, currentVersion, output) {
   return false
 }
 
-async function insertOutput(tx, input) {
+function isTransientUploadError(err) {
+  const status = Number(err?.http_code ?? err?.status ?? err?.error?.http_code)
+  if ([408, 429, 500, 502, 503, 504].includes(status)) return true
+  const code = String(err?.code || '').toUpperCase()
+  if (['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ESOCKETTIMEDOUT', 'EPIPE'].includes(code)) return true
+  return /timeout|timed out|socket hang up|network|temporar|rate limit/i.test(String(err?.message || ''))
+}
+
+async function uploadWithRetry(fn, { maxAttempts = 3, baseDelayMs = 500 } = {}) {
+  let lastErr
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      lastErr = err
+      if (attempt >= maxAttempts || !isTransientUploadError(err)) throw err
+      await new Promise((r) => setTimeout(r, baseDelayMs * attempt))
+    }
+  }
+  throw lastErr
+}
+
+async function validateOutputPreconditions(dbLike, input) {
   const projectId = input.projectId
   const version = input.transcriptVersion === undefined ? null : normalizeVersion(input.transcriptVersion)
   const scriptVersion = input.scriptVersion === undefined ? null : normalizeVersion(input.scriptVersion)
-  const project = await tx.queryOne('SELECT id, mode, transcript_version, script_version, params FROM projects WHERE id = ?', [projectId])
+  const project = await dbLike.queryOne('SELECT id, mode, transcript_version, script_version, params FROM projects WHERE id = ?', [projectId])
   if (!project) throw new Error('Project not found')
   if (input.runToken) {
-    const run = await tx.queryOne('SELECT status, run_token FROM projects WHERE id = ?', [projectId])
+    const run = await dbLike.queryOne('SELECT status, run_token FROM projects WHERE id = ?', [projectId])
     if (!run || run.status !== 'running' || run.run_token !== input.runToken) throw new OutputRunConflict()
   }
   const mode = String(project.mode).toUpperCase().replace('-', '_')
@@ -114,23 +136,33 @@ async function insertOutput(tx, input) {
     throw new Error('Dub output requires a valid transcript version snapshot')
   }
   if (mode === 'TRANSLATE_DUB' && version !== null) {
-    await assertOutputProvenance(tx, project, version, input)
+    await assertOutputProvenance(dbLike, project, version, input)
   }
   if (mode === 'SCRIPT_TO_VIDEO' && (input.scriptVersion === undefined || scriptVersion === null)) {
     throw new Error('Script output requires a valid script version snapshot')
   }
+  return { version, scriptVersion }
+}
 
+async function uploadOutputMedia(input, storage = storageService) {
   let uploadRes = null
   let thumbRes = null
   if (input.storageKey) {
     const absPath = resolveStorageKey(input.storageKey)
     if (absPath && fs.existsSync(absPath)) {
       try {
-        uploadRes = await storageService.upload(absPath, {
-          key: input.storageKey,
-          resourceType: 'video',
-          folder: 'outputs',
-        })
+        const uploadVideoFn = typeof storage.uploadLarge === 'function'
+          ? () => storage.uploadLarge(absPath, {
+            key: input.storageKey,
+            resourceType: 'video',
+            folder: 'outputs',
+          })
+          : () => storage.upload(absPath, {
+            key: input.storageKey,
+            resourceType: 'video',
+            folder: 'outputs',
+          })
+        uploadRes = await uploadWithRetry(uploadVideoFn)
       } catch (err) {
         console.warn(`[outputService] Output video storage upload skipped or failed: ${err.message}`)
       }
@@ -141,16 +173,40 @@ async function insertOutput(tx, input) {
     const thumbAbs = resolveStorageKey(input.thumbnailKey)
     if (thumbAbs && fs.existsSync(thumbAbs)) {
       try {
-        thumbRes = await storageService.upload(thumbAbs, {
+        thumbRes = await uploadWithRetry(() => storage.upload(thumbAbs, {
           key: input.thumbnailKey,
           resourceType: 'image',
           folder: 'outputs/thumbs',
-        })
+        }))
       } catch (err) {
         console.warn(`[outputService] Output thumbnail storage upload skipped or failed: ${err.message}`)
       }
     }
   }
+
+  return { uploadRes, thumbRes }
+}
+
+async function cleanupOrphanedUploads({ uploadRes, thumbRes }, storage = storageService) {
+  if (uploadRes?.provider === 'cloudinary' && uploadRes?.publicId) {
+    await storage.delete(uploadRes.publicId, {
+      provider: 'cloudinary',
+      resourceType: uploadRes.resourceType || 'video',
+    }).catch(() => {})
+  }
+  if (thumbRes?.provider === 'cloudinary' && thumbRes?.publicId) {
+    await storage.delete(thumbRes.publicId, {
+      provider: 'cloudinary',
+      resourceType: thumbRes.resourceType || 'image',
+    }).catch(() => {})
+  }
+}
+
+async function insertOutput(tx, input, uploadedMedia = null, storage = storageService) {
+  const projectId = input.projectId
+  const { version, scriptVersion } = await validateOutputPreconditions(tx, input)
+
+  const { uploadRes, thumbRes } = uploadedMedia || await uploadOutputMedia(input, storage)
 
   const outputRow = {
     id: input.id,
@@ -197,9 +253,27 @@ async function insertOutput(tx, input) {
   return created
 }
 
-export async function createOutput(input, transaction = null) {
-  if (transaction) return insertOutput(transaction, input)
-  return withTransaction((tx) => insertOutput(tx, input), { op: 'output.create' })
+export async function createOutput(input, transaction = null, options = {}) {
+  const storage = options.storage || storageService
+  const runTx = options.withTransaction || withTransaction
+  const readDb = options.db || { queryOne }
+
+  if (transaction) {
+    return insertOutput(transaction, input, null, storage)
+  }
+
+  // Pre-check provenance & run ownership outside the DB write lock / TX
+  await validateOutputPreconditions(readDb, input)
+
+  // Upload rendered media to remote storage BEFORE acquiring DB writeMutex / TX
+  const uploadedMedia = await uploadOutputMedia(input, storage)
+
+  try {
+    return await runTx((tx) => insertOutput(tx, input, uploadedMedia, storage), { op: 'output.create' })
+  } catch (err) {
+    await cleanupOrphanedUploads(uploadedMedia, storage)
+    throw err
+  }
 }
 
 export async function getOutputState(projectId) {
@@ -212,7 +286,16 @@ export async function getOutputState(projectId) {
             o.duration_sec AS output_duration_sec, o.thumbnail_key AS output_thumbnail_key,
             o.transcript_version AS output_transcript_version,
             o.script_version AS output_script_version,
-            o.created_date AS output_created_date
+            o.created_date AS output_created_date,
+            o.storage_provider AS output_storage_provider,
+            o.cloudinary_public_id AS output_cloudinary_public_id,
+            o.secure_url AS output_secure_url,
+            o.resource_type AS output_resource_type,
+            o.format AS output_format,
+            o.bytes AS output_bytes,
+            o.thumbnail_storage_provider AS output_thumbnail_storage_provider,
+            o.thumbnail_cloudinary_public_id AS output_thumbnail_cloudinary_public_id,
+            o.thumbnail_secure_url AS output_thumbnail_secure_url
      FROM projects p
      LEFT JOIN outputs o ON o.rowid = (
        SELECT o2.rowid FROM outputs o2
@@ -262,6 +345,17 @@ export async function getOutputState(projectId) {
     transcript_version: row.output_transcript_version,
     script_version: row.output_script_version,
     created_date: row.output_created_date,
+    storage_provider: row.output_storage_provider || 'local',
+    cloudinary_public_id: row.output_cloudinary_public_id || null,
+    secure_url: row.output_secure_url || null,
+    resource_type: row.output_resource_type || 'video',
+    format: row.output_format || null,
+    bytes: row.output_bytes != null ? Number(row.output_bytes) : null,
+    url: row.output_secure_url || (row.output_storage_key ? `/storage/${row.output_storage_key}` : null),
+    thumbnail_storage_provider: row.output_thumbnail_storage_provider || 'local',
+    thumbnail_cloudinary_public_id: row.output_thumbnail_cloudinary_public_id || null,
+    thumbnail_secure_url: row.output_thumbnail_secure_url || null,
+    thumbnailUrl: row.output_thumbnail_secure_url || (row.output_thumbnail_key ? `/storage/${row.output_thumbnail_key}` : null),
     youtubeUpload,
   } : null
   const mode = String(project.mode || '').toUpperCase().replace('-', '_')

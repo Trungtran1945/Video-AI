@@ -1,7 +1,12 @@
-import { classifyProviderError, ERROR_KINDS } from '../../lib/providerErrors.js'
+import { classifyProviderError, ERROR_KINDS, ERROR_CODES } from '../../lib/providerErrors.js'
 
 const DELAY_MS = 100 // Rate-limit: 10 request/giây để tránh bị chặn
 const MAX_RETRIES = 2
+
+function getTranslateTimeoutMs() {
+  const v = Number(process.env.GOOGLE_TRANSLATE_TIMEOUT_MS)
+  return Number.isFinite(v) && v > 0 ? v : 15_000
+}
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
@@ -70,11 +75,25 @@ export class GoogleTranslate {
     const url = `${this.scriptUrl}?${params}`
 
     let lastError = null
+    const timeoutMs = getTranslateTimeoutMs()
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       let res
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
       try {
-        res = await fetch(url)
+        res = await fetch(url, { signal: controller.signal })
       } catch (netErr) {
+        clearTimeout(timer)
+        if (netErr?.name === 'AbortError' || netErr?.name === 'TimeoutError' || controller.signal.aborted) {
+          const terr = new Error(`Google Translate timeout sau ${Math.round(timeoutMs / 1000)}s`)
+          terr.code = ERROR_CODES.PROVIDER_TIMEOUT
+          terr.errorCode = ERROR_CODES.PROVIDER_TIMEOUT
+          terr.kind = ERROR_KINDS.TRANSIENT
+          terr.status = 504
+          terr.retryable = true
+          terr.endpoint = safeEndpoint(this.scriptUrl)
+          netErr = terr
+        }
         lastError = netErr
         // Network blips retry; anything else (incl. config) throws now.
         if (classifyProviderError(netErr).kind !== ERROR_KINDS.TRANSIENT) throw netErr
@@ -82,6 +101,7 @@ export class GoogleTranslate {
         throw lastError
       }
       if (!res.ok) {
+        clearTimeout(timer)
         const probe = Object.assign(new Error(`Google Translate HTTP ${res.status}`), { status: res.status })
         const classification = classifyProviderError(probe)
         if (classification.kind === ERROR_KINDS.CONFIGURATION) {
@@ -100,11 +120,26 @@ export class GoogleTranslate {
       try {
         data = await res.json()
       } catch (jsonErr) {
+        clearTimeout(timer)
+        if (jsonErr?.name === 'AbortError' || jsonErr?.name === 'TimeoutError' || controller.signal.aborted) {
+          const terr = new Error(`Google Translate timeout sau ${Math.round(timeoutMs / 1000)}s`)
+          terr.code = ERROR_CODES.PROVIDER_TIMEOUT
+          terr.errorCode = ERROR_CODES.PROVIDER_TIMEOUT
+          terr.kind = ERROR_KINDS.TRANSIENT
+          terr.status = 504
+          terr.retryable = true
+          terr.endpoint = safeEndpoint(this.scriptUrl)
+          lastError = terr
+          if (attempt < MAX_RETRIES) { await sleep(500 * (attempt + 1)); continue }
+          throw lastError
+        }
         lastError = new Error(`Google Translate trả về dữ liệu không hợp lệ (endpoint: ${safeEndpoint(this.scriptUrl)})`)
         lastError.kind = ERROR_KINDS.INVALID_RESPONSE
         lastError.endpoint = safeEndpoint(this.scriptUrl)
         lastError.cause = jsonErr
         throw lastError
+      } finally {
+        clearTimeout(timer)
       }
       if (data.status !== 'success') {
         const providerMsg = data.error || 'Google Translate trả về lỗi'

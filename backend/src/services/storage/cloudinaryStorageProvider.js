@@ -1,10 +1,35 @@
 import { v2 as cloudinary } from 'cloudinary'
 import fs from 'node:fs'
 import path from 'node:path'
+import net from 'node:net'
 import https from 'node:https'
-import http from 'node:http'
 import { StorageProvider } from './storageProvider.js'
 import { detectResourceType } from './localStorageProvider.js'
+
+const MAX_DOWNLOAD_REDIRECTS = 3
+
+export function assertSafeRemoteMediaUrl(rawUrl) {
+  let parsed
+  try {
+    parsed = new URL(String(rawUrl || '').trim())
+  } catch (_) {
+    throw new Error('Unsafe remote media URL: invalid URL')
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error(`Unsafe remote media URL protocol: ${parsed.protocol}`)
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('Unsafe remote media URL: embedded credentials are not allowed')
+  }
+  const host = parsed.hostname.toLowerCase()
+  if (!host || net.isIP(host) !== 0 || host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) {
+    throw new Error(`Unsafe remote media host rejected: ${host || '(empty)'}`)
+  }
+  if (host !== 'res.cloudinary.com' && !host.endsWith('.cloudinary.com')) {
+    throw new Error(`Untrusted remote media host rejected: ${host}`)
+  }
+  return parsed.toString()
+}
 
 export class CloudinaryStorageProvider extends StorageProvider {
   constructor({
@@ -293,22 +318,31 @@ export class CloudinaryStorageProvider extends StorageProvider {
     }
   }
 
-  async downloadToTemp(keyOrUrl, destinationPath) {
+  async downloadToTemp(keyOrUrl, destinationPath, redirectDepth = 0) {
+    if (redirectDepth > MAX_DOWNLOAD_REDIRECTS) {
+      throw new Error('Too many redirects while downloading remote asset')
+    }
     const dest = path.resolve(destinationPath)
     await fs.promises.mkdir(path.dirname(dest), { recursive: true })
 
-    const targetUrl = /^https?:\/\//i.test(keyOrUrl) ? keyOrUrl : this.getUrl(keyOrUrl)
-    if (!targetUrl) throw new Error(`Could not resolve download URL for: ${keyOrUrl}`)
-
-    const client = targetUrl.startsWith('https') ? https : http
+    const rawUrl = /^https?:\/\//i.test(keyOrUrl) ? keyOrUrl : this.getUrl(keyOrUrl)
+    if (!rawUrl) throw new Error(`Could not resolve download URL for: ${keyOrUrl}`)
+    const targetUrl = assertSafeRemoteMediaUrl(rawUrl)
 
     return new Promise((resolve, reject) => {
       const fileStream = fs.createWriteStream(dest)
-      const req = client.get(targetUrl, (res) => {
-        // Handle redirect
+      const req = https.get(targetUrl, (res) => {
+        // Handle redirect safely
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           fileStream.close()
-          return this.downloadToTemp(res.headers.location, destinationPath).then(resolve).catch(reject)
+          fs.unlink(dest, () => {})
+          let nextUrl
+          try {
+            nextUrl = new URL(res.headers.location, targetUrl).toString()
+          } catch (_) {
+            return reject(new Error('Invalid redirect location for remote asset'))
+          }
+          return this.downloadToTemp(nextUrl, destinationPath, redirectDepth + 1).then(resolve).catch(reject)
         }
 
         if (res.statusCode !== 200) {

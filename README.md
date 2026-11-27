@@ -2,6 +2,8 @@
 
 > Nền tảng SaaS tự động sản xuất video bằng AI với kiến trúc hàng đợi linh hoạt, thiết kế Provider Pattern đa mô hình và quy trình pipeline xử lý video hoàn toàn tự động.
 
+> **Chỉ muốn chạy thử? (không cần API key):** `docker compose -f docker-compose.trial.yml up -d --build` → mở `http://localhost` → đăng nhập `demo@local.test` / `demo12345678`. Đây là **Demo mode** dùng dữ liệu mô phỏng; xem [hướng dẫn chi tiết](docs/LOCAL_TRIAL_SETUP.md) và [§6.4](#64-chạy-thử-local-bằng-docker-demo-mode).
+
 ---
 
 ## 📌 Mục lục
@@ -17,6 +19,7 @@
   - [6.1. Yêu cầu môi trường](#61-yêu-cầu-môi-trường)
   - [6.2. Chạy phát triển nội bộ (Local Development)](#62-chạy-phát-triển-nội-bộ-local-development)
   - [6.3. Khởi chạy bằng Docker Compose](#63-khởi-chạy-bằng-docker-compose)
+  - [6.4. Chạy thử local bằng Docker (Demo mode)](#64-chạy-thử-local-bằng-docker-demo-mode)
 - [7. Kiểm thử & Chất lượng mã nguồn](#7-kiểm-thử--chất-lượng-mã-nguồn)
 - [8. Bản đồ API (API Reference)](#8-bản-đồ-api-api-reference)
 - [9. Hệ thống tài liệu chi tiết](#9-hệ-thống-tài-liệu-chi-tiết)
@@ -328,6 +331,25 @@ Truy cập ứng dụng tại `http://localhost`.
 > - **Cross-origin** (gọi trực tiếp `:3001`, hoặc frontend/API khác domain): bắt buộc `CORS_ORIGINS=https://app.example.com` (comma-separated, khớp `Origin` header chính xác scheme+host+port). Để rỗng = fail-closed: mọi browser cross-origin bị `CORS: origin not allowed` (server log warn 1 lần lúc boot).
 > - **HTTP LAN** (`http://<LAN-IP>`): prod mặc định `COOKIE_SECURE=true` → browser drop cookie `Secure` trên HTTP → login loop (đăng nhập xong văng ra). Fix: `COOKIE_SECURE=false` trong `.env` khi còn HTTP nội bộ (`docker-compose.yml` đã pass-through biến này); prod public chỉ dùng HTTP là downgrade bảo mật — nên terminate TLS (https) rồi giữ `true`.
 > - Lỗi `403 CSRF_ORIGIN_MISMATCH` dùng chung allowlist `CORS_ORIGINS` (xem §8.1).
+
+---
+
+### 6.4. Chạy thử local bằng Docker (Demo mode)
+
+Dành cho người muốn xem/dùng thử sản phẩm mà **không có API key**. Khác với §6.3 (production cần secrets), bản trial dùng secret dev có sẵn và bật `DEFAULT_PROVIDER_MODE=mock`:
+
+```bash
+git clone <URL_REPO> Video_AI
+cd Video_AI
+docker compose -f docker-compose.trial.yml up -d --build
+# mở http://localhost
+# đăng nhập: demo@local.test / demo12345678
+```
+
+- **Demo mode**: provider mô phỏng thay thế khi thiếu key → chạy được toàn bộ pipeline, nhưng **nội dung sinh ra là giả lập**, không phải dịch/tóm tắt thật.
+- **Không nhúng key**: mock chỉ là fallback cuối; thêm Gemini/Groq key qua trang API Keys (BYOK) là pipeline tự dùng AI thật.
+- **Không .exe, không deploy**: compose này chỉ bind `127.0.0.1`.
+- Chi tiết (port tuỳ chỉnh, BYOK, troubleshoot, dọn dẹp): [`docs/LOCAL_TRIAL_SETUP.md`](docs/LOCAL_TRIAL_SETUP.md).
 
 ---
 

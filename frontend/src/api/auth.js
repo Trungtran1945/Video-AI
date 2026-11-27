@@ -1,10 +1,10 @@
 import api, { refreshSession } from './client'
 
 export const authApi = {
-  register: (email, password, name) =>
-    api.post('/auth/register', { email, password, name }).then((r) => r.data),
-  registerSendOtp: (email, password, name) =>
-    api.post('/auth/register/send-otp', { email, password, name }).then((r) => r.data),
+  register: (email, password, name, turnstileToken) =>
+    api.post('/auth/register', { email, password, name, ...(turnstileToken ? { turnstileToken } : {}) }).then((r) => r.data),
+  registerSendOtp: (email, password, name, turnstileToken) =>
+    api.post('/auth/register/send-otp', { email, password, name, ...(turnstileToken ? { turnstileToken } : {}) }).then((r) => r.data),
   registerVerifyOtp: (email, otp, password, name) =>
     api.post('/auth/register/verify-otp', { email, otp, password, name }).then((r) => r.data),
   googleLogin: (credential) =>

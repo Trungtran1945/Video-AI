@@ -42,6 +42,7 @@ import {
   DUMMY_BCRYPT_HASH,
 } from '../../lib/password.js'
 import { resetAllRateLimits, getClientIp } from '../../middleware/rateLimiter.js'
+import { botProtection } from '../../middleware/botProtection.js'
 import { canonicalizeEmail } from '../../lib/emailCanonical.js'
 import { sanitizeUserDto } from '../../lib/responseSanitizer.js'
 import { sensitiveNoCache } from '../../middleware/securityHeaders.js'
@@ -100,7 +101,46 @@ const registerHitsByIp = new Map()
 const registerOtpLastSentByEmail = new Map()
 const registerOtpHitsByEmail = new Map()
 const registerOtpHitsByIp = new Map()
+const registerOtpVerifyHitsByIp = new Map()
+const otpVerifyHitsByIp = new Map()
 const googleHitsByIp = new Map()
+
+function pruneAuthInMemoryMaps(now = Date.now()) {
+  const MAX_AGE_MS = 60 * 60 * 1000
+  for (const [k, v] of recentRotations.entries()) {
+    if (!v || now - v.rotatedAt > 10_000) recentRotations.delete(k)
+  }
+  for (const lastSentMap of [otpLastSentByEmail, registerOtpLastSentByEmail]) {
+    for (const [k, ts] of lastSentMap.entries()) {
+      if (now - ts > MAX_AGE_MS) lastSentMap.delete(k)
+    }
+  }
+  for (const hitMap of [
+    forgotHitsByIp,
+    forgotHitsByEmail,
+    otpHitsByEmail,
+    otpHitsByIp,
+    loginFailHitsByEmail,
+    loginFailHitsByIp,
+    registerHitsByIp,
+    registerOtpHitsByEmail,
+    registerOtpHitsByIp,
+    registerOtpVerifyHitsByIp,
+    otpVerifyHitsByIp,
+    googleHitsByIp,
+  ]) {
+    for (const [k, list] of hitMap.entries()) {
+      const fresh = Array.isArray(list) ? list.filter((t) => now - t < MAX_AGE_MS) : []
+      if (fresh.length === 0) hitMap.delete(k)
+      else if (fresh.length !== list.length) hitMap.set(k, fresh)
+    }
+  }
+}
+
+const authMapPruneTimer = setInterval(() => {
+  try { pruneAuthInMemoryMaps() } catch (_) {}
+}, 10 * 60 * 1000)
+if (typeof authMapPruneTimer.unref === 'function') authMapPruneTimer.unref()
 
 export function hitRateLimit(store, key, limit, windowMs, now = Date.now()) {
   const hits = (store.get(key) || []).filter((t) => now - t < windowMs)
@@ -141,6 +181,8 @@ export function __resetAuthRateLimitsForTests() {
   registerOtpLastSentByEmail.clear()
   registerOtpHitsByEmail.clear()
   registerOtpHitsByIp.clear()
+  registerOtpVerifyHitsByIp.clear()
+  otpVerifyHitsByIp.clear()
   googleHitsByIp.clear()
   resetAllRateLimits()
 }
@@ -159,7 +201,7 @@ export {
 export const verifyGoogleToken = verifyGoogleIdToken
 
 // POST /api/v1/auth/register
-router.post('/register', validateBody(registerSchema), async (req, res) => {
+router.post('/register', botProtection({ action: 'register' }), validateBody(registerSchema), async (req, res) => {
   try {
     const ip = getClientIp(req)
     const ipWait = hitRateLimit(registerHitsByIp, String(ip), 10, 15 * 60 * 1000)
@@ -189,11 +231,28 @@ router.post('/register', validateBody(registerSchema), async (req, res) => {
         `SELECT * FROM email_otps WHERE email = ? AND purpose = 'register' AND used = 0 ORDER BY created_date DESC, id DESC LIMIT 1`,
         [normalizedEmail]
       )
-      if (otpRow && hashOtp(cleanOtp) === otpRow.otp_hash && new Date(otpRow.expires_at) >= new Date()) {
-        await run(`UPDATE email_otps SET used = 1 WHERE id = ?`, [otpRow.id])
+      if (!otpRow) {
+        if (requireOtp) {
+          return sendError(res, 400, 'INVALID_OTP', 'Mã xác thực OTP không hợp lệ hoặc đã hết hạn.', { field: 'otp' })
+        }
+      } else if ((otpRow.attempts || 0) >= (otpRow.max_attempts || 5)) {
+        if (requireOtp) {
+          return sendError(res, 400, 'OTP_MAX_ATTEMPTS_EXCEEDED', 'Mã OTP đã vượt quá số lần thử cho phép. Vui lòng yêu cầu mã mới.', { field: 'otp' })
+        }
+      } else if (new Date(otpRow.expires_at) < new Date()) {
+        if (requireOtp) {
+          return sendError(res, 400, 'OTP_EXPIRED', 'Mã xác thực OTP không hợp lệ hoặc đã hết hạn.', { field: 'otp' })
+        }
+      } else if (hashOtp(cleanOtp) === otpRow.otp_hash) {
+        await run(`UPDATE email_otps SET used = 1 WHERE id = ? AND used = 0`, [otpRow.id])
         isEmailVerified = true
-      } else if (requireOtp) {
-        return sendError(res, 400, 'INVALID_OTP', 'Mã xác thực OTP không hợp lệ hoặc đã hết hạn.', { field: 'otp' })
+      } else {
+        const nextAttempts = (otpRow.attempts || 0) + 1
+        await run(`UPDATE email_otps SET attempts = ? WHERE id = ?`, [nextAttempts, otpRow.id])
+        if (requireOtp) {
+          const remaining = Math.max(0, (otpRow.max_attempts || 5) - nextAttempts)
+          return sendError(res, 400, 'INVALID_OTP', 'Mã xác thực OTP không hợp lệ hoặc đã hết hạn.', { field: 'otp', remainingAttempts: remaining })
+        }
       }
     }
 
@@ -225,7 +284,7 @@ router.post('/register', validateBody(registerSchema), async (req, res) => {
 })
 
 // POST /api/v1/auth/register/send-otp
-router.post('/register/send-otp', async (req, res) => {
+router.post('/register/send-otp', botProtection({ action: 'register_send_otp' }), async (req, res) => {
   try {
     const { email, password } = req.body
     if (!email || !isValidEmail(email)) {
@@ -287,7 +346,11 @@ router.post('/register/send-otp', async (req, res) => {
       created_date: new Date(now).toISOString(),
     })
 
-    const { devOtp } = await sendOtpEmail({ email: normalizedEmail, otp, purpose: 'register' })
+    const { sent, devOtp } = await sendOtpEmail({ email: normalizedEmail, otp, purpose: 'register' })
+    if (!sent && devOtp === undefined) {
+      await run(`UPDATE email_otps SET used = 1 WHERE id = ?`, [otpId]).catch(() => {})
+      return sendError(res, 503, 'SMTP_NOT_CONFIGURED', 'Hệ thống gửi email OTP chưa được cấu hình. Vui lòng liên hệ quản trị viên.')
+    }
 
     registerOtpLastSentByEmail.set(normalizedEmail, now)
     emailHits.push(now)
@@ -311,6 +374,12 @@ router.post('/register/send-otp', async (req, res) => {
 // POST /api/v1/auth/register/verify-otp
 router.post('/register/verify-otp', async (req, res) => {
   try {
+    const ip = getClientIp(req)
+    const ipWait = hitRateLimit(registerOtpVerifyHitsByIp, String(ip), 20, 15 * 60 * 1000)
+    if (ipWait) {
+      return sendError(res, 429, 'RATE_LIMITED', 'Quá nhiều lần xác thực OTP từ IP này. Vui lòng thử lại sau.', { retryAfterSec: ipWait })
+    }
+
     const { email, otp, password, name } = req.body
     if (!email || !otp || !password) {
       return sendError(res, 400, ERR.VALIDATION, 'Email, mật khẩu và mã OTP là bắt buộc', { field: 'email,otp,password' })
@@ -794,7 +863,11 @@ router.post('/otp/send', async (req, res) => {
     })
 
     // Gửi email OTP
-    const { devOtp } = await sendOtpEmail({ email: normalizedEmail, otp, purpose: 'login' })
+    const { sent, devOtp } = await sendOtpEmail({ email: normalizedEmail, otp, purpose: 'login' })
+    if (!sent && devOtp === undefined) {
+      await run(`UPDATE email_otps SET used = 1 WHERE id = ?`, [otpId]).catch(() => {})
+      return sendError(res, 503, 'SMTP_NOT_CONFIGURED', 'Hệ thống gửi email OTP chưa được cấu hình. Vui lòng liên hệ quản trị viên.')
+    }
 
     // Cập nhật rate limit sau khi gửi thành công
     otpLastSentByEmail.set(normalizedEmail, now)
@@ -819,6 +892,12 @@ router.post('/otp/send', async (req, res) => {
 // POST /api/v1/auth/otp/verify — Xác thực đăng nhập OTP qua Email
 router.post('/otp/verify', async (req, res) => {
   try {
+    const ip = getClientIp(req)
+    const ipWait = hitRateLimit(otpVerifyHitsByIp, String(ip), 20, 15 * 60 * 1000)
+    if (ipWait) {
+      return sendError(res, 429, 'RATE_LIMITED', 'Quá nhiều lần xác thực OTP từ IP này. Vui lòng thử lại sau.', { retryAfterSec: ipWait })
+    }
+
     const { email, otp } = req.body
     if (!email || !otp) {
       return sendError(res, 400, ERR.VALIDATION, 'Email và mã OTP là bắt buộc', { field: 'email,otp' })

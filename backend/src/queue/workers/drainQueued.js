@@ -36,6 +36,17 @@ export async function processDrainQueued(_job) {
   }
 
   // ── 2. Drain queued projects ──
+  // Enforce global concurrency cap early before scanning queued users.
+  const maxGlobal = Number(config.maxGlobalConcurrentPipelines || 0)
+  if (maxGlobal > 0) {
+    const globalActive = await queryOne(
+      `SELECT COUNT(*) as cnt FROM projects WHERE status IN (${EXECUTION_IN_LIST})`
+    )
+    if (Number(globalActive?.cnt || 0) >= maxGlobal) {
+      return { drained: 0, recovered }
+    }
+  }
+
   // Review-parked script projects are waiting for the user, not for a slot.
   const usersWithQueued = await queryOne(
     `SELECT DISTINCT user_id FROM projects WHERE status = 'queued' AND COALESCE(script_review_required, FALSE) = FALSE`

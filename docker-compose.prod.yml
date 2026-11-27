@@ -1,0 +1,175 @@
+# Production stack optimized for free cloud VMs / self-hosted servers (10-100+ CCU).
+# - Excludes heavy local VoiceStudio container (uses free keyless Edge-TTS + Google TTS).
+# - Uses Caddy for automatic Let's Encrypt HTTPS (set APP_DOMAIN=yourdomain.com)
+#   or HTTP behind Cloudflare Tunnel (set APP_DOMAIN=:80).
+# - Keeps Postgres & Redis strictly on the internal Docker network.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d --build
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_DB: ${DB_NAME:-video_ai}
+      POSTGRES_USER: ${DB_USER:-video_ai_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-video_ai_user} -d ${DB_NAME:-video_ai}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - INSTANCE_MODE=single
+      - TRUST_PROXY=${TRUST_PROXY:-1}
+      - FORCE_HTTPS=${FORCE_HTTPS:-true}
+      - DISABLE_FORCE_HTTPS=${DISABLE_FORCE_HTTPS:-false}
+      - STRICT_SECRETS=${STRICT_SECRETS:-true}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+      - REDIS_URL=${REDIS_URL:-}
+      - DATABASE_URL=postgresql://${DB_USER:-video_ai_user}:${DB_PASSWORD:?Set DB_PASSWORD in .env}@postgres:5432/${DB_NAME:-video_ai}
+      - DB_SSL=${DB_SSL:-false}
+      - DB_POOL_MAX=${DB_POOL_MAX:-20}
+      - DB_MAX_PENDING_WRITES=${DB_MAX_PENDING_WRITES:-1000}
+      - DB_SLOW_WRITE_MS=${DB_SLOW_WRITE_MS:-1000}
+      - PROJECT_LEASE_SECONDS=${PROJECT_LEASE_SECONDS:-1800}
+      - UPLOAD_SESSION_TTL_MINUTES=${UPLOAD_SESSION_TTL_MINUTES:-60}
+      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:-}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-}
+      - MASTER_KEY=${MASTER_KEY:-}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - MAX_CONCURRENT_PROJECTS_PER_USER=${MAX_CONCURRENT_PROJECTS_PER_USER:-2}
+      - MAX_GLOBAL_CONCURRENT_PIPELINES=${MAX_GLOBAL_CONCURRENT_PIPELINES:-2}
+      - PROJECT_RETENTION_DAYS=${PROJECT_RETENTION_DAYS:-7}
+      - MIN_FREE_DISK_GB=${MIN_FREE_DISK_GB:-30}
+      - MAX_STORED_PROJECTS_PER_USER=${MAX_STORED_PROJECTS_PER_USER:-5}
+      - STORAGE_DIR=/app/storage
+      - STORAGE_PROVIDER=${STORAGE_PROVIDER:-local}
+      - CLOUDINARY_URL=${CLOUDINARY_URL:-}
+      - CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME:-}
+      - CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY:-}
+      - CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET:-}
+      - CLOUDINARY_FOLDER_PREFIX=${CLOUDINARY_FOLDER_PREFIX:-video_ai}
+      - DEFAULT_PROVIDER_MODE=${DEFAULT_PROVIDER_MODE:-live}
+      - QUOTA_WARNING_THRESHOLD=${QUOTA_WARNING_THRESHOLD:-0.8}
+      - FFMPEG_CONCURRENCY=${FFMPEG_CONCURRENCY:-2}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-}
+      - GEMINI_VISION_MODEL=${GEMINI_VISION_MODEL:-}
+      - GEMINI_RPM=${GEMINI_RPM:-10}
+      - GEMINI_MAX_RETRIES=${GEMINI_MAX_RETRIES:-5}
+      - GEMINI_TIMEOUT_MS=${GEMINI_TIMEOUT_MS:-60000}
+      - LLM_BATCH_TIMEOUT_MS=${LLM_BATCH_TIMEOUT_MS:-}
+      - EDGE_TTS_VOICE=${EDGE_TTS_VOICE:-vi-VN-NamMinhNeural}
+      - GOOGLE_TRANSLATE_SCRIPT_URL=${GOOGLE_TRANSLATE_SCRIPT_URL:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - WHISPER_API_KEY=${WHISPER_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - WHISPER_BASE_URL=${WHISPER_BASE_URL:-https://api.groq.com/openai/v1}
+      - WHISPER_MODEL=${WHISPER_MODEL:-whisper-large-v3-turbo}
+      - WHISPER_TEMPERATURE=${WHISPER_TEMPERATURE:-0}
+      - WHISPER_INITIAL_PROMPT=${WHISPER_INITIAL_PROMPT:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - YOUTUBE_CLIENT_ID=${YOUTUBE_CLIENT_ID:-}
+      - YOUTUBE_CLIENT_SECRET=${YOUTUBE_CLIENT_SECRET:-}
+      - YOUTUBE_REDIRECT_URI=${YOUTUBE_REDIRECT_URI:-}
+      - FRONTEND_URL=${FRONTEND_URL:-https://${APP_DOMAIN:-localhost}}
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - NOTIFY_FROM_EMAIL=${NOTIFY_FROM_EMAIL:-}
+      - REQUIRE_REGISTRATION_OTP=${REQUIRE_REGISTRATION_OTP:-false}
+      - TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - COOKIE_SECURE=${COOKIE_SECURE:-true}
+      - PREVIOUS_MASTER_KEYS=${PREVIOUS_MASTER_KEYS:-}
+    volumes:
+      - storage_data:/app/storage
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "--header=X-Forwarded-Proto: https", "http://127.0.0.1:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/caddy.Dockerfile
+      args:
+        VITE_API_BASE: ${VITE_API_BASE:-/api/v1}
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+        VITE_TURNSTILE_SITE_KEY: ${VITE_TURNSTILE_SITE_KEY:-}
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      - APP_DOMAIN=${APP_DOMAIN:-:80}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  redis_data:
+  postgres_data:
+  storage_data:
+  caddy_data:
+  caddy_config:

@@ -181,8 +181,39 @@ export async function processCleanup(_job) {
     console.error('[Cleanup] Error cleaning tmp directory:', err.message)
   }
 
+  // Also sweep stale files (>24h) in storage/tmp_uploads (interrupted MEDIA_COMPOSER uploads)
+  const tmpUploadsRoot = path.join(config.storageDir, 'tmp_uploads')
+  let tmpUploadsCleaned = 0
+  try {
+    if (isPathInside(config.storageDir, tmpUploadsRoot) && fs.existsSync(tmpUploadsRoot)) {
+      const entries = fs.readdirSync(tmpUploadsRoot, { withFileTypes: true })
+      const now = Date.now()
+      const maxUploadAge = 24 * 60 * 60 * 1000 // 24 hours
+
+      for (const entry of entries) {
+        const entryPath = path.join(tmpUploadsRoot, entry.name)
+        if (!isPathInside(tmpUploadsRoot, entryPath)) continue
+        try {
+          const stat = fs.lstatSync(entryPath)
+          if (now - stat.mtimeMs > maxUploadAge) {
+            if (entry.isDirectory()) {
+              fs.rmSync(entryPath, { recursive: true, force: true })
+            } else {
+              fs.unlinkSync(entryPath)
+            }
+            tmpUploadsCleaned++
+            cleaned++
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (err) {
+    console.error('[Cleanup] Error cleaning tmp_uploads directory:', err.message)
+  }
+
   return {
     cleaned,
+    tmpUploadsCleaned,
     failed,
     failedCount: failed.length,
     uploads,

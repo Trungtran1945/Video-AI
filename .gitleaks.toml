@@ -60,6 +60,8 @@ paths = [
 ]
 stopwords = [
     "VideoAI_Secure_Db_2026!",
+    # CI-only ephemeral Postgres password in .github/workflows/ci.yml (not a real secret)
+    "CI_Ephemeral_Db_Pass_9f3a7c21",
     "video-ai-dev-access-secret",
     "video-ai-dev-refresh-secret",
     "dev-master-key",

@@ -15,12 +15,13 @@
 
 export const DEFAULT_CSP_DIRECTIVES = {
   'default-src': "'self'",
-  'script-src': "'self' 'unsafe-inline' https://accounts.google.com",
-  'style-src': "'self' 'unsafe-inline' https://fonts.googleapis.com",
+  'script-src': "'self' 'unsafe-inline' https://accounts.google.com https://challenges.cloudflare.com",
+  'style-src': "'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com",
   'font-src': "'self' data: https://fonts.gstatic.com",
-  'img-src': "'self' data: blob: https://lh3.googleusercontent.com",
-  'media-src': "'self' blob: data:",
-  'connect-src': "'self' data: blob: https://accounts.google.com https://oauth2.googleapis.com",
+  'img-src': "'self' data: blob: https://lh3.googleusercontent.com https://res.cloudinary.com",
+  'media-src': "'self' blob: data: https://res.cloudinary.com",
+  'connect-src': "'self' data: blob: https://accounts.google.com https://oauth2.googleapis.com https://res.cloudinary.com https://challenges.cloudflare.com",
+  'frame-src': "'self' https://accounts.google.com https://challenges.cloudflare.com",
   'object-src': "'none'",
   'base-uri': "'self'",
   'form-action': "'self'",
@@ -112,11 +113,57 @@ export function securityHeadersMiddleware(options = {}) {
   }
 }
 
+const SAFE_HOST_RE = /^(?:\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+)(?::\d{1,5})?$/
+
+function getConfiguredAllowedHosts(options = {}) {
+  const allowed = new Set()
+  if (Array.isArray(options.allowedHosts)) {
+    for (const h of options.allowedHosts) {
+      if (typeof h === 'string' && h.trim()) allowed.add(h.trim().toLowerCase())
+    }
+  }
+  const domain = String(process.env.APP_DOMAIN || '').trim()
+  if (domain && !domain.startsWith(':') && SAFE_HOST_RE.test(domain)) {
+    allowed.add(domain.toLowerCase())
+  }
+  const originsRaw = [process.env.CORS_ORIGINS, process.env.FRONTEND_URL].filter(Boolean).join(',')
+  for (const item of originsRaw.split(',')) {
+    const trimmed = item.trim()
+    if (!trimmed) continue
+    try {
+      const u = new URL(trimmed)
+      if (u.host) allowed.add(u.host.toLowerCase())
+      if (u.hostname) allowed.add(u.hostname.toLowerCase())
+    } catch (_) {}
+  }
+  return allowed
+}
+
+export function resolveSafeRedirectHost(rawHost, options = {}) {
+  const candidate = String(rawHost || '').trim()
+  const isValidSyntax = candidate.length > 0 && candidate.length <= 253 && SAFE_HOST_RE.test(candidate)
+  const allowed = getConfiguredAllowedHosts(options)
+
+  if (allowed.size > 0) {
+    if (isValidSyntax) {
+      const lower = candidate.toLowerCase()
+      const hostnameOnly = lower.replace(/:\d+$/, '')
+      if (allowed.has(lower) || allowed.has(hostnameOnly)) {
+        return candidate
+      }
+    }
+    return allowed.values().next().value
+  }
+
+  return isValidSyntax ? candidate : 'localhost'
+}
+
 /**
  * Middleware to enforce HTTPS in production or when FORCE_HTTPS is enabled.
  * Redirects HTTP requests to HTTPS via 301 Permanent Redirect (OWASP ASVS L2 & SEC-12).
  * @param {object} [options]
  * @param {boolean} [options.forceHttps]
+ * @param {string[]} [options.allowedHosts]
  * @returns {import('express').RequestHandler}
  */
 export function httpsEnforcementMiddleware(options = {}) {
@@ -137,8 +184,9 @@ export function httpsEnforcementMiddleware(options = {}) {
 
     const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https'
     if (!isSecure) {
-      const host = req.headers.host || 'localhost'
-      const targetUrl = `https://${host}${req.url}`
+      const host = resolveSafeRedirectHost(req.headers.host, options)
+      const safePath = String(req.url || '/').startsWith('/') ? req.url : `/${req.url}`
+      const targetUrl = `https://${host}${safePath}`
       return res.redirect(301, targetUrl)
     }
 

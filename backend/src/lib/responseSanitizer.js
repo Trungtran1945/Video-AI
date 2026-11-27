@@ -93,8 +93,8 @@ export function sanitizeStringContent(text) {
     .replace(/(postgresql|postgres|mysql|redis):\/\/[^@/]+@/gi, '$1://[redacted]@')
     // Redact Windows absolute filesystem paths (e.g. C:\Users\... or D:\E\...)
     .replace(/[A-Za-z]:\\(?:[^ :,\r\n\t"']+\\)+[^ :,\r\n\t"']*/g, '[internal path]')
-    // Redact Unix server paths (e.g. /home/... or /var/www/...)
-    .replace(/\/(?:home|root|var|etc|usr)\/(?:[a-zA-Z0-9._-]+\/)+[a-zA-Z0-9._-]*/g, '[internal path]')
+    // Redact Unix server paths (e.g. /app/..., /home/..., /var/www/...)
+    .replace(/\/(?:app|home|root|var|etc|usr|srv|opt|tmp)\/(?:[a-zA-Z0-9._-]+\/)+[a-zA-Z0-9._-]*/g, '[internal path]')
 }
 
 /**
